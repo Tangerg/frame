@@ -69,7 +69,8 @@ func admitWAL(ctx context.Context, db *sql.DB) (err error) {
 			return err
 		}
 		var busy *sqlitedriver.Error
-		if !errors.As(err, &busy) || busy.Code() != sqlite3.SQLITE_BUSY {
+		// Extended results such as SQLITE_BUSY_RECOVERY retain the primary code in the low byte.
+		if !errors.As(err, &busy) || busy.Code()&0xff != sqlite3.SQLITE_BUSY {
 			return err
 		}
 		// WAL conversion can bypass SQLite's busy handler to avoid a lock-upgrade

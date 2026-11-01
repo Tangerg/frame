@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Frame Document Workbench</title>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">FRAME / INDEPENDENT CONSUMER</p>
+        <h1>Document Workbench</h1>
+        <p>
+          Exact source revisions, retained conversion tasks, and a browser
+          preview owned by its original Use.
+        </p>
+      </header>
+      <section class="connection">
+        <label
+          >Application token<input
+            id="token"
+            type="password"
+            autocomplete="off"
+            placeholder="From the application-token file"
+        /></label>
+        <button id="connect">Connect preview</button>
+        <button id="reconnect" class="secondary">Reconnect Host</button>
+        <button id="close" class="secondary">Release preview</button>
+        <button id="reload" class="secondary" disabled>Reload page</button>
+        <p id="connection-state" role="status">Disconnected</p>
+      </section>
+      <section class="task-controls">
+        <label>Document path<input id="path" value="hello.md" /></label>
+        <label
+          >Original task ID<input
+            id="task"
+            placeholder="Generated when first queued"
+        /></label>
+        <div class="actions">
+          <button id="convert">Convert and preview</button
+          ><button id="queue" class="secondary">Queue</button
+          ><button id="run" class="secondary">Run original task</button
+          ><button id="observe" class="secondary">Observe</button
+          ><button id="cancel" class="secondary">Cancel idle task</button>
+        </div>
+      </section>
+      <div class="workspace">
+        <section class="preview-panel">
+          <h2>Preview</h2>
+          <div id="preview">
+            <p class="placeholder">
+              Convert a document to mount its approved preview object.
+            </p>
+          </div>
+        </section>
+        <aside>
+          <h2>Original result</h2>
+          <p id="status" role="status">No task selected</p>
+          <h3>Diagnostics</h3>
+          <ul id="diagnostics"></ul>
+          <h3>Retained binding</h3>
+          <pre id="binding">No binding captured</pre>
+        </aside>
+      </div>
+      <p id="error" role="alert"></p>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

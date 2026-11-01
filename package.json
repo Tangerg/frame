@@ -1,0 +1,37 @@
+{
+  "name": "frame-monorepo",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "workspaces": [
+    "packages/*",
+    "examples/authoring/browser",
+    "examples/document/web"
+  ],
+  "scripts": {
+    "build": "npm run build -w @frame/sdk && npm run build -w @frame/browser && npm run build -w @frame/node && npm run build -w @frame/react",
+    "typecheck": "npm run build && npm run typecheck --workspaces --if-present",
+    "test": "npm run build && vitest run packages --pool forks --execArgv=--expose-gc --maxWorkers=2",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm test && npm run check:pack",
+    "check:pack": "node scripts/check-pack.mjs",
+    "lint": "oxlint --deny-warnings packages/sdk/src packages/browser/src packages/node/src packages/react/src examples/authoring/browser/src examples/document/web/src scripts",
+    "format:check": "prettier --check \"packages/*/src/**/*.{ts,tsx}\" \"scripts/*.mjs\""
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "happy-dom": "21.0.4",
+    "oxlint": "1.89.0",
+    "playwright": "1.64.1",
+    "prettier": "3.9.10",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.5",
+    "vitest": "5.0.5"
+  }
+}

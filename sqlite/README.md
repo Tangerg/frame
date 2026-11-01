@@ -1,0 +1,91 @@
+# SQLite settlement and execution protection
+
+This optional adapter uses one local SQLite file and the Host's existing
+`frame.Admission`. A held operating-system lock on a persistent `.frame-lock`
+sidecar grants one Store authority; opening another Host on the same database
+fails. The sidecar stays in place after release and must not be replaced while a
+Store is alive. Database and lock paths must be regular files without hard links.
+The sidecar keeps authority separate from SQLite's own byte-range locks on macOS.
+The database is configured and
+checked for WAL, synchronous FULL, foreign keys and disabled dirty reads. The
+profile requires a reliable local filesystem. It does not support network filesystems,
+independent writers or atomic transactions across databases.
+
+`Open` accepts the complete current set of `OwnerSchema` declarations. A different
+schema requires a fresh data directory. Each owner supplies its original business
+tables and a trusted reference query. Register the resulting `Owner` with the same
+Admission through `RegisterUseOwner`. Frame does not create a competing business
+reference-count ledger. Every admission read uses a new current transaction.
+
+## Business submission
+
+`Owner.Prepare` allocates a monotonic `SubmissionID` and writes its original request
+in one transaction. The identity becomes usable only after that transaction has
+settled. Preparation does not authorize plugin execution.
+
+`Owner.Commit` enters `Admission.Admit`, starts `BEGIN IMMEDIATE`, checks the original
+request and terminal state, and invokes a trusted application mutation with that
+admitted context and transaction. Validate the prepared binding through
+`Host.ValidateBindingUnder` or `Host.ValidatePlanUnder` inside this callback, and
+write the original business record in this same transaction. Use the supplied
+context and Executor for all SQL. Do not call another admission or transaction
+entry from the callback. Plugin effects and network calls run after Commit returns.
+
+The mutation returns bounded evidence locating its committed change. This is
+submission evidence, not a plugin's business receipt. Actual business results stay
+with their original owner. An optional synchronization callback updates the local
+authority after a confirmed commit and before admission reopens. Its failure
+preserves Committed and raises the recovery barrier.
+
+Committed and NotCommitted are terminal. Repeating the same identity returns its
+original conclusion; changing its request is a conflict. Context cancellation is
+checked before COMMIT. Transaction rollback or connection disposal is joined
+before the owner releases admission. An unresolved connection or storage error
+raises RecoveryRequired instead of authorizing a retry.
+
+`Close` seals new Store transactions and joins those already admitted. A failed
+rollback cannot return its original connection to the pool. The Store retains
+that exact connection and its authority lock until the original driver confirms
+release. Repeated `Close` calls join or advance the same shutdown; a later
+`database/sql.Close` returning nil is not release evidence. If release remains
+unconfirmed, the outstanding shutdown keeps the owner alive until the process
+exits, even when a caller drops its handle.
+
+If initialization fails and its cleanup is also unconfirmed, `Open` returns the
+sealed Store together with an error. Callers must preserve that cleanup handle
+and call `Close`; it is not a partially usable database. Normal initialization
+failures whose resources were released return a nil Store. An indeterminate
+business commit reports `Indeterminate`, without speculative committed evidence.
+
+`Settlement` reads the original conclusion. `RecoverPrepared` may settle remaining
+Prepared intents only after this Store has acquired exclusive authority and old
+connections have ended. `Pending` exposes records requiring restoration or local
+synchronization. `Confirm` records synchronization but does not clear the Host's
+recovery barrier. The composition root calls `Admission.Recover` after restoring
+all necessary owners and execution scopes; recovery does not replay mutations.
+
+## Evidence retention
+
+`RetainEvidence` pins detailed evidence for an explicit recovery holder.
+`ReleaseEvidence` removes that holder monotonically. `Compact` advances only over a
+continuous terminal, synchronized, unreferenced sequence prefix. Deletion and the
+watermark commit in one transaction. Old queries return `ErrEvidenceExpired`;
+expiration never authorizes recreating an old identity.
+
+## Execution protection
+
+`RecordAttempt` persists the exact Unit, BindingSnapshot, profile, Realm and Host
+epoch before first creation. A short-lived child uses its own attempt and exact
+binding; it cannot silently enlarge an earlier approval. Repeated recording must
+match the original identity and bytes.
+
+`Attempts` and `ExecutionDependencies` remain separate from business `Held`
+queries. An idle Ready process may be retired by Host policy; its bytes and setup
+dependencies remain protected until actual exit is proved. A runner crash, lost
+connection or new Host epoch does not prove exit.
+
+Only the trusted driver that verified the actual owner's evidence may call
+`ReleaseAttempt`. The proof identifies the original attempt, Realm and exit. Its
+durable acceptance is idempotent, and a different proof cannot replace it. These
+monotonic settlements use `Admission.Maintenance`, which is the same gate and does
+not independently reopen recovery. Native in-memory Hosts do not need this package.

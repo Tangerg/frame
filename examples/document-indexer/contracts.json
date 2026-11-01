@@ -1,0 +1,80 @@
+{
+  "files": {
+    "descriptor": {
+      "protocol": "io.github.tangerg.frame/portable/1",
+      "reference": "documents.reader",
+      "methods": [
+        {
+          "name": "read",
+          "kind": "query",
+          "description": "",
+          "input": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "output": {
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    }
+  },
+  "index": {
+    "descriptor": {
+      "protocol": "io.github.tangerg.frame/portable/1",
+      "reference": "documents.index",
+      "methods": [
+        {
+          "name": "replace",
+          "kind": "command",
+          "description": "",
+          "input": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "text"
+            ],
+            "type": "object"
+          },
+          "output": {
+            "additionalProperties": false,
+            "properties": {
+              "saved": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "saved"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    }
+  }
+}

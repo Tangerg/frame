@@ -1,0 +1,23 @@
+:root {
+  color-scheme: light;
+  font:
+    18px/1.65 Georgia,
+    serif;
+  color: #27313d;
+  background: #fffdf8;
+}
+body {
+  max-width: 58rem;
+  padding: 2rem;
+  margin: auto;
+}
+h1 {
+  line-height: 1.15;
+  font-size: 2.5rem;
+  color: #164e45;
+  border-bottom: 2px solid #cfe2d9;
+  padding-bottom: 1rem;
+}
+p {
+  white-space: pre-wrap;
+}

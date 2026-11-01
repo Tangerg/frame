@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "maxFrameBytes": 1048576,
+  "maxInFlight": 128,
+  "methods": {
+    "hello": "hello",
+    "prepare": "prepare",
+    "activate": "activate",
+    "call": "call",
+    "chunk": "chunk",
+    "cancel": "cancel",
+    "close": "close"
+  },
+  "errors": {
+    "invalid": "invalid_request",
+    "capacity": "capacity",
+    "contract": "contract_mismatch",
+    "unknown": "outcome_unknown",
+    "closed": "closed",
+    "cancelled": "cancelled"
+  }
+}

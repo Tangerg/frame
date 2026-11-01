@@ -1,0 +1,20 @@
+{
+  "name": "@frame/example-document-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test:workflow": "node --test workflow.test.mjs",
+    "lint": "oxlint src --deny-warnings",
+    "format:check": "prettier --check *.mjs src package.json tsconfig.json vite.config.ts index.html",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run build",
+    "test:browser": "node --test browser.test.mjs"
+  },
+  "dependencies": {
+    "@frame/sdk": "0.1.0",
+    "@frame/browser": "0.1.0"
+  }
+}

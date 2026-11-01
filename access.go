@@ -1,0 +1,103 @@
+package frame
+
+import (
+	"context"
+	"sync"
+)
+
+// Access borrows every selected member under one admitted work interval.
+// Native implementations must not keep those values after the callback returns.
+type Access struct {
+	mu  sync.Mutex
+	use *Use
+	ctx context.Context
+}
+
+type Member[M, V any] struct {
+	Source   ExportRef
+	Metadata M
+	Value    V
+}
+
+func (a *Access) Context() context.Context { return a.ctx }
+
+func withAccess(ctx context.Context, use *Use, call func(*Access) error) error {
+	if use == nil || call == nil {
+		return ErrInvalid
+	}
+	work, err := use.enter(ctx)
+	if err != nil {
+		return err
+	}
+	access := &Access{use: use, ctx: work.Context()}
+	defer func() {
+		access.mu.Lock()
+		access.use = nil
+		access.mu.Unlock()
+		work.Finish()
+	}()
+	return call(access)
+}
+
+func (h *Host) With(ctx context.Context, grant ScopeGrant, plan *BindingPlan, call func(*Access) error) error {
+	if call == nil {
+		return ErrInvalid
+	}
+	return WithPlan(ctx, h, plan, grant, func(use *Use) error { return withAccess(ctx, use, call) })
+}
+
+func (s Selection[M, V]) Members(access *Access) ([]Member[M, V], error) {
+	if access == nil {
+		return nil, ErrInvalid
+	}
+	access.mu.Lock()
+	defer access.mu.Unlock()
+	use := access.use
+	if use == nil {
+		return nil, ErrClosed
+	}
+	ids, ok := use.selections[s.value.id]
+	if !ok {
+		return nil, ErrContractMismatch
+	}
+	members := make([]Member[M, V], len(ids))
+	for n, id := range ids {
+		publisher := use.members[id]
+		if publisher == nil {
+			return nil, ErrClosed
+		}
+		value, ok := publisher.value.(V)
+		if !ok {
+			return nil, ErrContractMismatch
+		}
+		members[n].Source = publisher.source
+		members[n].Value = value
+		if publisher.metadata != nil {
+			metadata, err := snapshotMetadata(publisher.metadata)
+			if err != nil {
+				return nil, err
+			}
+			v, ok := metadata.(M)
+			if !ok {
+				return nil, ErrContractMismatch
+			}
+			members[n].Metadata = v
+		}
+	}
+	return members, nil
+}
+
+func (s Selection[M, V]) One(access *Access) (Member[M, V], error) {
+	members, err := s.Members(access)
+	if err != nil {
+		return Member[M, V]{}, err
+	}
+	switch len(members) {
+	case 0:
+		return Member[M, V]{}, ErrUnavailable
+	case 1:
+		return members[0], nil
+	default:
+		return Member[M, V]{}, ErrAmbiguous
+	}
+}

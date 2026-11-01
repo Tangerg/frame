@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+subject=$(sed -n '1p' "$1")
+case "$subject" in
+    "Merge "*|"Revert "*|"fixup! "*|"squash! "*) exit 0 ;;
+esac
+if ! printf '%s\n' "$subject" | grep -Eq '^(feat|fix|refactor|test|docs|build|ci|chore|perf|style|revert)(\([[:alnum:]_./-]+\))?!?: .+'; then
+    printf '%s\n' 'Use a conventional commit subject, e.g. feat(process): support typed imports.' >&2
+    exit 1
+fi

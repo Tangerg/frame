@@ -4,3 +4,4 @@ out/
 coverage/
 *.tsbuildinfo
 .DS_Store
+.idea/

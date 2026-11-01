@@ -16,4 +16,4 @@ Run `make hooks` to enable local whitespace and conventional commit checks. Go f
 
 `scripts/check-browser-workflows.sh` builds the Go hosts and runs the browser author and document workflows against real local servers. Set `FRAME_CHROME_EXECUTABLE` to a Chromium executable to include real browser crash and reconnect scenarios. `go test -tags frame_interop -count=1 ./conformance` runs the two-way streaming and cancellation exercise after the npm packages have been built.
 
-For a committed tree, `python3 scripts/go-consumer.py --version v0.1.0` creates a temporary standard Go module proxy and compiles a separate consumer without a replace or workspace link. `--proxy <directory>` retains the unpublished module for local distribution. The public registry is not used to pretend that an unpublished Frame version already exists.
+For a committed tree, `python3 scripts/go-consumer.py --version v0.0.1` creates a temporary standard Go module proxy and compiles a separate consumer without a replace or workspace link. `--proxy <directory>` retains the module for local distribution. Verify a public release separately through the public Go module proxy.

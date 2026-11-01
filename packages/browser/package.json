@@ -1,6 +1,6 @@
 {
   "name": "@frame/browser",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "type": "module",
   "exports": {
     ".": {
@@ -13,7 +13,7 @@
     "README.md"
   ],
   "dependencies": {
-    "@frame/sdk": "0.1.0"
+    "@frame/sdk": "0.0.1"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

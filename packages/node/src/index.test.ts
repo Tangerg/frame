@@ -1,4 +1,4 @@
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { createInterface } from "node:readline";
 import { describe, it, expect } from "vitest";
 import { Capability, defineProcessUnit, serve } from "./index.js";
@@ -95,6 +95,27 @@ describe("local process author", () => {
 });
 
 describe("process outcome evidence", () => {
+  it("retires after peer EOF even when a response cannot drain", async () => {
+    const { Peer } = await import("./peer.js");
+    const input = new PassThrough();
+    let writing!: () => void;
+    const started = new Promise<void>((resolve) => {
+      writing = resolve;
+    });
+    const output = new Writable({
+      write() {
+        writing();
+      },
+    });
+    const peer = new Peer(input, output);
+    const run = peer.run(async () => true);
+    input.write('{"id":"1","method":"test","params":{}}\n');
+    await started;
+    input.end();
+    await run;
+    expect(output.destroyed).toBe(true);
+  });
+
   it("distinguishes cancellation before dispatch and an interrupted original call", async () => {
     const { Peer } = await import("./peer.js");
     const input = new PassThrough(),

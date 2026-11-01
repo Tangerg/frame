@@ -48,7 +48,7 @@ export class Peer {
   readonly #ended = new AbortController();
   #next = 0n;
   #received = 0n;
-  #writes = 0;
+  readonly #writing = new Set<(cause: unknown) => void>();
   #limit = wire.maxFrameBytes;
 
   constructor(
@@ -74,7 +74,12 @@ export class Peer {
     }
     this.#pending.clear();
     for (const controller of this.#incoming.values()) controller.abort(reason);
+    // A blocked write may never invoke its callback after peer EOF. Neither the
+    // original handler nor process retirement may wait for remote consumption.
+    for (const reject of this.#writing) reject(reason);
+    this.#writing.clear();
     this.input.destroy();
+    this.output.destroy();
   }
 
   async #send(message: unknown): Promise<void> {
@@ -85,17 +90,19 @@ export class Peer {
         wire.errors.capacity,
         "frame exceeds negotiated limit",
       );
-    if (this.#writes >= 2 * wire.maxInFlight)
+    if (this.#writing.size >= 2 * wire.maxInFlight)
       throw new ProcessError(wire.errors.capacity, "output capacity exceeded");
-    this.#writes++;
+    let failed!: (cause: unknown) => void;
     try {
-      await new Promise<void>((resolve, reject) =>
-        this.output.write(data, (err) => (err ? reject(err) : resolve())),
-      );
+      await new Promise<void>((resolve, reject) => {
+        failed = reject;
+        this.#writing.add(failed);
+        this.output.write(data, (err) => (err ? reject(err) : resolve()));
+      });
     } catch (cause) {
       throw unknownOutcome(cause);
     } finally {
-      this.#writes--;
+      this.#writing.delete(failed);
     }
   }
 

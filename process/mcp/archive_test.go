@@ -71,7 +71,7 @@ func TestInstallToolArchive(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() {
-				if err := errors.Join(lease.Close(), store.Remove(ctx, digest)); err != nil {
+				if err := errors.Join(lease.Close(), store.Remove(ctx, lease.Snapshot().Digest)); err != nil {
 					t.Error(err)
 				}
 			}()

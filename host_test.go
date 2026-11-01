@@ -9,8 +9,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
-	"github.com/Tangerg/frame/jsonvalue"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 func testContext(t *testing.T) context.Context {
@@ -39,7 +38,7 @@ func testHost(t *testing.T, config frame.HostConfig) *frame.Host {
 
 func installNative(t *testing.T, host *frame.Host, id string, units ...frame.Unit) *frame.Plugin {
 	t.Helper()
-	plugin, err := frame.Define(frame.Definition{Revision: integrity.Hash([]byte(id)), Units: units})
+	plugin, err := frame.Define(frame.Definition{Revision: framevalue.Hash([]byte(id)), Units: units})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +335,7 @@ func TestPortablePointHasIndependentMetadataAndValueIdentity(t *testing.T) {
 	ctx := testContext(t)
 	host := testHost(t, frame.HostConfig{})
 	descriptor := []byte(`{"protocol":"example","methods":["format"]}`)
-	valueRef := frame.ContractRef{Name: "example.portable.format", Version: "1", Digest: integrity.Hash(descriptor), Kind: frame.ServiceKind, Mode: frame.PortableMode}
+	valueRef := frame.ContractRef{Name: "example.portable.format", Version: "1", Digest: framevalue.Hash(descriptor), Kind: frame.ServiceKind, Mode: frame.PortableMode}
 	valueContract, err := frame.BindContract[func() string](valueRef, descriptor)
 	if err != nil {
 		t.Fatal(err)
@@ -354,7 +353,7 @@ func TestPortablePointHasIndependentMetadataAndValueIdentity(t *testing.T) {
 	if err := host.Register(valueContract, point); err != nil {
 		t.Fatal(err)
 	}
-	metadata, _ := jsonvalue.Parse([]byte(`{"priority":2}`))
+	metadata, _ := framevalue.ParseJSON([]byte(`{"priority":2}`))
 	plugin := installNative(t, host, "portable", frame.Unit{Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "format", Contract: point.Ref()}}}, Setup: func(_ context.Context, setup *frame.Setup) ([]frame.ExportValue, error) {
 		actual, err := setup.ValueContract(point.Ref())
 		if err != nil || actual != valueRef {

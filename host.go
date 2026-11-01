@@ -10,7 +10,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/Tangerg/frame/integrity"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 type CommitState string
@@ -23,7 +23,7 @@ const (
 
 type InstallationRecord struct {
 	ID            InstallationID    `json:"id"`
-	Release       integrity.Digest  `json:"release"`
+	Release       framevalue.Digest `json:"release"`
 	Configuration []byte            `json:"configuration"`
 	Enabled       bool              `json:"enabled"`
 	Units         []UnitDeclaration `json:"units"`
@@ -138,7 +138,7 @@ type Instance struct {
 	binding               UnitBinding
 	snapshot              BindingSnapshot
 	preparation           []bindingRead
-	identity              integrity.Digest
+	identity              framevalue.Digest
 	configuration         []byte
 	setup                 SetupFunc
 	lifetime              *Lifetime
@@ -161,7 +161,7 @@ type Instance struct {
 }
 
 type publicationOperation struct {
-	request     integrity.Digest
+	request     framevalue.Digest
 	publication *publication
 	withdrawn   bool
 }
@@ -334,7 +334,7 @@ func (h *Host) RegisterDescriptor(ref ContractRef, descriptor []byte) error {
 			return err
 		}
 	} else {
-		if integrity.Hash(descriptor) != ref.Digest {
+		if framevalue.Hash(descriptor) != ref.Digest {
 			return ErrContractMismatch
 		}
 		definition = &declaration{ref: ref, descriptor: bytes.Clone(descriptor)}

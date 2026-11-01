@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/jsonvalue"
 	"github.com/Tangerg/frame/portable"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 // Member retains the Go types from which its published unary method was derived.
@@ -21,23 +21,23 @@ func (m Member[Input, Output]) Descriptor() portable.MethodDescriptor { return m
 
 type Implementation struct {
 	method *portable.Method
-	call   func(context.Context, jsonvalue.Value) (jsonvalue.Value, error)
+	call   func(context.Context, framevalue.JSON) (framevalue.JSON, error)
 }
 
 func (m Member[Input, Output]) Implement(handler func(context.Context, Input) (Output, error)) Implementation {
 	if m.method == nil || handler == nil {
 		return Implementation{}
 	}
-	return Implementation{m.method, func(ctx context.Context, raw jsonvalue.Value) (jsonvalue.Value, error) {
+	return Implementation{m.method, func(ctx context.Context, raw framevalue.JSON) (framevalue.JSON, error) {
 		var input Input
-		if err := jsonvalue.DecodeValue(raw.JSON(), &input, m.method.Name()); err != nil {
-			return jsonvalue.Value{}, err
+		if err := framevalue.DecodeValue(raw.Bytes(), &input, m.method.Name()); err != nil {
+			return framevalue.JSON{}, err
 		}
 		output, err := handler(ctx, input)
 		if err != nil {
-			return jsonvalue.Value{}, err
+			return framevalue.JSON{}, err
 		}
-		return jsonvalue.Encode(output)
+		return framevalue.EncodeJSON(output)
 	}}
 }
 func (m Member[Input, Output]) Call(ctx context.Context, service Service, input Input) (Output, error) {
@@ -45,7 +45,7 @@ func (m Member[Input, Output]) Call(ctx context.Context, service Service, input 
 	if m.method == nil || nilDependency(service) {
 		return output, frame.ErrInvalid
 	}
-	raw, err := jsonvalue.Encode(input)
+	raw, err := framevalue.EncodeJSON(input)
 	if err != nil {
 		return output, err
 	}
@@ -56,10 +56,10 @@ func (m Member[Input, Output]) Call(ctx context.Context, service Service, input 
 	if err != nil {
 		return output, err
 	}
-	if err = m.method.ValidateOutput(reply.JSON()); err != nil {
+	if err = m.method.ValidateOutput(reply.Bytes()); err != nil {
 		return output, errors.Join(ErrOutcomeUnknown, err)
 	}
-	err = jsonvalue.DecodeValue(reply.JSON(), &output, m.method.Name())
+	err = framevalue.DecodeValue(reply.Bytes(), &output, m.method.Name())
 	return output, err
 }
 
@@ -80,20 +80,20 @@ func Implement(contract *portable.Capability, members ...Implementation) (Servic
 		}
 		methods[name] = member
 	}
-	return Handler(func(ctx context.Context, name string, input jsonvalue.Value) (jsonvalue.Value, error) {
+	return Handler(func(ctx context.Context, name string, input framevalue.JSON) (framevalue.JSON, error) {
 		m, ok := methods[name]
 		if !ok {
-			return jsonvalue.Value{}, frame.ErrContractMismatch
+			return framevalue.JSON{}, frame.ErrContractMismatch
 		}
 		if err := m.method.ValidateInput(input); err != nil {
-			return jsonvalue.Value{}, err
+			return framevalue.JSON{}, err
 		}
 		value, err := m.call(ctx, input)
 		if err != nil {
-			return jsonvalue.Value{}, err
+			return framevalue.JSON{}, err
 		}
-		if err = m.method.ValidateOutput(value.JSON()); err != nil {
-			return jsonvalue.Value{}, errors.Join(ErrOutcomeUnknown, err)
+		if err = m.method.ValidateOutput(value.Bytes()); err != nil {
+			return framevalue.JSON{}, errors.Join(ErrOutcomeUnknown, err)
 		}
 		return value, nil
 	}), nil

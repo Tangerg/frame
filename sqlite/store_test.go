@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 func testConfig(path string, admission *frame.Admission) Config {
@@ -68,7 +68,7 @@ func TestSubmissionAtomicBindingAndStableConclusion(t *testing.T) {
 	mutations := 0
 	settlement, err := owner.Commit(ctx, id, request, func(ctx context.Context, tx Executor) ([]byte, error) {
 		mutations++
-		_, err := tx.ExecContext(ctx, `INSERT INTO documents VALUES('a','converter',?,1)`, integrity.Hash([]byte("release")))
+		_, err := tx.ExecContext(ctx, `INSERT INTO documents VALUES('a','converter',?,1)`, value.Hash([]byte("release")))
 		return []byte("document:a"), err
 	}, nil)
 	if err != nil || settlement.State != Committed || !settlement.Synchronized {
@@ -119,7 +119,7 @@ func TestCanceledMutationSettlesBeforeAdmissionReopens(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	settlement, err := owner.Commit(ctx, id, request, func(ctx context.Context, tx Executor) ([]byte, error) {
-		_, err := tx.ExecContext(ctx, `INSERT INTO documents VALUES('cancelled','converter',?,1)`, integrity.Hash(nil))
+		_, err := tx.ExecContext(ctx, `INSERT INTO documents VALUES('cancelled','converter',?,1)`, value.Hash(nil))
 		cancel()
 		return nil, err
 	}, nil)
@@ -285,7 +285,7 @@ func TestCurrentReferencesDoNotUseOldWALSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = owner.Commit(ctx, id, []byte("wal"), func(ctx context.Context, tx Executor) ([]byte, error) {
-		_, err := tx.ExecContext(ctx, `INSERT INTO documents VALUES('wal','converter',?,1)`, integrity.Hash(nil))
+		_, err := tx.ExecContext(ctx, `INSERT INTO documents VALUES('wal','converter',?,1)`, value.Hash(nil))
 		return nil, err
 	}, nil)
 	if err != nil {
@@ -380,7 +380,7 @@ func TestSQLiteCrashChild(t *testing.T) {
 		panic(err)
 	}
 	_, err = owner.Commit(context.Background(), id, []byte("crash"), func(ctx context.Context, tx Executor) ([]byte, error) {
-		_, err := tx.ExecContext(context.Background(), `INSERT INTO documents VALUES('crash','converter',?,1)`, integrity.Hash(nil))
+		_, err := tx.ExecContext(context.Background(), `INSERT INTO documents VALUES('crash','converter',?,1)`, value.Hash(nil))
 		if err != nil {
 			return nil, err
 		}
@@ -401,8 +401,8 @@ func TestExecutionProtectionOutlivesBusinessAndEpoch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := frame.UnitRef{InstallationID: "converter", Release: integrity.Hash([]byte("release")), UnitID: "backend"}
-	binding := frame.BindingSnapshot{FormatVersion: 1, Roots: []frame.ExportRef{{InstallationID: source.InstallationID, Release: source.Release, UnitID: source.UnitID, Export: "convert", Contract: contract.Ref()}}, Units: []frame.UnitBinding{{Source: source, Configuration: integrity.Hash(nil), Imports: []frame.ImportDeclaration{}}}}
+	source := frame.UnitRef{InstallationID: "converter", Release: value.Hash([]byte("release")), UnitID: "backend"}
+	binding := frame.BindingSnapshot{FormatVersion: 1, Roots: []frame.ExportRef{{InstallationID: source.InstallationID, Release: source.Release, UnitID: source.UnitID, Export: "convert", Contract: contract.Ref()}}, Units: []frame.UnitBinding{{Source: source, Configuration: value.Hash(nil), Imports: []frame.ImportDeclaration{}}}}
 	attempt := Attempt{ID: "attempt-1", Epoch: store.Epoch(), Source: source, Binding: binding, Realm: "runner-1", Profile: "local-process"}
 	if err := store.RecordAttempt(context.Background(), attempt); err != nil {
 		t.Fatal(err)

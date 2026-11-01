@@ -7,7 +7,7 @@ import {
   Runtime,
   select,
   type Use,
-} from "@frame/browser";
+} from "@frame/sdk/browser";
 import type { ContractRef, Execution } from "@frame/sdk/protocol";
 import type {
   Converted,

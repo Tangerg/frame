@@ -14,7 +14,6 @@
     "test:browser": "node --test browser.test.mjs"
   },
   "dependencies": {
-    "@frame/sdk": "0.0.1",
-    "@frame/browser": "0.0.1"
+    "@frame/sdk": "0.0.1"
   }
 }

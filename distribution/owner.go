@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 func (s *Store) openOwner() (err error) {
@@ -165,7 +165,7 @@ func (s *Store) Close(ctx context.Context) error {
 	}
 }
 
-func (s *Store) openRelease(digest integrity.Digest) (*os.Root, error) {
+func (s *Store) openRelease(digest value.Digest) (*os.Root, error) {
 	name := digest.String()
 	info, err := s.root.Lstat(name)
 	if err != nil {

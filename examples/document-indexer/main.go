@@ -14,12 +14,11 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
-	"github.com/Tangerg/frame/jsonvalue"
 	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/process"
-	"github.com/Tangerg/frame/runner"
+	"github.com/Tangerg/frame/process/runner"
 	"github.com/Tangerg/frame/sqlite"
+	"github.com/Tangerg/frame/value"
 )
 
 //go:embed contracts.json
@@ -48,34 +47,34 @@ const documentText = "Frame indexes this document without an agent."
 
 type documents struct{ indexed chan document }
 
-func (d *documents) read(_ context.Context, _ string, input jsonvalue.Value) (jsonvalue.Value, error) {
+func (d *documents) read(_ context.Context, _ string, input value.JSON) (value.JSON, error) {
 	var request fileRead
-	if err := jsonvalue.DecodeValue(input.JSON(), &request, "read"); err != nil {
-		return jsonvalue.Value{}, err
+	if err := value.DecodeValue(input.Bytes(), &request, "read"); err != nil {
+		return value.JSON{}, err
 	}
 	if request.Path != allowedDocument {
-		return jsonvalue.Value{}, errors.New("document access denied")
+		return value.JSON{}, errors.New("document access denied")
 	}
-	return jsonvalue.Encode(textResult{documentText})
+	return value.EncodeJSON(textResult{documentText})
 }
 
-func (d *documents) replace(ctx context.Context, _ string, input jsonvalue.Value) (jsonvalue.Value, error) {
+func (d *documents) replace(ctx context.Context, _ string, input value.JSON) (value.JSON, error) {
 	var request document
-	if err := jsonvalue.DecodeValue(input.JSON(), &request, "replace"); err != nil {
-		return jsonvalue.Value{}, err
+	if err := value.DecodeValue(input.Bytes(), &request, "replace"); err != nil {
+		return value.JSON{}, err
 	}
 	if request.Path != allowedDocument {
-		return jsonvalue.Value{}, errors.New("document access denied")
+		return value.JSON{}, errors.New("document access denied")
 	}
 	select {
 	case d.indexed <- request:
 	case <-ctx.Done():
-		return jsonvalue.Value{}, context.Cause(ctx)
+		return value.JSON{}, context.Cause(ctx)
 	}
-	return jsonvalue.Encode(writeResult{true})
+	return value.EncodeJSON(writeResult{true})
 }
 
-func install(ctx context.Context, h *frame.Host, id frame.InstallationID, revision integrity.Digest, u frame.Unit) (frame.UnitRef, error) {
+func install(ctx context.Context, h *frame.Host, id frame.InstallationID, revision value.Digest, u frame.Unit) (frame.UnitRef, error) {
 	plugin, err := frame.Define(frame.Definition{Revision: revision, Units: []frame.Unit{u}})
 	if err != nil {
 		return frame.UnitRef{}, err
@@ -84,7 +83,7 @@ func install(ctx context.Context, h *frame.Host, id frame.InstallationID, revisi
 	return frame.UnitRef{InstallationID: id, Release: revision, UnitID: u.Declaration.ID}, err
 }
 
-func (d *documents) install(ctx context.Context, h *frame.Host, pluginRevision integrity.Digest) (frame.UnitRef, error) {
+func (d *documents) install(ctx context.Context, h *frame.Host, pluginRevision value.Digest) (frame.UnitRef, error) {
 	var definitions map[string]definition
 	if err := json.Unmarshal(domain, &definitions); err != nil {
 		return frame.UnitRef{}, err
@@ -92,7 +91,7 @@ func (d *documents) install(ctx context.Context, h *frame.Host, pluginRevision i
 	const hostID = "documents"
 	host := frame.Unit{Declaration: frame.UnitDeclaration{ID: "services", Profile: frame.NativeGo}}
 	child := frame.Unit{Declaration: frame.UnitDeclaration{ID: "document-indexer", Profile: frame.LocalProcess}}
-	hostRevision := integrity.Hash(domain)
+	hostRevision := value.Hash(domain)
 	services := map[string]process.Service{"files": process.Handler(d.read), "index": process.Handler(d.replace)}
 	values := []frame.ExportValue{}
 	for _, slot := range []string{"files", "index"} {
@@ -101,11 +100,11 @@ func (d *documents) install(ctx context.Context, h *frame.Host, pluginRevision i
 		if err != nil {
 			return frame.UnitRef{}, err
 		}
-		ref := frame.ContractRef{Name: c.Descriptor().Reference, Version: "1", Kind: frame.ServiceKind, Mode: frame.PortableMode, Digest: c.Identity().Digest()}
-		contract, err := frame.BindContract[process.Service](ref, c.Identity().JSON())
+		contract, err := frame.NewPortableContract[process.Service]("1", c)
 		if err != nil {
 			return frame.UnitRef{}, err
 		}
+		ref := contract.Ref()
 		if err = h.Register(contract); err != nil {
 			return frame.UnitRef{}, err
 		}
@@ -123,7 +122,7 @@ func (d *documents) install(ctx context.Context, h *frame.Host, pluginRevision i
 
 type approvedProgram struct {
 	program  process.Program
-	revision integrity.Digest
+	revision value.Digest
 }
 
 func (p approvedProgram) Program(_ context.Context, binding frame.UnitBinding) (process.Program, error) {
@@ -154,7 +153,7 @@ func run(ctx context.Context, entry string) (answer string, returned error) {
 	if err != nil {
 		return "", err
 	}
-	release, err := jsonvalue.Encode(struct {
+	release, err := value.EncodeJSON(struct {
 		Entry  string `json:"entry"`
 		Domain string `json:"domain"`
 	}{string(plugin), string(domain)})
@@ -164,7 +163,7 @@ func run(ctx context.Context, entry string) (answer string, returned error) {
 	revision := release.Digest()
 	// This example trusts its local workspace. Pin the already-read script bytes
 	// before dispatch so a later edit cannot change that entry's behavior.
-	program := approvedProgram{process.Program{Command: node, ExecutableDigest: integrity.Hash(bin), Args: []string{"--input-type=module", "--eval", string(plugin)}, Directory: filepath.Dir(entry)}, revision}
+	program := approvedProgram{process.Program{Command: node, ExecutableDigest: value.Hash(bin), Args: []string{"--input-type=module", "--eval", string(plugin)}, Directory: filepath.Dir(entry)}, revision}
 	dir, err := os.MkdirTemp("", "frame-docs-")
 	if err != nil {
 		return "", err

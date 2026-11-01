@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Tangerg/frame/jsonvalue"
 	"github.com/Tangerg/frame/portable"
+	framevalue "github.com/Tangerg/frame/value"
 	"github.com/Tangerg/scope/core/jsonschema"
 )
 
@@ -129,7 +129,7 @@ func TestPortableRecursiveSchemaBoundsQueryOutputAndStreamBeforeValidation(t *te
 	}
 	for _, depth := range []int{3, portable.ProfileLimits().MaxJSONDepth, portable.ProfileLimits().MaxJSONDepth + 1} {
 		raw := nestedObject(depth)
-		input, err := jsonvalue.Parse(raw)
+		input, err := framevalue.ParseJSON(raw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -172,7 +172,7 @@ func TestPortableNumericLimitsKeepWideEvidenceWithoutExpandingHostileExponents(t
 		}
 	}
 	for _, raw := range []string{"1e1000000000", "1e-1000000000", "1e" + strconv.Itoa(limits.MaxAbsExponent+1), strings.Repeat("9", limits.MaxNumberBytes+1)} {
-		input, err := jsonvalue.Parse([]byte(`{"revision":` + raw + `}`))
+		input, err := framevalue.ParseJSON([]byte(`{"revision":` + raw + `}`))
 		if err != nil {
 			t.Fatal(err)
 		}

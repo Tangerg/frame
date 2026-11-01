@@ -6,7 +6,7 @@ import (
 	"slices"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/jsonvalue"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 // Resources exposes only a unit's declared immutable files. Reads return
@@ -71,7 +71,7 @@ func (d *ResourceDriver) Prepare(ctx context.Context, setup *frame.Setup) ([]fra
 				if contribution.Point != export.Contract || metadata != nil {
 					return nil, frame.ErrContractMismatch
 				}
-				admitted, err := jsonvalue.Parse(contribution.Metadata)
+				admitted, err := framevalue.ParseJSON(contribution.Metadata)
 				if err != nil {
 					return nil, err
 				}

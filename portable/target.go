@@ -15,7 +15,7 @@ type Target struct {
 }
 
 func (t Target) Validate() error {
-	if !validToken(t.Scope) || t.Reference == "" || !utf8.ValidString(t.Reference) || strings.ContainsFunc(t.Reference, unicode.IsControl) {
+	if !ValidToken(t.Scope) || t.Reference == "" || !utf8.ValidString(t.Reference) || strings.ContainsFunc(t.Reference, unicode.IsControl) {
 		return errors.New("capability: concrete target scope and reference are required")
 	}
 	return nil

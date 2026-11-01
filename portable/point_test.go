@@ -5,7 +5,7 @@ import (
 	json "encoding/json/v2"
 	"testing"
 
-	"github.com/Tangerg/frame/jsonvalue"
+	"github.com/Tangerg/frame/value"
 )
 
 func TestPointDecodingDoesNotInventOptionality(t *testing.T) {
@@ -45,7 +45,7 @@ func testPoint(t *testing.T, composition Composition, optional bool, ordering Po
 
 func testValue(t *testing.T, key string) PointValue {
 	t.Helper()
-	data, err := jsonvalue.Encode(map[string]string{"title": key})
+	data, err := value.EncodeJSON(map[string]string{"title": key})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestPointOwnsSchemaApplicabilityAbsenceAndDetachedMetadata(t *testing.T) {
 	if err := contract.ValidateValue(testValue(t, "a").Data); err != nil {
 		t.Fatal(err)
 	}
-	invalid, err := jsonvalue.Parse([]byte(`{"title":1}`))
+	invalid, err := value.ParseJSON([]byte(`{"title":1}`))
 	if err != nil {
 		t.Fatal(err)
 	}

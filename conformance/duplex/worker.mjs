@@ -1,4 +1,4 @@
-import { Capability, defineProcessUnit, serve } from "@frame/node";
+import { Capability, defineProcessUnit, serve } from "@frame/sdk/node";
 import declaration from "./service.json" with { type: "json" };
 
 const service = new Capability(declaration);

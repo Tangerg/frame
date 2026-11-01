@@ -6,8 +6,6 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
-
-	"github.com/Tangerg/frame/cancellation"
 )
 
 // Cross-store transactions. The stores in this package each own their own
@@ -50,7 +48,7 @@ func Connection(ctx context.Context, db *sql.DB) Executor {
 // its own body in RunInTx is atomic standalone yet folds into a caller's
 // transaction transparently.
 func RunInTx(ctx context.Context, db *sql.DB, fn func(context.Context) error) error {
-	if err := cancellation.Err(ctx); err != nil {
+	if err := cancellationError(ctx); err != nil {
 		return err
 	}
 	if owned, ok := ctx.Value(txKey{database: db}).(transaction); ok {
@@ -58,7 +56,7 @@ func RunInTx(ctx context.Context, db *sql.DB, fn func(context.Context) error) er
 			return errors.New("sqlite: write transaction cannot enter a read snapshot")
 		}
 		if err := fn(ctx); err != nil {
-			return errors.Join(err, cancellation.Err(ctx))
+			return errors.Join(err, cancellationError(ctx))
 		}
 		return nil
 	}
@@ -69,11 +67,11 @@ func RunInTx(ctx context.Context, db *sql.DB, fn func(context.Context) error) er
 // Reads join an ambient transaction for the same database. The callback must not
 // mutate; RunInTx refuses to promote this snapshot to a write-set.
 func RunReadSnapshot(ctx context.Context, db *sql.DB, read func(context.Context) error) error {
-	if err := cancellation.Err(ctx); err != nil {
+	if err := cancellationError(ctx); err != nil {
 		return err
 	}
 	if _, ok := ctx.Value(txKey{database: db}).(transaction); ok {
-		return errors.Join(read(ctx), cancellation.Err(ctx))
+		return errors.Join(read(ctx), cancellationError(ctx))
 	}
 	return runIndependentTx(ctx, db, &sql.TxOptions{ReadOnly: true}, read)
 }
@@ -89,27 +87,27 @@ func RunIndependentTx(ctx context.Context, db *sql.DB, fn func(context.Context) 
 }
 
 func runIndependentTx(ctx context.Context, db *sql.DB, options *sql.TxOptions, fn func(context.Context) error) (err error) {
-	if err := cancellation.Err(ctx); err != nil {
+	if err := cancellationError(ctx); err != nil {
 		return err
 	}
 	if _, active := ctx.Value(txKey{database: db}).(transaction); active {
-		return errors.Join(errors.New("sqlite: independent transaction cannot enter an active database transaction"), cancellation.Err(ctx))
+		return errors.Join(errors.New("sqlite: independent transaction cannot enter an active database transaction"), cancellationError(ctx))
 	}
 	connection, err := db.Conn(ctx)
 	if err != nil {
-		return errors.Join(err, cancellation.Err(ctx))
+		return errors.Join(err, cancellationError(ctx))
 	}
 	defer func() {
 		if closeErr := connection.Close(); !errors.Is(closeErr, sql.ErrConnDone) {
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	if err := cancellation.Err(ctx); err != nil {
+	if err := cancellationError(ctx); err != nil {
 		return err
 	}
 	tx, err := connection.BeginTx(context.WithoutCancel(ctx), options)
 	if err != nil {
-		return errors.Join(err, discardConnection(connection), cancellation.Err(ctx))
+		return errors.Join(err, discardConnection(connection), cancellationError(ctx))
 	}
 	defer func() {
 		rollbackErr := rollbackTransaction(tx)
@@ -122,21 +120,21 @@ func runIndependentTx(ctx context.Context, db *sql.DB, options *sql.TxOptions, f
 				if !ok {
 					panicErr = fmt.Errorf("sqlite: transaction panicked: %v", recovered)
 				}
-				panic(errors.Join(panicErr, rollbackErr, cancellation.Err(ctx)))
+				panic(errors.Join(panicErr, rollbackErr, cancellationError(ctx)))
 			}
 			panic(recovered)
 		}
 		err = errors.Join(err, rollbackErr)
 	}()
-	if err = cancellation.Err(ctx); err == nil {
+	if err = cancellationError(ctx); err == nil {
 		err = fn(context.WithValue(ctx, txKey{database: db}, transaction{tx: tx, readOnly: options != nil && options.ReadOnly}))
 	}
-	err = errors.Join(err, cancellation.Err(ctx))
+	err = errors.Join(err, cancellationError(ctx))
 	if err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
-		return errors.Join(err, discardConnection(connection), cancellation.Err(ctx))
+		return errors.Join(err, discardConnection(connection), cancellationError(ctx))
 	}
 	return nil
 }

@@ -80,7 +80,7 @@ application that accepts external packages must supply its own trust policy.
 ## Verification
 
 ```sh
-go test -race ./examples/document ./control/host
+go test -race ./examples/document ./browser
 go build -o /tmp/frame-document ./examples/document/cmd/document
 npm run build --workspace @frame/example-document-web
 FRAME_DOCUMENT_BINARY=/tmp/frame-document npm run test:workflow --workspace @frame/example-document-web

@@ -11,12 +11,11 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
-	"github.com/Tangerg/frame/jsonvalue"
 	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/process"
-	"github.com/Tangerg/frame/runner"
+	"github.com/Tangerg/frame/process/runner"
 	"github.com/Tangerg/frame/sqlite"
+	"github.com/Tangerg/frame/value"
 )
 
 func echoContract() (*portable.Method, *portable.Capability, error) {
@@ -55,9 +54,9 @@ func TestLocalProcessHelper(t *testing.T) {
 					<-ctx.Done()
 					return process.Prepared{}, context.Cause(ctx)
 				}
-				echo := process.Handler(func(ctx context.Context, member string, input jsonvalue.Value) (jsonvalue.Value, error) {
+				echo := process.Handler(func(ctx context.Context, member string, input value.JSON) (value.JSON, error) {
 					if _, err := os.Stat(filepath.Join(directory, "activated")); err != nil {
-						return jsonvalue.Value{}, errors.New("business executed before activation")
+						return value.JSON{}, errors.New("business executed before activation")
 					}
 					return input, nil
 				})
@@ -78,20 +77,12 @@ func TestLocalProcessHelper(t *testing.T) {
 
 type source struct {
 	program      process.Program
-	contract     *portable.Capability
 	programCalls atomic.Int32
 }
 
 func (s *source) Program(context.Context, frame.UnitBinding) (process.Program, error) {
 	s.programCalls.Add(1)
 	return s.program, nil
-}
-
-func (s *source) Contract(_ context.Context, ref frame.ContractRef) (*portable.Capability, error) {
-	if ref.Digest != integrity.Hash(s.contract.Identity().JSON()) {
-		return nil, frame.ErrContractMismatch
-	}
-	return s.contract, nil
 }
 
 type environment struct {
@@ -149,11 +140,11 @@ func newEnvironment(t *testing.T, wait bool) *environment {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref := frame.ContractRef{Name: capability.Descriptor().Reference, Version: "1", Digest: integrity.Hash(capability.Identity().JSON()), Kind: frame.ServiceKind, Mode: frame.PortableMode}
-	contract, err := frame.BindContract[process.Service](ref, capability.Identity().JSON())
+	contract, err := frame.NewPortableContract[process.Service]("1", capability)
 	if err != nil {
 		t.Fatal(err)
 	}
+	ref := contract.Ref()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -162,7 +153,7 @@ func newEnvironment(t *testing.T, wait bool) *environment {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := &source{contract: capability, program: process.Program{Command: executable, ExecutableDigest: integrity.Hash(data), Args: []string{"-test.run=^TestLocalProcessHelper$"}, Env: append(os.Environ(), "FRAME_PROCESS_HELPER="+directory), Directory: directory}}
+	source := &source{program: process.Program{Command: executable, ExecutableDigest: value.Hash(data), Args: []string{"-test.run=^TestLocalProcessHelper$"}, Env: append(os.Environ(), "FRAME_PROCESS_HELPER="+directory), Directory: directory}}
 	if wait {
 		source.program.Env = append(source.program.Env, "FRAME_PROCESS_WAIT=1")
 	}
@@ -184,7 +175,7 @@ func newEnvironment(t *testing.T, wait bool) *environment {
 	if err := host.Register(contract); err != nil {
 		t.Fatal(err)
 	}
-	plugin, err := frame.Define(frame.Definition{Revision: integrity.Hash([]byte("echo release")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "backend", Profile: frame.LocalProcess, Exports: []frame.ExportDeclaration{{Name: "echo", Contract: ref}}}}}})
+	plugin, err := frame.Define(frame.Definition{Revision: value.Hash([]byte("echo release")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "backend", Profile: frame.LocalProcess, Exports: []frame.ExportDeclaration{{Name: "echo", Contract: ref}}}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +200,7 @@ func TestApprovedProcessUsesPublicContractAndReleasesOriginalAttempt(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	input, err := jsonvalue.Encode("document exact text")
+	input, err := value.EncodeJSON("document exact text")
 	if err != nil {
 		t.Fatal(err)
 	}

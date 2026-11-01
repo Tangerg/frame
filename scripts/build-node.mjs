@@ -1,7 +1,11 @@
 import { copyFile } from "node:fs/promises";
-for (const name of ["wire.json", "portable-profile.generated.json"]) {
-  await copyFile(
-    new URL(`../protocol/process/${name}`, import.meta.url),
-    new URL(`../packages/node/src/${name}`, import.meta.url),
-  );
-}
+
+const here = import.meta.url;
+await Promise.all(
+  ["process/wire.json", "portable/limits.generated.json"].map((path) =>
+    copyFile(
+      new URL("../" + path, here),
+      new URL("../sdk/src/node/" + path.split("/").at(-1), here),
+    ),
+  ),
+);

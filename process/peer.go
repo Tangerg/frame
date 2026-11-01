@@ -11,11 +11,8 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/Tangerg/frame/jsonvalue"
-	wire "github.com/Tangerg/frame/protocol/process"
+	framevalue "github.com/Tangerg/frame/value"
 )
-
-var profile = wire.Current()
 
 // ErrOutcomeUnknown means the peer stopped answering after dispatch. Only the
 // application that owns the effect can establish whether the operation finished.
@@ -218,7 +215,7 @@ func parseEnvelope(raw []byte) (envelope, error) {
 	}
 	if problem, ok := fields["error"]; ok {
 		var value Problem
-		if problem.Kind() != '{' || jsonvalue.DecodeValue(problem, &value, "error") != nil || value.Code == "" {
+		if problem.Kind() != '{' || framevalue.DecodeValue(problem, &value, "error") != nil || value.Code == "" {
 			return msg, invalid
 		}
 		msg.Error = &value
@@ -315,7 +312,7 @@ func (p *peer) run(ctx context.Context, msg envelope) (result jsontext.Value, er
 }
 
 func decode(raw jsontext.Value, out any) error {
-	if err := jsonvalue.DecodeValue(raw, out, "wire"); err != nil {
+	if err := framevalue.DecodeValue(raw, out, "wire"); err != nil {
 		return &Problem{profile.Errors.Invalid, "invalid payload"}
 	}
 	return nil

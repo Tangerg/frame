@@ -14,8 +14,7 @@ import (
 	"strings"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
-	"github.com/Tangerg/frame/jsonvalue"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 const ManifestName = "manifest.json"
@@ -32,10 +31,10 @@ var (
 )
 
 type Artifact struct {
-	Path       string           `json:"path"`
-	Digest     integrity.Digest `json:"digest"`
-	Size       int64            `json:"size"`
-	Executable bool             `json:"executable,omitempty"`
+	Path       string            `json:"path"`
+	Digest     framevalue.Digest `json:"digest"`
+	Size       int64             `json:"size"`
+	Executable bool              `json:"executable,omitempty"`
 }
 
 // An import is still a declaration here. Installation and binding supply its
@@ -47,9 +46,9 @@ type Import struct {
 }
 
 type RuntimeReference struct {
-	Name    string           `json:"name"`
-	Version string           `json:"version"`
-	Digest  integrity.Digest `json:"digest"`
+	Name    string            `json:"name"`
+	Version string            `json:"version"`
+	Digest  framevalue.Digest `json:"digest"`
 }
 
 type Variant struct {
@@ -100,7 +99,7 @@ type Manifest struct {
 	SchemaVersion int                 `json:"schemaVersion"`
 	Package       string              `json:"package"`
 	Version       string              `json:"version"`
-	Release       integrity.Digest    `json:"release,omitempty"`
+	Release       framevalue.Digest   `json:"release,omitempty"`
 	Artifacts     []Artifact          `json:"artifacts"`
 	Contracts     []frame.ContractRef `json:"contracts,omitempty"`
 	Units         []Unit              `json:"units"`
@@ -109,14 +108,14 @@ type Manifest struct {
 }
 
 type LockedRelease struct {
-	Package string           `json:"package"`
-	Release integrity.Digest `json:"release"`
+	Package string            `json:"package"`
+	Release framevalue.Digest `json:"release"`
 }
 
 type Lock struct {
 	SchemaVersion int                 `json:"schemaVersion"`
 	Package       string              `json:"package"`
-	Release       integrity.Digest    `json:"release"`
+	Release       framevalue.Digest   `json:"release"`
 	Artifacts     []Artifact          `json:"artifacts"`
 	Contracts     []frame.ContractRef `json:"contracts,omitempty"`
 	Dependencies  []LockedRelease     `json:"dependencies,omitempty"`
@@ -334,23 +333,29 @@ func (m Module) validate(artifacts map[string]Artifact) error {
 	return nil
 }
 
+// ValidateProcessEntry checks the executable archive shape shared by local process protocols.
+func (u Unit) ValidateProcessEntry() error {
+	if len(u.Variants) == 0 || u.Module != nil {
+		return fmt.Errorf("%w: process unit entry", ErrInvalid)
+	}
+	for _, imported := range u.Imports {
+		if imported.Contract.Mode != frame.PortableMode {
+			return fmt.Errorf("%w: process import %q is native", ErrInvalid, imported.Slot)
+		}
+	}
+	for _, exported := range u.Exports {
+		if exported.Contract.Mode != frame.PortableMode {
+			return fmt.Errorf("%w: process export %q is native", ErrInvalid, exported.Name)
+		}
+	}
+	return nil
+}
+
 // profileShape reports whether the standard format owns this particular profile.
 func (u Unit) profileShape() (bool, error) {
 	switch u.Profile {
 	case frame.LocalProcess:
-		if len(u.Variants) == 0 || u.Module != nil {
-			return true, fmt.Errorf("%w: process unit entry", ErrInvalid)
-		}
-		for _, imported := range u.Imports {
-			if imported.Contract.Mode != frame.PortableMode {
-				return true, fmt.Errorf("%w: process import %q is native", ErrInvalid, imported.Slot)
-			}
-		}
-		for _, exported := range u.Exports {
-			if exported.Contract.Mode != frame.PortableMode {
-				return true, fmt.Errorf("%w: process export %q is native", ErrInvalid, exported.Name)
-			}
-		}
+		return true, u.ValidateProcessEntry()
 	case frame.BrowserJS:
 		if u.Module == nil || len(u.Variants) != 0 {
 			return true, fmt.Errorf("%w: browser unit entry", ErrInvalid)
@@ -395,7 +400,7 @@ func validateContributions(declared []Contribution, units map[frame.UnitID]Unit,
 		}
 		keys[key] = struct{}{}
 		if len(contribution.Metadata) != 0 {
-			if _, err := jsonvalue.Parse(contribution.Metadata); err != nil {
+			if _, err := framevalue.ParseJSON(contribution.Metadata); err != nil {
 				return errors.Join(ErrInvalid, err)
 			}
 		}
@@ -409,26 +414,26 @@ func (m Manifest) Canonical() ([]byte, error) {
 	if err := m.Validate(); err != nil {
 		return nil, err
 	}
-	m.Release = integrity.Digest{}
+	m.Release = framevalue.Digest{}
 	m.Artifacts = slices.Clone(m.Artifacts)
 	slices.SortFunc(m.Artifacts, func(a, b Artifact) int { return strings.Compare(a.Path, b.Path) })
 	encoded, err := json.Marshal(m)
 	if err != nil {
 		return nil, err
 	}
-	canonical, err := jsonvalue.Parse(encoded)
+	canonical, err := framevalue.ParseJSON(encoded)
 	if err != nil {
 		return nil, err
 	}
-	return canonical.JSON(), nil
+	return canonical.Bytes(), nil
 }
 
-func (m Manifest) Identity() (integrity.Digest, error) {
+func (m Manifest) Identity() (framevalue.Digest, error) {
 	data, err := m.Canonical()
 	if err != nil {
-		return integrity.Digest{}, err
+		return framevalue.Digest{}, err
 	}
-	return integrity.Hash(data), nil
+	return framevalue.Hash(data), nil
 }
 
 func (m Manifest) Lock() (Lock, error) {

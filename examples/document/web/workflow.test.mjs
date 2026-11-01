@@ -172,7 +172,7 @@ test("dynamic native publication exits through its original execution and resend
         load(id) {
           if (id === fixture)
             return [
-              'export { HTTPControl, RealmModules, Runtime, select } from "@frame/browser";',
+              'export { HTTPControl, RealmModules, Runtime, select } from "@frame/sdk/browser";',
               'export { Lifetime, Point } from "@frame/sdk";',
             ].join("\n");
         },

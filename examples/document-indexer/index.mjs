@@ -1,4 +1,4 @@
-import { Capability, defineProcessUnit, serve } from "@frame/node";
+import { Capability, defineProcessUnit, serve } from "@frame/sdk/node";
 import contracts from "./contracts.json" with { type: "json" };
 
 const unit = defineProcessUnit({

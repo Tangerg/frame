@@ -11,8 +11,8 @@ import (
 	"weak"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
 	"github.com/Tangerg/frame/sqlite"
+	"github.com/Tangerg/frame/value"
 )
 
 func TestPreparationCapacityRetainsTheOriginalAdmission(t *testing.T) {
@@ -193,7 +193,7 @@ func reportAdditionalRecovery(admission *frame.Admission) []weak.Pointer[recover
 
 func TestRecoveryDiagnosticsRetainTheFirstCauseWithoutAccumulatingErrorGraphs(t *testing.T) {
 	admission := frame.NewAdmission()
-	dependency := frame.Dependency{InstallationID: "original", Release: integrity.Hash([]byte("original-release"))}
+	dependency := frame.Dependency{InstallationID: "original", Release: value.Hash([]byte("original-release"))}
 	if err := admission.RegisterUseOwner(&diagnosticUseOwner{id: "consumer.original", values: []frame.Dependency{dependency}}); err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +312,7 @@ func TestUseOwnerCapacityDoesNotEvictOriginalBusinessReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dependency := frame.Dependency{InstallationID: "original", Release: integrity.Hash([]byte("release"))}
+	dependency := frame.Dependency{InstallationID: "original", Release: value.Hash([]byte("release"))}
 	original := &diagnosticUseOwner{id: "consumer.original", values: []frame.Dependency{dependency}}
 	if err := admission.RegisterUseOwner(original); err != nil {
 		t.Fatal(err)
@@ -398,7 +398,7 @@ func TestRestorationChecksTheWholeScopeBudgetBeforeProjection(t *testing.T) {
 	}
 	host := testHost(t, frame.HostConfig{Admission: admission})
 	plugin, err := frame.Define(frame.Definition{
-		Revision: integrity.Hash([]byte("restored")),
+		Revision: value.Hash([]byte("restored")),
 		Units: []frame.Unit{{
 			Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.NativeGo},
 			Setup:       func(context.Context, *frame.Setup) ([]frame.ExportValue, error) { return nil, nil },

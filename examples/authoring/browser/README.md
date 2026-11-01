@@ -2,7 +2,7 @@
 
 This is a maintainer-authored public-API exercise. It is not an external-user
 study. The author implements new native JavaScript FileReader, Converter and
-Validator Units using `@frame/sdk`, while the application uses `@frame/browser`
+Validator Units using `@frame/sdk`, while the application uses `@frame/sdk/browser`
 to execute the original Go Host's approved plans. Neither package requires
 React or a product-specific runtime.
 
@@ -43,7 +43,7 @@ switch or replacement cleanup owner is used.
 
 The trusted Go fixture reads the already-built module bytes, registers the
 original document descriptors, installs the authored Units and exposes the real
-authenticated `control/host.Bridge`. The build script projects Units from their
+authenticated `browser.Bridge`. The build script projects Units from their
 actual `defineUnit` declarations; it does not ask an author to repeat contract
 hashes, slots, export tables, LocalPlans or exit proofs. The fixture chooses the
 `browser-js` execution profile and the Host's unique-provider policy. The narrow
@@ -77,8 +77,7 @@ separate document workbench browser workflow; the two environments must not be
 reported as equivalent.
 
 For an independent author exercise, copy this directory into a new npm project,
-install packed release artifacts for `@frame/sdk` and `@frame/browser`, create an
-independent lock and build the fixture with `go install
+install the `@frame/sdk` tarball, create an independent lock and build the fixture with `go install
 github.com/Tangerg/frame/examples/authoring/cmd/authorhost@<release>`. Use
 `GOWORK=off` and the public module artifact. The committed generated contract
 projection is sufficient; this npm author project does not need a Go compiler.

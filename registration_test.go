@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 type absentDriver struct{ frame.Driver }
@@ -79,7 +79,7 @@ func TestContractBatchRejectsConflictsWithoutPartialRegistration(t *testing.T) {
 	event, _ := frame.NewEvent[string]("example.batch", "1")
 	eventPayload, _ := frame.NewEvent[int]("example.batch", "1")
 	portable := func(descriptor string) frame.Contract[string] {
-		ref := frame.ContractRef{Name: "example.batch", Version: "1", Kind: frame.ServiceKind, Mode: frame.PortableMode, Digest: integrity.Hash([]byte(descriptor))}
+		ref := frame.ContractRef{Name: "example.batch", Version: "1", Kind: frame.ServiceKind, Mode: frame.PortableMode, Digest: framevalue.Hash([]byte(descriptor))}
 		value, err := frame.BindContract[string](ref, []byte(descriptor))
 		if err != nil {
 			t.Fatal(err)

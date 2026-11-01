@@ -22,4 +22,9 @@ jobs:
       - run: make check
       - run: make example
       - name: Verify browser plugins against live Go hosts
-        run: ./scripts/check-browser-workflows.sh
+        run: |
+          npm exec -- playwright install --with-deps --no-shell chromium
+          FRAME_CHROME_EXECUTABLE=$(node -p 'require("playwright").chromium.executablePath()')
+          test -x "$FRAME_CHROME_EXECUTABLE"
+          export FRAME_CHROME_EXECUTABLE
+          ./scripts/check-browser-workflows.sh

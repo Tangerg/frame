@@ -8,7 +8,7 @@ import (
 	"slices"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 func (s *Store) ImportDirectory(ctx context.Context, directory string) (Release, error) {
@@ -19,7 +19,7 @@ func (s *Store) ImportDirectory(ctx context.Context, directory string) (Release,
 	return lease.Snapshot(), lease.Close()
 }
 
-func (s *Store) ImportArchive(ctx context.Context, fileName string, expected integrity.Digest) (Release, error) {
+func (s *Store) ImportArchive(ctx context.Context, fileName string, expected value.Digest) (Release, error) {
 	lease, err := s.ImportArchiveHeld(ctx, fileName, expected)
 	if err != nil {
 		return Release{}, err
@@ -71,7 +71,7 @@ func (l *Lease) ReadLimit(ctx context.Context, name string, maximum int64) ([]by
 
 // Path projects an immutable release location for diagnostics and declarations.
 // It performs no admission: actual reads and execution require an acquired Lease.
-func (s *Store) Path(digest integrity.Digest) (string, error) {
+func (s *Store) Path(digest value.Digest) (string, error) {
 	done, err := s.beginOperation(true)
 	if err != nil {
 		return "", err
@@ -85,7 +85,7 @@ func (s *Store) Path(digest integrity.Digest) (string, error) {
 
 // Digests observes the content namespace. Each later Remove still checks the
 // original retention facts and live claims under the shared admission gate.
-func (s *Store) Digests(ctx context.Context) (_ []integrity.Digest, err error) {
+func (s *Store) Digests(ctx context.Context) (_ []value.Digest, err error) {
 	done, err := s.beginOperation(false)
 	if err != nil {
 		return nil, err
@@ -96,19 +96,19 @@ func (s *Store) Digests(ctx context.Context) (_ []integrity.Digest, err error) {
 		return nil, err
 	}
 	defer func() { err = errors.Join(err, directory.Close()) }()
-	var result []integrity.Digest
+	var result []value.Digest
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		entries, readErr := directory.ReadDir(256)
 		for _, entry := range entries {
-			if digest, err := integrity.ParseDigest(entry.Name()); err == nil {
+			if digest, err := value.ParseDigest(entry.Name()); err == nil {
 				result = append(result, digest)
 			}
 		}
 		if errors.Is(readErr, io.EOF) {
-			slices.SortFunc(result, integrity.Digest.Compare)
+			slices.SortFunc(result, value.Digest.Compare)
 			return result, nil
 		}
 		if readErr != nil {

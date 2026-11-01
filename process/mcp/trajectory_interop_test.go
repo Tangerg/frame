@@ -1,0 +1,193 @@
+//go:build flameinterop
+
+package mcp
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/portable"
+	"github.com/Tangerg/frame/process"
+	"github.com/Tangerg/frame/value"
+	sdk "github.com/Tangerg/go-sdk/mcp"
+)
+
+// The unmodified plugin reads a document through its call grant and delivers
+// Markdown through a different, acknowledged chunk grant in the same invocation.
+func TestFlameTrajectoryInterop(t *testing.T) {
+	var facts struct {
+		Read     portable.MethodDescriptor `json:"read"`
+		Document json.RawMessage           `json:"document"`
+	}
+	source, err := os.ReadFile(os.Getenv("FRAME_TRAJECTORY_INPUT"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(source, &facts); err != nil {
+		t.Fatal(err)
+	}
+	read, err := portable.AdmitMethod(facts.Read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const methodName = "flame.session-markdown/render.v1"
+	data, err := os.ReadFile(filepath.Join(os.Getenv("FRAME_FLAME_ROOT"), "plugins/trajectory/package/io.github.tangerg.flame/contracts/capability.generated.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract, err := ParseManagedContract(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiver, err := NewCallbackReceiver(CallbackReceiverLimits{MaxCalls: 2, MaxRequestBytes: 1 << 20, MaxResponseBytes: 1 << 20, ReadTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := value.Hash(facts.Document).String()
+	var requests atomic.Int32
+	type documentID struct {
+		Digest string `json:"digest"`
+		Bytes  int    `json:"bytes"`
+	}
+	registered, err := frame.NewPortableContract[process.Service]("1", contract.Capability())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var approved frame.ExportRef
+	protocol := ManagedProtocol{
+		Exports: func(binding frame.UnitBinding) (map[string]ManagedExport, error) {
+			unit := binding.Source
+			approved = frame.ExportRef{InstallationID: unit.InstallationID, Release: unit.Release, UnitID: unit.UnitID, Export: "service", Contract: registered.Ref()}
+			return map[string]ManagedExport{"service": {Name: "markdown", Contract: contract}}, nil
+		},
+		OpenCall: func(ctx context.Context, session *sdk.ClientSession, call ManagedCall) (*ManagedCallback, error) {
+			var requested documentID
+			if err := value.DecodeValue(call.Input.Bytes(), &requested, "target"); err != nil {
+				return nil, err
+			}
+			if session == nil || call.Source != approved || call.Method.Name() != methodName || call.CommandID != "" || requested.Digest != digest || requested.Bytes != len(facts.Document) {
+				return nil, frame.ErrUnavailable
+			}
+			grant, err := receiver.Grant(ctx, read, func(_ context.Context, id string, input value.JSON) (value.JSON, error) {
+				var r struct {
+					Digest string `json:"digest"`
+					Offset int64  `json:"offset"`
+				}
+				if err := value.DecodeValue(input.Bytes(), &r, "range"); err != nil {
+					return value.JSON{}, err
+				}
+				if id != "" || r.Digest != requested.Digest || r.Offset != 0 {
+					return value.JSON{}, frame.ErrInvalid
+				}
+				requests.Add(1)
+				return value.EncodeJSON(base64.StdEncoding.EncodeToString(facts.Document))
+			})
+			if err != nil {
+				return nil, err
+			}
+			return &grant, nil
+		},
+		OpenStream: receiver.Stream,
+	}
+	checkExecution(t, protocol, contract.Capability(), func(t *testing.T, dir string) process.Program {
+		name := os.Getenv("FRAME_FLAME_TRAJECTORY")
+		image, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return process.Program{Command: name, ExecutableDigest: value.Hash(image), Directory: dir, Env: []string{"PLUGIN_DATA=" + dir}}
+	}, nil, func(ctx context.Context, borrowed process.Service, _ string) {
+
+		in, err := value.EncodeJSON(documentID{digest, len(facts.Document)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var markdown strings.Builder
+		out, err := borrowed.(process.StreamingService).Stream(ctx, methodName, in, func(_ context.Context, chunk value.JSON) error {
+			var text string
+			if err := value.DecodeValue(chunk.Bytes(), &text, "markdown"); err != nil {
+				return err
+			}
+			_, err := markdown.WriteString(text)
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "# Frame integration\n"
+		var id documentID
+		if err := value.DecodeValue(out.Bytes(), &id, "result"); err != nil {
+			t.Fatal(err)
+		}
+		if requests.Load() != 1 || markdown.String() != want || id != (documentID{value.Hash([]byte(want)).String(), len(want)}) {
+			t.Fatalf("reads=%d markdown=%q identity=%+v", requests.Load(), markdown.String(), id)
+		}
+	})
+}
+
+// Discovery of Flame manifests belongs to this product-specific test.
+func TestFlameManagedContractCorpus(t *testing.T) {
+	root, err := os.OpenRoot(os.Getenv("FRAME_FLAME_ROOT"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	entries, err := os.ReadDir(filepath.Join(root.Name(), "plugins"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contributions, servers := 0, 0
+	for _, plugin := range entries {
+		if !plugin.IsDir() {
+			continue
+		}
+		base := filepath.Join("plugins", plugin.Name(), "package")
+		if _, err := root.Stat(filepath.Join(base, "mcp.json")); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := root.ReadFile(filepath.Join(base, "io.github.tangerg.flame", "declaration.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var manifest struct {
+			Contributions []struct{ ID, Contract, Server string } `json:"contributions"`
+		}
+		if err := json.Unmarshal(raw, &manifest); err != nil {
+			t.Fatal(err)
+		}
+		count := 0
+		for _, c := range manifest.Contributions {
+			if c.Server == "" {
+				continue
+			}
+			d, err := root.ReadFile(filepath.Join(base, c.Contract))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ParseManagedContract(d); err != nil {
+				t.Fatalf("%s/%s: %v", plugin.Name(), c.ID, err)
+			}
+			count++
+		}
+		if count == 0 {
+			t.Fatalf("%s has no managed contracts", plugin.Name())
+		}
+		servers++
+		contributions += count
+	}
+	if servers == 0 {
+		t.Fatal("no MCP package manifests found")
+	}
+	t.Logf("admitted %d managed descriptors across %d plugin packages", contributions, servers)
+}

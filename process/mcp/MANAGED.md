@@ -1,0 +1,76 @@
+# Managed MCP operations
+
+Use `mcp.ManagedProtocol` for a process implementing Qimu's `portable/1` operations. A host that wants ordinary MCP tools can register `mcp.Tools` separately. Both profiles use Frame's process driver and the MCP SDK over the runner's single attached stdio stream.
+
+## Register a backend
+
+Read the trusted capability descriptor from the approved package or contract catalog. `ParseManagedContract` admits its schemas once and projects the Frame capability and Qimu wire identity. Qimu includes scope and composition in its capability fingerprint. Descriptions remain presentation text. The package source owns which physical export implements each Frame export.
+
+```go
+contract, err := mcp.ParseManagedContract(descriptor)
+if err != nil {
+	return err
+}
+service, err := frame.NewPortableContract[process.Service]("1", contract.Capability())
+if err != nil {
+	return err
+}
+
+// This example registers one pinned backend. A multi-package source resolves
+// the mapping using the installation, release and unit in binding.Source.
+cfg.Protocol = mcp.ManagedProtocol{
+	Exports: func(binding frame.UnitBinding) (map[string]mcp.ManagedExport, error) {
+		if binding.Source != approvedUnit {
+			return nil, frame.ErrContractMismatch
+		}
+		return map[string]mcp.ManagedExport{
+			"hooks": {Name: "hook-provider", Contract: contract},
+		}, nil
+	},
+}
+driver, err := process.New(cfg)
+```
+
+Pass the driver to `frame.NewHost`, register `service` and declare the logical export `hooks` with `service.Ref()` and the unit profile `mcp.ManagedProfile`. Supply the executable digest, directory and exact environment through the process source. Frame owns installation, grants, process launch and release. The host owns package discovery, credentials and application policy.
+
+After MCP initialization the adapter calls `operations.describe`. It compares the complete set of physical capabilities and their member identities with the frozen declaration. It then sends `operations.setup` with the logical contribution IDs and physical export names. Frame's activation transition alone sends `operations.activate`. A refused setup or a mismatched description fails acquisition. Closing the original session retires the original child.
+
+## Call semantics
+
+Borrow the registered `process.Service` through Frame. Its `Call` method executes a managed query. Inside the borrow, use the concrete `*mcp.ManagedService` for protocol-specific operations.
+
+| Operation | Calling contract |
+| --- | --- |
+| `ValidateInput(ctx, member, input)` | Asks the exact backend to admit its typed input after local schema checks. No command identity or business dispatch. |
+| `Call(ctx, member, input)` | Unary query. |
+| `Command(ctx, commandID, member, input)` | Unary command. Supply the stable identity of the logical effect. |
+| `Stream` and `StreamCommand` | Synchronous chunk delivery through a per-call grant. Acknowledge a chunk only after its consumer accepts it. The separately validated final result completes the stream. |
+| `ReadReceipt(ctx, commandID, member, originalInput)` | Queries the backend's exact `commands.get` contract using the original input digest and the same export. A found receipt can represent a successful reply or a typed business refusal. |
+
+Use `mcp.WithInvocation` when the caller owns invocation and target evidence. Invocation ID and command ID have separate meanings. A transport failure after command dispatch can leave an unknown effect. Inspect the original receipt where supported. Missing evidence never authorizes replay. Keep borrowed services and their grants within their owning lifetime.
+
+## Reverse calls
+
+| Grant | Authority and lifetime |
+| --- | --- |
+| `OpenCallbacks` | The host issues a session grant for declared dependencies or an explicitly approved background role. Each `ManagedImport` links a dependency ID to a Frame import slot and its upstream descriptor. The bridge projects optionality and the original installed providers from `Setup.Imports`. A background target uses that installation's ID. |
+| `OpenCall` | The host selects permitted effects using the caller's context, original session and immutable `ManagedCall`. It includes the frozen Frame export (installation, release, unit, logical name and contract), admitted method, original input and command ID. A nil lease grants no call-scoped callback. This grant can coexist with stream delivery. |
+| `OpenStream` | Use the callback receiver's `Stream` method to issue a fresh credential for the Qimu chunk delivery operation. A stream cannot publish without a receiver. |
+
+For a loopback route use `mcp.NewCallbackReceiver` with explicit call count, request and response bytes, and read timeout. Its `Grant` method can authorize one admitted host operation. The application selects the exact handler and verifies domain access. A host with an existing Qimu broker may implement the same hooks. It must bind its ACL to the original setup or call, authenticate the credential and call token, and bound its work.
+
+A `ManagedCallback` contains an endpoint, two ephemeral tokens and a response budget. `Revoke` requests retirement. Close `Released` only after the route and every admitted callback have exited. Frame reserves a lifetime resource before the grant is issued. Unconfirmed callback cleanup keeps that instance pending even after the runner proves process exit. Never serialize credentials into a package, command argument or business input.
+
+The Qimu provider address carries installation, release and contribution. Frame also has a unit ID. The adapter rejects ambiguous projections before launch. Catalogs must map each managed dependency to its original Frame slot. Hosts must explicitly provide background and reverse-operation authorization for packages that require them. Agent tools, prompts, filesystem paths, Flame roles, browser UI components and package installation rules remain application-owned.
+
+## Reproduce independent interoperability tests
+
+Use a checkout of `Tangerg/flame` at `07ec19bb6376914b45fbdc2ea882b0464cfffac5`. The test script builds the unmodified upstream peers in that checkout and runs Frame from its own module:
+
+```sh
+./scripts/check-flame-interop.sh /absolute/path/to/flame
+```
+
+At the pinned commit the corpus contains 18 managed contribution descriptors in 15 plugin packages. The hooks test invokes a query, dispatches a command and reads the original receipt. The trajectory renderer reads one host-authorized document range, sends Markdown through an independent stream grant, and returns the content identity of the rendered document. A third peer built against upstream Qimu checks the ordered chunk protocol. Each execution uses the real Host, SQLite store and local runner.
+
+A descriptor check establishes schema admission. Exercising a plugin's external provider, desktop components, scheduler or other product effects requires its host's permissions and integration tests.

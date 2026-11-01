@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 func benchmarkGraph(b *testing.B, count int) (*frame.Host, frame.BindingSnapshot, frame.ScopeGrant) {
@@ -28,7 +28,7 @@ func benchmarkGraph(b *testing.B, count int) (*frame.Host, frame.BindingSnapshot
 	if err := host.Register(contract); err != nil {
 		b.Fatal(err)
 	}
-	release := integrity.Hash([]byte(fmt.Sprintf("benchmark-chain-%d", count)))
+	release := framevalue.Hash([]byte(fmt.Sprintf("benchmark-chain-%d", count)))
 	ref := func(index int) frame.ExportRef {
 		return frame.ExportRef{InstallationID: "benchmark", Release: release, UnitID: frame.UnitID(fmt.Sprintf("unit%d", index)), Export: "value", Contract: contract.Ref()}
 	}

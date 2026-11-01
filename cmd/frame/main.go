@@ -7,7 +7,7 @@ import (
 	"flag"
 	"os"
 
-	"github.com/Tangerg/frame/contractgen"
+	"github.com/Tangerg/frame/portable/contractgen"
 )
 
 func main() {

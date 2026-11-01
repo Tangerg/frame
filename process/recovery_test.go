@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
 	"github.com/Tangerg/frame/process"
-	"github.com/Tangerg/frame/runner"
+	"github.com/Tangerg/frame/process/runner"
 	"github.com/Tangerg/frame/sqlite"
+	"github.com/Tangerg/frame/value"
 )
 
 // A restart can replace the endpoint between two successful control calls.
@@ -139,9 +139,9 @@ func recordAttempt(t *testing.T, store *sqlite.Store, identity runner.Identity) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	contract := frame.ContractRef{Name: capability.Descriptor().Reference, Version: "1", Digest: integrity.Hash(capability.Identity().JSON()), Kind: frame.ServiceKind, Mode: frame.PortableMode}
-	root := frame.ExportRef{InstallationID: "original", Release: integrity.Hash([]byte("release")), UnitID: "backend", Export: "echo", Contract: contract}
-	binding := frame.BindingSnapshot{FormatVersion: 1, Roots: []frame.ExportRef{root}, Units: []frame.UnitBinding{{Source: root.Unit(), Configuration: integrity.Hash([]byte(`{}`)), Imports: []frame.ImportDeclaration{}}}}
+	contract := frame.ContractRef{Name: capability.Descriptor().Reference, Version: "1", Digest: capability.Identity().Digest(), Kind: frame.ServiceKind, Mode: frame.PortableMode}
+	root := frame.ExportRef{InstallationID: "original", Release: value.Hash([]byte("release")), UnitID: "backend", Export: "echo", Contract: contract}
+	binding := frame.BindingSnapshot{FormatVersion: 1, Roots: []frame.ExportRef{root}, Units: []frame.UnitBinding{{Source: root.Unit(), Configuration: value.Hash([]byte(`{}`)), Imports: []frame.ImportDeclaration{}}}}
 	attempt := sqlite.Attempt{ID: "approved-before-crash", Epoch: store.Epoch(), Source: root.Unit(), Binding: binding, Realm: identity.ID, Profile: frame.LocalProcess}
 	if err := store.RecordAttempt(t.Context(), attempt); err != nil {
 		t.Fatal(err)
@@ -180,7 +180,7 @@ func TestRecoverOriginalExitHandoffAcrossHostRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			attempt := recordAttempt(t, store, identity)
-			req := runner.LaunchRequest{AttemptID: attempt.ID, Epoch: attempt.Epoch, Command: filepath.Join(directory, "missing"), ExecutableDigest: integrity.Hash([]byte("missing")), Configuration: attempt.Binding.Units[0].Configuration}
+			req := runner.LaunchRequest{AttemptID: attempt.ID, Epoch: attempt.Epoch, Command: filepath.Join(directory, "missing"), ExecutableDigest: value.Hash([]byte("missing")), Configuration: attempt.Binding.Units[0].Configuration}
 			exit, err := original.Launch(ctx, req)
 			if err == nil || exit.State != runner.Exited {
 				t.Fatalf("failed start: %+v %v", exit, err)

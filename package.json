@@ -7,18 +7,18 @@
     "node": ">=24.0.0"
   },
   "workspaces": [
-    "packages/*",
+    "sdk",
     "examples/authoring/browser",
     "examples/document/web"
   ],
   "scripts": {
-    "build": "npm run build -w @frame/sdk && npm run build -w @frame/browser && npm run build -w @frame/node && npm run build -w @frame/react",
+    "build": "npm run build -w @frame/sdk",
     "typecheck": "npm run build && npm run typecheck --workspaces --if-present",
-    "test": "npm run build && vitest run packages --pool forks --execArgv=--expose-gc --maxWorkers=2",
+    "test": "npm run build && vitest run sdk --pool forks --execArgv=--expose-gc --maxWorkers=2",
     "check": "npm run typecheck && npm run lint && npm run format:check && npm test && npm run check:pack",
     "check:pack": "node scripts/check-pack.mjs",
-    "lint": "oxlint --deny-warnings packages/sdk/src packages/browser/src packages/node/src packages/react/src examples/authoring/browser/src examples/document/web/src scripts",
-    "format:check": "prettier --check \"packages/*/src/**/*.{ts,tsx}\" \"scripts/*.mjs\""
+    "lint": "oxlint --deny-warnings sdk/src examples/authoring/browser/src examples/document/web/src scripts",
+    "format:check": "prettier --check \"sdk/src/**/*.{ts,tsx}\" \"scripts/*.mjs\""
   },
   "devDependencies": {
     "@types/node": "26.6.5",

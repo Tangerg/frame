@@ -8,12 +8,20 @@ make check
 make example
 ```
 
-The Go race suite uses temporary SQLite files, real subprocesses and loopback sockets. The JavaScript check typechecks the workspace, exercises runtime/React behavior and tests packages as tarballs. The example crosses Go and Node through the real local driver. Run `go generate ./...` and `npm run build` after changing a wire declaration or contract owner. Generation drift is checked in CI.
+The Go race suite uses temporary SQLite files, real subprocesses and loopback sockets. The JavaScript check typechecks the workspace, exercises runtime/React behavior and installs and tests the SDK tarball. The example crosses Go and Node through the real local driver. Run `go generate ./...` and `npm run build` after changing a wire declaration or contract owner. Generation drift is checked in CI.
 
-To release, verify clean binaries and npm tarballs, then tag the independent Go module and publish the four packages under their respective identities. The maintainer controls names, credentials, license and publisher policy. Protocol versions and domain contract identities are independent of npm or Go module versions. Publishing is a separate, explicit operation.
+To release, verify both binaries and the single SDK tarball, then choose a new release version for the Go module and npm SDK. The maintainer controls names, credentials, license and publisher policy. Protocol versions and domain contract identities are independent of npm or Go module versions. Publishing is a separate, explicit operation.
 
 Run `make hooks` to enable local whitespace and conventional commit checks. Go formatting, vet, races and npm lint, formatting, types, tests and packed-package consumption are checked independently in CI.
 
-`scripts/check-browser-workflows.sh` builds the Go hosts and runs the browser author and document workflows against real local servers. Set `FRAME_CHROME_EXECUTABLE` to a Chromium executable to include real browser crash and reconnect scenarios. `go test -tags frame_interop -count=1 ./conformance` runs the two-way streaming and cancellation exercise after the npm packages have been built.
+`scripts/check-browser-workflows.sh` builds the Go hosts and runs the browser author and document workflows against real local servers. Set `FRAME_CHROME_EXECUTABLE` to a Chromium executable to include real browser crash and reconnect scenarios. `go test -tags frame_interop -count=1 ./conformance` runs the two-way streaming and cancellation exercise after the SDK has been built.
 
 For a committed tree, `python3 scripts/go-consumer.py --version v0.0.1` creates a temporary standard Go module proxy and compiles a separate consumer without a replace or workspace link. `--proxy <directory>` retains the module for local distribution. Verify a public release separately through the public Go module proxy.
+
+To exercise published Flame contracts and unmodified plugin binaries, run
+`./scripts/check-flame-interop.sh /absolute/path/to/flame` from Frame. This
+optional suite builds its peers in the supplied Flame workspace, then tests the
+adapter from the Frame module. It checks the managed descriptor corpus, the
+hooks backend, the trajectory renderer and the Qimu stream fixture. It writes
+its outputs to a temporary directory. See [managed MCP](process/mcp/MANAGED.md)
+for permissions and callback ownership.

@@ -8,7 +8,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/Tangerg/frame/jsonvalue"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 // Protocol identifies public wire behavior, independently of private releases.
@@ -41,20 +41,19 @@ func (d MethodDescriptor) clone() MethodDescriptor {
 
 type Method struct {
 	descriptor MethodDescriptor
-	identity   jsonvalue.Value
+	identity   framevalue.JSON
 	input      Schema
 	output     Schema
 	stream     Schema
 }
 
-func validToken(value string) bool {
+// ValidToken reports whether a portable name fits the profile and has no spaces or controls.
+func ValidToken(value string) bool {
 	return value != "" && len(value) <= ProfileLimits().MaxTokenBytes && utf8.ValidString(value) && !strings.ContainsFunc(value, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
 }
 
-func ValidMethodName(value string) bool { return validToken(value) }
-
 func AdmitMethod(descriptor MethodDescriptor) (*Method, error) {
-	if !ValidMethodName(descriptor.Name) || (descriptor.Target != "" && !validToken(descriptor.Target)) {
+	if !ValidToken(descriptor.Name) || (descriptor.Target != "" && !ValidToken(descriptor.Target)) {
 		return nil, errors.New("capability: method name and declared target must be bounded tokens")
 	}
 	if descriptor.Kind != Query && descriptor.Kind != Mutation {
@@ -88,7 +87,7 @@ func AdmitMethod(descriptor MethodDescriptor) (*Method, error) {
 	// Presentation prose does not change callable identity. Exact schemas do.
 	identity := descriptor.clone()
 	identity.Description = ""
-	canonical, err := jsonvalue.Encode(identity)
+	canonical, err := framevalue.EncodeJSON(identity)
 	if err != nil {
 		return nil, err
 	}
@@ -112,13 +111,13 @@ func checkMethodDescriptor(descriptor MethodDescriptor) error {
 func (m *Method) Name() string                 { return m.descriptor.Name }
 func (m *Method) Kind() MethodKind             { return m.descriptor.Kind }
 func (m *Method) Descriptor() MethodDescriptor { return m.descriptor.clone() }
-func (m *Method) Identity() jsonvalue.Value    { return m.identity }
+func (m *Method) Identity() framevalue.JSON    { return m.identity }
 
-func (m *Method) ValidateInput(input jsonvalue.Value) error {
+func (m *Method) ValidateInput(input framevalue.JSON) error {
 	if err := input.Validate(); err != nil {
 		return err
 	}
-	return m.input.Validate(input.JSON())
+	return m.input.Validate(input.Bytes())
 }
 
 func (m *Method) ValidateOutput(output jsontext.Value) error {

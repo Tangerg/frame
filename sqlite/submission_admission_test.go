@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 func TestJointSubmissionRequiresTheOriginalLiveAdmission(t *testing.T) {
@@ -33,7 +33,7 @@ func TestJointSubmissionRequiresTheOriginalLiveAdmission(t *testing.T) {
 			return err
 		}
 		settlement, err := owner.CommitUnder(ctx, id, request, func(ctx context.Context, tx Executor) ([]byte, error) {
-			_, err := tx.ExecContext(ctx, `INSERT INTO documents VALUES('joint','converter',?,1)`, integrity.Hash([]byte("release")))
+			_, err := tx.ExecContext(ctx, `INSERT INTO documents VALUES('joint','converter',?,1)`, value.Hash([]byte("release")))
 			return []byte("joint"), err
 		}, nil)
 		if err == nil && (settlement.State != Committed || !settlement.Synchronized) {

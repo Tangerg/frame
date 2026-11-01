@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Tangerg/frame/jsonvalue"
 	"github.com/Tangerg/frame/portable"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 func TestMethodOwnsStructuralAdmissionAndImmutableIdentity(t *testing.T) {
@@ -25,7 +25,7 @@ func TestMethodOwnsStructuralAdmissionAndImmutableIdentity(t *testing.T) {
 		t.Fatal("mutable projection changed identity")
 	}
 	for _, raw := range []string{`{}`, `{"revision":null}`, `{"revision":"one"}`, `{"revision":1,"extra":true}`} {
-		input, err := jsonvalue.Parse([]byte(raw))
+		input, err := framevalue.ParseJSON([]byte(raw))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -33,17 +33,17 @@ func TestMethodOwnsStructuralAdmissionAndImmutableIdentity(t *testing.T) {
 			t.Fatalf("invalid input admitted: %s", raw)
 		}
 	}
-	if err := method.ValidateInput(jsonvalue.Value{}); err == nil {
+	if err := method.ValidateInput(framevalue.JSON{}); err == nil {
 		t.Fatal("unadmitted input accepted")
 	}
-	input, err := jsonvalue.Parse([]byte(`{"revision":9007199254740993}`))
+	input, err := framevalue.ParseJSON([]byte(`{"revision":9007199254740993}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := method.ValidateInput(input); err != nil {
 		t.Fatal(err)
 	}
-	if string(input.JSON()) != `{"revision":9007199254740993}` {
+	if string(input.Bytes()) != `{"revision":9007199254740993}` {
 		t.Fatal("structural admission changed received number")
 	}
 	if err := method.ValidateOutput([]byte(`"value"`)); err != nil {

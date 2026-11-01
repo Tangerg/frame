@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 type FileConfiguration struct {
@@ -17,7 +17,7 @@ type FileConfiguration struct {
 }
 
 func FilePlugin(contracts Contracts) (*frame.Plugin, error) {
-	return frame.Define(frame.Definition{Revision: integrity.Hash([]byte("document/file-reader/1")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "files", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "read", Contract: contracts.Files.Ref()}}}, Setup: func(ctx context.Context, setup *frame.Setup) ([]frame.ExportValue, error) {
+	return frame.Define(frame.Definition{Revision: value.Hash([]byte("document/file-reader/1")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "files", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "read", Contract: contracts.Files.Ref()}}}, Setup: func(ctx context.Context, setup *frame.Setup) ([]frame.ExportValue, error) {
 		var configuration FileConfiguration
 		if err := json.Unmarshal(setup.Configuration(), &configuration); err != nil {
 			return nil, err
@@ -34,7 +34,7 @@ func FilePlugin(contracts Contracts) (*frame.Plugin, error) {
 }
 
 func ConverterPlugin(contracts Contracts, revision string) (*frame.Plugin, error) {
-	return frame.Define(frame.Definition{Revision: integrity.Hash([]byte("document/converter/" + revision)), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "converter", Profile: frame.NativeGo, Imports: []frame.ImportDeclaration{{Slot: "files", Contract: contracts.Files.Ref()}}, Exports: []frame.ExportDeclaration{{Name: "markdown", Contract: contracts.Converters.Ref()}}}, Setup: func(ctx context.Context, setup *frame.Setup) ([]frame.ExportValue, error) {
+	return frame.Define(frame.Definition{Revision: value.Hash([]byte("document/converter/" + revision)), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "converter", Profile: frame.NativeGo, Imports: []frame.ImportDeclaration{{Slot: "files", Contract: contracts.Files.Ref()}}, Exports: []frame.ExportDeclaration{{Name: "markdown", Contract: contracts.Converters.Ref()}}}, Setup: func(ctx context.Context, setup *frame.Setup) ([]frame.ExportValue, error) {
 		files, err := frame.Import(setup, "files", contracts.Files)
 		if err != nil {
 			return nil, err
@@ -67,7 +67,7 @@ func ConverterPlugin(contracts Contracts, revision string) (*frame.Plugin, error
 }
 
 func ValidationPlugin(contracts Contracts) (*frame.Plugin, error) {
-	return frame.Define(frame.Definition{Revision: integrity.Hash([]byte("document/validation/1")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "validation", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "title", Contract: contracts.Validators.Ref()}}}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
+	return frame.Define(frame.Definition{Revision: value.Hash([]byte("document/validation/1")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "validation", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "title", Contract: contracts.Validators.Ref()}}}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
 		return []frame.ExportValue{frame.Contribute("title", contracts.Validators, ValidatorMetadata{Name: "title", Order: 10}, Validator(func(ctx context.Context, converted Converted) ([]Diagnostic, error) {
 			if err := ctx.Err(); err != nil {
 				return nil, err

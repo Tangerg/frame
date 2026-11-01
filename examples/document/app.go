@@ -11,10 +11,10 @@ import (
 	"sync"
 
 	"github.com/Tangerg/frame"
-	controlhost "github.com/Tangerg/frame/control/host"
+	"github.com/Tangerg/frame/browser"
 	"github.com/Tangerg/frame/distribution"
-	"github.com/Tangerg/frame/integrity"
 	"github.com/Tangerg/frame/sqlite"
+	"github.com/Tangerg/frame/value"
 )
 
 type Config struct {
@@ -27,7 +27,7 @@ type App struct {
 	Host          *frame.Host
 	Store         *sqlite.Store
 	Content       *distribution.Store
-	Bridge        *controlhost.Bridge
+	Bridge        *browser.Bridge
 	Contracts     Contracts
 	owner         *sqlite.Owner
 	lifetime      *frame.Lifetime
@@ -68,13 +68,13 @@ func Open(ctx context.Context, config Config) (_ *App, err error) {
 		return nil, err
 	}
 	a.Host = host
-	var trustedArchive integrity.Digest
+	var trustedArchive value.Digest
 	content, err := distribution.Open(distribution.Config{Directory: config.ContentDirectory, Admission: admission, Trust: func(_ context.Context, source distribution.Source, manifest distribution.Manifest, _ distribution.Lock) error {
 		if trustedArchive.IsZero() || source.ArchiveDigest != trustedArchive || manifest.Package != "example.document-preview" || manifest.Version != "1" {
 			return distribution.ErrUntrusted
 		}
 		return nil
-	}, Retained: func(ctx context.Context, release integrity.Digest) (bool, error) {
+	}, Retained: func(ctx context.Context, release value.Digest) (bool, error) {
 		records, err := store.Installations(ctx)
 		if err != nil {
 			return false, err
@@ -118,7 +118,7 @@ func Open(ctx context.Context, config Config) (_ *App, err error) {
 	if err := host.RegisterDriver(resources); err != nil {
 		return nil, err
 	}
-	bridge, err := controlhost.NewBridge(controlhost.BridgeConfig{Host: host, Store: store, Source: moduleSource{store: content}, Points: []frame.ContractRef{contracts.Previews.Ref()}})
+	bridge, err := browser.NewBridge(browser.BridgeConfig{Host: host, Store: store, Source: moduleSource{store: content}, Points: []frame.ContractRef{contracts.Previews.Ref()}})
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +152,7 @@ func Open(ctx context.Context, config Config) (_ *App, err error) {
 	if len(records) == 0 {
 		// This distribution is built from files embedded in this executable.
 		// Remote or user-authored packages require their own trust decision.
-		a.preview, err = buildPreview(ctx, content, contracts, func(digest integrity.Digest) { trustedArchive = digest })
+		a.preview, err = buildPreview(ctx, content, contracts, func(digest value.Digest) { trustedArchive = digest })
 		if err != nil {
 			return nil, err
 		}
@@ -322,7 +322,7 @@ func (a *App) Theme(ctx context.Context) (string, error) {
 	return text, errors.Join(err, closeErr)
 }
 
-func (a *App) ActivatePreview(ctx context.Context, credentials controlhost.Credentials) error {
+func (a *App) ActivatePreview(ctx context.Context, credentials browser.Credentials) error {
 	poll, err := a.Bridge.Poll(ctx, credentials.Token)
 	if err != nil {
 		return err
@@ -331,7 +331,7 @@ func (a *App) ActivatePreview(ctx context.Context, credentials controlhost.Crede
 		return frame.ErrFenced
 	}
 	root := frame.ExportRef{InstallationID: "preview", Release: a.preview.Digest, UnitID: "preview", Export: "preview", Contract: a.Contracts.Previews.Ref()}
-	_, err = a.Host.ActivateIn(ctx, controlhost.RealmID(credentials.Realm), root)
+	_, err = a.Host.ActivateIn(ctx, browser.RealmID(credentials.Realm), root)
 	return err
 }
 

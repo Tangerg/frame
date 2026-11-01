@@ -6,12 +6,12 @@ import (
 	"os"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 // VerifyArchive validates a publisher artifact in disposable storage. It makes
 // no publisher trust decision and never installs code into an application Host.
-func VerifyArchive(ctx context.Context, archive string, digest integrity.Digest, limits Limits) (_ Release, err error) {
+func VerifyArchive(ctx context.Context, archive string, digest value.Digest, limits Limits) (_ Release, err error) {
 	directory, err := os.MkdirTemp("", "frame-verify-")
 	if err != nil {
 		return Release{}, err
@@ -20,7 +20,7 @@ func VerifyArchive(ctx context.Context, archive string, digest integrity.Digest,
 	store, err := Open(Config{
 		Directory: directory, Admission: frame.NewAdmission(), Limits: limits,
 		Trust:    func(context.Context, Source, Manifest, Lock) error { return nil },
-		Retained: func(context.Context, integrity.Digest) (bool, error) { return true, nil },
+		Retained: func(context.Context, value.Digest) (bool, error) { return true, nil },
 	})
 	if err != nil {
 		return Release{}, err

@@ -11,15 +11,15 @@ import (
 	"strings"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/control"
+	"github.com/Tangerg/frame/browser"
 	"github.com/Tangerg/frame/distribution"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 //go:embed assets/preview.js assets/theme.css
 var assets embed.FS
 
-func buildPreview(ctx context.Context, store *distribution.Store, contracts Contracts, authorize func(integrity.Digest)) (distribution.Release, error) {
+func buildPreview(ctx context.Context, store *distribution.Store, contracts Contracts, authorize func(value.Digest)) (distribution.Release, error) {
 	directory, err := os.MkdirTemp("", "frame-document-package-")
 	if err != nil {
 		return distribution.Release{}, err
@@ -53,8 +53,8 @@ func buildPreview(ctx context.Context, store *distribution.Store, contracts Cont
 	if err := os.WriteFile(path, archive.Bytes(), 0600); err != nil {
 		return distribution.Release{}, err
 	}
-	authorize(integrity.Hash(archive.Bytes()))
-	return store.ImportArchive(ctx, path, integrity.Hash(archive.Bytes()))
+	authorize(value.Hash(archive.Bytes()))
+	return store.ImportArchive(ctx, path, value.Hash(archive.Bytes()))
 }
 
 func previewDefinition(release distribution.Release) (*frame.Plugin, error) {
@@ -70,21 +70,21 @@ func previewDefinition(release distribution.Release) (*frame.Plugin, error) {
 
 type moduleSource struct{ store *distribution.Store }
 
-func (s moduleSource) Module(ctx context.Context, binding frame.UnitBinding) (control.Artifact, error) {
+func (s moduleSource) Module(ctx context.Context, binding frame.UnitBinding) (browser.Artifact, error) {
 	release, err := s.store.Inspect(ctx, binding.Source.Release)
 	if err != nil {
-		return control.Artifact{}, err
+		return browser.Artifact{}, err
 	}
 	for _, unit := range release.Manifest.Units {
 		if unit.ID == binding.Source.UnitID && unit.Profile == frame.BrowserJS && unit.Module != nil {
 			for _, artifact := range release.Manifest.Artifacts {
 				if artifact.Path == unit.Module.Entry {
-					return control.Artifact{Path: "/frame/artifacts/" + release.Digest.String() + "/" + artifact.Path, Digest: artifact.Digest}, nil
+					return browser.Artifact{Path: "/frame/artifacts/" + release.Digest.String() + "/" + artifact.Path, Digest: artifact.Digest}, nil
 				}
 			}
 		}
 	}
-	return control.Artifact{}, frame.ErrUnavailable
+	return browser.Artifact{}, frame.ErrUnavailable
 }
 
 func (a *App) artifact(ctx context.Context, path string) ([]byte, string, error) {

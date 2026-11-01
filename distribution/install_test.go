@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 type analyzerDriver struct{ prepared int }
@@ -42,7 +42,7 @@ func TestExternalProfileArchiveNeedsItsHostDriver(t *testing.T) {
 	if err := os.WriteFile(name, buf.Bytes(), 0600); err != nil {
 		t.Fatal(err)
 	}
-	digest := integrity.Hash(buf.Bytes())
+	digest := value.Hash(buf.Bytes())
 	if _, err := VerifyArchive(ctx, name, digest, DefaultLimits()); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestExternalProfileArchiveNeedsItsHostDriver(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	store, err := Open(Config{Directory: cache, Admission: gate, Trust: func(context.Context, Source, Manifest, Lock) error { return nil }, Retained: func(context.Context, integrity.Digest) (bool, error) { return false, nil }})
+	store, err := Open(Config{Directory: cache, Admission: gate, Trust: func(context.Context, Source, Manifest, Lock) error { return nil }, Retained: func(context.Context, value.Digest) (bool, error) { return false, nil }})
 	if err != nil {
 		t.Fatal(err)
 	}

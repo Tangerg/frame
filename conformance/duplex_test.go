@@ -15,12 +15,11 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
-	"github.com/Tangerg/frame/jsonvalue"
 	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/process"
-	"github.com/Tangerg/frame/runner"
+	"github.com/Tangerg/frame/process/runner"
 	"github.com/Tangerg/frame/sqlite"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 //go:embed duplex/service.json
@@ -32,33 +31,33 @@ type upstream struct {
 	waitCalls atomic.Int32
 }
 
-func (u *upstream) Call(ctx context.Context, member string, input jsonvalue.Value) (jsonvalue.Value, error) {
+func (u *upstream) Call(ctx context.Context, member string, input framevalue.JSON) (framevalue.JSON, error) {
 	switch member {
 	case "probe":
 		return input, nil
 	case "wait":
 		if u.waitCalls.Add(1) != 1 {
-			return jsonvalue.Value{}, errors.New("duplicate wait")
+			return framevalue.JSON{}, errors.New("duplicate wait")
 		}
 		close(u.started)
 		<-ctx.Done()
 		close(u.stopped)
-		return jsonvalue.Value{}, context.Cause(ctx)
+		return framevalue.JSON{}, context.Cause(ctx)
 	default:
-		return jsonvalue.Value{}, frame.ErrContractMismatch
+		return framevalue.JSON{}, frame.ErrContractMismatch
 	}
 }
-func (u *upstream) Stream(ctx context.Context, member string, input jsonvalue.Value, emit process.Emit) (jsonvalue.Value, error) {
+func (u *upstream) Stream(ctx context.Context, member string, input framevalue.JSON, emit process.Emit) (framevalue.JSON, error) {
 	if member != "read" {
-		return jsonvalue.Value{}, frame.ErrContractMismatch
+		return framevalue.JSON{}, frame.ErrContractMismatch
 	}
 	for _, value := range []string{"first", "second"} {
-		chunk, err := jsonvalue.Encode(value)
+		chunk, err := framevalue.EncodeJSON(value)
 		if err != nil {
-			return jsonvalue.Value{}, err
+			return framevalue.JSON{}, err
 		}
 		if err := emit(ctx, chunk); err != nil {
-			return jsonvalue.Value{}, err
+			return framevalue.JSON{}, err
 		}
 	}
 	return input, nil
@@ -72,7 +71,7 @@ func (p program) Program(context.Context, frame.UnitBinding) (process.Program, e
 
 func install(ctx context.Context, t *testing.T, h *frame.Host, id frame.InstallationID, unit frame.Unit) frame.UnitRef {
 	t.Helper()
-	release, err := frame.Define(frame.Definition{Revision: integrity.Hash([]byte(id)), Units: []frame.Unit{unit}})
+	release, err := frame.Define(frame.Definition{Revision: framevalue.Hash([]byte(id)), Units: []frame.Unit{unit}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +133,7 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	driver, err := process.New(process.Config{Runner: runner.Dial(socket), Store: store, MaxFrameBytes: 1 << 20, CloseTimeout: 5 * time.Second, Source: program{process.Program{Command: node, ExecutableDigest: integrity.Hash(data), Args: []string{entry}, Directory: filepath.Dir(entry)}}})
+	driver, err := process.New(process.Config{Runner: runner.Dial(socket), Store: store, MaxFrameBytes: 1 << 20, CloseTimeout: 5 * time.Second, Source: program{process.Program{Command: node, ExecutableDigest: framevalue.Hash(data), Args: []string{entry}, Directory: filepath.Dir(entry)}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,11 +153,11 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref := frame.ContractRef{Name: c.Descriptor().Reference, Version: "1", Kind: frame.ServiceKind, Mode: frame.PortableMode, Digest: c.Identity().Digest()}
-	contract, err := frame.BindContract[process.Service](ref, c.Identity().JSON())
+	contract, err := frame.NewPortableContract[process.Service]("1", c)
 	if err != nil {
 		t.Fatal(err)
 	}
+	ref := contract.Ref()
 	if err = h.Register(contract); err != nil {
 		t.Fatal(err)
 	}
@@ -179,9 +178,9 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 	}
 	err = frame.WithPlan(ctx, h, plan, grant, func(use *frame.Use) error {
 		return frame.BorrowExport[process.Service](ctx, use, export, func(ctx context.Context, relay process.Service) error {
-			input, _ := jsonvalue.Encode("done")
+			input, _ := framevalue.EncodeJSON("done")
 			var seen []string
-			final, err := relay.(process.StreamingService).Stream(ctx, "read", input, func(_ context.Context, chunk jsonvalue.Value) error {
+			final, err := relay.(process.StreamingService).Stream(ctx, "read", input, func(_ context.Context, chunk framevalue.JSON) error {
 				seen = append(seen, chunk.String())
 				return nil
 			})

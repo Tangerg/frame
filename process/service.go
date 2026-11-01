@@ -8,36 +8,36 @@ import (
 	"sync"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/jsonvalue"
 	"github.com/Tangerg/frame/portable"
+	"github.com/Tangerg/frame/value"
 )
 
 // Service is one already bound export. Only the member names in that export's
 // published contract can be invoked; equal member names across exports are independent.
 type Service interface {
-	Call(context.Context, string, jsonvalue.Value) (jsonvalue.Value, error)
+	Call(context.Context, string, value.JSON) (value.JSON, error)
 }
-type Handler func(context.Context, string, jsonvalue.Value) (jsonvalue.Value, error)
+type Handler func(context.Context, string, value.JSON) (value.JSON, error)
 
-func (f Handler) Call(ctx context.Context, name string, input jsonvalue.Value) (jsonvalue.Value, error) {
+func (f Handler) Call(ctx context.Context, name string, input value.JSON) (value.JSON, error) {
 	return f(ctx, name, input)
 }
 
-type Emit func(context.Context, jsonvalue.Value) error
+type Emit func(context.Context, value.JSON) error
 type StreamingService interface {
 	Service
-	Stream(context.Context, string, jsonvalue.Value, Emit) (jsonvalue.Value, error)
+	Stream(context.Context, string, value.JSON, Emit) (value.JSON, error)
 }
 
 type callParams struct {
-	Handle string          `json:"handle"`
-	Member string          `json:"member"`
-	Input  jsonvalue.Value `json:"input"`
-	Stream string          `json:"stream,omitzero"`
+	Handle string     `json:"handle"`
+	Member string     `json:"member"`
+	Input  value.JSON `json:"input"`
+	Stream string     `json:"stream,omitzero"`
 }
 type chunkParams struct {
-	Stream string          `json:"stream"`
-	Value  jsonvalue.Value `json:"value"`
+	Stream string     `json:"stream"`
+	Value  value.JSON `json:"value"`
 }
 type binding struct {
 	contract *portable.Capability
@@ -91,7 +91,7 @@ func (d *deliveries) receive(ctx context.Context, raw jsontext.Value) (jsontext.
 	if s.closed || s.ctx.Err() != nil || ctx.Err() != nil {
 		return nil, context.Canceled
 	}
-	if err := s.method.ValidateChunk(part.Value.JSON()); err != nil {
+	if err := s.method.ValidateChunk(part.Value.Bytes()); err != nil {
 		return nil, mismatch()
 	}
 	child, cancel := context.WithCancel(s.ctx)
@@ -111,22 +111,22 @@ type remote struct {
 	deliveries *deliveries
 }
 
-func (r *remote) Call(ctx context.Context, member string, input jsonvalue.Value) (jsonvalue.Value, error) {
+func (r *remote) Call(ctx context.Context, member string, input value.JSON) (value.JSON, error) {
 	return r.invoke(ctx, member, input, nil)
 }
-func (r *remote) Stream(ctx context.Context, member string, input jsonvalue.Value, emit Emit) (jsonvalue.Value, error) {
+func (r *remote) Stream(ctx context.Context, member string, input value.JSON, emit Emit) (value.JSON, error) {
 	if emit == nil {
-		return jsonvalue.Value{}, frame.ErrInvalid
+		return value.JSON{}, frame.ErrInvalid
 	}
 	return r.invoke(ctx, member, input, emit)
 }
-func (r *remote) invoke(ctx context.Context, member string, input jsonvalue.Value, emit Emit) (jsonvalue.Value, error) {
+func (r *remote) invoke(ctx context.Context, member string, input value.JSON, emit Emit) (value.JSON, error) {
 	method, ok := r.contract.Method(member)
 	if !ok || (len(method.Descriptor().Stream) > 0) != (emit != nil) {
-		return jsonvalue.Value{}, mismatch()
+		return value.JSON{}, mismatch()
 	}
 	if err := method.ValidateInput(input); err != nil {
-		return jsonvalue.Value{}, errors.Join(frame.ErrContractMismatch, err)
+		return value.JSON{}, errors.Join(frame.ErrContractMismatch, err)
 	}
 	params := callParams{Handle: r.handle, Member: member, Input: input}
 	if emit != nil {
@@ -135,12 +135,12 @@ func (r *remote) invoke(ctx context.Context, member string, input jsonvalue.Valu
 		defer func() { cancel(); closeSink() }()
 		params.Stream = token
 	}
-	var result jsonvalue.Value
+	var result value.JSON
 	if err := r.peer.request(ctx, profile.Methods.Call, params, &result); err != nil {
 		return result, err
 	}
-	if err := method.ValidateOutput(result.JSON()); err != nil {
-		return jsonvalue.Value{}, errors.Join(ErrOutcomeUnknown, err)
+	if err := method.ValidateOutput(result.Bytes()); err != nil {
+		return value.JSON{}, errors.Join(ErrOutcomeUnknown, err)
 	}
 	return result, nil
 }
@@ -158,7 +158,7 @@ func dispatchCall(ctx context.Context, conn *peer, services map[string]binding, 
 	if !ok || method.ValidateInput(params.Input) != nil || (len(method.Descriptor().Stream) > 0) != (params.Stream != "") {
 		return nil, mismatch()
 	}
-	var result jsonvalue.Value
+	var result value.JSON
 	var err error
 	if params.Stream != "" {
 		implementation, ok := selected.service.(StreamingService)
@@ -172,20 +172,20 @@ func dispatchCall(ctx context.Context, conn *peer, services map[string]binding, 
 	if err != nil {
 		return nil, err
 	}
-	if err := method.ValidateOutput(result.JSON()); err != nil {
+	if err := method.ValidateOutput(result.Bytes()); err != nil {
 		return nil, errors.Join(ErrOutcomeUnknown, err)
 	}
-	return result.JSON(), nil
+	return result.Bytes(), nil
 }
 
 // Concurrent or escaped emitters cannot publish a chunk after the final result.
 // Both the caller's cancellation and the emitter's shorter wait bound apply.
-func sendStream(ctx context.Context, conn *peer, source StreamingService, method *portable.Method, params callParams) (jsonvalue.Value, error) {
+func sendStream(ctx context.Context, conn *peer, source StreamingService, method *portable.Method, params callParams) (value.JSON, error) {
 	lifetime, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var guard sync.Mutex
 	sealed := false
-	result, err := source.Stream(lifetime, params.Member, params.Input, func(wait context.Context, chunk jsonvalue.Value) error {
+	result, err := source.Stream(lifetime, params.Member, params.Input, func(wait context.Context, chunk value.JSON) error {
 		if !guard.TryLock() {
 			return &Problem{profile.Errors.Invalid, "concurrent chunk delivery"}
 		}
@@ -196,7 +196,7 @@ func sendStream(ctx context.Context, conn *peer, source StreamingService, method
 		if err := wait.Err(); err != nil {
 			return context.Cause(wait)
 		}
-		if err := method.ValidateChunk(chunk.JSON()); err != nil {
+		if err := method.ValidateChunk(chunk.Bytes()); err != nil {
 			return err
 		}
 		child, stop := context.WithCancel(lifetime)

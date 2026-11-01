@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/Tangerg/frame/integrity"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 type Dependency struct {
-	InstallationID InstallationID   `json:"installationId"`
-	Release        integrity.Digest `json:"release"`
+	InstallationID InstallationID    `json:"installationId"`
+	Release        framevalue.Digest `json:"release"`
 }
 
 func (d Dependency) Validate() error {
@@ -34,9 +34,9 @@ func CompactDependencies(values []Dependency) []Dependency {
 }
 
 type UnitRef struct {
-	InstallationID InstallationID   `json:"installationId"`
-	Release        integrity.Digest `json:"release"`
-	UnitID         UnitID           `json:"unitId"`
+	InstallationID InstallationID    `json:"installationId"`
+	Release        framevalue.Digest `json:"release"`
+	UnitID         UnitID            `json:"unitId"`
 }
 
 func (r UnitRef) Validate() error {
@@ -51,11 +51,11 @@ func (r UnitRef) Dependency() Dependency {
 }
 
 type ExportRef struct {
-	InstallationID InstallationID   `json:"installationId"`
-	Release        integrity.Digest `json:"release"`
-	UnitID         UnitID           `json:"unitId"`
-	Export         string           `json:"export"`
-	Contract       ContractRef      `json:"contract"`
+	InstallationID InstallationID    `json:"installationId"`
+	Release        framevalue.Digest `json:"release"`
+	UnitID         UnitID            `json:"unitId"`
+	Export         string            `json:"export"`
+	Contract       ContractRef       `json:"contract"`
 }
 
 func (r ExportRef) Unit() UnitRef {
@@ -150,7 +150,7 @@ func (d UnitDeclaration) Validate() error {
 
 type UnitBinding struct {
 	Source        UnitRef             `json:"source"`
-	Configuration integrity.Digest    `json:"configuration"`
+	Configuration framevalue.Digest   `json:"configuration"`
 	Imports       []ImportDeclaration `json:"imports"`
 }
 
@@ -364,10 +364,10 @@ func (b BindingSnapshot) CanonicalJSON() ([]byte, error) {
 	return json.Marshal(value)
 }
 
-func (b BindingSnapshot) Identity() (integrity.Digest, error) {
+func (b BindingSnapshot) Identity() (framevalue.Digest, error) {
 	data, err := b.CanonicalJSON()
 	if err != nil {
-		return integrity.Digest{}, err
+		return framevalue.Digest{}, err
 	}
-	return integrity.Hash(data), nil
+	return framevalue.Hash(data), nil
 }

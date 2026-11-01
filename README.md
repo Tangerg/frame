@@ -27,26 +27,44 @@ The indexer receives a document-scoped reader and writer, starts only after acti
 | Native plugin author | [Typed importer and exports](examples/authoring/native/plugins.go) | Declare slots once, obtain the approved values during setup, bind each implementation once. |
 | Host author | [Build/check engine](examples/buildcheck/engine.go) | Select from a common snapshot, capture the choices, borrow members within one protected access. |
 | Process author | [Node unit](examples/document-indexer/index.mjs) and [Go host](examples/document-indexer/main.go) | Local duplex stdio supports exact session handles, cancellation and backpressured streaming. |
-| Browser and React author | [Browser exercise](examples/authoring/browser) · [React adapter](packages/react) | Native objects remain in their original realm and are held for the duration of their use. |
-| Distribution or operations | [Archive format](distribution/README.md) · [Runner](runner/README.md) · [SQLite](sqlite/README.md) | Content identity, installation authority, real process exit and business settlement have separate owners. |
+| MCP host integrator | [Standard tools and managed plugins](process/mcp/README.md) | Choose a protocol at composition and bind verified peer exports to already approved services. |
+| Browser and React author | [Browser exercise](examples/authoring/browser) · [React adapter](sdk/src/react/README.md) | Native objects remain in their original realm and are held for the duration of their use. |
+| Distribution or operations | [Archive format](distribution/README.md) · [Runner](process/runner/README.md) · [SQLite](sqlite/README.md) | Content identity, installation authority, real process exit and business settlement have separate owners. |
 
 ## Install
 
-Install the Go module at the released version:
+This tree contains breaking changes after the v0.0.1 release. To try this revision
+in a separate Go application, point a temporary workspace at both projects:
 
 ```sh
-go get github.com/Tangerg/frame@v0.0.1
+# Run in the application directory, which already contains a go.mod.
+go work init . /absolute/path/to/frame
+go test ./...
 ```
 
-The [v0.0.1 GitHub release](https://github.com/Tangerg/frame/releases/tag/v0.0.1) includes installable tarballs for `@frame/sdk`, `@frame/browser`, `@frame/node` and `@frame/react`. Install the packages you need together from their downloaded tarballs. These artifacts are distributed through GitHub Releases; they have not been published to the npm registry.
+Build one installable npm artifact from the patched monorepo:
+
+```sh
+npm ci
+npm pack --workspace @frame/sdk
+# In the consuming application:
+npm install /absolute/path/to/frame/frame-sdk-0.0.1.tgz
+```
+
+The tarball includes the native, browser, Node and React entries. See the
+[SDK guide](sdk/README.md) for import names and optional dependencies.
 
 ## Repository
 
-The root is the Go module `github.com/Tangerg/frame`. The private npm workspace builds four public package entry points, `@frame/sdk`, `@frame/browser`, `@frame/node` and `@frame/react`.
+| Responsibility | Physical owner |
+| --- | --- |
+| Declare, select, authorize, acquire and retire | Root Go package `frame` |
+| Immutable JSON and SHA-256 identities | `value/` |
+| Portable contract semantics and generated bindings | `portable/`, with its publisher tool in `portable/contractgen/` |
+| Managed local execution | `process/` for admission of an attached session, `process/runner/` for child ownership, `process/mcp/` for optional MCP interoperability |
+| Browser execution and its control messages | `browser/` for the Go bridge and DTOs, `sdk/src/browser/` for the browser runtime |
+| Artifact distribution and durable evidence | `distribution/` and `sqlite/` |
+| TypeScript consumption | `sdk/`, published as `@frame/sdk` with subpath imports |
+| Executables | `cmd/frame` for archives and contracts, `cmd/frame-runner` for direct child supervision |
 
-- `portable`, `jsonvalue`, `integrity` and `contractgen` own portable values, exact digests and projections of published schemas.
-- `process`, `protocol/process` and `runner` implement managed local plugins; the Go author API and Node SDK use the same wire profile.
-- `distribution`, `sqlite` and `control/host` supply optional content, durable evidence and browser-host integration.
-- `cmd/frame` packages and checks archives. `cmd/frame-runner` serves local process ownership. `examples` contains complete consumers.
-
-[Architecture and user guide](docs/architecture.md) · [Frame design proposal (PDF)](docs/Frame-Framework-Proposal-ZH.pdf) · [Editable proposal](docs/Frame-Framework-Proposal-ZH.md) · [Development and verification](DEVELOPMENT.md) · [Code rules](AGENTS.md)
+[Architecture and migration](docs/architecture.md) · [Original design proposal (PDF)](docs/Frame-Framework-Proposal-ZH.pdf) · [Original proposal source](docs/Frame-Framework-Proposal-ZH.md) · [Development and verification](DEVELOPMENT.md) · [Code rules](AGENTS.md)

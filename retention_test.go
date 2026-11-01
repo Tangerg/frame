@@ -8,7 +8,7 @@ import (
 	"weak"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 type retainedPayload struct{ bytes [1 << 20]byte }
@@ -63,7 +63,7 @@ func closedUse(t *testing.T) (*frame.Use, weak.Pointer[frame.Host], weak.Pointer
 	}
 	value := new(retainedPayload)
 	value.bytes[0] = 1
-	plugin, err := frame.Define(frame.Definition{Revision: integrity.Hash([]byte("retention")), Units: []frame.Unit{{
+	plugin, err := frame.Define(frame.Definition{Revision: framevalue.Hash([]byte("retention")), Units: []frame.Unit{{
 		Declaration: frame.UnitDeclaration{ID: "value", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "value", Contract: service.Ref()}}},
 		Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
 			return []frame.ExportValue{frame.Provide("value", service, value)}, nil

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tangerg/frame/jsonvalue"
 	"github.com/Tangerg/frame/portable"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 func TestDuplexStreamingAllowsNestedCallsWithAcknowledgedChunks(t *testing.T) {
@@ -33,9 +33,9 @@ func TestDuplexStreamingAllowsNestedCallsWithAcknowledgedChunks(t *testing.T) {
 		return nil, mismatch()
 	})
 	var called atomic.Int32
-	implementation := testStream{func(ctx context.Context, chunk jsonvalue.Value, emit Emit) (jsonvalue.Value, error) {
+	implementation := testStream{func(ctx context.Context, chunk framevalue.JSON, emit Emit) (framevalue.JSON, error) {
 		if err := emit(ctx, chunk); err != nil {
-			return jsonvalue.Value{}, err
+			return framevalue.JSON{}, err
 		}
 		if called.Load() != 1 {
 			t.Error("chunk was acknowledged before its consumer returned")
@@ -51,8 +51,8 @@ func TestDuplexStreamingAllowsNestedCallsWithAcknowledgedChunks(t *testing.T) {
 	defer left.end(context.Canceled)
 	defer right.end(context.Canceled)
 	svc := &remote{left, "one", contract, delivery}
-	in, _ := jsonvalue.Encode("value")
-	got, err := svc.Stream(ctx, "read", in, func(_ context.Context, value jsonvalue.Value) error {
+	in, _ := framevalue.EncodeJSON("value")
+	got, err := svc.Stream(ctx, "read", in, func(_ context.Context, value framevalue.JSON) error {
 		if value != in {
 			t.Error("changed chunk")
 		}
@@ -65,13 +65,13 @@ func TestDuplexStreamingAllowsNestedCallsWithAcknowledgedChunks(t *testing.T) {
 }
 
 type testStream struct {
-	emit func(context.Context, jsonvalue.Value, Emit) (jsonvalue.Value, error)
+	emit func(context.Context, framevalue.JSON, Emit) (framevalue.JSON, error)
 }
 
-func (testStream) Call(context.Context, string, jsonvalue.Value) (jsonvalue.Value, error) {
-	return jsonvalue.Value{}, mismatch()
+func (testStream) Call(context.Context, string, framevalue.JSON) (framevalue.JSON, error) {
+	return framevalue.JSON{}, mismatch()
 }
-func (s testStream) Stream(ctx context.Context, _ string, input jsonvalue.Value, emit Emit) (jsonvalue.Value, error) {
+func (s testStream) Stream(ctx context.Context, _ string, input framevalue.JSON, emit Emit) (framevalue.JSON, error) {
 	return s.emit(ctx, input, emit)
 }
 

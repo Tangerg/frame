@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 func TestCandidateProvenanceCannotCrossCaptureBoundaries(t *testing.T) {
@@ -248,7 +248,7 @@ func TestOneReleaseHasIndependentInstallationConfigurationAndLifetime(t *testing
 		t.Fatal(err)
 	}
 	released := map[frame.InstallationID]chan struct{}{"left": make(chan struct{}), "right": make(chan struct{})}
-	plugin, err := frame.Define(frame.Definition{Revision: integrity.Hash([]byte("one immutable release")), Units: []frame.Unit{{
+	plugin, err := frame.Define(frame.Definition{Revision: framevalue.Hash([]byte("one immutable release")), Units: []frame.Unit{{
 		Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "value", Contract: contract.Ref()}}},
 		Setup: func(_ context.Context, setup *frame.Setup) ([]frame.ExportValue, error) {
 			id := setup.Binding().Source.InstallationID
@@ -446,7 +446,7 @@ func TestConvenientAndExplicitUsesKeepTheSameAdmissionAndOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, scope := ownerAndScope(t, host)
-	var bindingIdentity integrity.Digest
+	var bindingIdentity framevalue.Digest
 	var lastUse *frame.Use
 	call := func(use *frame.Use) error {
 		lastUse = use

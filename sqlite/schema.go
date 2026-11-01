@@ -15,7 +15,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/Tangerg/frame/cancellation"
 	sqlitedriver "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -39,7 +38,7 @@ func OpenSchema(ctx context.Context, path string, statements []string) (*sql.DB,
 
 	if path != ":memory:" {
 		if err := admitWAL(ctx, db); err != nil {
-			return nil, errors.Join(fmt.Errorf("sqlite: admit wal: %w", err), cancellation.Err(ctx), db.Close())
+			return nil, errors.Join(fmt.Errorf("sqlite: admit wal: %w", err), cancellationError(ctx), db.Close())
 		}
 	}
 	if err := InstallSchema(ctx, db, statements); err != nil {

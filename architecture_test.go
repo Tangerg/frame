@@ -17,7 +17,7 @@ func TestFrameworkSourceTestsAndCommandsDoNotImportConsumers(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if entry.IsDir() && (entry.Name() == "node_modules" || entry.Name() == ".git" || entry.Name() == "testdata" || entry.Name() == ".git") {
+		if entry.IsDir() && (entry.Name() == "node_modules" || entry.Name() == ".git" || entry.Name() == "testdata" || entry.Name() == "dist") {
 			return filepath.SkipDir
 		}
 		if entry.IsDir() || !strings.HasSuffix(path, ".go") {
@@ -29,8 +29,15 @@ func TestFrameworkSourceTestsAndCommandsDoNotImportConsumers(t *testing.T) {
 		}
 		for _, imported := range file.Imports {
 			name := strings.Trim(imported.Path.Value, `"`)
-			if strings.HasPrefix(name, "github.com/Tangerg/flame/") || strings.HasPrefix(name, "github.com/modelcontextprotocol/") || name == "github.com/Tangerg/go-sdk/mcp" {
-				t.Errorf("framework source %s imports a consumer: %s", path, name)
+			dir := filepath.ToSlash(filepath.Dir(path))
+			mcpSDK := strings.HasPrefix(name, "github.com/modelcontextprotocol/") || strings.HasPrefix(name, "github.com/Tangerg/go-sdk/")
+			switch {
+			case name == "github.com/Tangerg/flame" || strings.HasPrefix(name, "github.com/Tangerg/flame/") || name == "github.com/Tangerg/qimu" || strings.HasPrefix(name, "github.com/Tangerg/qimu/"):
+				t.Errorf("%s imports the host or its former framework %s", path, name)
+			case mcpSDK && dir != "process/mcp":
+				t.Errorf("%s imports protocol SDK %s outside its adapter", path, name)
+			case name == modulePath+"/process/mcp" && !strings.HasPrefix(dir, "examples/") && dir != "process/mcp" && !strings.HasPrefix(dir, "conformance"):
+				t.Errorf("%s makes the optional MCP adapter a dependency", path)
 			}
 		}
 		return nil
@@ -41,7 +48,7 @@ func TestFrameworkSourceTestsAndCommandsDoNotImportConsumers(t *testing.T) {
 }
 
 func TestPortableValuesCannotImportHostOrExecutionCapabilities(t *testing.T) {
-	for _, directory := range []string{"portable", "jsonvalue", "integrity"} {
+	for _, directory := range []string{"portable", "value"} {
 		entries, err := os.ReadDir(directory)
 		if err != nil {
 			t.Fatal(err)
@@ -57,7 +64,7 @@ func TestPortableValuesCannotImportHostOrExecutionCapabilities(t *testing.T) {
 			}
 			for _, imported := range file.Imports {
 				name := strings.Trim(imported.Path.Value, `"`)
-				frameworkCapability := name == modulePath || strings.HasPrefix(name, modulePath+"/") && name != modulePath+"/portable" && name != modulePath+"/jsonvalue" && name != modulePath+"/integrity"
+				frameworkCapability := name == modulePath || strings.HasPrefix(name, modulePath+"/") && name != modulePath+"/portable" && name != modulePath+"/value"
 				externalCapability := name == "os" || name == "io/fs" || name == "database/sql" || name == "net" || strings.HasPrefix(name, "net/") && name != "net/url" && name != "net/netip"
 				if frameworkCapability || externalCapability {
 					t.Errorf("pure value %s imports capability %s", path, name)

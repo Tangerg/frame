@@ -7,7 +7,8 @@ A service defines behavior. A point describes a collection of contributions to w
 | Installation, selected immutable release and enabled state | Host | Until an admitted installation transition |
 | Candidate order and business authorization | Host application | The application owns the rule, the Host validates the chosen members |
 | Exact approved providers and accepted optional absence | Original binding | Reacquisition cannot silently switch provider |
-| Use grant and object reachability | Host and the original use | Withdrawal refuses new uses; already admitted work retains its resources |
+| Approval of a use | Host admission | Withdrawal fences new approvals |
+| Reachability of a borrowed object | Original use lifetime | Holds its accepted providers until admitted work has drained |
 | Process exit | Runner holding the direct child | Its original wait result; a disconnected connection proves no exit |
 | Business result, pending task and command receipt | Original business owner | A lost response may require observing that same operation |
 
@@ -38,3 +39,47 @@ The portable schema profile uses the published Scope JSON Schema library as a co
 ## Restoring accepted work
 
 The live execution path admits the original plan. A durable host can configure ReadAcceptedBinding once at composition. Its loader receives the record identity and the request's scope grant, authorizes that record, then reads the binding accepted by the original business transaction. Host.AcquireRecord consumes that evidence. A diagnostic BindingSnapshot on its own cannot be presented to the Host as a newly authorized operation. The document queue is a working example in examples/document/tasks.go.
+
+## How a host chooses an execution protocol
+
+A native host can use the root package alone. A host that runs local processes
+composes one process driver per protocol with the same admission, durable store
+and original runner. A unit's profile selects that driver. Each driver freezes its
+declared service slots before launch. A peer's catalog is evidence of what the
+peer can serve. It cannot install additional exports, change a grant, or choose
+which host object a plugin receives. A disconnected stream cannot settle a
+command or release a durable attempt.
+
+| Fact | Owner | What crosses the boundary |
+| --- | --- | --- |
+| Physical executable and package revision | Host package source and content store | A pinned program for the approved unit |
+| Service interface and identity | Published contract | Exact descriptor and digest in the host binding |
+| MCP method mapping and representation | Selected MCP protocol | Verified peer tools, or the managed descriptor projected into both identity formats |
+| Permission to start a binding | Frame Host admission | Frozen slots and lifetime-bound exports |
+| Permission to call back into the host | Host application | A credential scoped to the original session or call |
+| End of a reverse call grant | Broker that issued that grant | Joined callbacks and closed listener, independently of child exit |
+| Command result and receipt | Plugin implementing the command | Observation of the original operation |
+| Direct child exit | Original runner | The same durable evidence used by every process protocol |
+
+See the [MCP guide](../process/mcp/README.md) for protocol-specific requirements.
+
+## Migrating from the v0.0.1 source layout
+
+| Previous import | Current owner |
+| --- | --- |
+| `frame/integrity`, `frame/jsonvalue` | `frame/value`: `Digest`, `Hash`, `ParseJSON`, `EncodeJSON` and `JSON.Bytes()` |
+| `frame/control`, `frame/control/host` | `frame/browser` for both control DTOs and the host bridge |
+| `frame/runner` | `frame/process/runner` |
+| `frame/contractgen` | `frame/portable/contractgen` |
+| `frame/protocol/process` | The local wire specification lives in `process/wire.json`; Go and Node consume that file |
+| `@frame/browser`, `@frame/node`, `@frame/react` | `@frame/sdk/browser`, `@frame/sdk/node`, `@frame/sdk/react` from one tarball |
+| Managed invocation, refusal and command-conflict evidence under `frame/portable` | `frame/process/mcp` owns this managed wire vocabulary |
+| `frame/cancellation` | Removed. SQLite privately preserves context causes at its transaction boundary |
+
+Here `frame/` stands for `github.com/Tangerg/frame/`. Native and local wire
+identities, browser control protocol values, and SQLite record encodings survive
+these source moves. Install the revised SDK tarball in downstream workspaces.
+For a managed MCP plugin, publish host bindings from its original descriptor and
+select the managed profile explicitly. The plugin author's command receipts and
+the host's choices of scopes, grants and business authorization stay at their
+original owners.

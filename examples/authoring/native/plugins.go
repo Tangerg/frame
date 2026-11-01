@@ -16,7 +16,7 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/examples/document"
-	"github.com/Tangerg/frame/integrity"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 const maxSourceBytes = 1 << 20
@@ -142,7 +142,7 @@ func Plugin(contracts document.Contracts) (*frame.Plugin, error) {
 	if err != nil {
 		return nil, err
 	}
-	return frame.Define(frame.Definition{Revision: integrity.Hash(pluginSource), Units: []frame.Unit{fileUnit, converterUnit, validatorUnit}})
+	return frame.Define(frame.Definition{Revision: framevalue.Hash(pluginSource), Units: []frame.Unit{fileUnit, converterUnit, validatorUnit}})
 }
 
 func readSource(ctx context.Context, root *os.Root, ref document.DocumentRef) (_ document.Document, err error) {
@@ -171,7 +171,7 @@ func readSource(ctx context.Context, root *os.Root, ref document.DocumentRef) (_
 	if len(data) > maxSourceBytes {
 		return document.Document{}, errors.New("authoring: source byte budget exceeded")
 	}
-	if integrity.Hash(data) != ref.Revision {
+	if framevalue.Hash(data) != ref.Revision {
 		return document.Document{}, document.ErrSourceChanged
 	}
 	if err := context.Cause(ctx); err != nil {

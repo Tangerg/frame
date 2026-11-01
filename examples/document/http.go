@@ -12,8 +12,7 @@ import (
 	"strings"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/control"
-	controlhost "github.com/Tangerg/frame/control/host"
+	"github.com/Tangerg/frame/browser"
 )
 
 type HTTPConfig struct {
@@ -130,7 +129,7 @@ func (a *App) Handler(config HTTPConfig) (http.Handler, error) {
 	})
 	api.HandleFunc("POST /api/realm/resume", func(writer http.ResponseWriter, request *http.Request) {
 		var input struct {
-			Realm       control.Realm `json:"realm"`
+			Realm       browser.Realm `json:"realm"`
 			ResumeToken string        `json:"resumeToken"`
 		}
 		if !decodeRequest(writer, request, &input) {
@@ -149,7 +148,7 @@ func (a *App) Handler(config HTTPConfig) (http.Handler, error) {
 		respond(writer, nil, a.Bridge.SealRealm(request.Context(), input.Token))
 	})
 	api.HandleFunc("POST /api/preview/activate", func(writer http.ResponseWriter, request *http.Request) {
-		var credentials controlhost.Credentials
+		var credentials browser.Credentials
 		if !decodeRequest(writer, request, &credentials) {
 			return
 		}

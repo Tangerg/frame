@@ -11,7 +11,7 @@ import (
 	"slices"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 type Attempt struct {
@@ -104,7 +104,7 @@ func (s *Store) RecordAttempt(ctx context.Context, attempt Attempt) error {
 					return frame.ErrClosed
 				}
 			}
-			_, err = tx.ExecContext(ctx, `INSERT INTO frame_attempts(id,epoch,request,request_digest,state) VALUES(?,?,?,?,'approved')`, attempt.ID, attempt.Epoch, encoded, integrity.Hash(encoded))
+			_, err = tx.ExecContext(ctx, `INSERT INTO frame_attempts(id,epoch,request,request_digest,state) VALUES(?,?,?,?,'approved')`, attempt.ID, attempt.Epoch, encoded, value.Hash(encoded))
 			return err
 		})
 		if err != nil && !errors.Is(err, ErrConflict) && !errors.Is(err, frame.ErrClosed) {
@@ -123,12 +123,12 @@ func (s *Store) Attempts(ctx context.Context) (records []AttemptRecord, err erro
 		defer rows.Close()
 		for rows.Next() {
 			var request, proof []byte
-			var digest integrity.Digest
+			var digest value.Digest
 			var state string
 			if err := rows.Scan(&request, &digest, &state, &proof); err != nil {
 				return err
 			}
-			if integrity.Hash(request) != digest {
+			if value.Hash(request) != digest {
 				return errors.New("sqlite: execution request integrity failure")
 			}
 			var record AttemptRecord

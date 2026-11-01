@@ -8,7 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/Tangerg/frame/integrity"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 // UseOwner reads the original business records. It must use a current committed
@@ -128,7 +128,7 @@ func (g ScopeGrant) WireID() ScopeID {
 	if g.key.installation {
 		namespace = "installation/"
 	}
-	return ScopeID(namespace + integrity.Hash([]byte(g.key.id)).String())
+	return ScopeID(namespace + framevalue.Hash([]byte(g.key.id)).String())
 }
 func (g ScopeGrant) Generation() uint64 { return g.generation }
 

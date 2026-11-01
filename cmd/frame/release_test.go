@@ -10,7 +10,7 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/distribution"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 func TestPackageAndVerifyPreserveTheExactArtifactAndRefusePartialOutput(t *testing.T) {
@@ -22,7 +22,7 @@ func TestPackageAndVerifyPreserveTheExactArtifactAndRefusePartialOutput(t *testi
 		SchemaVersion: 1, Package: "example.theme", Version: "1.0.0",
 		Artifacts:    []distribution.Artifact{{Path: "theme.css"}},
 		Units:        []distribution.Unit{{ID: "theme", Profile: frame.StaticResource, Resources: []string{"theme.css"}}},
-		Dependencies: []distribution.LockedRelease{{Package: "example.dependency", Release: integrity.Hash([]byte("original dependency"))}},
+		Dependencies: []distribution.LockedRelease{{Package: "example.dependency", Release: value.Hash([]byte("original dependency"))}},
 	}
 	writeManifest := func() {
 		t.Helper()
@@ -41,7 +41,7 @@ func TestPackageAndVerifyPreserveTheExactArtifactAndRefusePartialOutput(t *testi
 		t.Fatal(err)
 	}
 	var report struct {
-		ArchiveDigest integrity.Digest  `json:"archiveDigest"`
+		ArchiveDigest value.Digest      `json:"archiveDigest"`
 		Lock          distribution.Lock `json:"lock"`
 	}
 	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
@@ -51,7 +51,7 @@ func TestPackageAndVerifyPreserveTheExactArtifactAndRefusePartialOutput(t *testi
 		t.Fatal("package command lost canonical manifest dependencies")
 	}
 	data, err := os.ReadFile(archive)
-	if err != nil || report.ArchiveDigest != integrity.Hash(data) {
+	if err != nil || report.ArchiveDigest != value.Hash(data) {
 		t.Fatalf("archive receipt: %v, %v", report.ArchiveDigest, err)
 	}
 	output.Reset()
@@ -113,7 +113,7 @@ func TestArchiveInspectionSeparatesIntegrityTrustAndExecution(t *testing.T) {
 		t.Fatal(result, err)
 	}
 	policy := filepath.Join(source, "trust.json")
-	data, err = json.Marshal(publisherPolicy{Archives: []integrity.Digest{result.ArchiveDigest}})
+	data, err = json.Marshal(publisherPolicy{Archives: []value.Digest{result.ArchiveDigest}})
 	if err != nil {
 		t.Fatal(err)
 	}

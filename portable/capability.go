@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/Tangerg/frame/jsonvalue"
+	"github.com/Tangerg/frame/value"
 )
 
 type CapabilityDescriptor struct {
@@ -19,7 +19,7 @@ type CapabilityDescriptor struct {
 type Capability struct {
 	reference string
 	methods   []*Method
-	identity  jsonvalue.Value
+	identity  value.JSON
 }
 
 func NewCapability(reference string, methods ...MethodDescriptor) (*Capability, error) {
@@ -31,7 +31,7 @@ func ParseCapability(data []byte) (*Capability, error) {
 		return nil, err
 	}
 	var descriptor CapabilityDescriptor
-	if err := jsonvalue.DecodeValue(data, &descriptor, "capability"); err != nil {
+	if err := value.DecodeValue(data, &descriptor, "capability"); err != nil {
 		return nil, err
 	}
 	return AdmitCapability(descriptor)
@@ -41,7 +41,7 @@ func AdmitCapability(descriptor CapabilityDescriptor) (*Capability, error) {
 	if descriptor.Protocol != Protocol {
 		return nil, errors.New("capability: current protocol is required")
 	}
-	if !validToken(descriptor.Reference) {
+	if !ValidToken(descriptor.Reference) {
 		return nil, errors.New("capability: bounded reference is required")
 	}
 	if len(descriptor.Methods) == 0 {
@@ -76,7 +76,7 @@ func AdmitCapability(descriptor CapabilityDescriptor) (*Capability, error) {
 	for i := range identity.Methods {
 		identity.Methods[i].Description = ""
 	}
-	canonical, err := jsonvalue.Encode(identity)
+	canonical, err := value.EncodeJSON(identity)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +92,7 @@ func (c *Capability) Descriptor() CapabilityDescriptor {
 	return descriptor
 }
 
-func (c *Capability) Identity() jsonvalue.Value { return c.identity }
+func (c *Capability) Identity() value.JSON { return c.identity }
 
 func (c *Capability) Method(name string) (*Method, bool) {
 	for _, method := range c.methods {

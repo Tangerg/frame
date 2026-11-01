@@ -9,7 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/Tangerg/frame/runner"
+	"github.com/Tangerg/frame/process/runner"
 )
 
 func main() {

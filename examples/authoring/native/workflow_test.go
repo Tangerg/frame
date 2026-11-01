@@ -15,7 +15,7 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/examples/document"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 func authorContext(t *testing.T) context.Context {
@@ -32,12 +32,12 @@ func authorFiles(t *testing.T) (Configuration, string, document.DocumentRef) {
 	if err := os.WriteFile(filepath.Join(config.SourceDirectory, "template.html"), template, 0600); err != nil {
 		t.Fatal(err)
 	}
-	config.Template = document.DocumentRef{Path: "template.html", Revision: integrity.Hash(template)}
+	config.Template = document.DocumentRef{Path: "template.html", Revision: value.Hash(template)}
 	text := []byte("Memo\nHello <world>\n")
 	if err := os.WriteFile(filepath.Join(config.SourceDirectory, "memo.txt"), text, 0600); err != nil {
 		t.Fatal(err)
 	}
-	return config, t.TempDir(), document.DocumentRef{Path: "memo.txt", Revision: integrity.Hash(text)}
+	return config, t.TempDir(), document.DocumentRef{Path: "memo.txt", Revision: value.Hash(text)}
 }
 
 func authorWorkbench(t *testing.T) (*Workbench, Configuration, string, document.DocumentRef, context.Context) {
@@ -188,7 +188,7 @@ func TestAuthoredMultiPointCaptureRefusesAChangedValidatorSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	point := workbench.Contracts.Validators
-	addition, err := frame.Define(frame.Definition{Revision: integrity.Hash([]byte("authoring/extra-validator/1")), Units: []frame.Unit{{
+	addition, err := frame.Define(frame.Definition{Revision: value.Hash([]byte("authoring/extra-validator/1")), Units: []frame.Unit{{
 		Declaration: frame.UnitDeclaration{ID: "validation", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "extra", Contract: point.Ref()}}},
 		Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
 			return []frame.ExportValue{frame.Contribute("extra", point, document.ValidatorMetadata{Name: "extra", Order: 30}, document.Validator(func(context.Context, document.Converted) ([]document.Diagnostic, error) { return nil, nil }))}, nil

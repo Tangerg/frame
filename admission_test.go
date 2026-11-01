@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 type retainedUseOwner struct {
@@ -68,8 +68,8 @@ func TestInvalidUseOwnerProjectionRequiresRecovery(t *testing.T) {
 		name       string
 		dependency frame.Dependency
 	}{
-		{"invalid release", frame.Dependency{InstallationID: "original", Release: integrity.Digest{}}},
-		{"different installation", frame.Dependency{InstallationID: "another", Release: integrity.Hash([]byte("release"))}},
+		{"invalid release", frame.Dependency{InstallationID: "original", Release: value.Digest{}}},
+		{"different installation", frame.Dependency{InstallationID: "another", Release: value.Hash([]byte("release"))}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			admission := frame.NewAdmission()

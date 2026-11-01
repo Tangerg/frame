@@ -7,20 +7,19 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
-	"github.com/Tangerg/frame/jsonvalue"
 	"github.com/Tangerg/frame/portable"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 func TestPortablePointUsesTheOriginalProfileBudgets(t *testing.T) {
 	host := testHost(t, frame.HostConfig{})
 	descriptor := []byte(`{"protocol":"example","methods":["read"]}`)
-	valueRef := frame.ContractRef{Name: "example.point-budget-value", Version: "1", Digest: integrity.Hash(descriptor), Kind: frame.ServiceKind, Mode: frame.PortableMode}
+	valueRef := frame.ContractRef{Name: "example.point-budget-value", Version: "1", Digest: framevalue.Hash(descriptor), Kind: frame.ServiceKind, Mode: frame.PortableMode}
 	value, err := frame.BindContract[string](valueRef, descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
-	point, err := frame.NewPortablePoint[jsonvalue.Value]("example.point-budget", "1", []byte(`true`), value)
+	point, err := frame.NewPortablePoint[framevalue.JSON]("example.point-budget", "1", []byte(`true`), value)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,14 +35,14 @@ func TestPortablePointUsesTheOriginalProfileBudgets(t *testing.T) {
 		t.Fatalf("Point metadata bypassed the original validation budget: %v", err)
 	}
 	tooLarge := []byte(`{"description":"` + strings.Repeat("x", limits.MaxDescriptorBytes) + `"}`)
-	if _, err := frame.NewPortablePoint[jsonvalue.Value]("example.oversized-point", "1", tooLarge, value); !errors.Is(err, portable.ErrLimit) {
+	if _, err := frame.NewPortablePoint[framevalue.JSON]("example.oversized-point", "1", tooLarge, value); !errors.Is(err, portable.ErrLimit) {
 		t.Fatalf("Point constructor bypassed descriptor admission: %v", err)
 	}
 	oversizedDescriptor := point.Descriptor()
 	oversizedDescriptor = append(oversizedDescriptor, bytes.Repeat([]byte(" "), limits.MaxDescriptorBytes+1-len(oversizedDescriptor))...)
 	oversizedRef := point.Ref()
-	oversizedRef.Digest = integrity.Hash(oversizedDescriptor)
-	if _, err := frame.BindPoint[jsonvalue.Value, string](oversizedRef, oversizedDescriptor); !errors.Is(err, portable.ErrLimit) {
+	oversizedRef.Digest = framevalue.Hash(oversizedDescriptor)
+	if _, err := frame.BindPoint[framevalue.JSON, string](oversizedRef, oversizedDescriptor); !errors.Is(err, portable.ErrLimit) {
 		t.Fatalf("typed Point binding bypassed descriptor admission: %v", err)
 	}
 	if err := host.RegisterDescriptor(oversizedRef, oversizedDescriptor); !errors.Is(err, portable.ErrLimit) {

@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 func TestRealProcessDriverRejectsNativeObjectsBeforeCreationOrBusiness(t *testing.T) {
@@ -27,7 +27,7 @@ func TestRealProcessDriverRejectsNativeObjectsBeforeCreationOrBusiness(t *testin
 				declaration.Exports = []frame.ExportDeclaration{{Name: "echo", Contract: e.ref.Contract}}
 				declaration.Imports = []frame.ImportDeclaration{{Slot: "shared", Contract: native.Ref(), Optional: true}}
 			}
-			plugin, err := frame.Define(frame.Definition{Revision: integrity.Hash([]byte(direction)), Units: []frame.Unit{{Declaration: declaration}}})
+			plugin, err := frame.Define(frame.Definition{Revision: value.Hash([]byte(direction)), Units: []frame.Unit{{Declaration: declaration}}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -66,7 +66,7 @@ func TestRealProcessDriverRejectsNativeObjectsBeforeCreationOrBusiness(t *testin
 func TestUnsupportedPortableDescriptorDoesNotCreateAnAttempt(t *testing.T) {
 	e := newEnvironment(t, false)
 	descriptor := []byte(`{"type":"string"}`)
-	ref := frame.ContractRef{Name: "domain.data", Version: "1", Kind: frame.ServiceKind, Mode: frame.PortableMode, Digest: integrity.Hash(descriptor)}
+	ref := frame.ContractRef{Name: "domain.data", Version: "1", Kind: frame.ServiceKind, Mode: frame.PortableMode, Digest: value.Hash(descriptor)}
 	contract, err := frame.BindContract[string](ref, descriptor)
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +74,7 @@ func TestUnsupportedPortableDescriptorDoesNotCreateAnAttempt(t *testing.T) {
 	if err = e.host.Register(contract); err != nil {
 		t.Fatal(err)
 	}
-	definition, err := frame.Define(frame.Definition{Revision: integrity.Hash([]byte("data")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "backend", Profile: frame.LocalProcess, Exports: []frame.ExportDeclaration{{Name: "data", Contract: ref}}}}}})
+	definition, err := frame.Define(frame.Definition{Revision: value.Hash([]byte("data")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "backend", Profile: frame.LocalProcess, Exports: []frame.ExportDeclaration{{Name: "data", Contract: ref}}}}}})
 	if err != nil {
 		t.Fatal(err)
 	}

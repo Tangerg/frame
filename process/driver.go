@@ -1,5 +1,5 @@
 // Package process binds Frame's approved execution to a durable local runner
-// and the neutral duplex stdio protocol. It never selects a provider.
+// and a selected stdio protocol. It never selects a provider.
 package process
 
 import (
@@ -9,26 +9,26 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
-	"github.com/Tangerg/frame/jsonvalue"
-	"github.com/Tangerg/frame/runner"
+	"github.com/Tangerg/frame/process/runner"
 	"github.com/Tangerg/frame/sqlite"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 // Program is an immutable distribution projection. Secret material belongs in
 // Env, never Args or Configuration; CredentialRevision is an opaque revision.
 type Program struct {
 	Command            string
-	ExecutableDigest   integrity.Digest
+	ExecutableDigest   framevalue.Digest
 	Args               []string
 	Env                []string
 	Directory          string
 	CredentialRevision string
-	Metadata           map[string]jsonvalue.Value
+	Metadata           ExportMetadata
 	// ReleaseContent transfers an acquired immutable-content lease to the instance.
 	ReleaseContent func() error
 }
@@ -56,12 +56,15 @@ type Config struct {
 	Source        Source
 	CloseTimeout  time.Duration
 	MaxFrameBytes int
+	// Protocol defaults to the neutral Frame stdio protocol.
+	Protocol Protocol
 }
 
 type Driver struct {
-	config Config
-	mu     sync.Mutex
-	live   map[string]*execution
+	config  Config
+	profile frame.Profile
+	mu      sync.Mutex
+	live    map[string]*execution
 }
 
 type execution struct {
@@ -69,17 +72,35 @@ type execution struct {
 	attempt  sqlite.Attempt
 	ready    chan struct{}
 	mu       sync.Mutex
-	session  *hostSession
+	session  Connection
+	channel  *attachment
 	started  bool
 	resource *frame.ResourceHandle
 	cancel   context.CancelCauseFunc
 }
 
+// New binds one wire protocol to the durable local process authority.
 func New(config Config) (*Driver, error) {
-	if nilDependency(config.Runner) || config.Store == nil || nilDependency(config.Source) || config.CloseTimeout <= 0 || config.MaxFrameBytes <= 0 || config.MaxFrameBytes > profile.MaxFrameBytes {
+	if nilDependency(config.Runner) || config.Store == nil || nilDependency(config.Source) || config.CloseTimeout <= 0 || config.MaxFrameBytes <= 0 {
 		return nil, fmt.Errorf("%w: process driver requires runner, store, source and explicit limits", frame.ErrInvalid)
 	}
-	return &Driver{config: config, live: make(map[string]*execution)}, nil
+	if config.Protocol == nil {
+		config.Protocol = localProtocol{}
+	}
+	if nilDependency(config.Protocol) {
+		return nil, fmt.Errorf("%w: missing process protocol", frame.ErrInvalid)
+	}
+	name := config.Protocol.Profile()
+	if err := name.Validate(); err != nil {
+		return nil, err
+	}
+	if name == frame.LocalProcess && config.MaxFrameBytes > profile.MaxFrameBytes {
+		return nil, fmt.Errorf("%w: neutral process frame exceeds %d bytes", frame.ErrInvalid, profile.MaxFrameBytes)
+	}
+	if name == frame.NativeGo {
+		return nil, fmt.Errorf("%w: reserved native profile", frame.ErrInvalid)
+	}
+	return &Driver{config: config, profile: name, live: make(map[string]*execution)}, nil
 }
 
 func nilDependency(dependency any) bool {
@@ -95,13 +116,16 @@ func nilDependency(dependency any) bool {
 	}
 }
 
-func (*Driver) Profile() frame.Profile { return frame.LocalProcess }
+func (d *Driver) Profile() frame.Profile { return d.profile }
 
 func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.ExportValue, error) {
 	if setup == nil || !setup.UsesAuthority(d.config.Store) {
 		return nil, frame.ErrFenced
 	}
 	unit := setup.Unit()
+	if unit.Profile != d.profile {
+		return nil, frame.ErrContractMismatch
+	}
 	for _, requirement := range unit.Imports {
 		if requirement.Contract.Mode != frame.PortableMode {
 			return nil, frame.ErrContractMismatch
@@ -124,9 +148,12 @@ func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 	if err != nil {
 		return nil, err
 	}
-	assembly, err := assemble(setup, program, d.config.MaxFrameBytes)
+	connection, err := d.config.Protocol.Prepare(setup, program.Metadata, d.config.MaxFrameBytes)
 	if err != nil {
 		return nil, err
+	}
+	if nilDependency(connection) {
+		return nil, fmt.Errorf("%w: missing protocol connection", frame.ErrInvalid)
 	}
 	if err := d.config.Runner.Fence(ctx, setup.Epoch()); err != nil {
 		return nil, err
@@ -138,7 +165,7 @@ func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 	if identity.Fenced || identity.Epoch != setup.Epoch() {
 		return nil, frame.ErrFenced
 	}
-	attempt := sqlite.Attempt{ID: setup.InstanceID(), Epoch: setup.Epoch(), Source: setup.Binding().Source, Binding: setup.Snapshot(), Realm: identity.ID, Profile: frame.LocalProcess}
+	attempt := sqlite.Attempt{ID: setup.InstanceID(), Epoch: setup.Epoch(), Source: setup.Binding().Source, Binding: setup.Snapshot(), Realm: identity.ID, Profile: d.profile}
 	if err := d.config.Store.RecordAttempt(ctx, attempt); err != nil {
 		return nil, err
 	}
@@ -184,11 +211,13 @@ func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 	if err != nil {
 		return nil, err
 	}
-	values, err := assembly.connect(ownedCtx, attached, setup)
+	channel := &attachment{ReadWriteCloser: attached}
 	e.mu.Lock()
-	e.session = assembly.session
+	e.channel, e.session = channel, connection
 	e.mu.Unlock()
-	return values, err
+	stopInterrupt := context.AfterFunc(ownedCtx, func() { _ = channel.Close() })
+	defer stopInterrupt()
+	return connection.Connect(ownedCtx, channel)
 }
 
 func (e *execution) close(ctx context.Context) (frame.ReleaseState, error) {
@@ -201,12 +230,17 @@ func (e *execution) close(ctx context.Context) (frame.ReleaseState, error) {
 		return frame.ResourceUnconfirmed, context.Cause(ctx)
 	}
 	e.mu.Lock()
-	session, started := e.session, e.started
-	e.session = nil
+	session, channel, started := e.session, e.channel, e.started
+	e.session, e.channel = nil, nil
 	e.mu.Unlock()
 	var transportErr error
 	if session != nil {
-		transportErr = session.close(ctx)
+		stopInterrupt := context.AfterFunc(ctx, func() { _ = channel.Close() })
+		transportErr = session.Close(ctx)
+		stopInterrupt()
+	}
+	if channel != nil {
+		transportErr = errors.Join(transportErr, channel.Close())
 	}
 	if !started {
 		proof := sqlite.ExitProof{AttemptID: e.attempt.ID, Realm: e.attempt.Realm, ExitID: e.attempt.ID + ":not-dispatched", Kind: "not-dispatched", Evidence: []byte(`{"dispatched":false}`)}
@@ -286,14 +320,10 @@ func (d *Driver) Recover(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	pending := false
-	for _, record := range records {
-		if (!record.Released || record.PendingHandoff) && record.Attempt.Profile == frame.LocalProcess {
-			pending = true
-			break
-		}
-	}
-	if !pending {
+	pending := slices.DeleteFunc(records, func(record sqlite.AttemptRecord) bool {
+		return record.Attempt.Profile != d.profile || (record.Released && !record.PendingHandoff)
+	})
+	if len(pending) == 0 {
 		return nil
 	}
 	identity, err := d.config.Runner.Identity(ctx)
@@ -304,10 +334,8 @@ func (d *Driver) Recover(ctx context.Context) error {
 		return err
 	}
 	var failures error
-	for _, record := range records {
-		if record.Attempt.Profile == frame.LocalProcess {
-			failures = errors.Join(failures, d.recoverAttempt(ctx, identity, record))
-		}
+	for _, record := range pending {
+		failures = errors.Join(failures, d.recoverAttempt(ctx, identity, record))
 	}
 	return failures
 }
@@ -316,9 +344,6 @@ func (d *Driver) recoverAttempt(ctx context.Context, identity runner.Identity, r
 	attempt := record.Attempt
 	if record.PendingHandoff {
 		return d.acknowledgeExit(ctx, attempt, *record.Proof)
-	}
-	if record.Released {
-		return nil
 	}
 	if attempt.Epoch >= d.config.Store.Epoch() {
 		return runner.ErrUnknown

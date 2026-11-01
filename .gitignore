@@ -5,3 +5,5 @@ coverage/
 *.tsbuildinfo
 .DS_Store
 .idea/
+/sdk/src/node/wire.json
+/sdk/src/node/limits.generated.json

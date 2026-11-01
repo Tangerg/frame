@@ -6,7 +6,7 @@ import (
 	"errors"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 // RealmCredential stores only an authentication verifier. It is not release,
@@ -15,7 +15,7 @@ type RealmCredential struct {
 	ID             string
 	Epoch          string
 	OperationID    string
-	ResumeVerifier integrity.Digest
+	ResumeVerifier value.Digest
 }
 
 func (s *Store) RegisterRealm(ctx context.Context, credential RealmCredential) error {

@@ -3,6 +3,4 @@
 **/generated/
 **/*.generated.*
 out/
-protocol/process/portable-profile.generated.json
-packages/node/src/wire.json
-packages/node/src/limits.json
+sdk/src/node/wire.json

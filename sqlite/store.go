@@ -18,7 +18,7 @@ import (
 	"sync"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	framevalue "github.com/Tangerg/frame/value"
 	_ "modernc.org/sqlite"
 )
 
@@ -162,7 +162,7 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 		store.owners[owner.ID] = &Owner{store: store, id: owner.ID, references: owner.References}
 		declarations += "\n-- owner " + owner.ID + "\n" + strings.Join(owner.Statements, ";\n")
 	}
-	digest := integrity.Hash([]byte(declarations))
+	digest := framevalue.Hash([]byte(declarations))
 	expectedShape, err := schemaShape(ctx, owners)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: owner schema: %w", err)
@@ -226,7 +226,7 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 		if actualShape != expectedShape {
 			return errors.New("sqlite: incompatible database schema; open a fresh data directory")
 		}
-		var storedDigest integrity.Digest
+		var storedDigest framevalue.Digest
 		if err := tx.QueryRowContext(ctx, `SELECT store_id,schema_digest,epoch FROM frame_meta WHERE singleton=1`).Scan(&store.id, &storedDigest, &store.epoch); err != nil {
 			return fmt.Errorf("sqlite: incompatible schema: %w", err)
 		}
@@ -250,51 +250,51 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 	return store, nil
 }
 
-func schemaShape(ctx context.Context, owners []OwnerSchema) (integrity.Digest, error) {
+func schemaShape(ctx context.Context, owners []OwnerSchema) (framevalue.Digest, error) {
 	database, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
-		return integrity.Digest{}, err
+		return framevalue.Digest{}, err
 	}
 	defer database.Close()
 	database.SetMaxOpenConns(1)
 	if _, err := database.ExecContext(ctx, schema); err != nil {
-		return integrity.Digest{}, err
+		return framevalue.Digest{}, err
 	}
 	for _, owner := range owners {
 		for _, statement := range owner.Statements {
 			if _, err := database.ExecContext(ctx, statement); err != nil {
-				return integrity.Digest{}, err
+				return framevalue.Digest{}, err
 			}
 		}
 	}
 	return readSchemaShape(ctx, database)
 }
 
-func readSchemaShape(ctx context.Context, executor Executor) (integrity.Digest, error) {
+func readSchemaShape(ctx context.Context, executor Executor) (framevalue.Digest, error) {
 	rows, err := executor.QueryContext(ctx, `SELECT type,name,tbl_name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type,name`)
 	if err != nil {
-		return integrity.Digest{}, err
+		return framevalue.Digest{}, err
 	}
 	defer rows.Close()
 	var objects [][4]string
 	for rows.Next() {
 		var object [4]string
 		if err := rows.Scan(&object[0], &object[1], &object[2], &object[3]); err != nil {
-			return integrity.Digest{}, err
+			return framevalue.Digest{}, err
 		}
 		objects = append(objects, object)
 	}
 	if err := rows.Err(); err != nil {
-		return integrity.Digest{}, err
+		return framevalue.Digest{}, err
 	}
 	if len(objects) == 0 {
-		return integrity.Digest{}, nil
+		return framevalue.Digest{}, nil
 	}
 	data, err := json.Marshal(objects)
 	if err != nil {
-		return integrity.Digest{}, err
+		return framevalue.Digest{}, err
 	}
-	return integrity.Hash(data), nil
+	return framevalue.Hash(data), nil
 }
 
 func (s *Store) ID() string    { return s.id }

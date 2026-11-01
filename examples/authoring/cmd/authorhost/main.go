@@ -2,6 +2,8 @@
 // TypeScript author exercise. It uses the real Host and browser control adapter.
 package main
 
+//go:generate go run . -generate ../../browser/src/contracts.generated.ts
+
 import (
 	"bytes"
 	"context"
@@ -22,11 +24,10 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/control"
-	controlhost "github.com/Tangerg/frame/control/host"
+	"github.com/Tangerg/frame/browser"
 	"github.com/Tangerg/frame/examples/document"
-	"github.com/Tangerg/frame/integrity"
 	"github.com/Tangerg/frame/sqlite"
+	"github.com/Tangerg/frame/value"
 )
 
 type AuthorPackage struct {
@@ -53,20 +54,20 @@ type SourceConfiguration struct {
 }
 
 type Bootstrap struct {
-	Origin      string                  `json:"origin"`
-	Credentials controlhost.Credentials `json:"credentials"`
+	Origin      string              `json:"origin"`
+	Credentials browser.Credentials `json:"credentials"`
 }
 
 type moduleSource struct {
-	release integrity.Digest
-	digest  integrity.Digest
+	release value.Digest
+	digest  value.Digest
 }
 
-func (s moduleSource) Module(_ context.Context, binding frame.UnitBinding) (control.Artifact, error) {
+func (s moduleSource) Module(_ context.Context, binding frame.UnitBinding) (browser.Artifact, error) {
 	if binding.Source.InstallationID != "author" || binding.Source.Release != s.release {
-		return control.Artifact{}, frame.ErrStaleBinding
+		return browser.Artifact{}, frame.ErrStaleBinding
 	}
-	return control.Artifact{Path: "/plugin.mjs", Digest: s.digest}, nil
+	return browser.Artifact{Path: "/plugin.mjs", Digest: s.digest}, nil
 }
 
 func main() {
@@ -120,7 +121,7 @@ func run() (returned error) {
 	}
 	// This trusted fixture reads immutable bytes before starting execution. It
 	// does not claim remote package trust or define another distribution format.
-	plugin, err := frame.Define(frame.Definition{Revision: integrity.Hash(append(append(bytes.Clone(declaration), 0), module...)), Units: units})
+	plugin, err := frame.Define(frame.Definition{Revision: value.Hash(append(append(bytes.Clone(declaration), 0), module...)), Units: units})
 	if err != nil {
 		return err
 	}
@@ -162,7 +163,7 @@ func run() (returned error) {
 	}
 	defer listener.Close()
 	origin := "http://" + listener.Addr().String()
-	bridge, err := controlhost.NewBridge(controlhost.BridgeConfig{Host: host, Store: store, Source: moduleSource{release: plugin.Revision(), digest: integrity.Hash(module)}, Points: []frame.ContractRef{contracts.Converters.Ref(), contracts.Validators.Ref()}, PublicConfiguration: func(context.Context, *frame.Setup) ([]byte, error) {
+	bridge, err := browser.NewBridge(browser.BridgeConfig{Host: host, Store: store, Source: moduleSource{release: plugin.Revision(), digest: value.Hash(module)}, Points: []frame.ContractRef{contracts.Converters.Ref(), contracts.Validators.Ref()}, PublicConfiguration: func(context.Context, *frame.Setup) ([]byte, error) {
 		return json.Marshal(SourceConfiguration{DocumentBase: origin + "/documents/"})
 	}})
 	if err != nil {
@@ -220,7 +221,7 @@ func run() (returned error) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		_, err := host.ActivateUnit(r.Context(), controlhost.RealmID(credentials.Realm), frame.UnitRef{InstallationID: "author", Release: plugin.Revision(), UnitID: input.Unit})
+		_, err := host.ActivateUnit(r.Context(), browser.RealmID(credentials.Realm), frame.UnitRef{InstallationID: "author", Release: plugin.Revision(), UnitID: input.Unit})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
@@ -257,7 +258,7 @@ func run() (returned error) {
 
 func writeContracts(path string, contracts document.Contracts) error {
 	var output bytes.Buffer
-	if err := control.WriteTypeScriptTypes(&output,
+	if err := browser.WriteTypeScriptTypes(&output,
 		reflect.TypeFor[document.Document](), reflect.TypeFor[document.Converted](),
 		reflect.TypeFor[document.Diagnostic](), reflect.TypeFor[document.ConverterMetadata](),
 		reflect.TypeFor[document.ValidatorMetadata](), reflect.TypeFor[AuthorPackage](),

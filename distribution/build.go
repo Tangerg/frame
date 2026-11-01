@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 // Build computes the artifact inventory from the declared source files, then
@@ -43,11 +43,11 @@ func Build(ctx context.Context, source string, manifest Manifest, output io.Writ
 			return Lock{}, err
 		}
 		total += int64(len(data))
-		manifest.Artifacts[i].Digest = integrity.Hash(data)
+		manifest.Artifacts[i].Digest = value.Hash(data)
 		manifest.Artifacts[i].Size = int64(len(data))
 		files[artifact.Path] = data
 	}
-	manifest.Release = integrity.Digest{}
+	manifest.Release = value.Digest{}
 	lock, err := manifest.Lock()
 	if err != nil {
 		return Lock{}, err

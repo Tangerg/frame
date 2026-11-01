@@ -9,7 +9,7 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/examples/buildcheck"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 func TestAroundContinuationKeepsItsOriginalRemainderAfterPointChanges(t *testing.T) {
@@ -37,7 +37,7 @@ func TestAroundContinuationKeepsItsOriginalRemainderAfterPointChanges(t *testing
 		}
 	}
 	var instanceID string
-	plugin, err := frame.Define(frame.Definition{Revision: integrity.Hash([]byte("mutable-around")), Units: []frame.Unit{{
+	plugin, err := frame.Define(frame.Definition{Revision: value.Hash([]byte("mutable-around")), Units: []frame.Unit{{
 		Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "tail", Contract: e.Contracts.Around.Ref()}}},
 		Setup: func(_ context.Context, setup *frame.Setup) ([]frame.ExportValue, error) {
 			instanceID = setup.InstanceID()

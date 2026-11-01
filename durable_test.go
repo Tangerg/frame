@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 type resultStore struct {
@@ -25,7 +25,7 @@ func (s resultStore) Installations(context.Context) ([]frame.InstallationRecord,
 }
 
 func TestInstallationReportsTheOriginalCommit(t *testing.T) {
-	plugin, err := frame.Define(frame.Definition{Revision: integrity.Hash([]byte("test")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "sample", Profile: frame.NativeGo}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) { return nil, nil }}}})
+	plugin, err := frame.Define(frame.Definition{Revision: value.Hash([]byte("test")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "sample", Profile: frame.NativeGo}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) { return nil, nil }}}})
 	if err != nil {
 		t.Fatal(err)
 	}

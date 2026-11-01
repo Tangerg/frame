@@ -10,7 +10,7 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/examples/buildcheck"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 func engine(t *testing.T, text string) (*buildcheck.Engine, context.Context) {
@@ -37,7 +37,7 @@ func install(t *testing.T, ctx context.Context, e *buildcheck.Engine, id string,
 	for _, export := range exports {
 		declarations = append(declarations, frame.ExportDeclaration{Name: export.Name, Contract: export.Contract})
 	}
-	plugin, err := frame.Define(frame.Definition{Revision: integrity.Hash([]byte(id)), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.NativeGo, Exports: declarations}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) { return exports, nil }}}})
+	plugin, err := frame.Define(frame.Definition{Revision: value.Hash([]byte(id)), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.NativeGo, Exports: declarations}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) { return exports, nil }}}})
 	if err != nil {
 		t.Fatal(err)
 	}

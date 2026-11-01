@@ -59,28 +59,6 @@ type hostSession struct {
 	deliveries deliveries
 }
 
-func declaredCapability(setup *frame.Setup, ref frame.ContractRef) (*portable.Capability, error) {
-	service, err := setup.ValueContract(ref)
-	if err != nil {
-		return nil, err
-	}
-	if service.Mode != frame.PortableMode || service.Kind != frame.ServiceKind {
-		return nil, frame.ErrContractMismatch
-	}
-	raw, err := setup.ContractDescriptor(service)
-	if err != nil {
-		return nil, err
-	}
-	contract, err := portable.ParseCapability(raw)
-	if err != nil {
-		return nil, errors.Join(frame.ErrContractMismatch, err)
-	}
-	if contract.Descriptor().Reference != service.Name || contract.Identity().Digest() != service.Digest {
-		return nil, frame.ErrContractMismatch
-	}
-	return contract, nil
-}
-
 func (s *hostSession) dispatch(ctx context.Context, method string, raw jsontext.Value) (jsontext.Value, error) {
 	if method == profile.Methods.Chunk {
 		return s.deliveries.receive(ctx, raw)
@@ -96,7 +74,12 @@ func (s *hostSession) dispatch(ctx context.Context, method string, raw jsontext.
 	return dispatchCall(work.Context(), s.peer, s.grants, raw)
 }
 
+type localProtocol struct{}
+
+func (localProtocol) Profile() frame.Profile { return frame.LocalProcess }
+
 type assembly struct {
+	setup    *frame.Setup
 	session  *hostSession
 	expected description
 	grants   preparation
@@ -104,7 +87,7 @@ type assembly struct {
 }
 
 // Freeze and validate every representable import before creating any process.
-func assemble(setup *frame.Setup, program Program, maximum int) (*assembly, error) {
+func (localProtocol) Prepare(setup *frame.Setup, metadata ExportMetadata, maximum int) (Connection, error) {
 	s := &hostSession{}
 	s.peer = newPeer(nil, maximum, s.dispatch)
 	s.grants = map[string]binding{}
@@ -113,19 +96,15 @@ func assemble(setup *frame.Setup, program Program, maximum int) (*assembly, erro
 	prepared := preparation{Imports: map[string][]offered{}}
 	values := make([]frame.ExportValue, 0, len(setup.Unit().Exports))
 	for _, export := range setup.Unit().Exports {
-		contract, err := declaredCapability(setup, export.Contract)
+		contract, err := DeclaredCapability(setup, export.Contract)
 		if err != nil {
 			return nil, err
 		}
 		expected.Exports[export.Name] = contract.Identity().Digest().String()
-		var meta any
-		if value, ok := program.Metadata[export.Name]; ok {
-			meta = value
-		}
-		values = append(values, frame.ExportValue{Name: export.Name, Contract: export.Contract, Metadata: meta, Value: &remote{s.peer, export.Name, contract, &s.deliveries}, Durable: true})
+		values = append(values, metadata.Export(export, &remote{s.peer, export.Name, contract, &s.deliveries}))
 	}
 	for _, slot := range setup.Unit().Imports {
-		contract, err := declaredCapability(setup, slot.Contract)
+		contract, err := DeclaredCapability(setup, slot.Contract)
 		if err != nil {
 			return nil, err
 		}
@@ -156,10 +135,10 @@ func assemble(setup *frame.Setup, program Program, maximum int) (*assembly, erro
 		}
 		prepared.Imports[slot.Slot] = handles
 	}
-	return &assembly{s, expected, prepared, values}, nil
+	return &assembly{setup, s, expected, prepared, values}, nil
 }
 
-func (a *assembly) connect(ctx context.Context, ch io.ReadWriteCloser, setup *frame.Setup) ([]frame.ExportValue, error) {
+func (a *assembly) Connect(ctx context.Context, ch io.ReadWriteCloser) ([]frame.ExportValue, error) {
 	s, expected := a.session, a.expected
 	s.peer.transport = ch
 	s.peer.start()
@@ -176,7 +155,7 @@ func (a *assembly) connect(ctx context.Context, ch io.ReadWriteCloser, setup *fr
 	if err := s.peer.acknowledge(ctx, profile.Methods.Prepare, a.grants); err != nil {
 		return nil, err
 	}
-	if err := setup.OnActivate(func(ctx context.Context) error {
+	if err := a.setup.OnActivate(func(ctx context.Context) error {
 		s.active.Store(true)
 		err := s.peer.acknowledge(ctx, profile.Methods.Activate, struct{}{})
 		if err != nil {
@@ -188,6 +167,8 @@ func (a *assembly) connect(ctx context.Context, ch io.ReadWriteCloser, setup *fr
 	}
 	return a.values, nil
 }
+
+func (a *assembly) Close(ctx context.Context) error { return a.session.close(ctx) }
 
 func (s *hostSession) close(ctx context.Context) error {
 	wasActive := s.active.Swap(false)

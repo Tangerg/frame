@@ -7,9 +7,8 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/Tangerg/frame/integrity"
-	"github.com/Tangerg/frame/jsonvalue"
 	"github.com/Tangerg/frame/portable"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 type ContractKind string
@@ -35,11 +34,11 @@ func (ContractMode) Values() []string { return []string{string(NativeMode), stri
 // ContractRef is a transport and persistence projection of a declaration. Its
 // digest is derived from the original descriptor, not from implementation types.
 type ContractRef struct {
-	Name    string           `json:"name"`
-	Version string           `json:"version"`
-	Digest  integrity.Digest `json:"digest"`
-	Kind    ContractKind     `json:"kind"`
-	Mode    ContractMode     `json:"mode"`
+	Name    string            `json:"name"`
+	Version string            `json:"version"`
+	Digest  framevalue.Digest `json:"digest"`
+	Kind    ContractKind      `json:"kind"`
+	Mode    ContractMode      `json:"mode"`
 }
 
 func (r ContractRef) Validate() error {
@@ -151,11 +150,11 @@ func pointDeclaration(ref ContractRef, descriptor []byte) (*declaration, error) 
 	if err := portable.CheckDescriptor(descriptor); err != nil {
 		return nil, err
 	}
-	if ref.Kind != PointKind || ref.Mode != PortableMode || integrity.Hash(descriptor) != ref.Digest {
+	if ref.Kind != PointKind || ref.Mode != PortableMode || framevalue.Hash(descriptor) != ref.Digest {
 		return nil, ErrContractMismatch
 	}
 	var shape PointDescriptor
-	if err := jsonvalue.DecodeValue(descriptor, &shape, "point"); err != nil {
+	if err := framevalue.DecodeValue(descriptor, &shape, "point"); err != nil {
 		return nil, err
 	}
 	if shape.Protocol != PointProtocol || shape.Name != ref.Name || shape.Version != ref.Version {
@@ -188,12 +187,12 @@ func NewPortablePoint[M, V any](name, version string, metadataSchema []byte, val
 		return Point[M, V]{}, err
 	}
 	shape := PointDescriptor{Protocol: PointProtocol, Name: name, Version: version, Metadata: bytes.Clone(metadataSchema), ValueContract: value.Ref()}
-	identity, err := jsonvalue.Encode(shape)
+	identity, err := framevalue.EncodeJSON(shape)
 	if err != nil {
 		return Point[M, V]{}, err
 	}
-	ref := ContractRef{Name: name, Version: version, Digest: integrity.Hash(identity.JSON()), Kind: PointKind, Mode: PortableMode}
-	return BindPoint[M, V](ref, identity.JSON())
+	ref := ContractRef{Name: name, Version: version, Digest: identity.Digest(), Kind: PointKind, Mode: PortableMode}
+	return BindPoint[M, V](ref, identity.Bytes())
 }
 
 func nativeDeclaration(name, version string, kind ContractKind, valueType, metadataType reflect.Type) (*declaration, error) {
@@ -206,7 +205,7 @@ func nativeDeclaration(name, version string, kind ContractKind, valueType, metad
 	if err != nil {
 		return nil, err
 	}
-	ref := ContractRef{Name: name, Version: version, Digest: integrity.Hash(descriptor), Kind: kind, Mode: NativeMode}
+	ref := ContractRef{Name: name, Version: version, Digest: framevalue.Hash(descriptor), Kind: kind, Mode: NativeMode}
 	if err := ref.Validate(); err != nil {
 		return nil, err
 	}
@@ -216,6 +215,17 @@ func nativeDeclaration(name, version string, kind ContractKind, valueType, metad
 func NewContract[T any](name, version string) (Contract[T], error) {
 	value, err := nativeDeclaration(name, version, ServiceKind, reflect.TypeFor[T](), nil)
 	return Contract[T]{value: value}, err
+}
+
+// NewPortableContract binds a published capability to its local implementation type.
+// The owner supplies the contract version. Name and content identity come from the capability.
+func NewPortableContract[T any](version string, capability *portable.Capability) (Contract[T], error) {
+	if capability == nil || capability.Identity().Validate() != nil {
+		return Contract[T]{}, ErrInvalid
+	}
+	identity := capability.Identity()
+	ref := ContractRef{Name: capability.Descriptor().Reference, Version: version, Kind: ServiceKind, Mode: PortableMode, Digest: identity.Digest()}
+	return BindContract[T](ref, identity.Bytes())
 }
 
 func NewPoint[M, V any](name, version string) (Point[M, V], error) {
@@ -234,7 +244,7 @@ func BindContract[T any](ref ContractRef, descriptor []byte) (Contract[T], error
 	if err := ref.Validate(); err != nil {
 		return Contract[T]{}, err
 	}
-	if ref.Kind != ServiceKind || ref.Mode != PortableMode || integrity.Hash(descriptor) != ref.Digest {
+	if ref.Kind != ServiceKind || ref.Mode != PortableMode || framevalue.Hash(descriptor) != ref.Digest {
 		return Contract[T]{}, ErrContractMismatch
 	}
 	return Contract[T]{value: &declaration{ref: ref, descriptor: bytes.Clone(descriptor), valueType: reflect.TypeFor[T]()}}, nil
@@ -254,7 +264,7 @@ func BindEvent[T any](ref ContractRef, descriptor []byte) (Event[T], error) {
 	if err := ref.Validate(); err != nil {
 		return Event[T]{}, err
 	}
-	if ref.Kind != EventKind || ref.Mode != PortableMode || integrity.Hash(descriptor) != ref.Digest {
+	if ref.Kind != EventKind || ref.Mode != PortableMode || framevalue.Hash(descriptor) != ref.Digest {
 		return Event[T]{}, ErrContractMismatch
 	}
 	return Event[T]{value: &declaration{ref: ref, descriptor: bytes.Clone(descriptor), valueType: reflect.TypeFor[T]()}}, nil

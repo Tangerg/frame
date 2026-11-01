@@ -51,7 +51,7 @@ import (
   "context"
   "testing"
   frame "{module}"
-  "{module}/integrity"
+  "{module}/value"
 )
 func TestPlugin(t *testing.T) {{
   host, err := frame.NewHost(t.Context(), frame.HostConfig{{}})
@@ -63,7 +63,7 @@ func TestPlugin(t *testing.T) {{
   unit, err := frame.DefineUnit(frame.UnitSpec{{ID:"outline",Exports:frame.Exports(output),
       Prepare:func(s *frame.Setup)error{{return output.Bind(s,"Frame")}}}})
   if err != nil {{t.Fatal(err)}}
-  plugin, err := frame.Define(frame.Definition{{Revision:integrity.Hash([]byte("outline-v1")), Units:[]frame.Unit{{unit}}}})
+  plugin, err := frame.Define(frame.Definition{{Revision:value.Hash([]byte("outline-v1")), Units:[]frame.Unit{{unit}}}})
   if err != nil {{t.Fatal(err)}}
   installed, err := host.Install(t.Context(),frame.InstallationConfig{{ID:"outline",Plugin:plugin,Enabled:true}})
   if err != nil {{t.Fatal(err)}}

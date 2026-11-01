@@ -9,7 +9,7 @@ import (
 	"errors"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 var _ frame.InstallationStore = (*Store)(nil)
@@ -228,7 +228,7 @@ func (s *Store) ApproveUse(ctx context.Context, approval frame.UseApproval) erro
 				return frame.ErrClosed
 			}
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO frame_use_approvals(id,request,request_digest,state) VALUES(?,?,?,'approved')`, approval.ID, encoded, integrity.Hash(encoded))
+		_, err = tx.ExecContext(ctx, `INSERT INTO frame_use_approvals(id,request,request_digest,state) VALUES(?,?,?,'approved')`, approval.ID, encoded, value.Hash(encoded))
 		return err
 	})
 	if err != nil && !errors.Is(err, ErrConflict) && !errors.Is(err, frame.ErrClosed) {
@@ -257,12 +257,12 @@ func (s *Store) Uses(ctx context.Context) (records []UseRecord, err error) {
 		defer rows.Close()
 		for rows.Next() {
 			var request, proof []byte
-			var digest integrity.Digest
+			var digest value.Digest
 			var state string
 			if err := rows.Scan(&request, &digest, &state, &proof); err != nil {
 				return err
 			}
-			if integrity.Hash(request) != digest {
+			if value.Hash(request) != digest {
 				return errors.New("sqlite: use approval integrity failure")
 			}
 			var record UseRecord

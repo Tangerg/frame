@@ -8,8 +8,7 @@ import (
 	"reflect"
 	"slices"
 
-	"github.com/Tangerg/frame/integrity"
-	"github.com/Tangerg/frame/jsonvalue"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 type authorityIdentity struct{ marker byte }
@@ -116,7 +115,7 @@ func snapshotMetadata(value any) (any, error) {
 	if value == nil {
 		return nil, nil
 	}
-	if admitted, ok := value.(jsonvalue.Value); ok {
+	if admitted, ok := value.(framevalue.JSON); ok {
 		return admitted, admitted.Validate()
 	}
 	type visit struct {
@@ -213,31 +212,31 @@ func snapshotMetadata(value any) (any, error) {
 	return copy.Interface(), nil
 }
 
-func decodeMetadata(definition *declaration, value jsonvalue.Value) (any, error) {
+func decodeMetadata(definition *declaration, value framevalue.JSON) (any, error) {
 	if err := value.Validate(); err != nil {
 		return nil, err
 	}
 	if definition.metadataSchema != nil {
-		if err := definition.metadataSchema.Validate(value.JSON()); err != nil {
+		if err := definition.metadataSchema.Validate(value.Bytes()); err != nil {
 			return nil, fmt.Errorf("point metadata: %w", err)
 		}
 	}
-	if definition.metadataType == nil || definition.metadataType == reflect.TypeFor[jsonvalue.Value]() {
+	if definition.metadataType == nil || definition.metadataType == reflect.TypeFor[framevalue.JSON]() {
 		return value, nil
 	}
 	destination := reflect.New(definition.metadataType)
-	if err := jsonvalue.DecodeValue(value.JSON(), destination.Interface(), "metadata"); err != nil {
+	if err := framevalue.DecodeValue(value.Bytes(), destination.Interface(), "metadata"); err != nil {
 		return nil, err
 	}
 	return snapshotMetadata(destination.Elem().Interface())
 }
 
 func prepareMetadata(definition *declaration, metadata any) (any, error) {
-	if value, ok := metadata.(jsonvalue.Value); ok {
+	if value, ok := metadata.(framevalue.JSON); ok {
 		return decodeMetadata(definition, value)
 	}
 	if definition.metadataSchema != nil {
-		value, err := jsonvalue.Encode(metadata)
+		value, err := framevalue.EncodeJSON(metadata)
 		if err != nil {
 			return nil, err
 		}
@@ -543,7 +542,7 @@ func Capture(snapshot *Snapshot, selections ...SelectionRef) (*BindingPlan, erro
 		if err != nil {
 			return nil, err
 		}
-		plan.binding.Rule = integrity.Hash(encoded).String()
+		plan.binding.Rule = framevalue.Hash(encoded).String()
 	}
 	ordered, err := subsetBinding(plan.binding, plan.binding.Roots)
 	if err != nil {
@@ -653,14 +652,14 @@ func (c CandidateRef) ID() string         { return c.member.id }
 func (c CandidateRef) Source() ExportRef  { return c.member.source }
 func (c CandidateRef) InstanceID() string { return c.member.instanceID }
 func (c CandidateRef) MetadataJSON() ([]byte, error) {
-	if value, ok := c.member.metadata.(jsonvalue.Value); ok {
-		return value.JSON(), nil
+	if value, ok := c.member.metadata.(framevalue.JSON); ok {
+		return value.Bytes(), nil
 	}
-	value, err := jsonvalue.Encode(c.member.metadata)
+	value, err := framevalue.EncodeJSON(c.member.metadata)
 	if err != nil {
 		return nil, err
 	}
-	return value.JSON(), nil
+	return value.Bytes(), nil
 }
 
 func (s *Snapshot) Candidates(contract ContractRef) ([]CandidateRef, error) {
@@ -720,7 +719,7 @@ func SelectRefs(snapshot *Snapshot, contract ContractRef, rule string, candidate
 }
 
 func (h *Host) DecodeMetadata(contract ContractRef, data []byte) (any, error) {
-	value, err := jsonvalue.Parse(data)
+	value, err := framevalue.ParseJSON(data)
 	if err != nil {
 		return nil, err
 	}
@@ -761,7 +760,7 @@ func (h *Host) Publish(ctx context.Context, instanceID, operationID string, valu
 	if err != nil {
 		return Publication{}, err
 	}
-	fingerprint := integrity.Hash(append([]byte(value.Name+"\x00"+value.Contract.Digest.String()+"\x00"), metadata...))
+	fingerprint := framevalue.Hash(append([]byte(value.Name+"\x00"+value.Contract.Digest.String()+"\x00"), metadata...))
 	var result Publication
 	err = h.admission.Admit(ctx, func(context.Context) error {
 		if err := h.admission.ValidateScope(instance.scope); err != nil {

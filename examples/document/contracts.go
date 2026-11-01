@@ -10,17 +10,17 @@ import (
 	"os"
 
 	"github.com/Tangerg/frame"
-	controlhost "github.com/Tangerg/frame/control/host"
+	"github.com/Tangerg/frame/browser"
 	"github.com/Tangerg/frame/distribution"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 var ErrSourceChanged = errors.New("document: source revision changed")
 var ErrTaskFinished = errors.New("document: task is already terminal")
 
 type DocumentRef struct {
-	Path     string           `json:"path"`
-	Revision integrity.Digest `json:"revision"`
+	Path     string       `json:"path"`
+	Revision value.Digest `json:"revision"`
 }
 type Document struct {
 	Ref  DocumentRef `json:"ref"`
@@ -55,7 +55,7 @@ type Contracts struct {
 	Files      frame.Contract[FileReader]
 	Converters frame.Point[ConverterMetadata, Converter]
 	Validators frame.Point[ValidatorMetadata, Validator]
-	Previews   frame.Point[PreviewMetadata, controlhost.Object]
+	Previews   frame.Point[PreviewMetadata, browser.Object]
 	Theme      frame.Contract[*distribution.Resources]
 }
 
@@ -74,7 +74,7 @@ func NewContracts() (Contracts, error) {
 	if err != nil {
 		return contracts, err
 	}
-	contracts.Previews, err = frame.NewPoint[PreviewMetadata, controlhost.Object]("documents.previews", "1")
+	contracts.Previews, err = frame.NewPoint[PreviewMetadata, browser.Object]("documents.previews", "1")
 	if err != nil {
 		return contracts, err
 	}
@@ -108,7 +108,7 @@ func readDocument(ctx context.Context, root *os.Root, reference DocumentRef) (Do
 	if len(data) > 4<<20 {
 		return Document{}, errors.New("document: source is too large")
 	}
-	if integrity.Hash(data) != reference.Revision {
+	if value.Hash(data) != reference.Revision {
 		return Document{}, ErrSourceChanged
 	}
 	if err := ctx.Err(); err != nil {

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 func TestScopedStartSharesOnlyTheOriginalGrantAndFinalStop(t *testing.T) {
@@ -29,7 +29,7 @@ func TestScopedStartSharesOnlyTheOriginalGrantAndFinalStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plugin, err := frame.Define(frame.Definition{Revision: integrity.Hash([]byte("one")), Units: []frame.Unit{unit}})
+	plugin, err := frame.Define(frame.Definition{Revision: value.Hash([]byte("one")), Units: []frame.Unit{unit}})
 	if err != nil {
 		t.Fatal(err)
 	}

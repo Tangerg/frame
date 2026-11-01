@@ -2,7 +2,7 @@
 
 Frame is a general-purpose plugin framework. Hosts define domain contracts and business authorization. Frame owns installation, exact binding admission and resource protection. Execution owners alone can prove exit. Business owners alone can settle their operations.
 
-A single Go module lives at the repository root. The npm workspace publishes the SDK, local Node process backend, browser runtime and React adapter. Read the package README and [development instructions](DEVELOPMENT.md) before structural changes. The reviewed Chinese proposal is shipped with each source distribution.
+A single Go module lives at the repository root. The npm workspace publishes one SDK with native, Node, browser and React entry points. MCP wire details belong in the optional process/mcp adapter. Read the package README and [development instructions](DEVELOPMENT.md) before structural changes. The reviewed Chinese proposal is shipped with each source distribution.
 
 - Freeze providers once at the Host. Setup consumes those exact slots. A driver must never resolve alternatives.
 - Deny invalid grants before executing plugin code. Revalidate after slow preparation. Cancellation of a wait never proves external work has stopped.

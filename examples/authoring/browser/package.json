@@ -12,7 +12,6 @@
     "check": "npm run typecheck && npm run lint && npm run format:check && npm run build"
   },
   "dependencies": {
-    "@frame/sdk": "0.0.1",
-    "@frame/browser": "0.0.1"
+    "@frame/sdk": "0.0.1"
   }
 }

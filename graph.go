@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/Tangerg/frame/integrity"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 func (h *Host) unitLocked(ref UnitRef) (Unit, *installed, error) {
@@ -203,7 +203,7 @@ func (r *bindingResolution) resolve(ref UnitRef) error {
 	r.visiting[ref] = true
 	r.path = append(r.path, ref.InstallationID.String()+"/"+string(ref.UnitID))
 	defer func() { r.path = r.path[:len(r.path)-1] }()
-	bound := UnitBinding{Source: ref, Configuration: integrity.Hash(installation.record.Configuration), Imports: make([]ImportDeclaration, len(unit.Declaration.Imports))}
+	bound := UnitBinding{Source: ref, Configuration: framevalue.Hash(installation.record.Configuration), Imports: make([]ImportDeclaration, len(unit.Declaration.Imports))}
 	requirements := unit.Declaration.Imports
 	actualRealm, err := h.realmLocked(unit.Declaration, r.realm)
 	if err != nil {
@@ -402,7 +402,7 @@ func (h *Host) validateBindingLocked(binding BindingSnapshot) error {
 		if err != nil {
 			return err
 		}
-		if integrity.Hash(installation.record.Configuration) != unit.Configuration {
+		if framevalue.Hash(installation.record.Configuration) != unit.Configuration {
 			return ErrStaleBinding
 		}
 		if err := h.admission.ValidateScope(installation.scope); err != nil {
@@ -447,7 +447,7 @@ func (h *Host) Restore(ctx context.Context, records []InstallationRecord, plugin
 	if len(records) > h.maxInstallations {
 		return ErrCapacity
 	}
-	definitions := make(map[integrity.Digest]*Plugin, len(plugins))
+	definitions := make(map[framevalue.Digest]*Plugin, len(plugins))
 	for _, plugin := range plugins {
 		if plugin == nil {
 			return ErrInvalid

@@ -6,12 +6,12 @@ import (
 	"strings"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 func StandardPlugins(contracts Contracts) ([]*frame.Plugin, error) {
 	definitions := []frame.Definition{
-		{Revision: integrity.Hash([]byte("buildcheck/compiler/1")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "compiler", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "normalize", Contract: contracts.Passes.Ref()}, {Name: "emit", Contract: contracts.Passes.Ref()}}}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
+		{Revision: value.Hash([]byte("buildcheck/compiler/1")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "compiler", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "normalize", Contract: contracts.Passes.Ref()}, {Name: "emit", Contract: contracts.Passes.Ref()}}}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
 			return []frame.ExportValue{
 				frame.Contribute("normalize", contracts.Passes, PassMetadata{Stage: "normalize", Order: 10}, CompilerPass(func(ctx context.Context, input string) (string, error) {
 					if err := ctx.Err(); err != nil {
@@ -27,7 +27,7 @@ func StandardPlugins(contracts Contracts) ([]*frame.Plugin, error) {
 				})),
 			}, nil
 		}}}},
-		{Revision: integrity.Hash([]byte("buildcheck/analysis/1")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "analysis", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "todo", Contract: contracts.Analyzers.Ref()}, {Name: "long-line", Contract: contracts.Analyzers.Ref()}}}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
+		{Revision: value.Hash([]byte("buildcheck/analysis/1")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "analysis", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "todo", Contract: contracts.Analyzers.Ref()}, {Name: "long-line", Contract: contracts.Analyzers.Ref()}}}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
 			return []frame.ExportValue{
 				frame.Contribute("todo", contracts.Analyzers, AnalyzerMetadata{Name: "todo", Required: true}, Analyzer(func(ctx context.Context, input SourceRevision) ([]Diagnostic, error) {
 					var found []Diagnostic
@@ -55,7 +55,7 @@ func StandardPlugins(contracts Contracts) ([]*frame.Plugin, error) {
 				})),
 			}, nil
 		}}}},
-		{Revision: integrity.Hash([]byte("buildcheck/format/1")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "format", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "trim", Contract: contracts.Formatters.Ref()}, {Name: "identity", Contract: contracts.Formatters.Ref()}}}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
+		{Revision: value.Hash([]byte("buildcheck/format/1")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "format", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "trim", Contract: contracts.Formatters.Ref()}, {Name: "identity", Contract: contracts.Formatters.Ref()}}}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
 			return []frame.ExportValue{
 				frame.Contribute("trim", contracts.Formatters, FormatterMetadata{Name: "trim", Priority: 10}, Formatter(func(ctx context.Context, input SourceRevision) (Patch, error) {
 					if err := ctx.Err(); err != nil {
@@ -71,7 +71,7 @@ func StandardPlugins(contracts Contracts) ([]*frame.Plugin, error) {
 				})),
 			}, nil
 		}}}},
-		{Revision: integrity.Hash([]byte("buildcheck/trace/1")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "trace", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "trace", Contract: contracts.Around.Ref()}}}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
+		{Revision: value.Hash([]byte("buildcheck/trace/1")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "trace", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "trace", Contract: contracts.Around.Ref()}}}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
 			return []frame.ExportValue{
 				frame.Contribute("trace", contracts.Around, AroundMetadata{Name: "trace", Order: 1}, Around(func(ctx context.Context, input SourceRevision, next Next) (Result, error) {
 					if next == nil {

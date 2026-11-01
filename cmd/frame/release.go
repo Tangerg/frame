@@ -15,7 +15,7 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/distribution"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 func boundedFile(path string, limit int64) ([]byte, error) {
@@ -75,14 +75,14 @@ func runPackage(args []string, output io.Writer) error {
 		return err
 	}
 	return json.MarshalWrite(output, struct {
-		ArchiveDigest integrity.Digest  `json:"archiveDigest"`
+		ArchiveDigest value.Digest      `json:"archiveDigest"`
 		Lock          distribution.Lock `json:"lock"`
-	}{integrity.DigestOf([sha256.Size]byte(hash.Sum(nil))), lock})
+	}{value.DigestOf([sha256.Size]byte(hash.Sum(nil))), lock})
 }
 
 type inspection struct {
-	ArchiveDigest  integrity.Digest      `json:"archiveDigest"`
-	ReleaseDigest  integrity.Digest      `json:"releaseDigest"`
+	ArchiveDigest  value.Digest          `json:"archiveDigest"`
+	ReleaseDigest  value.Digest          `json:"releaseDigest"`
 	Manifest       distribution.Manifest `json:"manifest"`
 	Integrity      string                `json:"integrity"`
 	HostSupport    string                `json:"hostProfileSupport"`
@@ -91,7 +91,7 @@ type inspection struct {
 }
 
 type publisherPolicy struct {
-	Archives []integrity.Digest `json:"allowedArchiveDigests"`
+	Archives []value.Digest `json:"allowedArchiveDigests"`
 }
 
 func runInspect(args []string, output io.Writer) error {
@@ -134,9 +134,9 @@ func inspectCommand(args []string, output io.Writer, verify bool) error {
 	if size > limits.ArchiveBytes {
 		return distribution.ErrCapacity
 	}
-	digest := integrity.DigestOf([sha256.Size]byte(hash.Sum(nil)))
+	digest := value.DigestOf([sha256.Size]byte(hash.Sum(nil)))
 	if expected != "" {
-		pin, err := integrity.ParseDigest(expected)
+		pin, err := value.ParseDigest(expected)
 		if err != nil {
 			return err
 		}
@@ -170,7 +170,7 @@ func diagnosticCode(err error) string {
 	switch {
 	case errors.Is(err, distribution.ErrUntrusted):
 		return "untrusted"
-	case errors.Is(err, distribution.ErrIntegrity), errors.Is(err, integrity.ErrInvalidDigest):
+	case errors.Is(err, distribution.ErrIntegrity), errors.Is(err, value.ErrInvalidDigest):
 		return "integrity"
 	case errors.Is(err, distribution.ErrCapacity):
 		return "capacity"

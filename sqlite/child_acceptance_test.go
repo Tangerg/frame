@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 var errParentFinal = errors.New("jobs: parent is final")
@@ -137,7 +137,7 @@ func openChildAcceptance(t *testing.T, path string, initialize bool) *childAccep
 		t.Fatal(err)
 	}
 	for _, id := range []frame.InstallationID{"parent-provider", "child-provider"} {
-		plugin, err := frame.Define(frame.Definition{Revision: integrity.Hash([]byte(id)), Units: []frame.Unit{{
+		plugin, err := frame.Define(frame.Definition{Revision: value.Hash([]byte(id)), Units: []frame.Unit{{
 			Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "run", Contract: f.contract.Ref()}}},
 			Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
 				return []frame.ExportValue{frame.Provide("run", f.contract, func() string { f.calls.Add(1); return string(id) })}, nil

@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/Tangerg/frame/jsonvalue"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 type Composition string
@@ -48,7 +48,7 @@ func (d PointDescriptor) clone() PointDescriptor {
 
 type Point struct {
 	descriptor    PointDescriptor
-	identity      jsonvalue.Value
+	identity      framevalue.JSON
 	value         Schema
 	applicability Schema
 }
@@ -58,14 +58,14 @@ func ParsePoint(data []byte) (*Point, error) {
 		return nil, err
 	}
 	var descriptor PointDescriptor
-	if err := jsonvalue.DecodeValue(data, &descriptor, "point"); err != nil {
+	if err := framevalue.DecodeValue(data, &descriptor, "point"); err != nil {
 		return nil, err
 	}
 	return AdmitPoint(descriptor)
 }
 
 func AdmitPoint(descriptor PointDescriptor) (*Point, error) {
-	if descriptor.Protocol != Protocol || !validToken(descriptor.Reference) || !validToken(descriptor.Scope) {
+	if descriptor.Protocol != Protocol || !ValidToken(descriptor.Reference) || !ValidToken(descriptor.Scope) {
 		return nil, errors.New("point: current protocol, reference and scope are required")
 	}
 	if descriptor.Composition != Collection && descriptor.Composition != Selection && descriptor.Composition != Decoration {
@@ -91,7 +91,7 @@ func AdmitPoint(descriptor PointDescriptor) (*Point, error) {
 	if err != nil {
 		return nil, fmt.Errorf("point: applicability schema: %w", err)
 	}
-	identity, err := jsonvalue.Encode(descriptor)
+	identity, err := framevalue.EncodeJSON(descriptor)
 	if err != nil {
 		return nil, err
 	}
@@ -99,12 +99,12 @@ func AdmitPoint(descriptor PointDescriptor) (*Point, error) {
 }
 
 func (c *Point) Definition() PointDescriptor { return c.descriptor.clone() }
-func (c *Point) Identity() jsonvalue.Value   { return c.identity }
-func (c *Point) ValidateValue(value jsonvalue.Value) error {
+func (c *Point) Identity() framevalue.JSON   { return c.identity }
+func (c *Point) ValidateValue(value framevalue.JSON) error {
 	if err := value.Validate(); err != nil {
 		return err
 	}
-	return c.value.Validate(value.JSON())
+	return c.value.Validate(value.Bytes())
 }
 
 // Applicability uses a frozen caller projection so it cannot discover or mutate
@@ -121,16 +121,16 @@ func (c *Point) Applicable(context PointContext) (bool, error) {
 	if context.Target.Scope != c.descriptor.Scope {
 		return false, errors.New("point: target scope differs from its contract")
 	}
-	attributes, err := jsonvalue.Parse(context.Attributes)
+	attributes, err := framevalue.ParseJSON(context.Attributes)
 	if err != nil {
 		return false, err
 	}
-	context.Attributes = attributes.JSON()
-	input, err := jsonvalue.Encode(context)
+	context.Attributes = attributes.Bytes()
+	input, err := framevalue.EncodeJSON(context)
 	if err != nil {
 		return false, err
 	}
-	if err := c.applicability.Validate(input.JSON()); err != nil {
+	if err := c.applicability.Validate(input.Bytes()); err != nil {
 		if errors.Is(err, ErrLimit) {
 			return false, err
 		}
@@ -141,7 +141,7 @@ func (c *Point) Applicable(context PointContext) (bool, error) {
 
 type PointValue struct {
 	Key  string
-	Data jsonvalue.Value
+	Data framevalue.JSON
 }
 
 // Compose returns a detached, frozen value projection. Explicit decoration

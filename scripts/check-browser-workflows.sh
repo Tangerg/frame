@@ -13,7 +13,6 @@ go build -o "$work/authorhost" ./examples/authoring/cmd/authorhost
 go build -o "$work/document" ./examples/document/cmd/document
 
 npm run build --workspace @frame/sdk
-npm run build --workspace @frame/browser
 npm run build --workspace @frame/example-author-browser
 npm run build --workspace @frame/example-document-web
 

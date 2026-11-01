@@ -16,7 +16,7 @@ import (
 	"sync"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/integrity"
+	"github.com/Tangerg/frame/value"
 )
 
 type Limits struct {
@@ -33,7 +33,7 @@ func DefaultLimits() Limits {
 
 type Source struct {
 	Location      string
-	ArchiveDigest integrity.Digest
+	ArchiveDigest value.Digest
 }
 
 // Trust is supplied by the application. A digest fixes bytes but cannot decide
@@ -45,7 +45,7 @@ type Config struct {
 	Admission *frame.Admission
 	Limits    Limits
 	Trust     Trust
-	Retained  func(context.Context, integrity.Digest) (bool, error)
+	Retained  func(context.Context, value.Digest) (bool, error)
 }
 
 type Store struct {
@@ -56,9 +56,9 @@ type Store struct {
 	admission      *frame.Admission
 	limits         Limits
 	trust          Trust
-	retained       func(context.Context, integrity.Digest) (bool, error)
+	retained       func(context.Context, value.Digest) (bool, error)
 	mu             sync.Mutex
-	leases         map[integrity.Digest]int
+	leases         map[value.Digest]int
 	operations     int
 	closing        bool
 	closeAttempted bool
@@ -68,7 +68,7 @@ type Store struct {
 }
 
 type Release struct {
-	Digest   integrity.Digest
+	Digest   value.Digest
 	Manifest Manifest
 	Lock     Lock
 }
@@ -94,7 +94,7 @@ func Open(config Config) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	store := &Store{directory: directory, admission: config.Admission, limits: config.Limits, trust: config.Trust, retained: config.Retained, leases: map[integrity.Digest]int{}, changed: make(chan struct{}), closeDone: make(chan struct{})}
+	store := &Store{directory: directory, admission: config.Admission, limits: config.Limits, trust: config.Trust, retained: config.Retained, leases: map[value.Digest]int{}, changed: make(chan struct{}), closeDone: make(chan struct{})}
 	if err := store.openOwner(); err != nil {
 		return nil, err
 	}
@@ -174,7 +174,7 @@ func (s *Store) ImportDirectoryHeld(ctx context.Context, directory string) (leas
 
 // ImportArchive accepts only a digest-pinned, completely read archive. An HTTPS
 // fetcher may supply a private temporary file; networking is application policy.
-func (s *Store) ImportArchiveHeld(ctx context.Context, fileName string, expected integrity.Digest) (lease *Lease, err error) {
+func (s *Store) ImportArchiveHeld(ctx context.Context, fileName string, expected value.Digest) (lease *Lease, err error) {
 	done, err := s.beginOperation(false)
 	if err != nil {
 		return nil, err
@@ -205,7 +205,7 @@ func (s *Store) ImportArchiveHeld(ctx context.Context, fileName string, expected
 	if err != nil {
 		return nil, err
 	}
-	if integrity.Hash(data) != expected {
+	if value.Hash(data) != expected {
 		return nil, ErrIntegrity
 	}
 	archive, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
@@ -250,7 +250,7 @@ func (s *Store) ImportArchiveHeld(ctx context.Context, fileName string, expected
 	return s.publishHeld(ctx, staged, Source{Location: fileName, ArchiveDigest: expected})
 }
 
-func (s *Store) Inspect(ctx context.Context, digest integrity.Digest) (Release, error) {
+func (s *Store) Inspect(ctx context.Context, digest value.Digest) (Release, error) {
 	done, err := s.beginOperation(false)
 	if err != nil {
 		return Release{}, err
@@ -259,7 +259,7 @@ func (s *Store) Inspect(ctx context.Context, digest integrity.Digest) (Release, 
 	return s.inspect(ctx, digest)
 }
 
-func (s *Store) inspect(ctx context.Context, digest integrity.Digest) (Release, error) {
+func (s *Store) inspect(ctx context.Context, digest value.Digest) (Release, error) {
 	if digest.Validate() != nil {
 		return Release{}, ErrInvalid
 	}
@@ -285,7 +285,7 @@ type Lease struct {
 	closed  bool
 }
 
-func (s *Store) Acquire(ctx context.Context, digest integrity.Digest) (_ *Lease, err error) {
+func (s *Store) Acquire(ctx context.Context, digest value.Digest) (_ *Lease, err error) {
 	done, err := s.beginOperation(false)
 	if err != nil {
 		return nil, err
@@ -363,7 +363,7 @@ func (l *Lease) Close() error {
 	return nil
 }
 
-func (s *Store) Remove(ctx context.Context, digest integrity.Digest) (err error) {
+func (s *Store) Remove(ctx context.Context, digest value.Digest) (err error) {
 	done, err := s.beginOperation(false)
 	if err != nil {
 		return err
@@ -464,7 +464,7 @@ func (s *Store) readArtifact(ctx context.Context, release Release, name string) 
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(data)) != found.Size || integrity.Hash(data) != found.Digest {
+	if int64(len(data)) != found.Size || value.Hash(data) != found.Digest {
 		return nil, ErrIntegrity
 	}
 	return data, nil
@@ -595,7 +595,7 @@ func (s *Store) validate(ctx context.Context, root *os.Root) (Release, error) {
 		if err != nil {
 			return err
 		}
-		if integrity.Hash(data) != artifact.Digest {
+		if value.Hash(data) != artifact.Digest {
 			return ErrIntegrity
 		}
 		delete(expected, name)

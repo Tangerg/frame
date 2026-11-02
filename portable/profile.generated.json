@@ -98,5 +98,177 @@
     "uuid": "uuid",
     "jsonPointer": "json-pointer",
     "relativeJSONPointer": "relative-json-pointer"
+  },
+  "schema": {
+    "dialect": "https://json-schema.org/draft/2020-12/schema",
+    "types": [
+      "null",
+      "boolean",
+      "object",
+      "array",
+      "number",
+      "integer",
+      "string"
+    ],
+    "keywords": {
+      "$comment": {
+        "value": "string",
+        "annotation": true
+      },
+      "$defs": {
+        "children": "map",
+        "annotation": true
+      },
+      "$ref": {
+        "value": "string"
+      },
+      "$schema": {
+        "value": "string",
+        "annotation": true
+      },
+      "additionalProperties": {
+        "children": "schema",
+        "edge": "descend"
+      },
+      "allOf": {
+        "children": "array",
+        "edge": "same"
+      },
+      "anyOf": {
+        "children": "array",
+        "edge": "same"
+      },
+      "const": {},
+      "contains": {
+        "children": "schema",
+        "edge": "descend"
+      },
+      "contentEncoding": {
+        "value": "string",
+        "annotation": true
+      },
+      "contentMediaType": {
+        "value": "string",
+        "annotation": true
+      },
+      "default": {
+        "annotation": true
+      },
+      "definitions": {
+        "children": "map",
+        "annotation": true
+      },
+      "deprecated": {
+        "value": "boolean",
+        "annotation": true
+      },
+      "description": {
+        "value": "string",
+        "annotation": true
+      },
+      "else": {
+        "children": "schema",
+        "edge": "same"
+      },
+      "enum": {
+        "value": "enum"
+      },
+      "examples": {
+        "value": "array",
+        "annotation": true
+      },
+      "exclusiveMaximum": {
+        "value": "number"
+      },
+      "exclusiveMinimum": {
+        "value": "number"
+      },
+      "format": {
+        "value": "string"
+      },
+      "if": {
+        "children": "schema",
+        "edge": "same"
+      },
+      "items": {
+        "children": "schema",
+        "edge": "descend"
+      },
+      "maxItems": {
+        "value": "size"
+      },
+      "maxLength": {
+        "value": "size"
+      },
+      "maxProperties": {
+        "value": "size"
+      },
+      "maximum": {
+        "value": "number"
+      },
+      "minItems": {
+        "value": "size"
+      },
+      "minLength": {
+        "value": "size"
+      },
+      "minProperties": {
+        "value": "size"
+      },
+      "minimum": {
+        "value": "number"
+      },
+      "multipleOf": {
+        "value": "positive-number"
+      },
+      "not": {
+        "children": "schema",
+        "edge": "same"
+      },
+      "oneOf": {
+        "children": "array",
+        "edge": "same"
+      },
+      "pattern": {
+        "value": "string"
+      },
+      "patternProperties": {
+        "children": "map",
+        "edge": "descend"
+      },
+      "properties": {
+        "children": "map",
+        "edge": "descend"
+      },
+      "propertyNames": {
+        "children": "schema",
+        "edge": "descend"
+      },
+      "readOnly": {
+        "value": "boolean",
+        "annotation": true
+      },
+      "required": {
+        "value": "required"
+      },
+      "then": {
+        "children": "schema",
+        "edge": "same"
+      },
+      "title": {
+        "value": "string",
+        "annotation": true
+      },
+      "type": {
+        "value": "types"
+      },
+      "uniqueItems": {
+        "value": "boolean"
+      },
+      "writeOnly": {
+        "value": "boolean",
+        "annotation": true
+      }
+    }
   }
 }

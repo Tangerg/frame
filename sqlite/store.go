@@ -4,19 +4,12 @@ package sqlite
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
-	"path/filepath"
-	"slices"
-	"strings"
 	"sync"
-	"time"
 
 	"github.com/Tangerg/frame"
 	framevalue "github.com/Tangerg/frame/value"
@@ -40,11 +33,6 @@ const (
 	pragmaEnabled          = 1
 	pragmaDisabled         = 0
 )
-
-type pragmaRequirement struct {
-	query string
-	want  int
-}
 
 type Reader interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
@@ -121,172 +109,6 @@ CREATE TABLE frame_realms (id TEXT NOT NULL,epoch TEXT NOT NULL,operation_id TEX
 CREATE TABLE frame_exit_proofs (attempt_id TEXT NOT NULL REFERENCES frame_attempts(id),scope TEXT NOT NULL,proof_id TEXT NOT NULL,evidence BLOB NOT NULL,PRIMARY KEY(attempt_id,proof_id),UNIQUE(attempt_id,scope));
 ` + realmReceiptSchema
 
-// Open returns a sealed Store together with an error only when its original
-// cleanup is unconfirmed. That Store permits Close and identity diagnostics,
-// not database work.
-func Open(ctx context.Context, config Config) (result *Store, err error) {
-	if config.Admission == nil || config.Path == "" || config.Path == ":memory:" {
-		return nil, errors.New("sqlite: a file path and the host admission are required")
-	}
-	path, err := filepath.Abs(config.Path)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return nil, err
-	}
-	parent, err := filepath.EvalSymlinks(filepath.Dir(path))
-	if err != nil {
-		return nil, err
-	}
-	path = filepath.Join(parent, filepath.Base(path))
-	if info, statErr := os.Lstat(path); statErr == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
-		return nil, errors.New("sqlite: database must be a regular file")
-	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-		return nil, statErr
-	}
-	lock, err := acquireAuthority(path)
-	if err != nil {
-		return nil, err
-	}
-	store := &Store{lock: lock, admission: config.Admission, owners: make(map[string]*Owner), maxRequestBytes: config.MaxRequestBytes, maxSubmissions: config.MaxSubmissionsPerOwner, projectInstallation: config.ProjectInstallation}
-	store.control = &Owner{store: store, id: "frame.installations"}
-	defer func() {
-		if err != nil {
-			err = errors.Join(err, store.Close())
-			select {
-			case <-store.closeDone:
-			default:
-				result = store
-			}
-		}
-	}()
-	if store.maxRequestBytes == 0 {
-		store.maxRequestBytes = defaultMaxRequestBytes
-	}
-	if store.maxRequestBytes < 1 {
-		return nil, errors.New("sqlite: request byte limit must be positive")
-	}
-	if store.maxSubmissions == 0 {
-		store.maxSubmissions = defaultMaxSubmissions
-	}
-	if store.maxSubmissions < 1 {
-		return nil, errors.New("sqlite: submission capacity must be positive")
-	}
-	owners := slices.Clone(config.Owners)
-	slices.SortFunc(owners, func(a, b OwnerSchema) int { return strings.Compare(a.ID, b.ID) })
-	statements := []string{schema}
-	declarations := schema
-	for _, owner := range owners {
-		if !validID(owner.ID) || strings.HasPrefix(owner.ID, "frame.") || owner.References == nil {
-			return nil, errors.New("sqlite: owner requires an identity and a reference reader")
-		}
-		if _, duplicate := store.owners[owner.ID]; duplicate {
-			return nil, errors.New("sqlite: duplicate owner")
-		}
-		store.owners[owner.ID] = &Owner{store: store, id: owner.ID, references: owner.References}
-		statements = append(statements, owner.Statements...)
-		declarations += "\n-- owner " + owner.ID + "\n" + strings.Join(owner.Statements, ";\n")
-	}
-	digest := framevalue.Hash([]byte(declarations))
-	expectedShape, err := schemaShape(ctx, statements)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: owner schema: %w", err)
-	}
-	store.db, err = sql.Open("sqlite", storeDataSource(path))
-	if err != nil {
-		return nil, err
-	}
-	// database/sql exposes a single-row error via Scan only. A canceled pool
-	// query produces a detached immutable error row without opening a connection.
-	expired, cancel := context.WithCancel(context.Background())
-	cancel()
-	store.expiredTransactionRow = store.db.QueryRowContext(expired, "")
-	store.db.SetMaxOpenConns(1)
-	store.db.SetMaxIdleConns(1)
-	var journal string
-	if err := store.db.QueryRowContext(ctx, `PRAGMA journal_mode=WAL`).Scan(&journal); err != nil {
-		return nil, err
-	}
-	if journal != "wal" {
-		return nil, errors.New("sqlite: wal was not enabled")
-	}
-	for _, requirement := range []pragmaRequirement{
-		{query: "PRAGMA synchronous", want: synchronousFull},
-		{query: "PRAGMA read_uncommitted", want: pragmaDisabled},
-		{query: "PRAGMA foreign_keys", want: pragmaEnabled},
-	} {
-		var got int
-		if err := store.db.QueryRowContext(ctx, requirement.query).Scan(&got); err != nil {
-			return nil, err
-		}
-		if got != requirement.want {
-			return nil, fmt.Errorf("sqlite: %s was not applied", requirement.query)
-		}
-	}
-	err = store.transaction(ctx, func(tx Executor) error {
-		actualShape, err := readSchemaShape(ctx, tx)
-		if err != nil {
-			return err
-		}
-		if actualShape.IsZero() {
-			if _, err := tx.ExecContext(ctx, schema); err != nil {
-				return err
-			}
-			var random [24]byte
-			if _, err := rand.Read(random[:]); err != nil {
-				return err
-			}
-			store.id = hex.EncodeToString(random[:])
-			store.epoch = 1
-			if _, err := tx.ExecContext(ctx, `INSERT INTO frame_meta VALUES(1,?,?,1)`, store.id, digest); err != nil {
-				return err
-			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO frame_owners(id) VALUES(?)`, store.control.id); err != nil {
-				return err
-			}
-			for _, owner := range owners {
-				for _, statement := range owner.Statements {
-					if _, err := tx.ExecContext(ctx, statement); err != nil {
-						return err
-					}
-				}
-				if _, err := tx.ExecContext(ctx, `INSERT INTO frame_owners(id) VALUES(?)`, owner.ID); err != nil {
-					return err
-				}
-			}
-			return nil
-		}
-		if actualShape != expectedShape {
-			return errors.New("sqlite: incompatible database schema; open a fresh data directory")
-		}
-		var storedDigest framevalue.Digest
-		if err := tx.QueryRowContext(ctx, `SELECT store_id,schema_digest,epoch FROM frame_meta WHERE singleton=1`).Scan(&store.id, &storedDigest, &store.epoch); err != nil {
-			return fmt.Errorf("sqlite: incompatible schema: %w", err)
-		}
-		if storedDigest != digest {
-			return errors.New("sqlite: incompatible owner schema; open a fresh data directory")
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM frame_realm_receipts`); err != nil {
-			return err
-		}
-		store.epoch++
-		_, err = tx.ExecContext(ctx, `UPDATE frame_meta SET epoch=? WHERE singleton=1`, store.epoch)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	var unresolved int
-	if err := store.db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM frame_submissions WHERE state=? OR synchronized=0)+(SELECT count(*) FROM frame_attempts WHERE state IN (?,?))+(SELECT count(*) FROM frame_use_approvals WHERE state=?)`, submissionPrepared, attemptApproved, attemptHandoff, useApproved).Scan(&unresolved); err != nil {
-		return nil, err
-	}
-	if unresolved != 0 {
-		store.admission.RequireRecovery(ErrIndeterminate)
-	}
-	return store, nil
-}
-
 func schemaShape(ctx context.Context, statements []string) (framevalue.Digest, error) {
 	database, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
@@ -300,13 +122,6 @@ func schemaShape(ctx context.Context, statements []string) (framevalue.Digest, e
 		}
 	}
 	return readSchemaShape(ctx, database)
-}
-
-func storeDataSource(path string) string {
-	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String() + fmt.Sprintf(
-		"?_pragma=foreign_keys(%d)&_pragma=synchronous(%d)&_pragma=read_uncommitted(%d)&_pragma=busy_timeout(%d)",
-		pragmaEnabled, synchronousFull, pragmaDisabled, busyTimeout/time.Millisecond,
-	)
 }
 
 func readSchemaShape(ctx context.Context, executor Reader) (framevalue.Digest, error) {

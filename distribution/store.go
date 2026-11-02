@@ -169,8 +169,8 @@ func (s *Store) ImportDirectoryHeld(ctx context.Context, directory string) (leas
 	return s.publishHeld(ctx, staged, Source{Location: directory})
 }
 
-// ImportArchive accepts only a digest-pinned, completely read archive. An HTTPS
-// fetcher may supply a private temporary file; networking is application policy.
+// Networking and trust policy belong to the application. This operation keeps
+// the digest-pinned archive and its installed content under one original lease.
 func (s *Store) ImportArchiveHeld(ctx context.Context, fileName string, expected value.Digest) (lease *Lease, err error) {
 	done, err := s.beginOperation(false)
 	if err != nil {

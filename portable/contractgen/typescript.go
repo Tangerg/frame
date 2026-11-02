@@ -10,7 +10,36 @@ import (
 	"strings"
 )
 
-type typeScript struct{ graph *projection }
+const (
+	typeScriptNumber       = "JSONNumber"
+	typeScriptArray        = "Array"
+	typeScriptRecord       = "Record"
+	methodInputs           = "MethodInputs"
+	methodOutputs          = "MethodOutputs"
+	methodChunks           = "MethodChunks"
+	methodsConstant        = "METHODS"
+	capabilityConstant     = "CAPABILITY"
+	capabilityJSONConstant = "CAPABILITY_JSON"
+)
+
+type typeScript struct {
+	names      map[*projectionNode]string
+	usesNumber bool
+}
+
+func newTypeScript(graph *projection) *typeScript {
+	symbols := newSymbolTable(typeScriptNumber, typeScriptArray, typeScriptRecord, methodInputs, methodOutputs, methodChunks, methodsConstant, capabilityConstant, capabilityJSONConstant)
+	emitter := &typeScript{names: make(map[*projectionNode]string, len(graph.definitions))}
+	for _, name := range slices.Sorted(maps.Keys(graph.definitions)) {
+		emitter.names[graph.definitions[name]] = symbols.claim(name)
+	}
+	return emitter
+}
+
+func (t *typeScript) numberType() string {
+	t.usesNumber = true
+	return typeScriptNumber
+}
 
 func (t *typeScript) Definition(name string, node *projectionNode) string {
 	if node.kind == typeObject && !node.object.impossible() && node.reference == nil && len(node.allOf) == 0 && len(node.anyOf) == 0 && len(node.literals) == 0 && node.object.openness == objectClosed && !node.object.patterns && len(node.object.properties) > 0 {
@@ -47,13 +76,13 @@ func (t *typeScript) expression(node *projectionNode, inherited schemaType) stri
 	kind, contextKind := node.contextualKind(inherited)
 	var parts []string
 	if node.referencePath != "" {
-		name := t.graph.names[node.reference]
+		name := t.names[node.reference]
 		parts = append(parts, name)
 	}
 	if len(node.literals) > 0 {
 		literals := make([]string, len(node.literals))
 		for i, value := range node.literals {
-			literals[i] = literalType(value)
+			literals[i] = t.literalType(value)
 		}
 		parts = append(parts, unionOf(literals))
 	}
@@ -87,14 +116,14 @@ func (t *typeScript) keyword(kind, contextKind schemaType, node *projectionNode)
 	case typeString:
 		return "string"
 	case typeInteger, typeNumber:
-		return "JSONNumber"
+		return t.numberType()
 	case typeBoolean:
 		return "boolean"
 	case typeNull:
 		return "null"
 	case typeArray:
 		// Generic array syntax owns its grouping even for unions and intersections.
-		return "Array<" + t.TypeOf(node.items) + ">"
+		return typeScriptArray + "<" + t.TypeOf(node.items) + ">"
 	case typeObject:
 		return t.object(node)
 	default:
@@ -105,10 +134,10 @@ func (t *typeScript) keyword(kind, contextKind schemaType, node *projectionNode)
 		// Applicator keywords constrain only their instance kind. A nullable or
 		// unresolved reference must retain both that constraint and the other kinds.
 		if node.object.constrained() {
-			parts = append(parts, unionOf([]string{"string", "JSONNumber", "boolean", "null", "Array<unknown>", t.object(node)}))
+			parts = append(parts, unionOf([]string{"string", t.numberType(), "boolean", "null", typeScriptArray + "<unknown>", t.object(node)}))
 		}
 		if node.items != nil {
-			parts = append(parts, unionOf([]string{"string", "JSONNumber", "boolean", "null", "Record<string, unknown>", "Array<" + t.TypeOf(node.items) + ">"}))
+			parts = append(parts, unionOf([]string{"string", t.numberType(), "boolean", "null", typeScriptRecord + "<string, unknown>", typeScriptArray + "<" + t.TypeOf(node.items) + ">"}))
 		}
 		return intersectionOf(parts)
 	}
@@ -126,22 +155,22 @@ func (t *typeScript) object(node *projectionNode) string {
 	switch {
 	case node.object.patterns || node.object.openness == objectOpen:
 		if len(fields) == 0 {
-			return "Record<string, unknown>"
+			return typeScriptRecord + "<string, unknown>"
 		}
-		return object + " & Record<string, unknown>"
+		return object + " & " + typeScriptRecord + "<string, unknown>"
 	case node.object.openness == objectTyped:
 		members := []string{t.TypeOf(node.object.additional)}
 		for _, name := range t.propertyNames(node) {
 			members = append(members, t.TypeOf(node.object.property(name)))
 		}
-		index := "Record<string, " + unionOf(members) + ">"
+		index := typeScriptRecord + "<string, " + unionOf(members) + ">"
 		if len(fields) == 0 {
 			return index
 		}
 		return object + " & " + index
 	default:
 		if len(fields) == 0 {
-			return "Record<string, never>"
+			return typeScriptRecord + "<string, never>"
 		}
 		return object
 	}
@@ -154,10 +183,10 @@ func optionalMark(node *projectionNode, name string) string {
 	return "?"
 }
 
-func literalType(raw jsontext.Value) string {
+func (t *typeScript) literalType(raw jsontext.Value) string {
 	switch raw.Kind() {
 	case '0':
-		return "JSONNumber"
+		return t.numberType()
 	case '[':
 		var values []jsontext.Value
 		if err := json.Unmarshal(raw, &values); err != nil {
@@ -165,7 +194,7 @@ func literalType(raw jsontext.Value) string {
 		}
 		members := make([]string, len(values))
 		for i, value := range values {
-			members[i] = literalType(value)
+			members[i] = t.literalType(value)
 		}
 		return "[" + strings.Join(members, ", ") + "]"
 	case '{':
@@ -175,7 +204,7 @@ func literalType(raw jsontext.Value) string {
 		}
 		var fields []string
 		for _, name := range slices.Sorted(maps.Keys(values)) {
-			fields = append(fields, PropertyKey(name)+": "+literalType(values[name]))
+			fields = append(fields, PropertyKey(name)+": "+t.literalType(values[name]))
 		}
 		return "{ " + strings.Join(fields, "; ") + " }"
 	default:
@@ -198,6 +227,11 @@ func PropertyKey(name string) string {
 		return name
 	}
 	return TypeScriptStringLiteral(name)
+}
+
+// Computed keys preserve own data members even for JavaScript prototype names.
+func RuntimePropertyKey(name string) string {
+	return "[" + TypeScriptStringLiteral(name) + "]"
 }
 func QuoteAll(values []string) []string {
 	out := make([]string, len(values))

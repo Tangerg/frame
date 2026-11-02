@@ -11,6 +11,7 @@ import type {
   AcquireRequest,
   CloseProof,
   LocalPlan,
+  PlanAdmission,
   Poll,
   ProofAcknowledgement,
   PublicationRequest,
@@ -20,6 +21,7 @@ import type {
   ReconnectResult,
   RouteGrant,
   Snapshot,
+  SnapshotRequest,
   UseGrant,
   Withdrawal,
 } from "../protocol.generated.js";
@@ -146,8 +148,8 @@ export class HTTPControl implements HostControl {
     return value as T;
   }
 
-  validatePlan(plan: LocalPlan): Promise<void> {
-    return this.#request("validatePlan", plan);
+  admitPlan(plan: LocalPlan): Promise<PlanAdmission> {
+    return this.#request("admitPlan", plan);
   }
   ready(report: ReadyReport): Promise<PublicationResult> {
     return this.#request("ready", report);
@@ -161,8 +163,8 @@ export class HTTPControl implements HostControl {
   validateRoute(grant: RouteGrant): Promise<void> {
     return this.#request("validateRoute", grant);
   }
-  snapshot(points: readonly string[]): Promise<Snapshot> {
-    return this.#request("snapshot", points);
+  snapshot(request: SnapshotRequest): Promise<Snapshot> {
+    return this.#request("snapshot", request);
   }
   closeSnapshot(snapshotId: string): Promise<void> {
     return this.#request("closeSnapshot", snapshotId);

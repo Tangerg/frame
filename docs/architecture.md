@@ -38,9 +38,12 @@ The portable schema profile uses the published Scope JSON Schema library as a co
 
 The profile admits only `date`, `time`, `date-time`, `uuid`, `json-pointer` and
 `relative-json-pointer` formats. Unsupported format names are rejected when a
-descriptor is admitted. Go exports this inventory, its resource budgets and
-its regular-expression atom meanings into `portable/profile.generated.json`;
-the Node adapter consumes that projection. In particular, whitespace uses Go's
+descriptor is admitted. `portable.ProfileSchema` owns the dialect, keyword value
+shapes and schema-child topology, including whether an edge consumes instance
+depth. Go exports that declaration, the format inventory, resource budgets and
+regular-expression atom meanings into `portable/profile.generated.json`; the
+Node adapter consumes that projection while each runtime keeps its own mature
+predicate compiler. In particular, whitespace uses Go's
 ASCII character set, a dot excludes LF, and the end anchor requires the end of
 the entire string. Fixed repetitions remain bounded by the profile. Both
 runtimes execute `portable/testdata/schema-profile.json`, including Unicode,
@@ -55,6 +58,14 @@ See [contract generation](../portable/contractgen/README.md) for its public
 surface and projection guarantees.
 
 ## Restoring accepted work
+
+A declared export always identifies its original setup value. Dynamic Point
+publications have separate operation identities and may reuse a withdrawn name
+only in the live catalog. They never replace a declaration's setup slot or gain
+durable reconstruction through that name. Withdrawal prevents a new setup or
+declaration-root use from acquiring the original export; already accepted uses
+and dependent instances retain the object they originally received. Slow setup
+rechecks those original exports before activation and publication.
 
 The live execution path admits the original plan. A durable host can configure ReadAcceptedBinding once at composition. Its loader receives the record identity and the request's scope grant, authorizes that record, then reads the binding accepted by the original business transaction. Host.AcquireRecord consumes that evidence. A diagnostic BindingSnapshot on its own cannot be presented to the Host as a newly authorized operation. The document queue is a working example in examples/document/tasks.go.
 

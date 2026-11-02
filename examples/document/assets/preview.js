@@ -1,8 +1,9 @@
-// The package builder prepends the exact published Preview Point reference.
+// The package builder owns the declaration shared with the manifest.
+const point = Object.freeze({ ref: published.point });
 export default Object.freeze({
-  id: "preview",
+  id: published.unitId,
   imports: Object.freeze({}),
-  exports: Object.freeze({ preview: point }),
+  exports: Object.freeze({ [published.export]: point }),
   setup({ lifetime }) {
     const preview = Object.freeze({
       mount(element, document, theme, owner) {
@@ -19,6 +20,6 @@ export default Object.freeze({
         element.replaceChildren(frame);
       },
     });
-    return { preview: { metadata: { format: "html", priority: 10 }, value: preview } };
+    return { [published.export]: { metadata: published.metadata, value: preview } };
   },
 });

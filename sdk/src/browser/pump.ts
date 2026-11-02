@@ -1,31 +1,45 @@
 import { FrameError } from "../index.js";
-import { sameAuthority, type HostControl } from "./control.js";
 import { Runtime } from "./runtime.js";
 
 export interface PumpOptions {
   readonly intervalMilliseconds: number;
+  readonly preparationCapacity: number;
   onError(error: unknown): void;
 }
 
-/** The pending projection is complete; no missed event authorizes new work. */
+/** Pending plans stay at the Host until their original execution settles. */
 export class ControlPump {
   readonly #runtime: Runtime;
-  readonly #control: HostControl;
   readonly #options: PumpOptions;
+  readonly #stopping = new AbortController();
+  readonly #preparations = new Map<string, Promise<void>>();
   #polling?: Promise<void>;
+  #proofs?: Promise<void>;
+  #running?: Promise<void>;
+  #closing?: Promise<void>;
+  #failure?: { error: unknown };
 
-  constructor(runtime: Runtime, control: HostControl, options: PumpOptions) {
+  constructor(runtime: Runtime, options: PumpOptions) {
     if (
       !Number.isSafeInteger(options.intervalMilliseconds) ||
       options.intervalMilliseconds < 1
     )
       throw new TypeError("poll interval must be a positive safe integer");
+    if (
+      !Number.isSafeInteger(options.preparationCapacity) ||
+      options.preparationCapacity < 1
+    )
+      throw new TypeError(
+        "preparation capacity must be a positive safe integer",
+      );
     this.#runtime = runtime;
-    this.#control = control;
-    this.#options = options;
+    this.#options = Object.freeze({ ...options });
   }
 
   synchronize(): Promise<void> {
+    if (this.#stopping.signal.aborted)
+      return Promise.reject(new FrameError("closed", "control pump is closed"));
+    this.#flushProofs();
     this.#polling ??= this.#synchronize().finally(() => {
       this.#polling = undefined;
     });
@@ -33,51 +47,133 @@ export class ControlPump {
   }
 
   async #synchronize(): Promise<void> {
-    if (this.#runtime.connection === "paused")
-      await this.#runtime.reconnect(this.#control);
-    const poll = await this.#control.poll();
-    if (
-      poll.realm.id !== this.#runtime.realm.id ||
-      poll.realm.epoch !== this.#runtime.realm.epoch
-    )
-      throw new FrameError(
-        "permission_denied",
-        "pending plans belong to another realm",
-      );
-    if (!sameAuthority(poll.authority, this.#runtime.authority))
-      throw new FrameError(
-        "unavailable",
-        "pending plans require authority revalidation",
-      );
-    for (const fence of poll.fences)
-      this.#runtime.fence(fence.scopeId, fence.scopeGeneration);
-    if (this.#runtime.connection === "connected") {
-      for (const plan of poll.plans) {
-        if (
-          poll.fences.some(
-            (fence) =>
-              fence.scopeId === plan.scopeId &&
-              fence.scopeGeneration === plan.scopeGeneration,
+    await this.#runtime.poll((plans) => {
+      if (this.#stopping.signal.aborted) return;
+      for (const plan of plans) {
+        if (this.#preparations.has(plan.execution.id)) continue;
+        if (this.#preparations.size >= this.#options.preparationCapacity) break;
+        const preparation = this.#runtime
+          .prepare(plan)
+          .then(
+            () => {},
+            (error) => this.#report(error),
           )
-        )
-          continue;
-        await this.#runtime.prepare(plan);
+          .finally(() => {
+            this.#preparations.delete(plan.execution.id);
+            this.#flushProofs();
+          });
+        this.#preparations.set(plan.execution.id, preparation);
       }
-    }
-    await this.#runtime.flushProofs();
+    });
+    this.#flushProofs();
   }
 
-  async run(signal: AbortSignal): Promise<void> {
-    while (!signal.aborted && this.#runtime.connection !== "closed") {
-      try {
-        await this.synchronize();
-      } catch (error) {
-        this.#runtime.disconnect();
-        if (!signal.aborted) this.#options.onError(error);
-      }
-      if (!signal.aborted)
-        await delay(this.#options.intervalMilliseconds, signal);
+  #flushProofs(): void {
+    if (
+      this.#proofs ||
+      this.#stopping.signal.aborted ||
+      this.#runtime.connection === "paused" ||
+      this.#runtime.pendingProofs.length === 0
+    )
+      return;
+    this.#proofs = this.#runtime
+      .flushProofs()
+      .catch((error) => this.#report(error))
+      .finally(() => {
+        this.#proofs = undefined;
+      });
+  }
+
+  #report(error: unknown): void {
+    if (this.#stopping.signal.aborted) return;
+    try {
+      this.#options.onError(error);
+    } catch (error) {
+      this.#failure ??= { error };
+      this.#stopping.abort(error);
     }
+  }
+
+  run(signal?: AbortSignal): Promise<void> {
+    if (this.#running)
+      return Promise.reject(
+        new FrameError("invalid_plan", "control pump is already running"),
+      );
+    if (this.#stopping.signal.aborted)
+      return Promise.reject(new FrameError("closed", "control pump is closed"));
+    this.#running = this.#run(signal);
+    return this.#running;
+  }
+
+  async #run(signal?: AbortSignal): Promise<void> {
+    let closing: Promise<void> | undefined;
+    const observeClose = () => {
+      closing ??= this.#closing;
+    };
+    const stop = () => {
+      // The finally block joins this same close, including its rejection.
+      closing ??= this.close();
+      void closing.catch(() => {});
+    };
+    signal?.addEventListener("abort", stop, { once: true });
+    this.#stopping.signal.addEventListener("abort", observeClose, {
+      once: true,
+    });
+    if (signal?.aborted) stop();
+    try {
+      while (
+        !this.#stopping.signal.aborted &&
+        this.#runtime.connection !== "closed"
+      ) {
+        try {
+          await this.synchronize();
+        } catch (error) {
+          this.#report(error);
+        }
+        await delay(this.#options.intervalMilliseconds, this.#stopping.signal);
+      }
+    } finally {
+      signal?.removeEventListener("abort", stop);
+      this.#stopping.signal.removeEventListener("abort", observeClose);
+      await (closing ?? this.close());
+    }
+  }
+
+  close(): Promise<void> {
+    this.#closing ??= this.#close().catch((error) => {
+      this.#closing = undefined;
+      throw error;
+    });
+    this.#stopping.abort();
+    return this.#closing;
+  }
+
+  async #close(): Promise<void> {
+    const [resources, ...work] = await Promise.allSettled([
+      this.#runtime.close(),
+      this.#polling,
+      this.#proofs,
+      ...this.#preparations.values(),
+    ]);
+    const failures: unknown[] = [];
+    if (this.#failure) failures.push(this.#failure.error);
+    for (const result of [resources, ...work])
+      if (result.status === "rejected") failures.push(result.reason);
+    if (
+      resources.status === "fulfilled" &&
+      resources.value.some((outcome) => outcome.status !== "released")
+    )
+      failures.push(
+        new FrameError(
+          "close_unconfirmed",
+          "original runtime resources have not released",
+        ),
+      );
+    if (failures.length)
+      throw new AggregateError(
+        failures,
+        "control pump shutdown did not complete",
+      );
   }
 }
 

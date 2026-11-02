@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -54,70 +53,20 @@ type controlResponse struct {
 	Error       string        `json:"error,omitempty"`
 }
 
-// Listen uses a private Unix socket. A runner has one local authority; remote
-// clients and authenticated multi-user execution are not this profile.
-func Listen(socket string) (net.Listener, error) {
-	if err := validateSocketPath(socket); err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(filepath.Dir(socket), 0700); err != nil {
-		return nil, err
-	}
-	directory, err := filepath.EvalSymlinks(filepath.Dir(socket))
-	if err != nil {
-		return nil, err
-	}
-	if err := verifyAuthorityDirectory(directory); err != nil {
-		return nil, err
-	}
-	socket = filepath.Join(directory, filepath.Base(socket))
-	if _, err := os.Lstat(socket); err == nil {
-		return nil, errors.New("runner: socket already exists")
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	listener, err := net.Listen("unix", socket)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(socket, 0600); err != nil {
-		_ = listener.Close()
-		return nil, err
-	}
-	return listener, nil
-}
-
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
-	socket, ok := listener.(*net.UnixListener)
-	if ctx == nil || !ok || socket == nil {
-		return frame.ErrInvalid
-	}
-	path := socket.Addr().String()
-	if err := validateSocketPath(path); err != nil {
-		return err
-	}
-	directory, err := filepath.EvalSymlinks(filepath.Dir(path))
+	ctx, owned, err := s.admitServe(ctx, listener)
 	if err != nil {
 		return err
 	}
-	if directory != s.config.Directory {
-		return errors.New("runner: listener is outside the owned state directory")
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSocket == 0 || info.Mode().Perm()&0077 != 0 {
-		return errors.New("runner: listener must be a private Unix socket")
-	}
-
-	ctx, cancel := context.WithCancel(ctx)
 	var workers sync.WaitGroup
 	slots := make(chan struct{}, s.config.MaxControlConnections)
 	stop := context.AfterFunc(ctx, func() { _ = listener.Close() })
 	defer stop()
-	defer workers.Wait()
-	defer cancel()
+	defer func() {
+		_ = listener.Close()
+		workers.Wait()
+		close(owned.served)
+	}()
 	for {
 		select {
 		case <-ctx.Done():
@@ -211,31 +160,7 @@ func (s *Server) handle(ctx context.Context, connection net.Conn, release func()
 			err = frame.ErrInvalid
 			break
 		}
-		live, attachErr := s.attach(*request.Attempt)
-		if attachErr != nil {
-			_ = s.writeResponse(connection, nil, attachErr)
-			return
-		}
-		if err := s.writeResponse(connection, nil, nil); err != nil {
-			_, _ = s.CloseAttempt(context.Background(), *request.Attempt)
-			return
-		}
-		if err := connection.SetDeadline(time.Time{}); err != nil {
-			_, _ = s.CloseAttempt(ctx, *request.Attempt)
-			return
-		}
-		release()
-		inputDone := make(chan struct{})
-		go func() {
-			_, _ = io.Copy(live.stdin, reader)
-			_ = live.stdin.Close()
-			_, _ = s.CloseAttempt(context.Background(), *request.Attempt)
-			close(inputDone)
-		}()
-		_, _ = io.Copy(connection, live.stdout)
-		_ = live.stdout.Close()
-		_ = connection.Close()
-		<-inputDone
+		s.serveAttachment(ctx, connection, reader, *request.Attempt, release)
 		return
 	default:
 		err = frame.ErrInvalid
@@ -247,33 +172,12 @@ func (s *Server) handle(ctx context.Context, connection net.Conn, release func()
 	_ = s.writeResponse(connection, result, err)
 }
 
-func (s *Server) Listen(socket string) (net.Listener, error) {
-	if err := validateSocketPath(socket); err != nil {
-		return nil, err
-	}
-	directory, err := filepath.EvalSymlinks(filepath.Dir(socket))
-	if err != nil {
-		return nil, err
-	}
-	if directory != s.config.Directory {
-		return nil, errors.New("runner: socket must be in the owned state directory")
-	}
-	if info, err := os.Lstat(socket); err == nil {
-		if info.Mode()&os.ModeSocket == 0 {
-			return nil, errors.New("runner: control path is not a socket")
-		}
-		if err := os.Remove(socket); err != nil {
-			return nil, err
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	return Listen(socket)
-}
-
-func (s *Server) attach(ref AttemptRef) (*process, error) {
+func (s *Server) attach(ref AttemptRef) (*attachment, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return nil, frame.ErrClosed
+	}
 	item, exists, err := s.lookupAttempt(ref.AttemptID)
 	if err != nil {
 		return nil, err
@@ -291,12 +195,12 @@ func (s *Server) attach(ref AttemptRef) (*process, error) {
 	if live == nil || live.closeState != processOpen {
 		return nil, frame.ErrClosed
 	}
-	if live.attached {
+	if live.stdout == nil {
 		return nil, ErrAttached
 	}
-	live.attached = true
-
-	return live, nil
+	attached := &attachment{stdin: live.stdin, stdout: live.stdout}
+	live.stdout = nil
+	return attached, nil
 }
 
 type Client struct{ socket string }

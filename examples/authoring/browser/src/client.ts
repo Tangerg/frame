@@ -93,14 +93,14 @@ export function connect(bootstrap: Bootstrap) {
       );
     },
   });
-  const stop = new AbortController();
-  const pump = new ControlPump(runtime, control, {
+  const pump = new ControlPump(runtime, {
     intervalMilliseconds: 5,
+    preparationCapacity: 4,
     onError(error) {
       errors.push(error);
     },
   });
-  const pumping = pump.run(stop.signal);
+  const pumping = pump.run().catch((error) => errors.push(error));
   const request = async (path: string, input?: unknown): Promise<Response> =>
     fetch(new URL(path, bootstrap.origin), {
       method: input === undefined ? "GET" : "POST",
@@ -127,12 +127,12 @@ export function connect(bootstrap: Bootstrap) {
     async start(reference: DocumentRef): Promise<ConversionTask> {
       const execution = executions.get("converter");
       if (!execution) throw new Error("activate the Converter before using it");
-      // Capture both Points once. Ordering is explicit application policy.
-      const snapshot = await control.snapshot([
-        converters.ref.name,
-        validators.ref.name,
-      ]);
+      const capture = {
+        operationId: crypto.randomUUID(),
+        points: [converters.ref.name, validators.ref.name],
+      };
       try {
+        const snapshot = await control.snapshot(capture);
         const conversion = select(
           snapshot,
           converters,
@@ -184,7 +184,7 @@ export function connect(bootstrap: Bootstrap) {
         return { result, close: (signal) => use.close(signal) };
       } catch (error) {
         try {
-          await control.closeSnapshot(snapshot.id);
+          await control.closeSnapshot(capture.operationId);
         } catch (closeFailure) {
           throw new AggregateError(
             [error, closeFailure],
@@ -195,11 +195,8 @@ export function connect(bootstrap: Bootstrap) {
       }
     },
     async close(): Promise<void> {
-      stop.abort();
+      await pump.close();
       await pumping;
-      const outcomes = await runtime.close();
-      if (outcomes.some((outcome) => outcome.status !== "released"))
-        throw new Error("original author execution did not release");
       await transport.close();
     },
   };

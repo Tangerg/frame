@@ -16,6 +16,7 @@ import (
 )
 
 const maximumTaskBytes = 32 << 20
+const maximumConvertedHTMLBytes = 8 << 20
 const taskOwnerID = "document.tasks"
 const taskPolicy = "documents.convert-and-validate/1"
 
@@ -116,7 +117,7 @@ func (a *App) Reference(ctx context.Context, path string) (DocumentRef, error) {
 	}
 	var configuration FileConfiguration
 	for _, record := range records {
-		if record.ID == "files" {
+		if record.ID == fileInstallationID {
 			if err := json.Unmarshal(record.Configuration, &configuration); err != nil {
 				return DocumentRef{}, err
 			}
@@ -386,7 +387,7 @@ func (a *App) convert(ctx context.Context, task Task, use *frame.Use) (TaskResul
 	if !converted && runErr == nil {
 		runErr = frame.ErrUnavailable
 	}
-	if len(result.Converted.HTML) > 8<<20 {
+	if len(result.Converted.HTML) > maximumConvertedHTMLBytes {
 		runErr = frame.ErrCapacity
 	}
 	return result, runErr

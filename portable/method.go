@@ -47,7 +47,6 @@ type Method struct {
 	stream     Schema
 }
 
-// ValidToken reports whether a portable name fits the profile and has no spaces or controls.
 func ValidToken(value string) bool {
 	return value != "" && len(value) <= ProfileLimits().MaxTokenBytes && utf8.ValidString(value) && !strings.ContainsFunc(value, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"reflect"
 	"slices"
 
@@ -109,149 +108,6 @@ func (p *BindingPlan) Snapshot() (BindingSnapshot, error) {
 		return BindingSnapshot{}, fmt.Errorf("%w: dynamic publication has no stable reconstruction contract", ErrInvalid)
 	}
 	return p.binding.Clone(), nil
-}
-
-func snapshotMetadata(value any) (any, error) {
-	if value == nil {
-		return nil, nil
-	}
-	if admitted, ok := value.(framevalue.JSON); ok {
-		return admitted, admitted.Validate()
-	}
-	type visit struct {
-		kind reflect.Kind
-		ptr  uintptr
-	}
-	active := make(map[visit]bool)
-	var clone func(reflect.Value) (reflect.Value, error)
-	clone = func(value reflect.Value) (reflect.Value, error) {
-		switch value.Kind() {
-		case reflect.Interface:
-			if value.IsNil() {
-				return reflect.Zero(value.Type()), nil
-			}
-			inner, err := clone(value.Elem())
-			if err != nil {
-				return reflect.Value{}, err
-			}
-			result := reflect.New(value.Type()).Elem()
-			result.Set(inner)
-			return result, nil
-		case reflect.Bool, reflect.String, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			return value, nil
-		case reflect.Float32, reflect.Float64:
-			if math.IsInf(value.Float(), 0) || math.IsNaN(value.Float()) {
-				return reflect.Value{}, ErrInvalid
-			}
-			return value, nil
-		case reflect.Struct:
-			result := reflect.New(value.Type()).Elem()
-			for i := range value.NumField() {
-				if !result.Field(i).CanSet() || !value.Type().Field(i).IsExported() {
-					return reflect.Value{}, fmt.Errorf("%w: metadata contains inaccessible fields", ErrInvalid)
-				}
-				item, err := clone(value.Field(i))
-				if err != nil {
-					return reflect.Value{}, err
-				}
-				result.Field(i).Set(item)
-			}
-			return result, nil
-		case reflect.Array:
-			result := reflect.New(value.Type()).Elem()
-			for i := range value.Len() {
-				item, err := clone(value.Index(i))
-				if err != nil {
-					return reflect.Value{}, err
-				}
-				result.Index(i).Set(item)
-			}
-			return result, nil
-		case reflect.Slice, reflect.Map:
-			if value.IsNil() {
-				return reflect.Zero(value.Type()), nil
-			}
-			key := visit{value.Kind(), value.Pointer()}
-			if active[key] {
-				return reflect.Value{}, fmt.Errorf("%w: cyclic metadata", ErrInvalid)
-			}
-			active[key] = true
-			defer delete(active, key)
-			if value.Kind() == reflect.Slice {
-				result := reflect.MakeSlice(value.Type(), value.Len(), value.Len())
-				for i := range value.Len() {
-					item, err := clone(value.Index(i))
-					if err != nil {
-						return reflect.Value{}, err
-					}
-					result.Index(i).Set(item)
-				}
-				return result, nil
-			}
-			if value.Type().Key().Kind() != reflect.String {
-				return reflect.Value{}, fmt.Errorf("%w: metadata map keys must be strings", ErrInvalid)
-			}
-			result := reflect.MakeMapWithSize(value.Type(), value.Len())
-			iterator := value.MapRange()
-			for iterator.Next() {
-				item, err := clone(iterator.Value())
-				if err != nil {
-					return reflect.Value{}, err
-				}
-				result.SetMapIndex(iterator.Key(), item)
-			}
-			return result, nil
-		default:
-			return reflect.Value{}, fmt.Errorf("%w: metadata contains a live or unsupported value", ErrInvalid)
-		}
-	}
-	copy, err := clone(reflect.ValueOf(value))
-	if err != nil {
-		return nil, err
-	}
-	return copy.Interface(), nil
-}
-
-func decodeMetadata(definition *declaration, value framevalue.JSON) (any, error) {
-	if err := value.Validate(); err != nil {
-		return nil, err
-	}
-	if definition.metadataSchema != nil {
-		if err := definition.metadataSchema.Validate(value.Bytes()); err != nil {
-			return nil, fmt.Errorf("point metadata: %w", err)
-		}
-	}
-	if definition.metadataType == nil || definition.metadataType == reflect.TypeFor[framevalue.JSON]() {
-		return value, nil
-	}
-	destination := reflect.New(definition.metadataType)
-	if err := framevalue.DecodeValue(value.Bytes(), destination.Interface(), "metadata"); err != nil {
-		return nil, err
-	}
-	return snapshotMetadata(destination.Elem().Interface())
-}
-
-func prepareMetadata(definition *declaration, metadata any) (any, error) {
-	if value, ok := metadata.(framevalue.JSON); ok {
-		return decodeMetadata(definition, value)
-	}
-	if definition.metadataSchema != nil {
-		value, err := framevalue.EncodeJSON(metadata)
-		if err != nil {
-			return nil, err
-		}
-		return decodeMetadata(definition, value)
-	}
-	if definition.metadataType != nil {
-		if metadata == nil {
-			if definition.metadataType.Kind() != reflect.Interface {
-				return nil, ErrContractMismatch
-			}
-		} else if !reflect.TypeOf(metadata).AssignableTo(definition.metadataType) {
-			return nil, ErrContractMismatch
-		}
-	}
-	return snapshotMetadata(metadata)
 }
 
 func declaresPoint(unit UnitDeclaration, contract ContractRef) bool {
@@ -361,8 +217,11 @@ func (h *Host) withdrawLocked(value *publication) {
 }
 
 func (h *Host) withdrawInstanceLocked(instance *Instance) {
-	for _, value := range instance.exports {
+	for _, value := range instance.setupExports {
 		h.withdrawLocked(value)
+	}
+	for _, operation := range instance.publicationOperations {
+		h.withdrawLocked(operation.publication)
 	}
 }
 
@@ -559,6 +418,16 @@ func (h *Host) validatePlanLocked(plan *BindingPlan) error {
 			if actual != nil && !actual.retiring && !sameUnitBinding(actual.binding, bound) {
 				return fmt.Errorf("%w: unit acquired another setup binding", ErrStaleBinding)
 			}
+			if actual == nil || !actual.readyDone {
+				if err := h.validateReadyImportsLocked(bound, plan.realm); err != nil {
+					return err
+				}
+			}
+		}
+		for _, source := range plan.binding.Roots {
+			if err := h.validateReadyExportLocked(source, plan.realm); err != nil {
+				return err
+			}
 		}
 		if err := h.validateBindingReadsLocked(plan.preparation.reads); err != nil {
 			return err
@@ -596,6 +465,37 @@ func (h *Host) validatePlanLocked(plan *BindingPlan) error {
 		}
 	}
 	return nil
+}
+
+func (h *Host) validateReadyImportsLocked(bound UnitBinding, realm RealmID) error {
+	for _, requirement := range bound.Imports {
+		for _, provider := range requirement.Providers {
+			if err := h.validateReadyExportLocked(provider, realm); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (h *Host) validateReadyExportLocked(source ExportRef, realm RealmID) error {
+	unit, _, err := h.unitLocked(source.Unit())
+	if err != nil {
+		return err
+	}
+	realm, err = h.realmLocked(unit.Declaration, realm)
+	if err != nil {
+		return err
+	}
+	instance := h.instances[instanceKey{source: source.Unit(), realm: realm}]
+	if instance == nil || !instance.readyDone {
+		return nil
+	}
+	if instance.retiring || instance.readyErr != nil {
+		return ErrUnavailable
+	}
+	_, err = instance.setupExportLocked(source)
+	return err
 }
 
 func (h *Host) ValidatePlanUnder(ctx context.Context, plan *BindingPlan) (BindingSnapshot, error) {
@@ -755,7 +655,7 @@ func (h *Host) Publish(ctx context.Context, instanceID, operationID string, valu
 			return ErrUnavailable
 		}
 		if original := instance.publicationOperations[operationID]; original != nil {
-			if original.request != fingerprint || original.withdrawn {
+			if original.request != fingerprint || !original.publication.visible {
 				return ErrStaleBinding
 			}
 			result = Publication{ID: original.publication.id, Source: original.publication.source, InstanceID: instance.id, Revision: original.publication.revision}
@@ -767,16 +667,27 @@ func (h *Host) Publish(ctx context.Context, instanceID, operationID string, valu
 		if h.publicationCountLocked() >= h.maxPublications {
 			return ErrCapacity
 		}
-		if old := instance.exports[value.Name]; old != nil && old.visible {
+		if instance.hasVisiblePublicationLocked(value.Name) {
 			return fmt.Errorf("%w: export is already published", ErrInvalid)
 		}
 		h.publishLocked(publication)
-		instance.exports[value.Name] = publication
 		instance.publicationOperations[operationID] = &publicationOperation{request: fingerprint, publication: publication}
 		result = Publication{ID: publication.id, Source: publication.source, InstanceID: instance.id, Revision: publication.revision}
 		return nil
 	})
 	return result, err
+}
+
+func (i *Instance) hasVisiblePublicationLocked(name string) bool {
+	if original := i.setupExports[name]; original != nil && original.visible {
+		return true
+	}
+	for _, operation := range i.publicationOperations {
+		if value := operation.publication; value.source.Export == name && value.visible {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Host) Publication(instanceID, operationID string) (Publication, error) {
@@ -787,7 +698,7 @@ func (h *Host) Publication(instanceID, operationID string) (Publication, error) 
 		return Publication{}, ErrUnavailable
 	}
 	operation := instance.publicationOperations[operationID]
-	if operation == nil || operation.withdrawn {
+	if operation == nil || !operation.publication.visible {
 		return Publication{}, ErrUnavailable
 	}
 	return Publication{ID: operation.publication.id, Source: operation.publication.source, InstanceID: instanceID, Revision: operation.publication.revision}, nil
@@ -800,11 +711,6 @@ func (h *Host) Withdraw(ctx context.Context, id string) error {
 		for _, store := range h.catalog {
 			if value := store.members[id]; value != nil {
 				h.withdrawLocked(value)
-				for _, operation := range value.instance.publicationOperations {
-					if operation.publication == value {
-						operation.withdrawn = true
-					}
-				}
 				return nil
 			}
 		}

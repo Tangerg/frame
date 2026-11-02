@@ -79,22 +79,25 @@ export class ProofOutbox {
     return this.#reserved.size === 0;
   }
 
-  acknowledge(proofId: string): void {
-    const entry = this.#pending.get(proofId);
-    if (!entry) return;
-    this.#pending.delete(proofId);
-    this.#reserved.delete(entry.reservation);
-  }
-
-  flush(control: HostControl, authority: Authority): Promise<void> {
+  flush(
+    control: HostControl,
+    authority: Authority,
+    acknowledged: (proof: CloseProof) => void,
+  ): Promise<void> {
     if (this.#sending) return this.#sending;
-    this.#sending = this.#flush(control, authority).finally(() => {
-      this.#sending = undefined;
-    });
+    this.#sending = this.#flush(control, authority, acknowledged).finally(
+      () => {
+        this.#sending = undefined;
+      },
+    );
     return this.#sending;
   }
 
-  async #flush(control: HostControl, authority: Authority): Promise<void> {
+  async #flush(
+    control: HostControl,
+    authority: Authority,
+    acknowledged: (proof: CloseProof) => void,
+  ): Promise<void> {
     for (const entry of this.#pending.values()) {
       const ack = await control.prove(entry.proof);
       if (
@@ -108,7 +111,9 @@ export class ProofOutbox {
           "host has not durably acknowledged this exit proof",
         );
       }
-      this.acknowledge(ack.proofId);
+      this.#pending.delete(ack.proofId);
+      this.#reserved.delete(entry.reservation);
+      acknowledged(entry.proof);
     }
   }
 }

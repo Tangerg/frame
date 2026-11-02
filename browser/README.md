@@ -28,8 +28,15 @@ returns the published control DTO. The application owns TLS, origin policy and
 bootstrap authentication. The bearer credential belongs to a Realm and must
 never appear in plugin configuration, artifact URLs or logs.
 
-`Poll` returns complete pending plans and fences. `Ready` observes preparation;
-only the Core Host publishes exports. Point acquisition retains the original
+`Poll` returns complete pending plans and fences without transferring execution
+responsibility. The Runtime reserves its original execution and exit owner, then
+calls `AdmitPlan` before loading code. `admitted` permits preparation;
+`cleanupRequired` permits only the original exit proof. `notAdmitted` and `settled`
+observe the original Host's durable settlement and let an unstarted Runtime
+release its temporary reservation. A transport or authentication error provides
+no such observation. The same LocalPlan resolves a lost admission reply without
+inventing another execution. `Ready` observes preparation; only the Core Host
+publishes exports. Point acquisition retains the original
 multi-Point Snapshot and candidate provenance. Trusted consumers use
 `AcquirePlan` for a fresh declaration plan created in the target Realm; its
 candidate and setup premises remain subject to the Core's final admission.
@@ -41,26 +48,44 @@ and direct grant acceptance materialize that same local owner. Replaying an
 accepted operation observes its historical receipt; it does not revive a
 released Use. A new materialization must pass current Host validation.
 
-Each wire Snapshot is a Realm-owned selection lease. `Acquire` takes it exactly
-once when the operation is admitted, including an attempt whose selection later
-fails. Repeating that operation ID observes its original grant or refusal; a new
-selection needs a new Snapshot. `CloseSnapshot` discards a pending lease and is
-idempotent after close or acquisition. It does not cancel an admitted acquisition
-or release a Use. Close abandoned and read-only snapshots explicitly. Realm
-sealing and cleanup-only reconnect discard all of that Realm's pending leases.
-Concurrent Snapshot completion cannot insert a lease after sealing.
+Each wire Snapshot is a Realm-owned selection lease. Callers create
+`SnapshotRequest{OperationID, Points}` before dispatch; the returned Snapshot ID
+is that original operation ID. The Bridge reserves capacity before capturing
+the Host's selection. Concurrent requests and retries after a lost response
+observe the same capture and candidate tokens. Changing the requested Points
+under that ID is a conflict; a different Realm cannot observe or close it.
+Snapshot is a mutating control operation, so an incomplete response leaves an
+unknown outcome rather than permission to capture again.
+
+`Acquire` takes the original lease exactly once when its operation is admitted,
+including an attempt whose selection later fails. Repeating that acquisition ID
+observes its original grant or refusal. Retrying a Snapshot after consumption or
+close returns `ErrClosed`; its receipt can never reconstruct candidate provenance.
+A fresh selection requires a fresh Snapshot operation ID.
+
+`CloseSnapshot` discards a pending lease and is idempotent after close or
+acquisition. It accepts the caller-known ID even when the capture reply was lost.
+A close that arrives before capture records a terminal receipt, so a delayed
+request cannot recreate the lease after cleanup was acknowledged. Closing does
+not cancel an admitted acquisition or release a Use. Close abandoned and read-only
+snapshots explicitly. Realm sealing and cleanup-only reconnect discard all of
+that Realm's pending leases. Concurrent completion cannot insert a lease after
+sealing. Completed receipts occupy the existing authority-epoch journal rather
+than unbounded in-memory tombstones.
 
 `SealRealm` revokes new work in one Realm without fencing other windows using the
-same installation. An exposed plan remains protected until its original proof
+same installation. An admitted plan remains protected until its original proof
 arrives. A Use proof releases the original parent-to-child delegated closure,
 including an unknown child acknowledgement. An execution proof releases only
 that original execution's Uses. Proof acknowledgement waits for durable release;
 repeating it never starts cleanup again or substitutes a new exit identity.
 
-A Bridge admits only Setup values from its original Host. Poll does not expose a
-retired plan for the first time. The Host settles an unexposed plan with its
-original non-delivery evidence and retries that evidence if persistence fails.
-An already exposed plan still requires its execution owner's proof.
+A Bridge admits only Setup values from its original Host. A plan returned by Poll
+remains unstarted until `AdmitPlan` transfers responsibility to its reserved
+Runtime owner. The Host settles an unadmitted plan with its original
+`not-admitted` proof and retries it if persistence fails. An admitted execution
+still requires its execution owner's proof. A bounded browser scheduler can
+defer plans without acquiring cleanup duties for work it has not admitted.
 
 MaxRealms bounds resident Realms and MaxPending bounds active operations. On
 seal, an empty Realm relinquishes its slot. Its credential can still submit
@@ -71,10 +96,10 @@ submit the old execution's proofs on the new cleanup-only channel.
 
 `MaxMessageBytes` bounds complete encoded control requests and responses,
 including their envelopes. Before persisting an attempt, the Bridge checks its
-plan validation, declared Ready shape and original execution proof. Each Realm
+plan admission, declared Ready shape and original execution proof. Each Realm
 also reserves encoded bytes for its complete pending and reconnect projections;
 ready executions retain that reservation until their original release. An
-exposure cannot turn an admitted backlog into an oversized response.
+admission cannot turn a pending backlog into an oversized response.
 
 Setup can produce additional contributions and metadata that the Host cannot
 predict before execution. An oversized Ready report is refused before

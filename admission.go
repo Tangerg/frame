@@ -33,6 +33,13 @@ type AdmissionLimits struct {
 	MaxUseOwners          int
 }
 
+const (
+	defaultMaxPreparations       = 4096
+	defaultMaxPreparationChanges = 4096
+	defaultMaxScopes             = 4096
+	defaultMaxUseOwners          = 256
+)
+
 // Admission serializes new uses with changes and bounded storage commits. Its
 // state mutex is never held during storage, execution or consumer code.
 type Admission struct {
@@ -142,16 +149,16 @@ func NewAdmission() *Admission {
 // records. A closed scope retains its generation and still occupies capacity.
 func NewAdmissionWithLimits(limits AdmissionLimits) (*Admission, error) {
 	if limits.MaxPreparations == 0 {
-		limits.MaxPreparations = 4096
+		limits.MaxPreparations = defaultMaxPreparations
 	}
 	if limits.MaxPreparationChanges == 0 {
-		limits.MaxPreparationChanges = 4096
+		limits.MaxPreparationChanges = defaultMaxPreparationChanges
 	}
 	if limits.MaxScopes == 0 {
-		limits.MaxScopes = 4096
+		limits.MaxScopes = defaultMaxScopes
 	}
 	if limits.MaxUseOwners == 0 {
-		limits.MaxUseOwners = 256
+		limits.MaxUseOwners = defaultMaxUseOwners
 	}
 	if limits.MaxPreparations < 1 || limits.MaxPreparationChanges < 1 || limits.MaxScopes < 1 || limits.MaxUseOwners < 1 {
 		return nil, ErrInvalid

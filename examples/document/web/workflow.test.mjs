@@ -387,7 +387,10 @@ test("dynamic native publication exits through its original execution and resend
       native,
     );
     assert.equal(publication.outcome.decision, "accepted");
-    const snapshot = await control.snapshot([point.ref.name]);
+    const snapshot = await control.snapshot({
+      operationId: crypto.randomUUID(),
+      points: [point.ref.name],
+    });
     const choice = select(
       snapshot,
       point,

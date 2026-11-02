@@ -522,30 +522,40 @@ func TestFailedStartRequiresDurableExitBeforePublishingProof(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := launchFixture(t, c, "failed-proof", 1, t.TempDir())
-	if _, err := c.Launch(ctx, r); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.CloseAttempt(ctx, r.AttemptRef); err != nil {
-		t.Fatal(err)
-	}
-	journal := filepath.Join(s.config.Directory, "attempts.json")
-	if err := os.Rename(journal, journal+".bak"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(journal, 0700); err != nil {
+	digest, err := requestIdentity(r)
+	if err != nil {
 		t.Fatal(err)
 	}
 	s.mu.Lock()
+	s.journal.Attempts[r.AttemptID] = storedAttempt{
+		Observation:   Observation{AttemptID: r.AttemptID, Epoch: r.Epoch, RunnerID: r.RunnerID, State: Starting},
+		RequestDigest: digest,
+	}
+	err = s.persist()
+	s.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restore := interruptJournal(t, s)
+	s.mu.Lock()
 	o, err := s.failedStart(r.AttemptID, "fixture refused start", errors.New("invalid executable"))
+	original := s.terminalObservations[r.AttemptID].clone()
 	s.mu.Unlock()
 	if !errors.Is(err, ErrUnknown) || o.State != Unknown || o.ProofID != "" {
 		t.Fatalf("failed persist: %+v %v", o, err)
 	}
-	if o, err := c.Inspect(ctx, r.AttemptID); err != nil || o.State != Unknown || o.ProofID != "" {
+	if o, err := c.Inspect(ctx, r.AttemptID); !errors.Is(err, ErrUnknown) || o.State != Unknown || o.ProofID != "" {
 		t.Fatalf("inspect: %+v %v", o, err)
 	}
 	if o, err := c.CloseAttempt(ctx, r.AttemptRef); !errors.Is(err, ErrUnknown) || o.ProofID != "" {
 		t.Fatalf("close: %+v %v", o, err)
+	}
+	restore()
+	if o, err := c.Launch(ctx, r); err != nil || o.State != Exited || o.ProofID == "" || o.ProofID != original.ProofID {
+		t.Fatalf("failed start replay changed the original evidence: %+v %v", o, err)
+	}
+	if _, err := os.Stat(filepath.Join(r.Directory, "created")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed start replay created a child: %v", err)
 	}
 }
 

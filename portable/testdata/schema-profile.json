@@ -37,7 +37,7 @@
         "valid": false
       },
       {
-        "value": "\u2028",
+        "value": " ",
         "valid": false
       },
       {
@@ -72,7 +72,7 @@
         "valid": true
       },
       {
-        "value": "\u2028",
+        "value": " ",
         "valid": true
       },
       {
@@ -115,11 +115,11 @@
         "valid": true
       },
       {
-        "value": "\u2028",
+        "value": " ",
         "valid": true
       },
       {
-        "value": "\u2029",
+        "value": " ",
         "valid": true
       },
       {
@@ -162,7 +162,7 @@
         "valid": false
       },
       {
-        "value": "a\u2028",
+        "value": "a ",
         "valid": false
       }
     ]
@@ -1113,6 +1113,373 @@
       {
         "value": "x",
         "valid": true
+      }
+    ]
+  },
+  {
+    "name": "closed objects recognize only declared own members",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "admitted": true,
+    "digest": "ecb1ce9b4c5c42ee5a9a2591016e98d17f87164f0d6e30a24099294a0d51f051",
+    "values": [
+      {
+        "value": {
+          "ok": "yes"
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "__proto__": 7
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "constructor": 7
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "toString": 7
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "hasOwnProperty": 7
+        },
+        "valid": false
+      }
+    ]
+  },
+  {
+    "name": "closed empty objects reject prototype names",
+    "schema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "admitted": true,
+    "digest": "99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa",
+    "values": [
+      {
+        "value": {},
+        "valid": true
+      },
+      {
+        "value": {
+          "__proto__": 7
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "constructor": 7
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "toString": 7
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "hasOwnProperty": 7
+        },
+        "valid": false
+      }
+    ]
+  },
+  {
+    "name": "declared prototype names retain their constraints",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "__proto__": {
+          "type": "string"
+        },
+        "constructor": {
+          "type": "string"
+        },
+        "toString": {
+          "type": "string"
+        },
+        "hasOwnProperty": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "__proto__",
+        "constructor",
+        "toString",
+        "hasOwnProperty"
+      ],
+      "additionalProperties": false
+    },
+    "admitted": true,
+    "digest": "cbb577665e5c3a6025c5acea59fd7a96f8c7cf72b6564dd1b1f12739ec543c79",
+    "values": [
+      {
+        "value": {
+          "__proto__": "yes",
+          "constructor": "yes",
+          "toString": "yes",
+          "hasOwnProperty": "yes"
+        },
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": {
+          "__proto__": 7,
+          "constructor": "yes",
+          "toString": "yes",
+          "hasOwnProperty": "yes"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "__proto__": "yes",
+          "constructor": 7,
+          "toString": "yes",
+          "hasOwnProperty": "yes"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "__proto__": "yes",
+          "constructor": "yes",
+          "toString": 7,
+          "hasOwnProperty": "yes"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "__proto__": "yes",
+          "constructor": "yes",
+          "toString": "yes",
+          "hasOwnProperty": 7
+        },
+        "valid": false
+      }
+    ]
+  },
+  {
+    "name": "additional schemas validate prototype names",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": {
+        "type": "integer"
+      }
+    },
+    "admitted": true,
+    "digest": "1d8e01c55f551d8a78540496a81d48a2250b229bfa371f33e8f8bd3fcec10482",
+    "values": [
+      {
+        "value": {
+          "__proto__": 7
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "constructor": 7
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "toString": 7
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "hasOwnProperty": 7
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "__proto__": "no"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "constructor": "no"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "toString": "no"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "hasOwnProperty": "no"
+        },
+        "valid": false
+      }
+    ]
+  },
+  {
+    "name": "patterns and additional properties share own member semantics",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "patternProperties": {
+        "^__proto__$": {
+          "type": "integer"
+        },
+        "^constructor$": {
+          "type": "integer"
+        },
+        "^toString$": {
+          "type": "integer"
+        },
+        "^hasOwnProperty$": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "admitted": true,
+    "digest": "7dc7d7811a3e01a81f2cdbbe0041dab050f4913319f69958a080133f18395ab7",
+    "values": [
+      {
+        "value": {
+          "__proto__": 7
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "constructor": 7
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "toString": 7
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "hasOwnProperty": 7
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "__proto__": "no"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "constructor": "no"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "toString": "no"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "hasOwnProperty": "no"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "other": 7
+        },
+        "valid": false
+      }
+    ]
+  },
+  {
+    "name": "local references preserve prototype names",
+    "schema": {
+      "$defs": {
+        "__proto__": {
+          "type": "string"
+        }
+      },
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "constructor": {
+            "$ref": "#/$defs/__proto__"
+          }
+        },
+        "required": [
+          "constructor"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "admitted": true,
+    "digest": "12ee90028228f95b7f206f0139772f12e679ec773c348c183f36fe32b3c0ab97",
+    "values": [
+      {
+        "value": [
+          {
+            "constructor": "yes"
+          }
+        ],
+        "valid": true
+      },
+      {
+        "value": [
+          {
+            "constructor": 7
+          }
+        ],
+        "valid": false
+      },
+      {
+        "value": [
+          {
+            "toString": "no"
+          }
+        ],
+        "valid": false
       }
     ]
   }

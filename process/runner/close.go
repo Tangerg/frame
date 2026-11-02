@@ -89,10 +89,27 @@ func (s *Server) advanceClose() error {
 		closeErr = errors.Join(closeErr, err)
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if len(s.processes) != 0 {
+		s.mu.Unlock()
 		return errors.Join(ErrUnknown, closeErr)
 	}
+	if len(s.terminalObservations) != 0 {
+		if err := s.persist(); err != nil {
+			s.mu.Unlock()
+			return errors.Join(ErrUnknown, closeErr, err)
+		}
+	}
+	var served <-chan struct{}
+	if s.listener != nil {
+		closeErr = errors.Join(closeErr, s.listener.close())
+		served = s.listener.served
+	}
+	s.mu.Unlock()
+	if served != nil {
+		<-served
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	closeErr = errors.Join(closeErr, unlockDirectory(s.lock))
 	s.lock = nil
 	return closeErr

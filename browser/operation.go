@@ -20,6 +20,15 @@ type controlReceipt struct {
 	Failures    []string
 }
 
+func (o *controlOperation) wait(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	case <-o.done:
+		return nil
+	}
+}
+
 // Arbitrary application diagnostics may contain secrets. Replay restores stable
 // failure categories, never application error strings or a new side effect.
 var receiptFailures = []struct {

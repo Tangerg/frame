@@ -13,7 +13,6 @@ import (
 )
 
 const RefPrefix = "#/$defs/"
-const SchemaDialect = "https://json-schema.org/draft/2020-12/schema"
 
 type schemaType string
 

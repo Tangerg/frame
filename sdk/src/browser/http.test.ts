@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { Lifetime } from "../index.js";
-import { type ReadyReport } from "../protocol.generated.js";
+import {
+  PROTOCOL,
+  type LocalPlan,
+  type ReadyReport,
+} from "../protocol.generated.js";
 import { HTTPControl } from "./http";
 import { readResponseBytes } from "./response";
 
@@ -85,6 +89,50 @@ describe("authenticated control transport", () => {
     });
     expect(request.headers).toMatchObject({
       Authorization: "Bearer realm-secret",
+    });
+    await f.lifetime.close();
+  });
+
+  it("sends the caller's snapshot identity and preserves an unknown capture outcome", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("{"));
+    const f = control(fetch);
+    const capture = {
+      operationId: "original-snapshot",
+      points: ["document.previews"],
+    };
+    for (let attempt = 0; attempt < 2; attempt++)
+      await expect(f.control.snapshot(capture)).rejects.toMatchObject({
+        code: "outcome_unknown",
+      });
+    for (const [, request] of fetch.mock.calls)
+      expect(JSON.parse(request!.body as string)).toEqual({
+        method: "snapshot",
+        input: capture,
+      });
+    await f.lifetime.close();
+  });
+
+  it("treats a lost preparation admission response as an unknown mutation", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+      throw new Error("response lost");
+    });
+    const f = control(fetch);
+    const plan: LocalPlan = {
+      protocol: PROTOCOL,
+      approvalToken: "original-approval",
+      authority: ready.authority,
+      realm: ready.realm,
+      execution: ready.execution,
+      scopeId: "original-scope",
+      scopeGeneration: "1",
+      units: [],
+    };
+    await expect(f.control.admitPlan(plan)).rejects.toMatchObject({
+      code: "outcome_unknown",
+    });
+    expect(JSON.parse(fetch.mock.calls[0]![1]!.body as string)).toEqual({
+      method: "admitPlan",
+      input: plan,
     });
     await f.lifetime.close();
   });

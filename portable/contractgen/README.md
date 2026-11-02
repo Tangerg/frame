@@ -39,6 +39,14 @@ syntax so an element intersection cannot change meaning through precedence.
 Types express their supported structural constraints while the canonical
 validator remains responsible for the full JSON Schema predicate.
 
+Each renderer owns its complete generated namespace, including imports, runtime
+constants, helper interfaces and built-in types. Colliding source names receive
+deterministic numeric suffixes in that language's projection. Method dictionaries
+use computed own keys, so names such as `__proto__` remain ordinary declared
+methods. Neither projected identifiers nor helper names change the published
+capability descriptor or its digest. Numeric imports follow the projected schema
+shape; application strings containing `JSONNumber` do not create dependencies.
+
 The regression suite generates actual Go and TypeScript consumers. Run
 `npm ci` before `go test ./portable/contractgen ./value`; the TypeScript consumer
 checks use the repository's pinned compiler and SDK numeric type. Positive

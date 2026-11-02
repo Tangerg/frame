@@ -5,12 +5,12 @@ export const PROTOCOL = "io.github.tangerg.frame/control/1" as const;
 export const MAX_NAME_BYTES = 256 as const;
 
 export interface ControlInputs {
-  readonly validatePlan: LocalPlan;
+  readonly admitPlan: LocalPlan;
   readonly ready: ReadyReport;
   readonly acquire: AcquireRequest;
   readonly validateUse: UseGrant;
   readonly validateRoute: RouteGrant;
-  readonly snapshot: readonly string[];
+  readonly snapshot: SnapshotRequest;
   readonly closeSnapshot: string;
   readonly publish: PublicationRequest;
   readonly publication: string;
@@ -21,7 +21,7 @@ export interface ControlInputs {
 }
 
 export interface ControlOutputs {
-  readonly validatePlan: void;
+  readonly admitPlan: PlanAdmission;
   readonly ready: PublicationResult;
   readonly acquire: UseGrant;
   readonly validateUse: void;
@@ -49,8 +49,10 @@ export const CONTROL_ERROR_CODES = [
 ] as const;
 
 export const CONTROL_MUTATIONS = [
+  "admitPlan",
   "ready",
   "acquire",
+  "snapshot",
   "closeSnapshot",
   "publish",
   "withdraw",
@@ -180,6 +182,16 @@ export interface ObjectRef {
   readonly objectId: string;
 }
 
+export interface PlanAdmission {
+  readonly authority: Authority;
+  readonly realm: Realm;
+  readonly execution: Execution;
+  readonly decision: PlanAdmissionDecision;
+}
+
+export type PlanAdmissionDecision =
+  "admitted" | "cleanupRequired" | "notAdmitted" | "settled";
+
 export interface PlannedUnit {
   readonly instance: Instance;
   readonly configurationJson: string;
@@ -298,6 +310,11 @@ export interface Snapshot {
   readonly id: string;
   readonly authority: Authority;
   readonly points: readonly PointSnapshot[];
+}
+
+export interface SnapshotRequest {
+  readonly operationId: string;
+  readonly points: readonly string[];
 }
 
 export type UnitID = string;

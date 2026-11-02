@@ -101,7 +101,7 @@ func (s *Store) Digests(ctx context.Context) (_ []value.Digest, err error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		entries, readErr := directory.ReadDir(256)
+		entries, readErr := directory.ReadDir(directoryReadBatch)
 		for _, entry := range entries {
 			if digest, err := value.ParseDigest(entry.Name()); err == nil {
 				result = append(result, digest)

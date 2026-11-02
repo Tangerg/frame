@@ -2,6 +2,7 @@ package browser_test
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,7 +15,12 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	"github.com/Tangerg/frame/sqlite"
 )
+
+func snapshotRequest(points ...string) browser.SnapshotRequest {
+	return browser.SnapshotRequest{OperationID: rand.Text(), Points: points}
+}
 
 func snapshotBridge(t *testing.T) (*bridgeEnvironment, *browser.Bridge) {
 	t.Helper()
@@ -26,6 +32,150 @@ func snapshotBridge(t *testing.T) (*bridgeEnvironment, *browser.Bridge) {
 	return e, bridge
 }
 
+type lostSnapshotResponse struct {
+	header http.Header
+	body   []byte
+}
+
+func (w *lostSnapshotResponse) Header() http.Header { return w.header }
+func (w *lostSnapshotResponse) WriteHeader(int)     {}
+func (w *lostSnapshotResponse) Write(body []byte) (int, error) {
+	w.body = append(w.body, body...)
+	return 0, errors.New("response lost before reaching the caller")
+}
+
+func TestLostSnapshotResponseReplaysOriginalLeaseWithoutTakingAnotherRealmSlot(t *testing.T) {
+	e, bridge := snapshotBridge(t)
+	first, err := bridge.OpenRealm(e.ctx, "first", "0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := bridge.OpenRealm(e.ctx, "other", "abcdef0123456789abcdef0123456789")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := snapshotRequest(e.first.Ref().Name)
+	body, err := json.Marshal(struct {
+		Method string                  `json:"method"`
+		Input  browser.SnapshotRequest `json:"input"`
+	}{"snapshot", input})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var original browser.Snapshot
+	for range 3 {
+		request := httptest.NewRequest(http.MethodPost, "/control", bytes.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+first.Token)
+		lost := &lostSnapshotResponse{header: make(http.Header)}
+		bridge.Handler().ServeHTTP(lost, request)
+		if err := json.Unmarshal(lost.body, &original); err != nil || original.ID != input.OperationID {
+			t.Fatalf("lost response = %s, %v", lost.body, err)
+		}
+	}
+	replayed, err := bridge.Snapshot(e.ctx, first.Token, input)
+	if err != nil || !reflect.DeepEqual(replayed, original) {
+		t.Fatalf("original capture was replaced: %+v, %v", replayed, err)
+	}
+	if _, err := bridge.Snapshot(e.ctx, other.Token, snapshotRequest(e.first.Ref().Name)); err != nil {
+		t.Fatalf("one lost capture consumed another Realm's capacity: %v", err)
+	}
+	if _, err := bridge.Snapshot(e.ctx, first.Token, snapshotRequest(e.first.Ref().Name)); !errors.Is(err, frame.ErrCapacity) {
+		t.Fatalf("two live leases did not enforce the configured limit: %v", err)
+	}
+	if err := bridge.CloseSnapshot(e.ctx, first.Token, input.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bridge.Snapshot(e.ctx, first.Token, input); !errors.Is(err, frame.ErrClosed) {
+		t.Fatalf("closed operation recaptured a lease: %v", err)
+	}
+}
+
+func TestSnapshotOperationPreservesProvenanceAndRejectsChangedRequests(t *testing.T) {
+	e := openBridge(t, filepath.Join(t.TempDir(), "store.db"), true)
+	e.start("snapshot-owner")
+	input := snapshotRequest(e.first.Ref().Name, e.second.Ref().Name)
+	original, err := e.bridge.Snapshot(e.ctx, e.credentials.Token, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := e.bridge.Snapshot(e.ctx, e.credentials.Token, input)
+	if err != nil || !reflect.DeepEqual(replayed, original) {
+		t.Fatalf("retry changed original candidate provenance: %+v, %v", replayed, err)
+	}
+	original.Points[0].Candidates[0].Token = "caller-mutated"
+	again, err := e.bridge.Snapshot(e.ctx, e.credentials.Token, input)
+	if err != nil || !reflect.DeepEqual(again, replayed) {
+		t.Fatalf("returned projection changed the owned lease: %+v, %v", again, err)
+	}
+	changed := input
+	changed.Points = []string{e.second.Ref().Name}
+	if _, err := e.bridge.Snapshot(e.ctx, e.credentials.Token, changed); !errors.Is(err, sqlite.ErrConflict) {
+		t.Fatalf("changed capture reused original identity: %v", err)
+	}
+	other, err := e.bridge.OpenRealm(e.ctx, "other", "abcdef0123456789abcdef0123456789")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, closeOriginal := range []bool{false, true} {
+		if closeOriginal {
+			if err := e.bridge.CloseSnapshot(e.ctx, e.credentials.Token, input.OperationID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := e.bridge.Snapshot(e.ctx, other.Token, input); !errors.Is(err, frame.ErrFenced) {
+			t.Fatalf("another Realm observed original capture: %v", err)
+		}
+		if err := e.bridge.CloseSnapshot(e.ctx, other.Token, input.OperationID); !errors.Is(err, frame.ErrFenced) {
+			t.Fatalf("another Realm closed original capture: %v", err)
+		}
+	}
+}
+
+func TestSnapshotConcurrentRetriesShareOneCapture(t *testing.T) {
+	e, bridge := snapshotBridge(t)
+	credentials, err := bridge.OpenRealm(e.ctx, "capture", "0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := snapshotRequest(e.first.Ref().Name)
+	start := make(chan struct{})
+	var calls sync.WaitGroup
+	for range 8 {
+		calls.Go(func() {
+			<-start
+			capture, err := bridge.Snapshot(e.ctx, credentials.Token, input)
+			if err != nil || capture.ID != input.OperationID {
+				t.Errorf("retry = %+v, %v", capture, err)
+			}
+		})
+	}
+	close(start)
+	calls.Wait()
+	if _, err := bridge.Snapshot(e.ctx, credentials.Token, snapshotRequest(e.first.Ref().Name)); err != nil {
+		t.Fatalf("concurrent retries consumed another lease: %v", err)
+	}
+}
+
+func TestSnapshotCloseBeforeCapturePreventsLateCreation(t *testing.T) {
+	e, bridge := snapshotBridge(t)
+	credentials, err := bridge.OpenRealm(e.ctx, "capture", "0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 8 {
+		input := snapshotRequest(e.first.Ref().Name)
+		if err := bridge.CloseSnapshot(e.ctx, credentials.Token, input.OperationID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := bridge.Snapshot(e.ctx, credentials.Token, input); !errors.Is(err, frame.ErrClosed) {
+			t.Fatalf("delayed capture revived closed identity: %v", err)
+		}
+	}
+	if _, err := bridge.Snapshot(e.ctx, credentials.Token, snapshotRequest(e.first.Ref().Name)); err != nil {
+		t.Fatalf("completed closes consumed live capacity: %v", err)
+	}
+}
+
 func TestBridgeSealingRealmReleasesUnconsumedSnapshots(t *testing.T) {
 	e, bridge := snapshotBridge(t)
 	original, err := bridge.OpenRealm(e.ctx, "original", "0123456789abcdef0123456789abcdef")
@@ -33,7 +183,7 @@ func TestBridgeSealingRealmReleasesUnconsumedSnapshots(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		snapshot, err := bridge.Snapshot(e.ctx, original.Token, []string{e.first.Ref().Name})
+		snapshot, err := bridge.Snapshot(e.ctx, original.Token, snapshotRequest(e.first.Ref().Name))
 		if err != nil || len(snapshot.Points) != 1 || len(snapshot.Points[0].Candidates) != 0 {
 			t.Fatalf("empty selection snapshot = %+v, %v", snapshot, err)
 		}
@@ -45,7 +195,7 @@ func TestBridgeSealingRealmReleasesUnconsumedSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := bridge.Snapshot(e.ctx, next.Token, []string{e.first.Ref().Name}); err != nil {
+	if _, err := bridge.Snapshot(e.ctx, next.Token, snapshotRequest(e.first.Ref().Name)); err != nil {
 		t.Fatalf("sealed Realm retained snapshot capacity: %v", err)
 	}
 }
@@ -63,7 +213,7 @@ func TestBridgeConcurrentSnapshotCannotRetainASealedRealmLease(t *testing.T) {
 		for range 8 {
 			calls.Go(func() {
 				<-start
-				_, err := bridge.Snapshot(e.ctx, original.Token, []string{e.first.Ref().Name})
+				_, err := bridge.Snapshot(e.ctx, original.Token, snapshotRequest(e.first.Ref().Name))
 				results <- err
 			})
 		}
@@ -83,7 +233,7 @@ func TestBridgeConcurrentSnapshotCannotRetainASealedRealmLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := bridge.Snapshot(e.ctx, next.Token, []string{e.first.Ref().Name}); err != nil {
+	if _, err := bridge.Snapshot(e.ctx, next.Token, snapshotRequest(e.first.Ref().Name)); err != nil {
 		t.Fatalf("snapshot inserted into a sealed Realm: %v", err)
 	}
 }
@@ -98,7 +248,7 @@ func TestBridgeSnapshotCloseIsIdempotentAndRealmBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := bridge.Snapshot(e.ctx, first.Token, []string{e.first.Ref().Name})
+	snapshot, err := bridge.Snapshot(e.ctx, first.Token, snapshotRequest(e.first.Ref().Name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +259,7 @@ func TestBridgeSnapshotCloseIsIdempotentAndRealmBound(t *testing.T) {
 		if err := bridge.CloseSnapshot(e.ctx, first.Token, snapshot.ID); err != nil {
 			t.Fatal(err)
 		}
-		snapshot, err = bridge.Snapshot(e.ctx, first.Token, []string{e.first.Ref().Name})
+		snapshot, err = bridge.Snapshot(e.ctx, first.Token, snapshotRequest(e.first.Ref().Name))
 		if err != nil {
 			t.Fatalf("abandoned empty selection retained capacity: %v", err)
 		}
@@ -132,6 +282,9 @@ func TestBridgeSnapshotClosePreservesAcquiredUseAndReplay(t *testing.T) {
 	e := openBridge(t, filepath.Join(t.TempDir(), "store.db"), true)
 	plan := e.start("snapshot-use")
 	request, grant := e.acquire(plan, "original-acquire")
+	if _, err := e.bridge.Snapshot(e.ctx, e.credentials.Token, browser.SnapshotRequest{OperationID: request.SnapshotID, Points: []string{e.first.Ref().Name, e.second.Ref().Name}}); !errors.Is(err, frame.ErrClosed) {
+		t.Fatalf("consumed capture was recreated: %v", err)
+	}
 	for range 2 {
 		if err := e.bridge.CloseSnapshot(e.ctx, e.credentials.Token, request.SnapshotID); err != nil {
 			t.Fatal(err)
@@ -191,6 +344,9 @@ func TestBridgeFailedAcquisitionConsumesSnapshotAndReplaysOriginalRefusal(t *tes
 	if err := e.bridge.CloseSnapshot(e.ctx, e.credentials.Token, request.SnapshotID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := e.bridge.Snapshot(e.ctx, e.credentials.Token, browser.SnapshotRequest{OperationID: request.SnapshotID, Points: []string{e.first.Ref().Name, e.second.Ref().Name}}); !errors.Is(err, frame.ErrClosed) {
+		t.Fatalf("refused acquisition recreated its consumed capture: %v", err)
+	}
 }
 
 func TestBridgeSnapshotCloseAndAcquireHaveOneAdmissionWinner(t *testing.T) {
@@ -238,7 +394,7 @@ func TestBridgeCleanupOnlyReconnectReleasesSnapshots(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if _, err := bridge.Snapshot(e.ctx, original.Token, []string{e.first.Ref().Name}); err != nil {
+		if _, err := bridge.Snapshot(e.ctx, original.Token, snapshotRequest(e.first.Ref().Name)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -252,7 +408,7 @@ func TestBridgeCleanupOnlyReconnectReleasesSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := bridge.Snapshot(e.ctx, next.Token, []string{e.first.Ref().Name}); err != nil {
+	if _, err := bridge.Snapshot(e.ctx, next.Token, snapshotRequest(e.first.Ref().Name)); err != nil {
 		t.Fatalf("cleanup-only Realm retained selection capacity: %v", err)
 	}
 }
@@ -263,7 +419,7 @@ func TestControlHTTPCloseSnapshotReleasesOnlyTheOriginalLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := bridge.Snapshot(e.ctx, original.Token, []string{e.first.Ref().Name})
+	snapshot, err := bridge.Snapshot(e.ctx, original.Token, snapshotRequest(e.first.Ref().Name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +443,7 @@ func TestControlHTTPCloseSnapshotReleasesOnlyTheOriginalLease(t *testing.T) {
 		t.Fatalf("unpublished close shape accepted: %d", response.Code)
 	}
 	for range 2 {
-		if _, err := bridge.Snapshot(e.ctx, original.Token, []string{e.first.Ref().Name}); err != nil {
+		if _, err := bridge.Snapshot(e.ctx, original.Token, snapshotRequest(e.first.Ref().Name)); err != nil {
 			t.Fatalf("HTTP close retained snapshot capacity: %v", err)
 		}
 	}
@@ -297,7 +453,7 @@ func TestBridgeRealmSealingRetainsAcquiredUseUntilOriginalProof(t *testing.T) {
 	e := openBridge(t, filepath.Join(t.TempDir(), "store.db"), true)
 	plan := e.start("snapshot-seal-proof")
 	_, grant := e.acquire(plan, "original-acquire")
-	pending, err := e.bridge.Snapshot(e.ctx, e.credentials.Token, []string{e.first.Ref().Name})
+	pending, err := e.bridge.Snapshot(e.ctx, e.credentials.Token, snapshotRequest(e.first.Ref().Name))
 	if err != nil {
 		t.Fatal(err)
 	}

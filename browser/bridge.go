@@ -75,7 +75,7 @@ type Bridge struct {
 	executions     map[string]*browserExecution
 	operations     map[string]*controlOperation
 	publications   map[string]*controlOperation
-	snapshots      map[string]*wireSnapshot
+	snapshots      map[string]*snapshotLease
 	uses           map[string]*browserUse
 	routes         map[string]browserRoute
 	openings       map[string]*realmOpening
@@ -106,7 +106,7 @@ type browserExecution struct {
 	readyDigest       framevalue.Digest
 	retiring          bool
 	uncertainApproval bool
-	exposed           bool
+	admitted          bool
 	projectionBytes   int64
 }
 
@@ -125,12 +125,6 @@ type controlOperation struct {
 	done        chan struct{}
 	failure     error
 	withdrawn   bool
-}
-type wireSnapshot struct {
-	realm      string
-	original   *frame.Snapshot
-	points     map[string]frame.ContractRef
-	candidates map[string]frame.CandidateRef
 }
 type browserUse struct {
 	grant     UseGrant
@@ -170,7 +164,7 @@ func NewBridge(config BridgeConfig) (*Bridge, error) {
 		operations:     make(map[string]*controlOperation),
 		receiptReaders: make(map[string]*receiptRead),
 		publications:   make(map[string]*controlOperation),
-		snapshots:      make(map[string]*wireSnapshot),
+		snapshots:      make(map[string]*snapshotLease),
 		uses:           make(map[string]*browserUse),
 		routes:         make(map[string]browserRoute),
 	}, nil
@@ -442,7 +436,7 @@ func (b *Bridge) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 	}
 }
 
-func (b *Bridge) releaseUnexposed(ctx context.Context, entry *browserExecution) error {
+func (b *Bridge) releaseUnadmitted(ctx context.Context, entry *browserExecution) error {
 	a := entry.attempt
 	if entry.uncertainApproval {
 		original, err := b.config.Store.Attempt(ctx, a.ID)
@@ -456,14 +450,13 @@ func (b *Bridge) releaseUnexposed(ctx context.Context, entry *browserExecution) 
 			return nil
 		}
 	}
-	proof := sqlite.ExitProof{AttemptID: a.ID, Realm: a.Realm, ExitID: a.ID + ":not-delivered", Kind: "not-delivered", Evidence: []byte(`{"delivered":false}`)}
-	return b.config.Store.ReleaseAttempt(ctx, a.ID, proof)
+	return b.config.Store.ReleaseAttempt(ctx, a.ID, unadmittedExitProof(a))
 }
 
 func (b *Bridge) closeExecution(ctx context.Context, entry *browserExecution) (frame.ReleaseState, error) {
 	b.fence(entry)
 	b.mu.Lock()
-	exposed := entry.exposed
+	admitted := entry.admitted
 	owned := entry.resource
 	registered := b.executions[entry.attempt.ID] == entry
 	b.mu.Unlock()
@@ -473,10 +466,10 @@ func (b *Bridge) closeExecution(ctx context.Context, entry *browserExecution) (f
 		}
 		return frame.ResourceReleased, nil
 	}
-	if exposed {
+	if admitted {
 		return frame.ResourceUnconfirmed, nil
 	}
-	if err := b.releaseUnexposed(ctx, entry); err != nil {
+	if err := b.releaseUnadmitted(ctx, entry); err != nil {
 		return frame.ResourceUnconfirmed, err
 	}
 	if err := owned.ConfirmReleased(nil); err != nil {
@@ -527,7 +520,7 @@ func (b *Bridge) Poll(ctx context.Context, token string) (Poll, error) {
 	result := Poll{Authority: b.authority, Realm: session.realm, Revision: strconv.FormatUint(session.revision, 10), Plans: []LocalPlan{}, Fences: []Fence{}}
 	fences := map[Fence]struct{}{}
 	for _, entry := range b.executions {
-		if entry.plan.Realm == session.realm && entry.retiring && entry.exposed {
+		if entry.plan.Realm == session.realm && entry.retiring && entry.admitted {
 			fences[Fence{ScopeID: entry.plan.ScopeID, ScopeGeneration: entry.plan.ScopeGeneration}] = struct{}{}
 		}
 	}
@@ -549,20 +542,17 @@ func (b *Bridge) Poll(ctx context.Context, token string) (Poll, error) {
 	if err := b.checkResponse(result); err != nil {
 		return Poll{}, err
 	}
-	for _, plan := range result.Plans {
-		b.executions[plan.Execution.ID].exposed = true
-	}
 	return result, nil
 }
 
-func (b *Bridge) ValidatePlan(ctx context.Context, token string, plan LocalPlan) error {
+func (b *Bridge) validateCurrentPlan(ctx context.Context, token string, plan LocalPlan) error {
 	session, err := b.session(token, true)
 	if err != nil {
 		return err
 	}
 	b.mu.Lock()
 	entry := b.executions[plan.Execution.ID]
-	valid := entry != nil && entry.exposed && !entry.retiring && entry.plan.Realm == session.realm && equal(entry.plan, plan)
+	valid := entry != nil && !entry.retiring && entry.plan.Realm == session.realm && equal(entry.plan, plan)
 	b.mu.Unlock()
 	if !valid {
 		return frame.ErrStaleBinding
@@ -587,7 +577,7 @@ func (b *Bridge) Ready(ctx context.Context, token string, report ReadyReport) (P
 	}
 	b.mu.Lock()
 	entry := b.executions[report.Execution.ID]
-	if session.cleanupOnly || entry == nil || !entry.exposed || entry.plan.Execution != report.Execution || entry.plan.Realm != session.realm || entry.retiring {
+	if session.cleanupOnly || entry == nil || !entry.admitted || entry.plan.Execution != report.Execution || entry.plan.Realm != session.realm || entry.retiring {
 		b.mu.Unlock()
 		return PublicationResult{Decision: Rejected, Problem: "execution unavailable"}, nil
 	}
@@ -600,7 +590,7 @@ func (b *Bridge) Ready(ctx context.Context, token string, report ReadyReport) (P
 		return PublicationResult{Decision: Accepted}, nil
 	}
 	b.mu.Unlock()
-	if err := b.ValidatePlan(ctx, token, entry.plan); err != nil {
+	if err := b.validateCurrentPlan(ctx, token, entry.plan); err != nil {
 		return PublicationResult{Decision: Rejected, Problem: "plan is no longer current"}, nil
 	}
 	unit := entry.plan.Units[0]

@@ -4,104 +4,10 @@ import (
 	"context"
 	"errors"
 	"slices"
-	"strconv"
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/sqlite"
 )
-
-func (b *Bridge) Snapshot(ctx context.Context, token string, names []string) (Snapshot, error) {
-	session, err := b.session(token, true)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	if len(names) == 0 || len(names) > b.config.MaxPending {
-		return Snapshot{}, frame.ErrInvalid
-	}
-	points := make([]frame.ContractRef, 0, len(names))
-	seen := map[string]bool{}
-	for _, name := range names {
-		if seen[name] {
-			return Snapshot{}, frame.ErrInvalid
-		}
-		seen[name] = true
-		var selected frame.ContractRef
-		for _, point := range b.config.Points {
-			if point.Name == name {
-				if selected.Name != "" {
-					return Snapshot{}, frame.ErrAmbiguous
-				}
-				selected = point
-			}
-		}
-		if selected.Name == "" {
-			return Snapshot{}, frame.ErrContractMismatch
-		}
-		points = append(points, selected)
-	}
-	original, err := b.config.Host.SnapshotIn(ctx, RealmID(session.realm), points...)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	wire := Snapshot{ID: newToken(), Authority: b.authority, Points: []PointSnapshot{}}
-	retained := &wireSnapshot{realm: string(RealmID(session.realm)), original: original, points: map[string]frame.ContractRef{}, candidates: map[string]frame.CandidateRef{}}
-	for _, point := range points {
-		candidates, err := original.Candidates(point)
-		if err != nil {
-			return Snapshot{}, err
-		}
-		revision, err := original.Revision(point)
-		if err != nil {
-			return Snapshot{}, err
-		}
-		projection := PointSnapshot{Point: point, Revision: strconv.FormatUint(revision, 10), Candidates: []Candidate{}}
-		retained.points[point.Name] = point
-		for _, candidate := range candidates {
-			metadata, err := candidate.MetadataJSON()
-			if err != nil {
-				return Snapshot{}, err
-			}
-			token := newToken()
-			retained.candidates[token] = candidate
-			projection.Candidates = append(projection.Candidates, Candidate{PublicationID: candidate.ID(), Source: candidate.Source(), MetadataJSON: string(metadata), Token: token})
-		}
-		wire.Points = append(wire.Points, projection)
-	}
-	if err := b.checkResponse(wire); err != nil {
-		return Snapshot{}, err
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if session.cleanupOnly {
-		return Snapshot{}, frame.ErrFenced
-	}
-	if len(b.snapshots) >= b.config.MaxPending {
-		return Snapshot{}, frame.ErrCapacity
-	}
-	b.snapshots[wire.ID] = retained
-	return wire, nil
-}
-
-// CloseSnapshot discards a pending selection lease. An admitted Acquire already
-// owns its snapshot; closing that ID neither cancels it nor releases its Use.
-func (b *Bridge) CloseSnapshot(_ context.Context, token, snapshotID string) error {
-	session, err := b.session(token, false)
-	if err != nil {
-		return err
-	}
-	if snapshotID == "" {
-		return frame.ErrInvalid
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if snapshot := b.snapshots[snapshotID]; snapshot != nil {
-		if snapshot.realm != string(RealmID(session.realm)) {
-			return frame.ErrFenced
-		}
-		delete(b.snapshots, snapshotID)
-	}
-	return nil
-}
 
 func (b *Bridge) Acquire(ctx context.Context, token string, request AcquireRequest) (grant UseGrant, returned error) {
 	session, err := b.session(token, true)
@@ -146,7 +52,7 @@ func (b *Bridge) Acquire(ctx context.Context, token string, request AcquireReque
 	}
 	entry := b.executions[request.Execution.ID]
 	selection := b.snapshots[request.SnapshotID]
-	if entry == nil || entry.plan.Execution != request.Execution || entry.plan.Realm != session.realm || entry.retiring || selection == nil || selection.realm != string(RealmID(session.realm)) {
+	if entry == nil || entry.plan.Execution != request.Execution || entry.plan.Realm != session.realm || entry.retiring || selection == nil || selection.original == nil || selection.realm != session.realm {
 		b.mu.Unlock()
 		return UseGrant{}, frame.ErrStaleBinding
 	}
@@ -167,26 +73,7 @@ func (b *Bridge) Acquire(ctx context.Context, token string, request AcquireReque
 		b.mu.Unlock()
 		returned = errors.Join(returned, b.complete(ctx, request.OperationID, operation))
 	}()
-	selections := make([]frame.SelectionRef, 0, len(request.Selections))
-	for _, chosen := range request.Selections {
-		if selection.points[chosen.Point.Name] != chosen.Point {
-			return UseGrant{}, frame.ErrContractMismatch
-		}
-		candidates := make([]frame.CandidateRef, 0, len(chosen.Candidates))
-		for _, token := range chosen.Candidates {
-			candidate, exists := selection.candidates[token]
-			if !exists || candidate.Source().Contract != chosen.Point {
-				return UseGrant{}, frame.ErrStaleBinding
-			}
-			candidates = append(candidates, candidate)
-		}
-		selected, err := frame.SelectRefs(selection.original, chosen.Point, chosen.Rule, candidates...)
-		if err != nil {
-			return UseGrant{}, err
-		}
-		selections = append(selections, selected)
-	}
-	plan, err := frame.Capture(selection.original, selections...)
+	plan, err := selection.bind(request.Selections)
 	if err != nil {
 		return UseGrant{}, err
 	}

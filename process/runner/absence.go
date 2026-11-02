@@ -8,6 +8,8 @@ import (
 	"github.com/Tangerg/frame/value"
 )
 
+const absenceProofDomain = "runner-sealed-absence"
+
 // AttemptRef binds creation and control to the authority approved before dispatch.
 type AttemptRef struct {
 	AttemptID string `json:"attemptId"`
@@ -65,7 +67,7 @@ func absentProof(request AttemptRef, fenceEpoch uint64) (AbsenceProof, error) {
 		Kind       string     `json:"kind"`
 		Attempt    AttemptRef `json:"attempt"`
 		FenceEpoch uint64     `json:"fenceEpoch"`
-	}{"runner-sealed-absence", request, fenceEpoch})
+	}{absenceProofDomain, request, fenceEpoch})
 	if err != nil {
 		return AbsenceProof{}, err
 	}

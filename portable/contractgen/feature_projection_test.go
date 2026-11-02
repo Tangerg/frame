@@ -150,7 +150,7 @@ func TestFeatureGenerationReusesTheAdmittedSchemas(t *testing.T) {
 		Schema string                    `json:"$schema"`
 		Ref    string                    `json:"$ref"`
 		Defs   map[string]jsontext.Value `json:"$defs"`
-	}{SchemaDialect, root, generated.definitions})
+	}{portable.SchemaDialect, root, generated.definitions})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,8 +180,8 @@ func TestFeatureGenerationRefusesDuplicatesAndExternalSchemas(t *testing.T) {
 			t.Fatalf("invalid feature contract admitted: %s", data)
 		}
 	}
-	if _, _, err := featureNames([]portable.MethodDescriptor{{Name: "x/read.v1"}, {Name: "y/read-v1"}}); err == nil {
-		t.Fatal("two methods were given one generated name")
+	if roots, _, err := featureNames([]portable.MethodDescriptor{{Name: "x/read.v1"}, {Name: "y/read-v1"}}); err != nil || roots["x/read.v1"] == roots["y/read-v1"] {
+		t.Fatalf("distinct method identities lost their projected names: %v", err)
 	}
 }
 
@@ -217,7 +217,7 @@ func TestFeatureTypeProjectionPreservesIntersectionsAndSiblingConstraints(t *tes
 			if err != nil {
 				t.Fatal(err)
 			}
-			emitter := &typeScript{graph: graph}
+			emitter := newTypeScript(graph)
 			projection := emitter.Definition("Value", graph.definitions["Value"])
 			if got := projection; got != "export type Value = "+sample.want+";\n\n" {
 				t.Fatalf("type projection = %s, want %s", got, sample.want)

@@ -32,8 +32,8 @@ func TestReturnedGrantCannotChangeAdmission(t *testing.T) {
 	if err = e.host.RetireInstance(e.ctx, p.Execution.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err = e.bridge.ValidatePlan(e.ctx, e.credentials.Token, p); err == nil {
-		t.Fatal("retiring instance passed plan validation")
+	if result, err := e.bridge.AdmitPlan(e.ctx, e.credentials.Token, p); err != nil || result.Decision != browser.PlanCleanupRequired {
+		t.Fatalf("retiring instance lost its original cleanup obligation: %+v %v", result, err)
 	}
 }
 
@@ -53,7 +53,7 @@ func TestSealedEmptyRealmReturnsLiveCapacity(t *testing.T) {
 	if _, err = b.OpenRealm(e.ctx, "second", "1123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = b.Snapshot(e.ctx, first.Token, []string{e.first.Ref().Name}); !errors.Is(err, frame.ErrFenced) {
+	if _, err = b.Snapshot(e.ctx, first.Token, snapshotRequest(e.first.Ref().Name)); !errors.Is(err, frame.ErrFenced) {
 		t.Fatal(err)
 	}
 	if _, err = b.Poll(e.ctx, first.Token); err != nil {
@@ -127,7 +127,7 @@ func TestAcquisitionRefusalDoesNotConsumePendingBudget(t *testing.T) {
 	}
 }
 
-func TestUnexposedRetirementRetriesOriginalProof(t *testing.T) {
+func TestUnadmittedRetirementRetriesOriginalProof(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.sqlite")
 	e := openBridge(t, path, true)
 	cred, err := e.bridge.OpenRealm(e.ctx, "op", "0123456789abcdef0123456789abcdef")
@@ -186,7 +186,7 @@ func TestUnexposedRetirementRetriesOriginalProof(t *testing.T) {
 		t.Fatal(err)
 	}
 	record, err := e.store.Attempt(e.ctx, id)
-	if err != nil || !record.Released || record.Proof.Kind != "not-delivered" {
+	if err != nil || !record.Released || record.Proof.Kind != "not-admitted" {
 		t.Fatalf("release: %+v, %v", record, err)
 	}
 	if err = e.host.WaitInstanceRetired(e.ctx, id); err != nil {

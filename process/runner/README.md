@@ -15,6 +15,12 @@ before creating state or interpreting it as a missing authority. Configure a
 shorter private state directory; the runner does not create another temporary
 socket namespace or silently switch transports.
 
+`Server.Listen` publishes the control socket under that Server's directory lock.
+`Serve` accepts only its original Server's listener. A live publication cannot be
+replaced, and a closed Server cannot publish another endpoint. Shutdown joins the
+listener and accepted connections before releasing the directory lock. An old
+listener's later `Close` cannot remove a successor's pathname.
+
 Daemon `Close` joins its original process even when startup has not completed.
 An interrupt delivered by that close is an expected stop only after the original
 Wait observes the matching exit. A process that already crashed keeps its original
@@ -35,6 +41,9 @@ publishing any plugin export. `Fence` advances the approved Host epoch only afte
 older Launch operations have settled. Old processes retain their original close
 path. `Attach` returns an `io.ReadWriteCloser` suitable for a framed stdio stream
 transport. There is one attachment per attempt; disconnect begins its original exit.
+Taking that attachment transfers the sole stdout reader before its reply is sent.
+Failed acknowledgement, stream completion and cancellation all close that same
+reader. Child exit and output-pipe release remain separate resource obligations.
 
 Launch accepts an absolute executable, its exact SHA-256 digest, explicit arguments,
 working directory and environment, plus configuration and credential revisions.
@@ -64,6 +73,16 @@ runner restarts. Reusing the ID with another epoch or request is a conflict.
 A crash between handoff and confirmation is reconciled by repeating that exact
 acknowledgement against the original state directory.
 This journal format and the corresponding private Host schema require fresh state.
+
+A failed journal write does not erase the original Wait observation or a known
+failure before process creation. The Server retains its immutable terminal fact
+and proof identity while withholding that proof from clients. Inspection, close,
+replay of the same launch, or a later
+durable fence can commit that original observation after storage recovers.
+Creation remains fenced, but a durable exit can complete its exact handoff without
+a new creation epoch. Shutdown retains directory authority until pending terminal
+observations are durable. If the Runner itself crashes first, its uncommitted
+memory cannot establish exit after restart.
 
 `ProveAbsent` covers a Host attempt whose creation request never reached this
 original runner. It checks the exact runner identity, a synchronized fence beyond

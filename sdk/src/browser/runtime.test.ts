@@ -16,7 +16,9 @@ import {
   type CloseProof,
   type ContractRef,
   type LocalPlan,
+  type PlanAdmission,
   type PlannedUnit,
+  type Poll,
   type PublicationRequest,
   type PublicationResult,
   type ReadyReport,
@@ -74,16 +76,22 @@ function plan(id: string, units: readonly PlannedUnit[]): LocalPlan {
   };
 }
 
-function fixture(definitions: Record<string, Unit>) {
+function fixture(definitions: Record<string, Unit>, proofCapacity = 128) {
   const ready = new Map<string, ReadyReport>();
   const grants = new Map<string, UseGrant>();
   const publications = new Map<string, PublicationResult>();
   const proofs = new Map<string, CloseProof>();
   let nextGrant = 0;
   const control: HostControl = {
-    validatePlan: vi.fn<HostControl["validatePlan"]>(async (value) => {
+    admitPlan: vi.fn<HostControl["admitPlan"]>(async (value) => {
       if (value.approvalToken !== `plan:${value.execution.id}`)
         throw new Error("invalid plan approval");
+      return {
+        authority,
+        realm,
+        execution: value.execution,
+        decision: "admitted",
+      };
     }),
     ready: vi.fn<HostControl["ready"]>(async (report) => {
       ready.set(report.execution.id, report);
@@ -157,7 +165,7 @@ function fixture(definitions: Record<string, Unit>) {
     authority,
     realm,
     control,
-    proofCapacity: 128,
+    proofCapacity,
     load: (entry) => definitions[entry.module.path]!,
     remote: () => {
       throw new Error("unexpected remote import");
@@ -253,6 +261,238 @@ function previewPlan(id: string): LocalPlan {
 }
 
 describe("approved browser execution", () => {
+  it("installs the original admission before a control adapter can reenter preparation", async () => {
+    const setup = vi.fn(() => ({}));
+    const f = fixture({
+      owned: defineUnit({ id: "owned", imports: {}, exports: {}, setup }),
+    });
+    const original = plan("original", [unit("original-unit", "owned", [])]);
+    let reentered: Promise<unknown> | undefined;
+    vi.mocked(f.control.admitPlan).mockImplementationOnce(async () => {
+      reentered = f.runtime.prepare(original);
+      return {
+        authority,
+        realm,
+        execution: original.execution,
+        decision: "admitted",
+      };
+    });
+    const execution = await f.runtime.prepare(original);
+    expect(await reentered).toBe(execution);
+    expect(f.control.admitPlan).toHaveBeenCalledOnce();
+    expect(setup).toHaveBeenCalledOnce();
+    await f.runtime.close();
+  });
+
+  it("cannot settle the pending owner with another execution's admission result", async () => {
+    const setup = vi.fn(() => ({}));
+    const f = fixture(
+      { owned: defineUnit({ id: "owned", imports: {}, exports: {}, setup }) },
+      1,
+    );
+    const original = plan("original", [unit("original-unit", "owned", [])]);
+    vi.mocked(f.control.admitPlan).mockResolvedValueOnce({
+      authority,
+      realm,
+      execution: { id: "different", generation: "1" },
+      decision: "notAdmitted",
+    });
+    await expect(f.runtime.prepare(original)).rejects.toMatchObject({
+      code: "outcome_unknown",
+    });
+    await expect(
+      f.runtime.prepare(plan("other", [unit("other-unit", "owned", [])])),
+    ).rejects.toMatchObject({ code: "capacity" });
+    vi.mocked(f.control.admitPlan).mockResolvedValueOnce({
+      authority,
+      realm,
+      execution: original.execution,
+      decision: "cleanupRequired",
+    });
+    await f.runtime.close();
+    expect(f.proofs.size).toBe(1);
+    expect(setup).not.toHaveBeenCalled();
+  });
+
+  it.each(["notAdmitted", "settled"] as const)(
+    "cancels the unstarted reservation after the Host reports %s",
+    async (decision) => {
+      const setup = vi.fn(() => ({}));
+      const definition = defineUnit({
+        id: "owned",
+        imports: {},
+        exports: {},
+        setup,
+      });
+      const f = fixture({ owned: definition }, 1);
+      const original = plan("original", [unit("original-unit", "owned", [])]);
+      vi.mocked(f.control.admitPlan).mockResolvedValueOnce({
+        authority,
+        realm,
+        execution: original.execution,
+        decision,
+      });
+      await expect(f.runtime.prepare(original)).rejects.toMatchObject({
+        code: "stale_binding",
+      });
+      expect(setup).not.toHaveBeenCalled();
+      expect(f.runtime.pendingProofs).toEqual([]);
+      await f.runtime.prepare(plan("next", [unit("next-unit", "owned", [])]));
+      expect(setup).toHaveBeenCalledOnce();
+      await f.runtime.close();
+      expect(f.proofs.size).toBe(1);
+      expect([...f.proofs.values()][0]!.execution.id).toBe("next");
+    },
+  );
+
+  it("owns an admission before dispatch and joins its late result during shutdown", async () => {
+    const setup = vi.fn(() => ({}));
+    const f = fixture({
+      owned: defineUnit({ id: "owned", imports: {}, exports: {}, setup }),
+    });
+    const original = plan("original", [unit("original-unit", "owned", [])]);
+    const admission = Promise.withResolvers<PlanAdmission>();
+    vi.mocked(f.control.admitPlan).mockImplementationOnce(
+      () => admission.promise,
+    );
+    const preparing = f.runtime.prepare(original).catch((error) => error);
+    const closing = f.runtime.close();
+    let settled = false;
+    void closing.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(setup).not.toHaveBeenCalled();
+    expect(f.proofs.size).toBe(0);
+    admission.resolve({
+      authority,
+      realm,
+      execution: original.execution,
+      decision: "admitted",
+    });
+    await preparing;
+    expect(
+      (await closing).every((outcome) => outcome.status === "released"),
+    ).toBe(true);
+    expect(setup).not.toHaveBeenCalled();
+    expect(f.proofs.size).toBe(1);
+  });
+
+  it.each(["notAdmitted", "cleanupRequired"] as const)(
+    "reconciles an unknown admission as %s without starting setup",
+    async (decision) => {
+      const setup = vi.fn(() => ({}));
+      const f = fixture(
+        { owned: defineUnit({ id: "owned", imports: {}, exports: {}, setup }) },
+        1,
+      );
+      const original = plan("original", [unit("original-unit", "owned", [])]);
+      vi.mocked(f.control.admitPlan).mockRejectedValueOnce(
+        new FrameError("outcome_unknown", "admission acknowledgement lost"),
+      );
+      await expect(f.runtime.prepare(original)).rejects.toMatchObject({
+        code: "outcome_unknown",
+      });
+      await expect(
+        f.runtime.prepare(plan("other", [unit("other-unit", "owned", [])])),
+      ).rejects.toMatchObject({ code: "capacity" });
+      expect(f.runtime.pendingProofs).toEqual([]);
+      vi.mocked(f.control.admitPlan).mockResolvedValueOnce({
+        authority,
+        realm,
+        execution: original.execution,
+        decision,
+      });
+      expect(
+        (await f.runtime.close()).every(
+          (outcome) => outcome.status === "released",
+        ),
+      ).toBe(true);
+      expect(f.proofs.size).toBe(decision === "cleanupRequired" ? 1 : 0);
+      expect(setup).not.toHaveBeenCalled();
+      expect(vi.mocked(f.control.admitPlan).mock.calls).toEqual([
+        [original],
+        [original],
+      ]);
+    },
+  );
+
+  it("retains an unknown admission after an ordinary refusal and retries original cleanup", async () => {
+    const setup = vi.fn(() => ({}));
+    const f = fixture({
+      owned: defineUnit({ id: "owned", imports: {}, exports: {}, setup }),
+    });
+    const original = plan("original", [unit("original-unit", "owned", [])]);
+    vi.mocked(f.control.admitPlan).mockRejectedValue(
+      new FrameError(
+        "permission_denied",
+        "old credential cannot observe original admission",
+      ),
+    );
+    await expect(f.runtime.prepare(original)).rejects.toMatchObject({
+      code: "permission_denied",
+    });
+    expect((await f.runtime.close())[0]!.status).toBe("unconfirmed");
+    expect(f.proofs.size).toBe(0);
+    vi.mocked(f.control.admitPlan).mockResolvedValue({
+      authority,
+      realm,
+      execution: original.execution,
+      decision: "cleanupRequired",
+    });
+    expect((await f.runtime.close())[0]!.status).toBe("released");
+    expect(setup).not.toHaveBeenCalled();
+    expect(f.proofs.size).toBe(1);
+  });
+
+  it("replaces a closed Runtime's cleanup channel without reopening admission", async () => {
+    const setup = vi.fn(() => ({}));
+    const f = fixture({
+      owned: defineUnit({ id: "owned", imports: {}, exports: {}, setup }),
+    });
+    const original = plan("original", [unit("original-unit", "owned", [])]);
+    vi.mocked(f.control.admitPlan).mockRejectedValue(
+      new FrameError("outcome_unknown", "original host unavailable"),
+    );
+    await expect(f.runtime.prepare(original)).rejects.toMatchObject({
+      code: "outcome_unknown",
+    });
+    expect((await f.runtime.close())[0]!.status).toBe("unconfirmed");
+    const current = { ...authority, epoch: "next-host" };
+    const cleanup: HostControl = {
+      ...f.control,
+      reconnect: async () => ({
+        authority: current,
+        realm,
+        mode: "cleanupOnly",
+        executions: [],
+      }),
+      admitPlan: async (plan) => ({
+        authority: current,
+        realm,
+        execution: plan.execution,
+        decision: "cleanupRequired",
+      }),
+      prove: vi.fn(async (proof) => ({
+        authority: current,
+        closeId: proof.closeId,
+        proofId: proof.proofId,
+        recorded: true,
+      })),
+    };
+    await f.runtime.reconnect(cleanup);
+    expect(f.runtime.connection).toBe("closed");
+    expect((await f.runtime.close())[0]!.status).toBe("released");
+    expect(vi.mocked(cleanup.prove).mock.calls[0]![0].authority).toEqual(
+      authority,
+    );
+    expect(setup).not.toHaveBeenCalled();
+    await expect(
+      f.runtime.prepare(plan("new", [unit("new-unit", "owned", [])])),
+    ).rejects.toMatchObject({ code: "unavailable" });
+  });
+
   it("retains one exit owner when approved preparation exceeds the local child budget", async () => {
     const f = fixture({ reader });
     const overflow = plan(
@@ -898,6 +1138,184 @@ describe("approved browser execution", () => {
     expect(f.proofs.get(proof.proofId)).toEqual(proof);
   });
 
+  it("invalidates concurrent old polls when a manual execution settles during their observation", async () => {
+    const f = fixture({ reader }, 1);
+    const original = plan("original", [
+      unit("original-reader", "reader", [
+        { name: "files", contract: files.ref },
+      ]),
+    ]);
+    const firstReply = Promise.withResolvers<Poll>();
+    const secondReply = Promise.withResolvers<Poll>();
+    vi.mocked(f.control.poll)
+      .mockReturnValueOnce(firstReply.promise)
+      .mockReturnValueOnce(secondReply.promise);
+    const firstSchedule = vi.fn<(plans: readonly LocalPlan[]) => void>();
+    const secondSchedule = vi.fn<(plans: readonly LocalPlan[]) => void>();
+    const firstPoll = f.runtime.poll(firstSchedule);
+    const secondPoll = f.runtime.poll(secondSchedule);
+
+    const execution = await f.runtime.prepare(original);
+    await execution.close();
+    await f.runtime.flushProofs();
+    const next = await f.runtime.prepare(
+      plan("next", [
+        unit("next-reader", "reader", [{ name: "files", contract: files.ref }]),
+      ]),
+    );
+    const oldReply: Poll = {
+      authority,
+      realm,
+      revision: "1",
+      plans: [original],
+      fences: [],
+    };
+    firstReply.resolve(oldReply);
+    await firstPoll;
+    expect(firstSchedule).toHaveBeenCalledExactlyOnceWith([]);
+    await next.close();
+    await f.runtime.flushProofs();
+
+    const fresh = plan("fresh", [
+      unit("fresh-reader", "reader", [{ name: "files", contract: files.ref }]),
+    ]);
+    vi.mocked(f.control.poll).mockResolvedValueOnce({
+      ...oldReply,
+      plans: [fresh],
+    });
+    const freshSchedule = vi.fn<(plans: readonly LocalPlan[]) => void>();
+    await f.runtime.poll(freshSchedule);
+    expect(freshSchedule).toHaveBeenCalledExactlyOnceWith([fresh]);
+
+    secondReply.resolve(oldReply);
+    await secondPoll;
+    expect(secondSchedule).toHaveBeenCalledExactlyOnceWith([]);
+    expect(f.control.admitPlan).toHaveBeenCalledTimes(2);
+    expect(f.runtime.pendingProofs).toEqual([]);
+    await f.runtime.close();
+  });
+
+  it.each(["notAdmitted", "settled"] as const)(
+    "invalidates an old poll when its original admission is %s",
+    async (decision) => {
+      const setup = vi.fn(() => ({}));
+      const f = fixture(
+        { owned: defineUnit({ id: "owned", imports: {}, exports: {}, setup }) },
+        1,
+      );
+      const original = plan("original", [unit("original-unit", "owned", [])]);
+      const reply = Promise.withResolvers<Poll>();
+      vi.mocked(f.control.poll).mockReturnValueOnce(reply.promise);
+      const schedule = vi.fn<(plans: readonly LocalPlan[]) => void>();
+      const polling = f.runtime.poll(schedule);
+      vi.mocked(f.control.admitPlan).mockResolvedValueOnce({
+        authority,
+        realm,
+        execution: original.execution,
+        decision,
+      });
+      await expect(f.runtime.prepare(original)).rejects.toMatchObject({
+        code: "stale_binding",
+      });
+      expect(setup).not.toHaveBeenCalled();
+      const next = await f.runtime.prepare(
+        plan("next", [unit("next-unit", "owned", [])]),
+      );
+      reply.resolve({
+        authority,
+        realm,
+        revision: "1",
+        plans: [original],
+        fences: [],
+      });
+      await polling;
+      expect(schedule).toHaveBeenCalledExactlyOnceWith([]);
+      expect(f.control.admitPlan).toHaveBeenCalledTimes(2);
+      expect(f.control.prove).not.toHaveBeenCalled();
+      await next.close();
+      await f.runtime.close();
+    },
+  );
+
+  it("still applies fences when an acknowledgement invalidates older pending plans", async () => {
+    const f = fixture({ reader }, 2);
+    const releasedPlan = plan("released", [
+      unit("released-reader", "reader", [
+        { name: "files", contract: files.ref },
+      ]),
+    ]);
+    const activePlan = plan("active", [
+      unit("active-reader", "reader", [{ name: "files", contract: files.ref }]),
+    ]);
+    const released = await f.runtime.prepare(releasedPlan);
+    const active = await f.runtime.prepare(activePlan);
+    const reply = Promise.withResolvers<Poll>();
+    vi.mocked(f.control.poll).mockReturnValueOnce(reply.promise);
+    const schedule = vi.fn<(plans: readonly LocalPlan[]) => void>();
+    const polling = f.runtime.poll(schedule);
+    await released.close();
+    await f.runtime.flushProofs();
+    reply.resolve({
+      authority,
+      realm,
+      revision: "1",
+      plans: [releasedPlan],
+      fences: [
+        {
+          scopeId: activePlan.scopeId,
+          scopeGeneration: activePlan.scopeGeneration,
+        },
+      ],
+    });
+    await polling;
+    expect(schedule).toHaveBeenCalledExactlyOnceWith([]);
+    expect((await active.wait()).status).toBe("released");
+    expect(f.runtime.pendingProofs.map((proof) => proof.execution.id)).toEqual([
+      "active",
+    ]);
+    await f.runtime.close();
+  });
+
+  it("revalidates only live executions after a released execution loses its proof acknowledgement", async () => {
+    const f = fixture({ reader });
+    const released = await f.runtime.prepare(
+      plan("released", [
+        unit("released-reader", "reader", [
+          { name: "files", contract: files.ref },
+        ]),
+      ]),
+    );
+    const active = await f.runtime.prepare(
+      plan("active", [
+        unit("active-reader", "reader", [
+          { name: "files", contract: files.ref },
+        ]),
+      ]),
+    );
+    await released.close();
+    const prove = vi.mocked(f.control.prove).getMockImplementation()!;
+    vi.mocked(f.control.prove).mockImplementationOnce(async (proof) => {
+      await prove(proof);
+      throw new FrameError("outcome_unknown", "proof acknowledgement was lost");
+    });
+    await expect(f.runtime.flushProofs()).rejects.toMatchObject({
+      code: "outcome_unknown",
+    });
+    const originalProof = f.runtime.pendingProofs[0]!;
+    f.runtime.disconnect();
+    await f.runtime.reconnect(f.control);
+    expect(f.control.reconnect).toHaveBeenCalledExactlyOnceWith({
+      authority,
+      realm,
+      executions: [active.identity],
+    });
+    expect(f.runtime.connection).toBe("connected");
+    expect(f.runtime.pendingProofs).toEqual([]);
+    expect(f.proofs.get(originalProof.proofId)).toEqual(originalProof);
+    expect(active.objects).toHaveLength(1);
+    await f.runtime.close();
+  });
+
   it("keeps a dynamic native object after publication ACK loss and rejects disconnected admission", async () => {
     const contributor = defineUnit({
       id: "contributor",
@@ -1145,7 +1563,12 @@ async function closedHandles() {
   // Instrumented mocks keep their implementations in Vitest's global registry.
   // This fixture uses ordinary functions so only the public handles retain state.
   const control: HostControl = {
-    validatePlan: async () => {},
+    admitPlan: async (plan) => ({
+      authority,
+      realm,
+      execution: plan.execution,
+      decision: "admitted",
+    }),
     ready: async () => ({ decision: "accepted" }),
     acquire: unavailable,
     validateUse: async () => {},

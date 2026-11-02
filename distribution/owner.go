@@ -15,6 +15,9 @@ import (
 	"github.com/Tangerg/frame/value"
 )
 
+const directoryReadBatch = 256
+const privateDirectoryAttempts = 32
+
 func (s *Store) openOwner() (err error) {
 	s.root, err = os.OpenRoot(s.directory)
 	if err != nil {
@@ -48,7 +51,7 @@ func (s *Store) openOwner() (err error) {
 	}
 	defer func() { err = errors.Join(err, directory.Close()) }()
 	for {
-		entries, readErr := directory.ReadDir(256)
+		entries, readErr := directory.ReadDir(directoryReadBatch)
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			return readErr
 		}
@@ -186,7 +189,7 @@ func (s *Store) openRelease(digest value.Digest) (*os.Root, error) {
 }
 
 func (s *Store) privateDirectory(prefix string) (string, *os.Root, fs.FileInfo, error) {
-	for range 32 {
+	for range privateDirectoryAttempts {
 		var entropy [16]byte
 		if _, err := rand.Read(entropy[:]); err != nil {
 			return "", nil, nil, err

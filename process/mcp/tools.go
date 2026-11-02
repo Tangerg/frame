@@ -180,7 +180,7 @@ type toolService struct {
 // ToolError is an MCP tool's explicit failure. Result includes its content and metadata.
 type ToolError struct{ Result value.JSON }
 
-func (*ToolError) Error() string { return "MCP tool reported an error" }
+func (*ToolError) Error() string { return "mcp tool reported an error" }
 
 func (s *toolService) Call(ctx context.Context, name string, input value.JSON) (value.JSON, error) {
 	if ctx == nil {

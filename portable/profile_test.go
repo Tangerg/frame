@@ -3,11 +3,28 @@ package portable_test
 import (
 	"encoding/json"
 	"os"
+	"reflect"
 	"testing"
 
 	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/value"
 )
+
+func TestGeneratedSchemaProfileMatchesOwner(t *testing.T) {
+	data, err := os.ReadFile("profile.generated.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var generated struct {
+		Schema portable.SchemaProfile `json:"schema"`
+	}
+	if err := json.Unmarshal(data, &generated); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(generated.Schema, portable.ProfileSchema()) {
+		t.Fatal("schema profile projection is stale; run go generate ./internal/sdkgen")
+	}
+}
 
 func TestSharedSchemaProfileCorpus(t *testing.T) {
 	data, err := os.ReadFile("testdata/schema-profile.json")

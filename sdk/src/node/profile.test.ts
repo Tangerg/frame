@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseJSON } from "../json.js";
-import { digestJSON } from "./contract.js";
+import { digestJSON, freezeJSON, Method } from "./contract.js";
 import { compileSchema } from "./schema.js";
 
 interface ProfileCase {
@@ -35,4 +35,45 @@ describe("shared Go and Node schema profile", () => {
       }
     });
   }
+
+  it("keeps the descriptor and caller members immutable during validation", () => {
+    const schema = freezeJSON(
+      parseJSON(`{
+      "type": "object",
+      "properties": {"__proto__": {"type": "string"}, "toString": {"type": "string"}},
+      "additionalProperties": false
+    }`),
+    );
+    const validate = compileSchema(schema);
+    const instance = Object.freeze({});
+    expect(() => validate(instance)).not.toThrow();
+    expect(Object.keys(instance)).toEqual([]);
+    const declared = freezeJSON(
+      parseJSON('{"__proto__":"value","toString":"value"}'),
+    );
+    expect(() => validate(declared)).not.toThrow();
+    expect(Object.getPrototypeOf(declared)).toBe(Object.prototype);
+  });
+
+  it("enforces own-member constraints at the method admission boundary", () => {
+    const method = new Method({
+      name: "read",
+      kind: "query",
+      description: "Read a bounded object.",
+      input: {
+        type: "object",
+        properties: { ok: { type: "string" } },
+        additionalProperties: false,
+      },
+      output: true,
+    });
+    for (const name of [
+      "__proto__",
+      "constructor",
+      "toString",
+      "hasOwnProperty",
+    ]) {
+      expect(() => method.validateInput(parseJSON(`{"${name}":7}`))).toThrow();
+    }
+  });
 });

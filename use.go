@@ -573,22 +573,10 @@ func (h *Host) acquireReadyBinding(ctx context.Context, binding BindingSnapshot,
 			h.mu.Unlock()
 			return nil, err
 		}
-		store := h.catalog[source.Contract]
-		var selected *publication
-		if store != nil {
-			for _, candidate := range store.members {
-				if candidate.source == source && candidate.instance == instance {
-					if selected != nil {
-						h.mu.Unlock()
-						return nil, ErrAmbiguous
-					}
-					selected = candidate
-				}
-			}
-		}
-		if selected == nil || !selected.durable {
+		selected, err := instance.setupExportLocked(source)
+		if err != nil {
 			h.mu.Unlock()
-			return nil, ErrUnavailable
+			return nil, err
 		}
 		plan.members = append(plan.members, snapshotMember{id: selected.id, source: selected.source, instanceID: selected.instance.id, binding: selected.instance.snapshot.Clone(), durable: true})
 	}

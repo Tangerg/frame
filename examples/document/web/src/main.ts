@@ -1,4 +1,4 @@
-import { Lifetime, Point, type Unit } from "@frame/sdk";
+import { FrameError, Lifetime, Point, type Unit } from "@frame/sdk";
 import { parseJSON, projectNumber, stringifyJSON } from "@frame/sdk/json";
 import {
   ControlPump,
@@ -13,6 +13,8 @@ import type {
   AcquireRequest,
   ContractRef,
   Execution,
+  Snapshot,
+  SnapshotRequest,
 } from "@frame/sdk/protocol";
 import type {
   Converted,
@@ -43,7 +45,8 @@ let execution: Execution | undefined;
 let point: Point<PreviewMetadata, Preview> | undefined;
 let mounted: Use | undefined;
 let pendingAdmission: AcquireRequest | undefined;
-let pumpAbort: AbortController | undefined;
+let pendingSnapshot: SnapshotRequest | undefined;
+let pump: ControlPump | undefined;
 let pumpWork: Promise<void> | undefined;
 let opening: { operationId: string; resumeToken: string } | undefined;
 let realmReleased = false;
@@ -131,12 +134,12 @@ async function connect(): Promise<void> {
       throw new Error("this consumer has no remote import contract");
     },
   });
-  pumpAbort = new AbortController();
-  const pump = new ControlPump(runtime, control, {
+  pump = new ControlPump(runtime, {
     intervalMilliseconds: 100,
+    preparationCapacity: 1,
     onError: report,
   });
-  pumpWork = pump.run(pumpAbort.signal);
+  pumpWork = pump.run().catch(report);
   await api("/api/preview/activate", credentials);
   element("connection-state").textContent =
     `Realm ${credentials.realm.id.slice(0, 12)} / Host epoch ${credentials.authority.epoch}`;
@@ -190,6 +193,22 @@ async function acquirePreview(
   }
 }
 
+async function capturePreview(
+  channel: HTTPControl,
+  pointName: string,
+): Promise<Snapshot> {
+  pendingSnapshot ??= { operationId: crypto.randomUUID(), points: [pointName] };
+  try {
+    const snapshot = await channel.snapshot(pendingSnapshot);
+    pendingSnapshot = undefined;
+    return snapshot;
+  } catch (error) {
+    if (error instanceof FrameError && error.code !== "outcome_unknown")
+      pendingSnapshot = undefined;
+    throw error;
+  }
+}
+
 async function closeMounted(owner: Runtime): Promise<void> {
   if (!mounted) return;
   const outcome = await mounted.close();
@@ -222,7 +241,7 @@ async function mountPreview(task: TaskView): Promise<void> {
     channel = control;
   await recoverPreview(owner, channel);
   await closeMounted(owner);
-  const snapshot = await channel.snapshot([point.ref.name]);
+  const snapshot = await capturePreview(channel, point.ref.name);
   let choice;
   try {
     choice = select(
@@ -358,19 +377,12 @@ action("cancel", async () => {
 });
 action("reconnect", async () => {
   if (!credentials || !runtime) throw new Error("no original Realm exists");
-  pumpAbort?.abort();
-  await pumpWork;
   credentials = await api<Credentials>("/api/realm/resume", {
     realm: credentials.realm,
     resumeToken: credentials.resumeToken,
   });
   control = hostControl(credentials);
   await runtime.reconnect(control);
-  pumpAbort = new AbortController();
-  pumpWork = new ControlPump(runtime, control, {
-    intervalMilliseconds: 100,
-    onError: report,
-  }).run(pumpAbort.signal);
   if (runtime.connection === "connected") {
     const owner = runtime,
       channel = control;
@@ -382,21 +394,14 @@ action("reconnect", async () => {
 action("close", async () => {
   if (!credentials || !runtime) return;
   await api("/api/realm/seal", { token: credentials.token });
-  pumpAbort?.abort();
+  await pump?.close();
   await pumpWork;
-  const outcomes = await runtime.close();
-  if (
-    outcomes.some((outcome) => outcome.status !== "released") ||
-    runtime.pendingProofs.length
-  )
-    throw new Error(
-      "original resources or proof acknowledgements are still pending",
-    );
   await api("/api/recover", {});
   realmReleased = true;
   credentials = undefined;
   mounted = undefined;
   pendingAdmission = undefined;
+  pendingSnapshot = undefined;
   execution = undefined;
   opening = undefined;
   element<HTMLButtonElement>("connect").disabled = true;

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/Tangerg/frame"
@@ -19,32 +20,59 @@ import (
 //go:embed assets/preview.js assets/theme.css
 var assets embed.FS
 
+const (
+	previewPackageName                  = "example.document-preview"
+	previewPackageVersion               = "1"
+	previewModulePath                   = "preview.js"
+	previewUnitID          frame.UnitID = "preview"
+	previewExportName                   = "preview"
+	themeUnitID            frame.UnitID = "theme"
+	themeExportName                     = "theme"
+	themeResourcePath                   = "theme.css"
+	defaultPreviewPriority              = 10
+)
+
 func buildPreview(ctx context.Context, store *distribution.Store, contracts Contracts, authorize func(value.Digest)) (distribution.Release, error) {
 	directory, err := os.MkdirTemp("", "frame-document-package-")
 	if err != nil {
 		return distribution.Release{}, err
 	}
 	defer os.RemoveAll(directory)
-	module, err := assets.ReadFile("assets/preview.js")
+	module, err := assets.ReadFile("assets/" + previewModulePath)
 	if err != nil {
 		return distribution.Release{}, err
 	}
-	ref, err := json.Marshal(contracts.Previews.Ref())
+	declaration, err := json.Marshal(struct {
+		UnitID   frame.UnitID      `json:"unitId"`
+		Export   string            `json:"export"`
+		Point    frame.ContractRef `json:"point"`
+		Metadata PreviewMetadata   `json:"metadata"`
+	}{previewUnitID, previewExportName, contracts.Previews.Ref(), PreviewMetadata{Format: "html", Priority: defaultPreviewPriority}})
 	if err != nil {
 		return distribution.Release{}, err
 	}
-	module = append(append([]byte("const point = Object.freeze({ ref: "), ref...), append([]byte(" });\n"), module...)...)
-	if err := os.WriteFile(filepath.Join(directory, "preview.js"), module, 0600); err != nil {
+	module = slices.Concat([]byte("const published = Object.freeze("), declaration, []byte(");\n"), module)
+	if err := os.WriteFile(filepath.Join(directory, previewModulePath), module, 0600); err != nil {
 		return distribution.Release{}, err
 	}
-	theme, err := assets.ReadFile("assets/theme.css")
+	theme, err := assets.ReadFile("assets/" + themeResourcePath)
 	if err != nil {
 		return distribution.Release{}, err
 	}
-	if err := os.WriteFile(filepath.Join(directory, "theme.css"), theme, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(directory, themeResourcePath), theme, 0600); err != nil {
 		return distribution.Release{}, err
 	}
-	manifest := distribution.Manifest{SchemaVersion: 1, Package: "example.document-preview", Version: "1", Artifacts: []distribution.Artifact{{Path: "preview.js"}, {Path: "theme.css"}}, Contracts: []frame.ContractRef{contracts.Previews.Ref(), contracts.Theme.Ref()}, Units: []distribution.Unit{{ID: "preview", Profile: frame.BrowserJS, Exports: []frame.ExportDeclaration{{Name: "preview", Contract: contracts.Previews.Ref()}}, Module: &distribution.Module{Entry: "preview.js"}}, {ID: "theme", Profile: frame.StaticResource, Exports: []frame.ExportDeclaration{{Name: "theme", Contract: contracts.Theme.Ref()}}, Resources: []string{"theme.css"}}}}
+	manifest := distribution.Manifest{
+		SchemaVersion: distribution.ManifestSchemaVersion,
+		Package:       previewPackageName,
+		Version:       previewPackageVersion,
+		Artifacts:     []distribution.Artifact{{Path: previewModulePath}, {Path: themeResourcePath}},
+		Contracts:     []frame.ContractRef{contracts.Previews.Ref(), contracts.Theme.Ref()},
+		Units: []distribution.Unit{
+			{ID: previewUnitID, Profile: frame.BrowserJS, Exports: []frame.ExportDeclaration{{Name: previewExportName, Contract: contracts.Previews.Ref()}}, Module: &distribution.Module{Entry: previewModulePath}},
+			{ID: themeUnitID, Profile: frame.StaticResource, Exports: []frame.ExportDeclaration{{Name: themeExportName, Contract: contracts.Theme.Ref()}}, Resources: []string{themeResourcePath}},
+		},
+	}
 	var archive bytes.Buffer
 	if _, err := distribution.Build(ctx, directory, manifest, &archive); err != nil {
 		return distribution.Release{}, err

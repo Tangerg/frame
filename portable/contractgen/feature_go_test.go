@@ -52,7 +52,7 @@ func TestGoProjectionPreservesPublishedStringEnumOwnership(t *testing.T) {
 	}
 }
 
-func TestGoProjectionRejectsCollidingEnumIdentifiers(t *testing.T) {
+func TestGoProjectionPreservesCollidingEnumValues(t *testing.T) {
 	method := portable.MethodDescriptor{
 		Name: "acme/review", Kind: portable.Mutation, Target: "installation", Description: "Review a record.",
 		Input:  []byte(`{"type":"object","properties":{"decision":{"type":"string","enum":["a-b","a_b"]}},"required":["decision"],"additionalProperties":false}`),
@@ -66,7 +66,27 @@ func TestGoProjectionRejectsCollidingEnumIdentifiers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := feature.goProjection(featureGoOptions{Package: "consumer"}); err == nil {
-		t.Fatal("two published values received one Go identifier")
+	projection, err := feature.goProjection(featureGoOptions{Package: "consumer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := token.NewFileSet()
+	file, err := parser.ParseFile(files, "contract.go", projection, parser.AllErrors)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := (&types.Config{}).Check("consumer", files, []*ast.File{file}, nil)
+	if err != nil {
+		t.Fatalf("generated enum does not compile: %v\n%s", err, projection)
+	}
+	values := make(map[string]bool)
+	for _, name := range compiled.Scope().Names() {
+		member, ok := compiled.Scope().Lookup(name).(*types.Const)
+		if ok && types.Identical(member.Type(), compiled.Scope().Lookup("ReviewInputDecision").Type()) {
+			values[constant.StringVal(member.Val())] = true
+		}
+	}
+	if len(values) != 2 || !values["a-b"] || !values["a_b"] {
+		t.Fatalf("published enum values changed: %v", values)
 	}
 }

@@ -186,7 +186,7 @@ func (h *Host) planInstanceLocked(binding BindingSnapshot, bound UnitBinding, re
 		return nil, false, err
 	}
 	h.nextGeneration++
-	instance := &Instance{host: h, startGrant: grant, id: id, generation: h.nextGeneration, scope: installation.scope, realm: actualRealm, unit: unit.Declaration.Clone(), binding: bound.Clone(), snapshot: actual, identity: identity, configuration: bytes.Clone(installation.record.Configuration), setup: unit.Setup, lifetime: NewLifetime(context.WithoutCancel(h.lifetime.Context())), exports: make(map[string]*publication), ready: make(chan struct{}), closed: make(chan struct{}), changed: make(chan struct{}), publicationOperations: make(map[string]*publicationOperation)}
+	instance := &Instance{host: h, startGrant: grant, id: id, generation: h.nextGeneration, scope: installation.scope, realm: actualRealm, unit: unit.Declaration.Clone(), binding: bound.Clone(), snapshot: actual, identity: identity, configuration: bytes.Clone(installation.record.Configuration), setup: unit.Setup, lifetime: NewLifetime(context.WithoutCancel(h.lifetime.Context())), setupExports: make(map[string]*publication), ready: make(chan struct{}), closed: make(chan struct{}), changed: make(chan struct{}), publicationOperations: make(map[string]*publicationOperation)}
 	for _, read := range reads {
 		if read.unit == bound.Source {
 			instance.preparation = append(instance.preparation, read)
@@ -297,7 +297,7 @@ func (i *Instance) prepare() {
 		return
 	}
 	defer work.Finish()
-	setup := &Setup{host: h, instance: i, work: work, imports: make(map[string][]BoundValue)}
+	setup := &Setup{host: h, instance: i, work: work}
 	for _, dependency := range i.dependencies {
 		select {
 		case <-dependency.ready:
@@ -315,28 +315,7 @@ func (i *Instance) prepare() {
 		}
 	}
 	h.mu.Lock()
-	for _, requirement := range i.binding.Imports {
-		values := make([]BoundValue, 0, len(requirement.Providers))
-		for _, provider := range requirement.Providers {
-			if provider.Unit() == i.binding.Source {
-				values = append(values, BoundValue{Source: provider, Local: true})
-				continue
-			}
-			var selected *publication
-			for _, dependency := range i.dependencies {
-				if dependency.binding.Source == provider.Unit() {
-					selected = dependency.exports[provider.Export]
-					break
-				}
-			}
-			if selected == nil || selected.source.Contract != provider.Contract {
-				err = ErrContractMismatch
-				break
-			}
-			values = append(values, BoundValue{Source: provider, Value: selected.value})
-		}
-		setup.imports[requirement.Slot] = values
-	}
+	setup.imports, err = i.bindImportsLocked()
 	driver := h.drivers[i.unit.Profile].Driver
 	h.mu.Unlock()
 	if err != nil {
@@ -355,6 +334,62 @@ func (i *Instance) prepare() {
 		err = contextError(work.Context())
 	}
 	i.finishPrepare(exports, setup.sealPreparation(), err)
+}
+
+func (i *Instance) bindImportsLocked() (map[string][]BoundValue, error) {
+	imports := make(map[string][]BoundValue, len(i.binding.Imports))
+	for _, requirement := range i.binding.Imports {
+		values := make([]BoundValue, 0, len(requirement.Providers))
+		for _, provider := range requirement.Providers {
+			if provider.Unit() == i.binding.Source {
+				values = append(values, BoundValue{Source: provider, Local: true})
+				continue
+			}
+			selected, err := i.providerExportLocked(provider)
+			if err != nil {
+				return nil, err
+			}
+			values = append(values, BoundValue{Source: provider, Value: selected.value})
+		}
+		imports[requirement.Slot] = values
+	}
+	return imports, nil
+}
+
+func (i *Instance) providerExportLocked(source ExportRef) (*publication, error) {
+	for _, dependency := range i.dependencies {
+		if dependency.binding.Source == source.Unit() {
+			return dependency.setupExportLocked(source)
+		}
+	}
+	return nil, ErrContractMismatch
+}
+
+// A declaration names the original setup export. Live Point membership can
+// withdraw that value, but cannot replace what a new setup would receive.
+func (i *Instance) setupExportLocked(source ExportRef) (*publication, error) {
+	selected := i.setupExports[source.Export]
+	if selected == nil || selected.source != source {
+		return nil, ErrContractMismatch
+	}
+	if !selected.visible || !selected.durable {
+		return nil, ErrUnavailable
+	}
+	return selected, nil
+}
+
+func (i *Instance) validateImportsLocked() error {
+	for _, requirement := range i.binding.Imports {
+		for _, provider := range requirement.Providers {
+			if provider.Unit() == i.binding.Source {
+				continue
+			}
+			if _, err := i.providerExportLocked(provider); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func invokeSetup(setup SetupFunc, ctx context.Context, value *Setup) (exports []ExportValue, err error) {
@@ -385,6 +420,11 @@ func (i *Instance) validateCurrentLocked() error {
 	}
 	if err := h.validateBindingLocked(i.snapshot); err != nil {
 		return err
+	}
+	if !i.readyDone {
+		if err := i.validateImportsLocked(); err != nil {
+			return err
+		}
 	}
 	return h.validateBindingReadsLocked(i.preparation)
 }
@@ -422,7 +462,7 @@ func (i *Instance) finishPrepare(exports []ExportValue, activate func(context.Co
 			}
 			for _, publication := range prepared {
 				h.publishLocked(publication)
-				i.exports[publication.source.Export] = publication
+				i.setupExports[publication.source.Export] = publication
 			}
 			i.preparation = nil
 			return nil
@@ -507,7 +547,7 @@ func (i *Instance) beginRetire() {
 				delete(h.instances, i.key())
 			}
 			delete(h.allInstances, i.id)
-			i.exports = nil
+			i.setupExports = nil
 			i.dependencies = nil
 			i.dependencyHolds = nil
 			i.setup = nil

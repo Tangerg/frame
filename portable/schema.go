@@ -70,30 +70,20 @@ type schemaReference struct {
 	path   string
 }
 
-var scalarSchemaKeywords = map[string]bool{
-	"$schema": true, "$comment": true, "title": true, "description": true,
-	"default": true, "examples": true, "readOnly": true, "writeOnly": true,
-	"deprecated": true, "contentEncoding": true, "contentMediaType": true,
-	"type": true, "enum": true, "const": true, "required": true,
-	"minimum": true, "maximum": true, "exclusiveMinimum": true,
-	"exclusiveMaximum": true, "multipleOf": true, "minLength": true,
-	"maxLength": true, "pattern": true, "format": true, "minItems": true,
-	"maxItems": true, "uniqueItems": true, "minProperties": true, "maxProperties": true,
-}
-
 // schemaGraph counts possible schema traversal, not predicates or verdicts.
 // A property/item edge (descend) consumes instance depth; a ref/composition
 // edge (same) does not. Only cycles of the latter are forbidden, preserving
 // structural recursion.
 type schemaGraph struct {
 	limits     Limits
+	profile    SchemaProfile
 	nodes      []schemaNode
 	paths      map[string]int
 	references []schemaReference
 }
 
 func schemaWork(value any) ([]int, bool, error) {
-	graph := schemaGraph{limits: ProfileLimits(), paths: map[string]int{}}
+	graph := schemaGraph{limits: ProfileLimits(), profile: ProfileSchema(), paths: map[string]int{}}
 	if _, err := graph.visit(value, ""); err != nil {
 		return nil, false, err
 	}
@@ -127,19 +117,26 @@ func (g *schemaGraph) visit(value any, path string) (int, error) {
 }
 
 func (g *schemaGraph) visitKeyword(index int, key string, field any, path string) error {
+	keyword, supported := g.profile.Keywords[key]
+	if !supported {
+		return fmt.Errorf("portable: unsupported schema keyword %q", key)
+	}
+	switch keyword.Children {
+	case SchemaMap:
+		return g.visitMap(index, key, field, path, keyword.Edge)
+	case SchemaChild:
+		return g.visitChild(index, field, path, keyword.Edge)
+	case SchemaArray:
+		return g.visitComposition(index, field, path, keyword.Edge)
+	}
+	if keyword.Value == SchemaSize {
+		return g.sizeConstraint(key, field)
+	}
 	switch key {
 	case "$ref":
 		return g.reference(index, field)
-	case "$defs", "definitions", "properties", "patternProperties":
-		return g.visitMap(index, key, field, path)
-	case "additionalProperties", "items", "contains", "propertyNames":
-		return g.visitChild(index, field, path, true)
-	case "not", "if", "then", "else":
-		return g.visitChild(index, field, path, false)
-	case "allOf", "anyOf", "oneOf":
-		return g.visitComposition(index, field, path)
 	case "$schema":
-		if field != "https://json-schema.org/draft/2020-12/schema" {
+		if field != g.profile.Dialect {
 			return errors.New("portable: unsupported schema dialect")
 		}
 	case "pattern":
@@ -150,51 +147,48 @@ func (g *schemaGraph) visitKeyword(index int, key string, field any, path string
 		return checkPattern(pattern)
 	case "format":
 		return checkFormat(field)
-	case "minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties":
-		number, ok := field.(json.Number)
-		if !ok {
-			return fmt.Errorf("portable: %s must be a nonnegative integer", key)
-		}
-		size, ok := new(big.Rat).SetString(number.String())
-		if !ok || !size.IsInt() || size.Sign() < 0 || !size.Num().IsInt64() || size.Num().Int64() > g.limits.MaxSizeConstraint {
-			return fmt.Errorf("portable: %s must be an integer between 0 and %d", key, g.limits.MaxSizeConstraint)
-		}
 	case "enum":
 		return g.enum(index, field)
 	case "const":
 		g.nodes[index].local += int(equalityWeight(field))
 	case "uniqueItems":
 		g.nodes[index].unique, _ = field.(bool)
-	default:
-		if !scalarSchemaKeywords[key] {
-			return fmt.Errorf("portable: unsupported schema keyword %q", key)
-		}
 	}
 	return nil
 }
 
-// visitChild links a subschema that applies to a nested instance (descend) or
-// to the same instance.
-func (g *schemaGraph) visitChild(index int, field any, path string, descend bool) error {
+func (g *schemaGraph) sizeConstraint(key string, field any) error {
+	number, ok := field.(json.Number)
+	if !ok {
+		return fmt.Errorf("portable: %s must be a nonnegative integer", key)
+	}
+	size, ok := new(big.Rat).SetString(number.String())
+	if !ok || !size.IsInt() || size.Sign() < 0 || !size.Num().IsInt64() || size.Num().Int64() > g.limits.MaxSizeConstraint {
+		return fmt.Errorf("portable: %s must be an integer between 0 and %d", key, g.limits.MaxSizeConstraint)
+	}
+	return nil
+}
+
+func (g *schemaGraph) visitChild(index int, field any, path string, edge SchemaEdge) error {
 	child, err := g.visit(field, path)
 	if err != nil {
 		return err
 	}
-	if descend {
+	if edge == SchemaDescend {
 		g.nodes[index].descend = append(g.nodes[index].descend, child)
-	} else {
+	} else if edge == SchemaSame {
 		g.nodes[index].same = append(g.nodes[index].same, child)
 	}
 	return nil
 }
 
-func (g *schemaGraph) visitComposition(index int, field any, path string) error {
+func (g *schemaGraph) visitComposition(index int, field any, path string, edge SchemaEdge) error {
 	children, ok := field.([]any)
 	if !ok || len(children) == 0 {
 		return errors.New("portable: schema composition requires a nonempty array")
 	}
 	for n, child := range children {
-		if err := g.visitChild(index, child, path+"/"+strconv.Itoa(n), false); err != nil {
+		if err := g.visitChild(index, child, path+"/"+strconv.Itoa(n), edge); err != nil {
 			return err
 		}
 	}
@@ -230,7 +224,7 @@ func (g *schemaGraph) reference(index int, field any) error {
 	return nil
 }
 
-func (g *schemaGraph) visitMap(index int, key string, field any, path string) error {
+func (g *schemaGraph) visitMap(index int, key string, field any, path string, edge SchemaEdge) error {
 	children, ok := field.(map[string]any)
 	if !ok {
 		return errors.New("portable: schema map must be an object")
@@ -241,12 +235,8 @@ func (g *schemaGraph) visitMap(index int, key string, field any, path string) er
 				return err
 			}
 		}
-		childIndex, err := g.visit(child, path+"/"+pointerToken(name))
-		if err != nil {
+		if err := g.visitChild(index, child, path+"/"+pointerToken(name), edge); err != nil {
 			return err
-		}
-		if key == "properties" || key == "patternProperties" {
-			g.nodes[index].descend = append(g.nodes[index].descend, childIndex)
 		}
 	}
 	return nil
@@ -263,8 +253,7 @@ func (g *schemaGraph) resolveReferences() error {
 	return nil
 }
 
-// expansionOrder orders nodes so every same-value target precedes its source,
-// refusing a same-value cycle and bounding its expansion.
+// Same-value cycles cannot consume instance depth to terminate evaluation.
 func (g *schemaGraph) expansionOrder() ([]int, error) {
 	state := make([]byte, len(g.nodes))
 	expansion := make([]int, len(g.nodes))
@@ -305,10 +294,9 @@ func (g *schemaGraph) expansionOrder() ([]int, error) {
 	return order, nil
 }
 
-// work bounds validation cost per instance depth with saturating dynamic
-// programming, which bounds recursion without unfolding it. Summing every
-// possible child and multiplying by instance nodes is deliberately
-// conservative; admission never executes schema predicates to guess a cheaper path.
+// Saturating dynamic programming bounds recursion without unfolding it. Summing
+// every possible child and multiplying by instance nodes is deliberately
+// conservative; admission never executes predicates to guess a cheaper path.
 func (g *schemaGraph) work(order []int) []int {
 	work := make([]int, g.limits.MaxJSONDepth+1)
 	previous := make([]int, len(g.nodes))
@@ -332,7 +320,6 @@ func (g *schemaGraph) work(order []int) []int {
 	return work
 }
 
-// unique reports whether any schema reachable from the root requires unique items.
 func (g *schemaGraph) unique() bool {
 	visited := make([]bool, len(g.nodes))
 	queue := []int{0}

@@ -19,7 +19,12 @@ func TestInvalidSocketAddressNeverCreatesOrReconnectsAnAuthority(t *testing.T) {
 	if _, err := NewDaemon(DaemonConfig{Executable: "/unstarted-runner", Directory: directory, StartTimeout: time.Second}); !errors.Is(err, frame.ErrInvalid) {
 		t.Fatalf("long daemon address: %v", err)
 	}
-	if _, err := Listen(socket); !errors.Is(err, frame.ErrInvalid) {
+	server, err := Open(Config{Directory: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	if _, err := server.Listen(socket); !errors.Is(err, frame.ErrInvalid) {
 		t.Fatalf("long listener address: %v", err)
 	}
 	if _, err := Dial(socket).Identity(t.Context()); !errors.Is(err, frame.ErrInvalid) || errors.Is(err, os.ErrNotExist) {

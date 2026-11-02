@@ -93,6 +93,16 @@ type HostConfig struct {
 	MaxEventRoutes           int
 }
 
+const (
+	defaultMaxInstallations         = 4096
+	defaultMaxPublications          = 4096
+	defaultMaxPublicationOperations = 8192
+	defaultWatchCapacity            = 64
+	defaultMaxWatches               = 1024
+	defaultMaxUses                  = 4096
+	defaultMaxEventRoutes           = 4096
+)
+
 type InstallationConfig struct {
 	ID            InstallationID
 	Plugin        *Plugin
@@ -147,7 +157,7 @@ type Instance struct {
 	hostResource          *ResourceHandle
 	dependencies          []*Instance
 	dependencyHolds       []*Work
-	exports               map[string]*publication
+	setupExports          map[string]*publication
 	ready                 chan struct{}
 	readyErr              error
 	readyDone             bool
@@ -165,7 +175,6 @@ type Instance struct {
 type publicationOperation struct {
 	request     framevalue.Digest
 	publication *publication
-	withdrawn   bool
 }
 
 type Host struct {
@@ -209,25 +218,25 @@ func NewHost(ctx context.Context, config HostConfig) (*Host, error) {
 		config.Epoch = 1
 	}
 	if config.MaxInstallations == 0 {
-		config.MaxInstallations = 4096
+		config.MaxInstallations = defaultMaxInstallations
 	}
 	if config.MaxPublications == 0 {
-		config.MaxPublications = 4096
+		config.MaxPublications = defaultMaxPublications
 	}
 	if config.MaxPublicationOperations == 0 {
-		config.MaxPublicationOperations = 8192
+		config.MaxPublicationOperations = defaultMaxPublicationOperations
 	}
 	if config.WatchCapacity == 0 {
-		config.WatchCapacity = 64
+		config.WatchCapacity = defaultWatchCapacity
 	}
 	if config.MaxWatches == 0 {
-		config.MaxWatches = 1024
+		config.MaxWatches = defaultMaxWatches
 	}
 	if config.MaxUses == 0 {
-		config.MaxUses = 4096
+		config.MaxUses = defaultMaxUses
 	}
 	if config.MaxEventRoutes == 0 {
-		config.MaxEventRoutes = 4096
+		config.MaxEventRoutes = defaultMaxEventRoutes
 	}
 	if config.MaxInstallations < 1 || config.MaxPublications < 1 || config.MaxPublicationOperations < 1 || config.WatchCapacity < 1 || config.MaxWatches < 1 || config.MaxUses < 1 || config.MaxEventRoutes < 1 {
 		return nil, ErrInvalid
@@ -605,6 +614,24 @@ func (h *Host) Uninstall(ctx context.Context, id InstallationID) error {
 	return h.changeInstallation(ctx, id, func(*installed) (*installed, error) { return nil, nil })
 }
 
+type installationTransition struct {
+	before *installed
+	after  *installed
+}
+
+func (t installationTransition) destructive() bool {
+	return t.after == nil || t.after.record.Release != t.before.record.Release || !bytes.Equal(t.after.record.Configuration, t.before.record.Configuration)
+}
+
+func (t installationTransition) records() (*InstallationRecord, *InstallationRecord) {
+	before := t.before.record.Clone()
+	if t.after == nil {
+		return &before, nil
+	}
+	after := t.after.record.Clone()
+	return &before, &after
+}
+
 func (h *Host) changeInstallation(ctx context.Context, id InstallationID, prepare func(*installed) (*installed, error)) error {
 	if err := id.Validate(); err != nil {
 		return err
@@ -612,67 +639,24 @@ func (h *Host) changeInstallation(ctx context.Context, id InstallationID, prepar
 	state := CommitRejected
 	var retire []*Instance
 	err := h.admitInstallation(ctx, func(admitted context.Context) error {
-		h.mu.Lock()
-		if h.closed {
-			h.mu.Unlock()
-			return ErrClosed
-		}
-		current := h.installations[id]
-		if current == nil {
-			h.mu.Unlock()
-			return ErrUnavailable
-		}
-		next, err := prepare(current)
-		if err != nil {
-			h.mu.Unlock()
+		transition, err := h.planInstallationTransition(id, prepare)
+		if err != nil || transition == nil {
 			return err
 		}
-		if next == current || next != nil && sameInstallationRecord(current.record, next.record) {
-			h.mu.Unlock()
-			return nil
-		}
-		if next != nil {
-			if err := h.checkReleaseLocked(next.record); err != nil {
-				h.mu.Unlock()
-				return err
-			}
-		}
-		destructive := next == nil || next.record.Release != current.record.Release || !bytes.Equal(next.record.Configuration, current.record.Configuration)
-		if destructive {
-			for _, use := range h.uses {
-				for _, dependency := range use.binding.Dependencies() {
-					if dependency.InstallationID == id {
-						h.mu.Unlock()
-						return ErrInUse
-					}
-				}
-			}
-		}
-		if next != nil {
-			if err := h.validateUnitsLocked(next.record.Units); err != nil {
-				h.mu.Unlock()
-				return err
-			}
-		}
-		before := current.record.Clone()
-		var after *InstallationRecord
-		if next != nil {
-			value := next.record.Clone()
-			after = &value
-		}
-		h.mu.Unlock()
+		next := transition.after
 		if next != nil && next.record.Enabled {
 			if err := h.admission.checkScopeCapacity(installationScope(id)); err != nil {
 				return err
 			}
 		}
-		if destructive {
+		if transition.destructive() {
 			if err := h.admission.CheckUnused(admitted, id); err != nil {
 				return err
 			}
 		}
+		before, after := transition.records()
 		var commitErr error
-		state, commitErr = h.commitInstallation(admitted, &before, after)
+		state, commitErr = h.commitInstallation(admitted, before, after)
 		if state != CommitSucceeded {
 			return commitErr
 		}
@@ -684,29 +668,7 @@ func (h *Host) changeInstallation(ctx context.Context, id InstallationID, prepar
 				return errors.Join(ErrRecoveryRequired, commitErr, err)
 			}
 		}
-		h.mu.Lock()
-		if next == nil {
-			delete(h.installations, id)
-		} else {
-			h.installations[id] = next
-		}
-		for ref, instance := range h.instances {
-			depends := false
-			for _, dependency := range instance.snapshot.Dependencies() {
-				if dependency.InstallationID == id {
-					depends = true
-					break
-				}
-			}
-			if !depends {
-				continue
-			}
-			instance.retiring = true
-			h.withdrawInstanceLocked(instance)
-			delete(h.instances, ref)
-			retire = append(retire, instance)
-		}
-		h.mu.Unlock()
+		retire = h.applyInstallationTransition(id, next)
 		h.admission.recordChange(id)
 		return errors.Join(commitErr, h.confirmInstallation(admitted, id))
 	})
@@ -714,6 +676,65 @@ func (h *Host) changeInstallation(ctx context.Context, id InstallationID, prepar
 		instance.beginRetire()
 	}
 	return installationFailure(id, state, err)
+}
+
+func (h *Host) planInstallationTransition(id InstallationID, prepare func(*installed) (*installed, error)) (*installationTransition, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return nil, ErrClosed
+	}
+	current := h.installations[id]
+	if current == nil {
+		return nil, ErrUnavailable
+	}
+	next, err := prepare(current)
+	if err != nil {
+		return nil, err
+	}
+	if next == current || next != nil && sameInstallationRecord(current.record, next.record) {
+		return nil, nil
+	}
+	if next != nil {
+		if err := h.checkReleaseLocked(next.record); err != nil {
+			return nil, err
+		}
+	}
+	transition := &installationTransition{before: current, after: next}
+	if transition.destructive() {
+		for _, use := range h.uses {
+			if use.binding.requiresInstallation(id) {
+				return nil, ErrInUse
+			}
+		}
+	}
+	if next != nil {
+		if err := h.validateUnitsLocked(next.record.Units); err != nil {
+			return nil, err
+		}
+	}
+	return transition, nil
+}
+
+func (h *Host) applyInstallationTransition(id InstallationID, next *installed) []*Instance {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if next == nil {
+		delete(h.installations, id)
+	} else {
+		h.installations[id] = next
+	}
+	var retire []*Instance
+	for ref, instance := range h.instances {
+		if !instance.snapshot.requiresInstallation(id) {
+			continue
+		}
+		instance.retiring = true
+		h.withdrawInstanceLocked(instance)
+		delete(h.instances, ref)
+		retire = append(retire, instance)
+	}
+	return retire
 }
 
 func (h *Host) Observations() []InstanceObservation {

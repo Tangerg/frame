@@ -32,19 +32,60 @@ const runtime = new Runtime({
   load: (unit, owner, plan) => modules.load(unit, owner, plan),
   remote: createApprovedPortableProxy,
 });
-const pump = new ControlPump(runtime, control, {
+const pump = new ControlPump(runtime, {
   intervalMilliseconds: applicationPollInterval,
+  preparationCapacity: applicationPreparationBudget,
   onError: reportControlFailure,
 });
 ```
 
-Run the pump under the application's bootstrap owner. The pending projection is
-complete: unresolved plans and fences remain visible rather than depending on
-an event delivery cursor. Fences are applied before new plans. An unavailable
-control channel seals new framework work; reconnect requires explicit current
-Host revalidation. A new authority epoch makes old executions cleanup-only.
+Run the pump under the application's bootstrap owner. `synchronize()` completes
+one control poll without waiting for module loading, setup or Ready delivery.
+The pump retains at most `preparationCapacity` preparation tasks, with one task
+per original execution; deferred plans remain in the Host's complete pending
+projection. Fences and proof delivery continue while setup is pending. Proof
+acknowledgements also run independently of polling. No timeout substitutes for
+resource release.
 
-`prepare(plan)` validates Host approval before loading code. Its exact slots may
+The original execution remains locally owned after resource release until its
+proof is acknowledged. Polling cannot schedule that terminal execution again.
+Acknowledgement invalidates older plan observations without retaining execution
+tombstones or holding proof capacity for a stalled poll. Such a response still
+delivers its fences; the next poll supplies the Host's current pending plans.
+`runtime.poll(schedule)` delivers plans to a synchronous callback so scheduling
+reserves their original owners before another acknowledgement can invalidate the
+observation. A custom scheduler must start its bounded preparations in that
+callback, without deferring the received plans.
+
+The Runtime owns the current control channel and consumes its authority, Realm
+and fence projection. An unavailable current channel seals new framework work;
+reconnect requires Host revalidation. Call `runtime.reconnect(replacement)` to
+replace the authenticated channel while the same pump runs. A late poll from the
+retired channel cannot fence or disconnect the replacement. A new authority
+epoch makes old executions cleanup-only.
+
+`run(signal?)` owns the pump's bootstrap lifetime. Aborting its signal, or calling
+`pump.close()`, stops new scheduling, begins Runtime closure and joins the actual
+poll, preparations and proof delivery. Successful completion requires resource
+release and durable proof acknowledgement. An unconfirmed close remains an
+error with the original Runtime; aborting is never evidence that setup exited.
+Close the transport Lifetime only after this join. A failed close can be retried
+to observe the original resources and redeliver the same proofs; it never
+restarts scheduling or setup. A pump cannot be restarted.
+If recovery needs a replacement authenticated transport, a closed Runtime still
+accepts `reconnect(replacement)` for cleanup. It remains closed to new work;
+retry the original close after that channel is available.
+
+`prepare(plan)` reserves one original execution and proof slot before sending
+`admitPlan`. Only an `admitted` response permits loading code. An uncertain reply
+retains that original admission; ordinary errors, including an authentication
+failure, cannot be interpreted as proof that the Host never admitted it. A later
+`cleanupRequired` response joins the original exit without running setup.
+`notAdmitted` or `settled` releases the unstarted reservation using the Host's
+original settlement, without manufacturing a competing browser proof. Runtime
+closure joins and resolves pending admissions before reporting release.
+
+The plan's exact slots may
 reference existing instances in another plan of the same Realm. The consuming
 Lifetime protects that original provider; the new plan never owns or resolves
 it again. The module must declare the approved import and export set.
@@ -62,12 +103,28 @@ restarted by replaying a receipt or switching entrances.
 `select` is a pure consumer metadata policy helper; the Host still admits its
 result. `Use.with` accesses approved native objects locally without per-call RPC.
 
-Close a discarded or read-only selection with `control.closeSnapshot(snapshot.id)`.
-An admitted `acquire` consumes that original lease, including a failed selection;
-retry its original operation ID to recover the same grant or refusal. Closing the
-snapshot afterward is idempotent and leaves accepted Uses and their release proofs
-with their original owners. If selection fails before acquisition, close the
-snapshot and preserve both errors when cleanup also fails.
+Create the Snapshot operation identity before dispatch and retain the request
+while its outcome is unknown:
+
+```ts
+const capture = {
+  operationId: crypto.randomUUID(),
+  points: [previews.ref.name],
+};
+const snapshot = await control.snapshot(capture);
+```
+
+Retry `control.snapshot(capture)` with that same request after a lost response;
+the Host returns the original capture rather than allocating another lease.
+Close a discarded or read-only selection with
+`control.closeSnapshot(capture.operationId)`, including when the reply containing
+`snapshot.id` was lost. A close acknowledged before a delayed capture prevents
+that capture from starting. An admitted `acquire` consumes the original lease,
+including a failed selection; retry the acquisition's operation ID to recover
+the same grant or refusal. Replaying a consumed or closed Snapshot returns
+`closed`; only an explicitly new capture may select again. Closing the Snapshot
+afterward is idempotent and leaves accepted Uses and release proofs with their
+original owners. Preserve both errors when selection and cleanup fail.
 
 `route` accepts an exact Host-approved native Event route. Dispatch preserves the
 actual payload object in the Realm. Changing public subscriptions or acquiring
@@ -103,8 +160,9 @@ cannot enlarge release evidence. Use the Host's `maxMessageBytes` bootstrap
 projection for the transport budget so accepted messages share one effective
 wire capacity.
 
-Close the Runtime and obtain durable proof acknowledgement before closing the
-transport Lifetime. `reload(callback, signal?)` calls the callback only after all
+Close the pump and obtain durable proof acknowledgement before closing the
+transport Lifetime. A Runtime used without a pump must be closed directly.
+`reload(callback, signal?)` calls the callback only after all
 resources have released and every proof has been durably acknowledged. Aborting
 the wait leaves the original exits and proof delivery owned.
 

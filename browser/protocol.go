@@ -83,6 +83,24 @@ type LocalPlan struct {
 	Units           []PlannedUnit `json:"units"`
 }
 
+type PlanAdmissionDecision string
+
+const (
+	PlanAdmitted        PlanAdmissionDecision = "admitted"
+	PlanCleanupRequired PlanAdmissionDecision = "cleanupRequired"
+	PlanNotAdmitted     PlanAdmissionDecision = "notAdmitted"
+	PlanSettled         PlanAdmissionDecision = "settled"
+)
+
+// An uncertain admission keeps its original local owner. Only the exact
+// original attempt can establish whether that owner owes an execution proof.
+type PlanAdmission struct {
+	Authority Authority             `json:"authority"`
+	Realm     Realm                 `json:"realm"`
+	Execution Execution             `json:"execution"`
+	Decision  PlanAdmissionDecision `json:"decision"`
+}
+
 type Fence struct {
 	ScopeID         string `json:"scopeId"`
 	ScopeGeneration string `json:"scopeGeneration"`
@@ -141,6 +159,11 @@ type PointSnapshot struct {
 	Point      frame.ContractRef `json:"point"`
 	Revision   string            `json:"revision"`
 	Candidates []Candidate       `json:"candidates"`
+}
+
+type SnapshotRequest struct {
+	OperationID string   `json:"operationId"`
+	Points      []string `json:"points"`
 }
 
 type Snapshot struct {
@@ -274,6 +297,9 @@ func (ImportKind) Values() []string {
 }
 func (Decision) Values() []string {
 	return []string{string(Accepted), string(Rejected), string(Unknown)}
+}
+func (PlanAdmissionDecision) Values() []string {
+	return []string{string(PlanAdmitted), string(PlanCleanupRequired), string(PlanNotAdmitted), string(PlanSettled)}
 }
 func (ReleaseStatus) Values() []string { return []string{string(Released), string(Unconfirmed)} }
 func (ReconnectMode) Values() []string { return []string{string(Revalidated), string(CleanupOnly)} }

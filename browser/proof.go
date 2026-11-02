@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
-	"strconv"
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/sqlite"
@@ -79,6 +78,13 @@ func (b *Bridge) releaseProven(ctx context.Context, proof CloseProof, attempt sq
 // provenAttempt finds the browser attempt a proof closes and refuses a proof
 // minted for an earlier epoch, generation or scope of it.
 func (b *Bridge) provenAttempt(ctx context.Context, session *realmSession, proof CloseProof) (sqlite.Attempt, error) {
+	b.mu.Lock()
+	entry := b.executions[proof.Execution.ID]
+	unadmitted := entry != nil && !entry.admitted
+	b.mu.Unlock()
+	if unadmitted {
+		return sqlite.Attempt{}, frame.ErrStaleBinding
+	}
 	record, err := b.config.Store.Attempt(ctx, proof.Execution.ID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return sqlite.Attempt{}, frame.ErrUnavailable
@@ -87,7 +93,7 @@ func (b *Bridge) provenAttempt(ctx context.Context, session *realmSession, proof
 		return sqlite.Attempt{}, err
 	}
 	attempt := record.Attempt
-	if attempt.Profile != frame.BrowserJS || attempt.Realm != string(RealmID(session.realm)) || proof.Authority.Epoch != strconv.FormatUint(attempt.Epoch, 10) || proof.Execution.Generation != strconv.FormatUint(attempt.Generation, 10) || proof.ScopeID != string(attempt.Scope) || proof.ScopeGeneration != strconv.FormatUint(attempt.ScopeGeneration, 10) {
+	if isUnadmittedRecord(record) || !matchesAttempt(attempt, proof.Authority, session.realm, proof.Execution, proof.ScopeID, proof.ScopeGeneration) {
 		return sqlite.Attempt{}, frame.ErrStaleBinding
 	}
 	if hasDuplicate(proof.Instances) {
@@ -386,7 +392,7 @@ func (b *Bridge) Reconnect(ctx context.Context, token string, request ReconnectR
 	b.mu.Unlock()
 	if !cleanupOnly {
 		for _, entry := range entries {
-			if err := b.ValidatePlan(ctx, token, entry.plan); err != nil {
+			if err := b.validateCurrentPlan(ctx, token, entry.plan); err != nil {
 				cleanupOnly = true
 				break
 			}
@@ -426,7 +432,7 @@ func sameSet(left, right []string) bool {
 }
 
 // SealRealm revokes new creation and public admission in this exact Realm.
-// Already exposed plans remain protected until their original exit is proven.
+// Already admitted plans remain protected until their original exit is proven.
 // Other windows using the same installation retain their independent scopes.
 func (b *Bridge) SealRealm(ctx context.Context, token string) error {
 	session, err := b.session(token, false)
@@ -460,7 +466,7 @@ func (b *Bridge) sealSessionLocked(session *realmSession) {
 	session.cleanupOnly = true
 	session.revision++
 	for id, snapshot := range b.snapshots {
-		if snapshot.realm == string(RealmID(session.realm)) {
+		if snapshot.realm == session.realm {
 			delete(b.snapshots, id)
 		}
 	}

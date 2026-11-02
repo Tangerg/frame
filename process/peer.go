@@ -344,6 +344,10 @@ func (p *peer) request(ctx context.Context, method string, params, result any) e
 	}
 	reply := make(chan envelope, 1)
 	p.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		p.mu.Unlock()
+		return context.Cause(ctx)
+	}
 	if len(p.pending) >= profile.MaxInFlight || p.next == ^uint64(0) {
 		p.mu.Unlock()
 		return &Problem{profile.Errors.Capacity, "request limit reached"}

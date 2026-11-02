@@ -114,8 +114,8 @@ func TestCompletePendingProjectionReservesEncodedBytesAndReturnsCapacityOnReleas
 					}
 					limit = messageBytes/len(encoded) + 1
 				}
-				if response := controlReply(t, e.bridge, e.credentials.Token, "validatePlan", plan); response.Code != http.StatusOK {
-					t.Fatalf("admitted plan cannot validate: %d %s", response.Code, response.Body.String())
+				if response := controlReply(t, e.bridge, e.credentials.Token, "admitPlan", plan); response.Code != http.StatusOK {
+					t.Fatalf("pending plan cannot be admitted: %d %s", response.Code, response.Body.String())
 				}
 			}
 			if observed {
@@ -158,7 +158,7 @@ func TestCompletePendingProjectionReservesEncodedBytesAndReturnsCapacityOnReleas
 		}
 		for _, plan := range poll.Plans {
 			if plan.Units[0].Instance.Source.InstallationID == "replacement" {
-				e.plans = append(e.plans, plan)
+				e.admit(plan)
 				return
 			}
 		}

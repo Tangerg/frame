@@ -6,6 +6,13 @@ The application publishes its portable descriptor once. A `Capability` checks th
 
 Portable schema size constraints accept mathematical integers within the shared profile's exact nonnegative size range. Equivalent numeric spellings retain their original text in the capability identity.
 
+`portable.ProfileSchema` owns the admitted dialect, keywords, value shapes and
+schema traversal edges. The generated profile supplies these facts to both
+runtime adapters; each runtime keeps its existing schema engine. Validation uses
+a private JSON projection with prototype-free records, so only declared own
+members can satisfy object constraints. Prototype names remain legal contract
+names and validation leaves the caller's descriptor and values unchanged.
+
 Format admission follows the fixed list generated from the Go portable profile:
 `date`, `time`, `date-time`, `uuid`, `json-pointer`, and `relative-json-pointer`.
 Unknown formats are rejected. Pattern validation uses the character classes and

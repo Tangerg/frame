@@ -66,8 +66,8 @@ test(
           const close = client.control.closeSnapshot.bind(client.control);
           const selected = [];
           const closed = [];
-          client.control.snapshot = async (points) => {
-            const value = await snapshot(points);
+          client.control.snapshot = async (request) => {
+            const value = await snapshot(request);
             selected.push(value.id);
             return value;
           };
@@ -190,7 +190,10 @@ test(
           assert.ok(failure, client.errors.map(String).join("\n"));
           assert.equal(typeof failure.releasedURL, "string");
           await assert.rejects(fetch(failure.releasedURL));
-          const snapshot = await client.control.snapshot([validators.ref.name]);
+          const snapshot = await client.control.snapshot({
+            operationId: crypto.randomUUID(),
+            points: [validators.ref.name],
+          });
           assert.equal(
             snapshot.points[0].candidates.some(
               (candidate) => candidate.source.unitId === "partial",
@@ -205,6 +208,9 @@ test(
           assert.deepEqual(
             client.errors.map((error) => error.name),
             ["PartialSetupFailure"],
+            client.errors
+              .map((error) => `${error.code ?? error.name}: ${error.message}`)
+              .join("\n"),
           );
         },
       );

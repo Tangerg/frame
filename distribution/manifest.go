@@ -333,7 +333,6 @@ func (m Module) validate(artifacts map[string]Artifact) error {
 	return nil
 }
 
-// ValidateProcessEntry checks the executable archive shape shared by local process protocols.
 func (u Unit) ValidateProcessEntry() error {
 	if len(u.Variants) == 0 || u.Module != nil {
 		return fmt.Errorf("%w: process unit entry", ErrInvalid)
@@ -351,7 +350,6 @@ func (u Unit) ValidateProcessEntry() error {
 	return nil
 }
 
-// profileShape reports whether the standard format owns this particular profile.
 func (u Unit) profileShape() (bool, error) {
 	switch u.Profile {
 	case frame.LocalProcess:

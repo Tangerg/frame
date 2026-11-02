@@ -7,6 +7,7 @@ import {
 } from "jsonschema";
 import { compilePattern } from "./pattern.js";
 import { checkFormat, validateFormat } from "./format.js";
+import profile from "./profile.generated.json" with { type: "json" };
 import {
   parseJSON,
   stringifyJSON,
@@ -40,64 +41,14 @@ function multipleOf(value: JSONNumber, divisor: JSONNumber): boolean {
   return new ProfileDecimal(value.toString()).mod(divisor.toString()).isZero();
 }
 
-const maps = new Set([
-  "$defs",
-  "definitions",
-  "properties",
-  "patternProperties",
-]);
-const singles = new Set([
-  "additionalProperties",
-  "items",
-  "contains",
-  "propertyNames",
-  "not",
-  "if",
-  "then",
-  "else",
-]);
-const arrays = new Set(["allOf", "anyOf", "oneOf"]);
-const annotations = new Set([
-  "$schema",
-  "$id",
-  "$comment",
-  "$defs",
-  "definitions",
-  "title",
-  "description",
-  "default",
-  "examples",
-  "readOnly",
-  "writeOnly",
-  "deprecated",
-  "contentEncoding",
-  "contentMediaType",
-]);
-const supported = new Set([
-  ...annotations,
-  ...maps,
-  ...singles,
-  ...arrays,
-  "$ref",
-  "type",
-  "enum",
-  "const",
-  "required",
-  "minimum",
-  "maximum",
-  "exclusiveMinimum",
-  "exclusiveMaximum",
-  "multipleOf",
-  "minLength",
-  "maxLength",
-  "pattern",
-  "format",
-  "minItems",
-  "maxItems",
-  "uniqueItems",
-  "minProperties",
-  "maxProperties",
-]);
+interface SchemaKeyword {
+  children?: "map" | "schema" | "array";
+  edge?: "same" | "descend";
+  value?: string;
+  annotation?: boolean;
+}
+const keywords: Readonly<Record<string, SchemaKeyword>> = profile.schema
+  .keywords as Record<string, SchemaKeyword>;
 
 function pointerToken(key: string): string {
   return key.replaceAll("~", "~0").replaceAll("/", "~1");
@@ -121,26 +72,19 @@ interface Subschema {
   edge?: "same" | "descend";
 }
 function* subschemas(key: string, field: unknown): Generator<Subschema> {
-  if (maps.has(key)) {
+  const keyword = keywords[key];
+  if (keyword?.children === "map") {
     if (!schemaObject(field))
       throw new Error("portable: schema map must be an object");
-    const edge =
-      key === "properties" || key === "patternProperties"
-        ? "descend"
-        : undefined;
     for (const [name, value] of Object.entries(field))
-      yield { value, suffix: "/" + pointerToken(name), edge };
-  } else if (singles.has(key)) {
-    yield {
-      value: field,
-      suffix: "",
-      edge: ["not", "if", "then", "else"].includes(key) ? "same" : "descend",
-    };
-  } else if (arrays.has(key)) {
+      yield { value, suffix: "/" + pointerToken(name), edge: keyword.edge };
+  } else if (keyword?.children === "schema") {
+    yield { value: field, suffix: "", edge: keyword.edge };
+  } else if (keyword?.children === "array") {
     if (!Array.isArray(field) || field.length === 0)
       throw new Error("portable: schema composition requires a nonempty array");
     for (const [index, value] of field.entries())
-      yield { value, suffix: "/" + index, edge: "same" };
+      yield { value, suffix: "/" + index, edge: keyword.edge };
   }
 }
 
@@ -149,28 +93,14 @@ function admitNumericConstraints(
   key: string,
   field: unknown,
 ): void {
+  const shape = keywords[key]!.value;
   if (
-    [
-      "minimum",
-      "maximum",
-      "exclusiveMinimum",
-      "exclusiveMaximum",
-      "multipleOf",
-    ].includes(key) &&
+    (shape === "number" || shape === "positive-number") &&
     (!numeric(field) ||
-      (key === "multipleOf" && compareJSONNumbers(field, 0) <= 0))
+      (shape === "positive-number" && compareJSONNumbers(field, 0) <= 0))
   )
     throw new Error("plugin: numeric schema constraint is invalid");
-  if (
-    [
-      "minLength",
-      "maxLength",
-      "minItems",
-      "maxItems",
-      "minProperties",
-      "maxProperties",
-    ].includes(key)
-  ) {
+  if (shape === "size") {
     if (
       !numeric(field) ||
       !isJSONInteger(field) ||
@@ -185,37 +115,31 @@ function admitNumericConstraints(
 
 function admitChoiceConstraints(key: string, field: unknown): void {
   if (
-    key === "required" &&
+    keywords[key]!.value === "required" &&
     (!Array.isArray(field) ||
       field.some((name) => typeof name !== "string") ||
       new Set(field).size !== field.length)
   )
     throw new Error("plugin: schema required members are invalid");
-  if (key === "enum" && (!Array.isArray(field) || field.length === 0))
+  if (
+    keywords[key]!.value === "enum" &&
+    (!Array.isArray(field) || field.length === 0)
+  )
     throw new Error("plugin: schema enum is invalid");
   if (
-    key === "enum" &&
+    keywords[key]!.value === "enum" &&
     (field as unknown[]).some((item, index, values) =>
       values.slice(0, index).some((previous) => equal(item, previous)),
     )
   )
     throw new Error("plugin: schema enum has duplicate values");
-  if (key === "type") {
+  if (keywords[key]!.value === "types") {
     const types = Array.isArray(field) ? field : [field];
     if (
       types.length === 0 ||
       types.some(
         (type) =>
-          typeof type !== "string" ||
-          ![
-            "null",
-            "boolean",
-            "object",
-            "array",
-            "number",
-            "integer",
-            "string",
-          ].includes(type),
+          typeof type !== "string" || !profile.schema.types.includes(type),
       ) ||
       new Set(types).size !== types.length
     )
@@ -228,35 +152,15 @@ function admitAnnotations(
   field: unknown,
   patterns: Map<string, RegExp>,
 ): void {
-  if (
-    [
-      "pattern",
-      "format",
-      "$id",
-      "$schema",
-      "$comment",
-      "title",
-      "description",
-      "contentEncoding",
-      "contentMediaType",
-    ].includes(key) &&
-    typeof field !== "string"
-  )
+  const shape = keywords[key]!.value;
+  if (shape === "string" && typeof field !== "string")
     throw new Error("plugin: schema string constraint is invalid");
-  if (
-    ["uniqueItems", "readOnly", "writeOnly", "deprecated"].includes(key) &&
-    typeof field !== "boolean"
-  )
+  if (shape === "boolean" && typeof field !== "boolean")
     throw new Error("plugin: schema boolean constraint is invalid");
-  if (key === "examples" && !Array.isArray(field))
-    throw new Error("plugin: schema examples must be an array");
-  if (
-    key === "$schema" &&
-    field !== "https://json-schema.org/draft/2020-12/schema"
-  )
+  if (shape === "array" && !Array.isArray(field))
+    throw new Error("plugin: schema annotation must be an array");
+  if (key === "$schema" && field !== profile.schema.dialect)
     throw new Error("plugin: unsupported schema dialect");
-  if (key === "$id")
-    throw new Error("plugin: nested schema resources are unsupported");
   if (key === "format") checkFormat(field);
   if (key === "pattern") {
     patterns.set(field as string, compilePattern(field as string));
@@ -268,7 +172,7 @@ function admitSchema(value: unknown, patterns: Map<string, RegExp>): void {
   if (!schemaObject(value))
     throw new Error("plugin: schema must be an object or boolean");
   for (const [key, field] of Object.entries(value)) {
-    if (!supported.has(key))
+    if (!Object.hasOwn(keywords, key))
       throw new Error(`plugin: unsupported schema keyword ${key}`);
     if (key === "patternProperties") {
       for (const name of Object.keys(field as RecordValue))
@@ -285,16 +189,32 @@ function admitSchema(value: unknown, patterns: Map<string, RegExp>): void {
     delete value.$ref;
     value.allOf = [
       ...((value.allOf as unknown[] | undefined) ?? []),
-      { $ref: ref },
+      Object.assign(Object.create(null), { $ref: ref }),
     ];
   }
+}
+
+// The engine indexes schema maps with ordinary property lookup and may rewrite
+// instance members. Private prototype-free JSON trees preserve own-member
+// semantics without reserving otherwise legal names or mutating caller data.
+function engineProjection(source: unknown): unknown {
+  const document = parseJSON(stringifyJSON(source));
+  function visit(value: unknown): void {
+    if (Array.isArray(value)) value.forEach(visit);
+    else if (schemaObject(value)) {
+      Object.setPrototypeOf(value, null);
+      Object.values(value).forEach(visit);
+    }
+  }
+  visit(document);
+  return document;
 }
 
 // jsonschema supplies traversal and composition. Its supported instance-local
 // hooks adapt numeric comparison to the public exact JSON representation.
 export function compileSchema(source: unknown): (value: unknown) => void {
   checkDescriptor(source);
-  const document = parseJSON(stringifyJSON(source));
+  const document = engineProjection(source);
   const budget = schemaWork(document);
   const validator = new Validator() as Validator & {
     types: Record<string, (value: unknown) => boolean>;
@@ -347,7 +267,8 @@ export function compileSchema(source: unknown): (value: unknown) => void {
     }
     return result;
   }) as CustomProperty;
-  for (const name of annotations) validator.attributes[name] = () => "";
+  for (const [name, keyword] of Object.entries(keywords))
+    if (keyword.annotation) validator.attributes[name] = () => "";
   for (const [keyword, compare] of Object.entries({
     minimum: (left: JSONNumber, right: JSONNumber) =>
       compareJSONNumbers(left, right) >= 0,
@@ -417,9 +338,7 @@ export function compileSchema(source: unknown): (value: unknown) => void {
         throw new Error("plugin: schema reference must identify a schema");
     }
     for (const [name, field] of Object.entries(record)) {
-      if (maps.has(name))
-        Object.values(field as RecordValue).forEach(checkReferences);
-      else if (singles.has(name) || arrays.has(name)) checkReferences(field);
+      for (const child of subschemas(name, field)) checkReferences(child.value);
     }
   }
   checkReferences(schema);
@@ -434,9 +353,9 @@ export function compileSchema(source: unknown): (value: unknown) => void {
       PORTABLE_LIMITS.maxValidationWork / (size.nodes + size.keys)
     )
       exceeded("schema validation work", PORTABLE_LIMITS.maxValidationWork);
-    stringifyJSON(value);
+    const instance = engineProjection(value);
     if (
-      !validator.validate(value, schema, {
+      !validator.validate(instance, schema, {
         base,
         required: true,
         allowUnknownAttributes: false,

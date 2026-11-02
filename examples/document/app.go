@@ -24,6 +24,13 @@ type Config struct {
 	DocumentsDirectory     string
 }
 
+const (
+	fileInstallationID      frame.InstallationID = "files"
+	converterInstallationID frame.InstallationID = "converter"
+	validatorInstallationID frame.InstallationID = "validators"
+	previewInstallationID   frame.InstallationID = "preview"
+)
+
 type App struct {
 	Host       *frame.Host
 	Store      *sqlite.Store
@@ -70,7 +77,7 @@ func Open(ctx context.Context, config Config) (_ *App, err error) {
 	a.Host = host
 	var trustedArchive value.Digest
 	content, err := distribution.Open(distribution.Config{Directory: config.ContentDirectory, Admission: admission, Trust: func(_ context.Context, source distribution.Source, manifest distribution.Manifest, _ distribution.Lock) error {
-		if trustedArchive.IsZero() || source.ArchiveDigest != trustedArchive || manifest.Package != "example.document-preview" || manifest.Version != "1" {
+		if trustedArchive.IsZero() || source.ArchiveDigest != trustedArchive || manifest.Package != previewPackageName || manifest.Version != previewPackageVersion {
 			return distribution.ErrUntrusted
 		}
 		return nil
@@ -165,7 +172,7 @@ func (a *App) restore(ctx context.Context, directory string, trustPreview func(v
 	}
 	definitions := []*frame.Plugin{files, converter, second, validators}
 	for _, record := range records {
-		if record.ID == "preview" {
+		if record.ID == previewInstallationID {
 			a.preview, err = a.Content.Inspect(ctx, record.Release)
 			if err != nil {
 				return err
@@ -209,7 +216,12 @@ func (a *App) restore(ctx context.Context, directory string, trustPreview func(v
 	if err != nil {
 		return err
 	}
-	for _, installation := range []frame.InstallationConfig{{ID: "files", Plugin: files, Configuration: configuration, Enabled: true}, {ID: "converter", Plugin: converter, Enabled: true}, {ID: "validators", Plugin: validators, Enabled: true}, {ID: "preview", Plugin: preview, Enabled: true}} {
+	for _, installation := range []frame.InstallationConfig{
+		{ID: fileInstallationID, Plugin: files, Configuration: configuration, Enabled: true},
+		{ID: converterInstallationID, Plugin: converter, Enabled: true},
+		{ID: validatorInstallationID, Plugin: validators, Enabled: true},
+		{ID: previewInstallationID, Plugin: preview, Enabled: true},
+	} {
 		if _, installed := a.Host.Installation(installation.ID); installed {
 			continue
 		}
@@ -289,7 +301,7 @@ func (a *App) plan(ctx context.Context) (*frame.BindingPlan, error) {
 		return nil, err
 	}
 	converters = slices.DeleteFunc(converters, func(candidate frame.Candidate[ConverterMetadata, Converter]) bool {
-		return candidate.Metadata().Format != "markdown"
+		return candidate.Metadata().Format != markdownFormat
 	})
 	slices.SortFunc(converters, func(left, right frame.Candidate[ConverterMetadata, Converter]) int {
 		return cmp.Or(cmp.Compare(right.Metadata().Priority, left.Metadata().Priority), cmp.Compare(left.Source().InstallationID, right.Source().InstallationID))
@@ -323,14 +335,14 @@ func (a *App) ReplaceConverter(ctx context.Context, version string) error {
 	if err != nil {
 		return err
 	}
-	return a.Host.Replace(ctx, "converter", plugin, nil)
+	return a.Host.Replace(ctx, converterInstallationID, plugin, nil)
 }
 
 func (a *App) Theme(ctx context.Context) (string, error) {
 	if a.preview.Digest.IsZero() {
 		return "", frame.ErrUnavailable
 	}
-	root := frame.ExportRef{InstallationID: "preview", Release: a.preview.Digest, UnitID: "theme", Export: "theme", Contract: a.Contracts.Theme.Ref()}
+	root := frame.ExportRef{InstallationID: previewInstallationID, Release: a.preview.Digest, UnitID: themeUnitID, Export: themeExportName, Contract: a.Contracts.Theme.Ref()}
 	plan, err := a.Host.Plan(ctx, root)
 	if err != nil {
 		return "", err
@@ -341,7 +353,7 @@ func (a *App) Theme(ctx context.Context) (string, error) {
 	}
 	var text string
 	err = frame.BorrowExport(ctx, use, root, func(ctx context.Context, resource *distribution.Resources) error {
-		data, err := resource.Read(ctx, "theme.css")
+		data, err := resource.Read(ctx, themeResourcePath)
 		text = string(data)
 		return err
 	})
@@ -360,7 +372,7 @@ func (a *App) ActivatePreview(ctx context.Context, credentials browser.Credentia
 	if poll.Realm != credentials.Realm {
 		return frame.ErrFenced
 	}
-	root := frame.ExportRef{InstallationID: "preview", Release: a.preview.Digest, UnitID: "preview", Export: "preview", Contract: a.Contracts.Previews.Ref()}
+	root := frame.ExportRef{InstallationID: previewInstallationID, Release: a.preview.Digest, UnitID: previewUnitID, Export: previewExportName, Contract: a.Contracts.Previews.Ref()}
 	_, err = a.Host.ActivateIn(ctx, browser.RealmID(credentials.Realm), root)
 	return err
 }

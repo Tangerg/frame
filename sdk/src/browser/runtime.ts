@@ -19,6 +19,7 @@ import type {
   Import,
   LocalPlan,
   ObjectRef,
+  PlanAdmissionDecision,
   PlannedUnit,
   PreparedContribution,
   PublicationRequest,
@@ -32,6 +33,7 @@ import { PROTOCOL } from "../protocol.generated.js";
 import { type HostControl, sameAuthority } from "./control.js";
 import { ProofOutbox } from "./outbox.js";
 import { UseAdmission } from "./admission.js";
+import { PreparationAdmission } from "./preparation.js";
 
 export interface RuntimeOptions {
   readonly authority: Authority;
@@ -191,6 +193,8 @@ interface ExecutionEntry {
   readonly plan: LocalPlan;
   readonly fingerprint: string;
   readonly lifetime: Lifetime;
+  readonly admission: PreparationAdmission;
+  readonly ordered: readonly PlannedUnit[];
   readonly units: Map<string, UnitEntry>;
   readonly objects: Map<string, ObjectEntry>;
   readonly preparations: PreparedContribution[];
@@ -330,6 +334,7 @@ export class Runtime {
   readonly #outbox: ProofOutbox;
   #connection: "connected" | "paused" | "cleanupOnly" | "closed" = "connected";
   #connectionRevision = 0;
+  #executionProjectionRevision = 0;
   #executions = new Map<string, ExecutionEntry>();
   #instances = new Map<string, UnitEntry>();
   #objects = new Map<string, ObjectEntry>();
@@ -376,8 +381,29 @@ export class Runtime {
   }
 
   async prepare(received: LocalPlan): Promise<ExecutionHandle> {
-    this.#assertConnected();
     const plan = immutable(received);
+    const fingerprint = stringifyJSON(plan, true);
+    const existing = this.#executions.get(plan.execution.id);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint)
+        throw new FrameError(
+          "stale_binding",
+          "execution identity cannot be relabeled or restarted",
+        );
+      if (existing.prepared) return existing.prepared;
+      if (existing.admission.pending)
+        return this.#resumePreparation(existing, this.#connectionRevision);
+      if (existing.lifetime.closing)
+        throw new FrameError("stale_binding", "original execution is closing");
+      this.#assertConnected();
+      if (!existing.ready)
+        throw new FrameError(
+          "invalid_plan",
+          "execution has no prepared report",
+        );
+      return this.#resumePreparation(existing, this.#connectionRevision);
+    }
+    this.#assertConnected();
     if (
       plan.protocol !== PROTOCOL ||
       plan.units.some((unit) => unit.profile !== "browser-js")
@@ -394,29 +420,7 @@ export class Runtime {
         "permission_denied",
         "execution belongs to another authority or realm",
       );
-    const revision = this.#connectionRevision;
-    await this.#control.validatePlan(plan);
-    this.#assertRevision(revision);
     const ordered = orderUnits(plan, this.#instances);
-    const fingerprint = stringifyJSON(plan, true);
-    const existing = this.#executions.get(plan.execution.id);
-    if (existing) {
-      if (existing.fingerprint !== fingerprint || existing.lifetime.closing)
-        throw new FrameError(
-          "stale_binding",
-          "execution identity cannot be relabeled or restarted",
-        );
-      if (existing.prepared) return existing.prepared;
-      if (!existing.ready)
-        throw new FrameError(
-          "invalid_plan",
-          "execution has no prepared report",
-        );
-      existing.prepared = this.#submitReady(existing, revision).finally(() => {
-        existing.prepared = undefined;
-      });
-      return existing.prepared;
-    }
     if (ordered.some((unit) => this.#instances.has(unit.instance.id)))
       throw new FrameError(
         "invalid_plan",
@@ -427,28 +431,67 @@ export class Runtime {
     const objects = new Map<string, ObjectEntry>();
     const units = new Map<string, UnitEntry>();
     const view = executionView(plan.execution, objects, lifetime);
+    const admission = new PreparationAdmission(plan, lifetime, (decision) =>
+      this.#settlePreparation(entry, decision),
+    );
     const entry: ExecutionEntry = {
       plan,
       fingerprint,
       lifetime,
+      admission,
+      ordered,
       units,
       objects,
       preparations: [],
       view,
     };
     this.#executions.set(plan.execution.id, entry);
-    this.#observeExit(
-      entry,
-      lifetime,
-      `execution:${plan.execution.id}`,
-      "execution",
-      plan.execution.id,
-      ordered.map((unit) => unit.instance.id),
-    );
-    entry.prepared = this.#prepare(entry, ordered, revision).finally(() => {
+    return this.#resumePreparation(entry, this.#connectionRevision);
+  }
+
+  #resumePreparation(
+    entry: ExecutionEntry,
+    revision: number,
+  ): Promise<ExecutionHandle> {
+    const work = entry.ready
+      ? this.#submitReady(entry, revision)
+      : this.#prepare(entry, entry.ordered, revision);
+    entry.prepared = work.finally(() => {
       entry.prepared = undefined;
     });
     return entry.prepared;
+  }
+
+  #settlePreparation(
+    entry: ExecutionEntry,
+    decision: PlanAdmissionDecision,
+  ): void {
+    const reservation = `execution:${entry.plan.execution.id}`;
+    switch (decision) {
+      case "notAdmitted":
+      case "settled":
+        this.#outbox.cancelReservation(reservation);
+        this.#forgetExecution(entry);
+        entry.lifetime.beginClose();
+        return;
+      case "admitted":
+      case "cleanupRequired":
+        this.#observeExit(
+          entry,
+          entry.lifetime,
+          reservation,
+          "execution",
+          entry.plan.execution.id,
+          entry.ordered.map((unit) => unit.instance.id),
+        );
+        if (decision === "cleanupRequired") entry.lifetime.beginClose();
+        return;
+      default:
+        throw new FrameError(
+          "outcome_unknown",
+          "host has not settled the original preparation admission",
+        );
+    }
   }
 
   async #prepare(
@@ -456,7 +499,20 @@ export class Runtime {
     ordered: readonly PlannedUnit[],
     revision: number,
   ): Promise<ExecutionHandle> {
+    const admit = () => entry.admission.resolve(this.#control, this.#authority);
+    const decision = await (entry.lifetime.closing
+      ? admit()
+      : entry.lifetime.run(admit));
+    if (decision !== "admitted") {
+      await entry.lifetime.close();
+      throw new FrameError(
+        "stale_binding",
+        "host admission does not authorize preparation",
+      );
+    }
     try {
+      this.#assertRevision(revision);
+      entry.lifetime.assertOpen();
       for (const unit of ordered) {
         const owned = {
           unit,
@@ -1153,9 +1209,16 @@ export class Runtime {
         entry.preparations.length = 0;
         entry.prepared = undefined;
         entry.ready = undefined;
-        this.#executions.delete(entry.plan.execution.id);
       }
     });
+  }
+
+  #forgetExecution(entry: ExecutionEntry): void {
+    if (this.#executions.get(entry.plan.execution.id) !== entry) return;
+    this.#executions.delete(entry.plan.execution.id);
+    // Poll creates no execution obligation. Invalidating its older projection
+    // avoids retaining an unbounded history of acknowledged execution IDs.
+    this.#executionProjectionRevision++;
   }
 
   disconnect(): void {
@@ -1164,16 +1227,20 @@ export class Runtime {
   }
 
   async reconnect(control: HostControl): Promise<void> {
-    if (this.#connection === "closed")
-      throw new FrameError("closed", "runtime is closed");
+    await this.#revalidate(control);
+    await this.flushProofs();
+  }
+
+  async #revalidate(control: HostControl): Promise<void> {
+    const closing = this.#connection === "closed";
     this.disconnect();
     const revision = this.#connectionRevision;
     const result = await control.reconnect({
       authority: this.#authority,
       realm: this.#realm,
-      executions: [...this.#executions.values()].map(
-        (entry) => entry.plan.execution,
-      ),
+      executions: [...this.#executions.values()]
+        .filter((entry) => entry.lifetime.exit?.outcome.status !== "released")
+        .map((entry) => entry.plan.execution),
     });
     if (revision !== this.#connectionRevision)
       throw new FrameError("unavailable", "reconnection was superseded");
@@ -1185,7 +1252,9 @@ export class Runtime {
     const sameEpoch = sameAuthority(result.authority, this.#authority);
     this.#authority = immutable(result.authority);
     this.#control = control;
-    if (sameEpoch && result.mode === "revalidated") {
+    if (closing) {
+      this.#connection = "closed";
+    } else if (sameEpoch && result.mode === "revalidated") {
       for (const entry of this.#executions.values()) {
         if (
           !result.executions.some(
@@ -1203,7 +1272,67 @@ export class Runtime {
       for (const entry of this.#executions.values())
         entry.lifetime.beginClose();
     }
-    await this.flushProofs();
+  }
+
+  /** Scheduling stays in this observation's turn so an ACK cannot race its reservation. */
+  async poll(schedule: (plans: readonly LocalPlan[]) => void): Promise<void> {
+    if (this.#connection === "closed") return;
+    let revision = this.#connectionRevision;
+    let plans: LocalPlan[];
+    try {
+      if (this.#connection === "paused") {
+        const revalidating = this.#revalidate(this.#control);
+        revision = this.#connectionRevision;
+        await revalidating;
+      }
+      if (revision !== this.#connectionRevision) return;
+      const executionProjectionRevision = this.#executionProjectionRevision;
+      const pending = await this.#control.poll();
+      // A replacement channel owns current admission. A late observation from
+      // the retired channel cannot fence it or turn it back into a paused one.
+      if (revision !== this.#connectionRevision) return;
+      if (!sameRealm(pending.realm, this.#realm))
+        throw new FrameError(
+          "permission_denied",
+          "pending plans belong to another realm",
+        );
+      if (!sameAuthority(pending.authority, this.#authority))
+        throw new FrameError(
+          "unavailable",
+          "pending plans require authority revalidation",
+        );
+      for (const fence of pending.fences) {
+        if (revision !== this.#connectionRevision) return;
+        this.fence(fence.scopeId, fence.scopeGeneration);
+      }
+      if (revision !== this.#connectionRevision) return;
+      plans =
+        this.#connection === "connected" &&
+        executionProjectionRevision === this.#executionProjectionRevision
+          ? pending.plans.filter((plan) => {
+              const entry = this.#executions.get(plan.execution.id);
+              return (
+                (!entry ||
+                  entry.admission.pending ||
+                  !entry.lifetime.closing) &&
+                !pending.fences.some(
+                  (fence) =>
+                    fence.scopeId === plan.scopeId &&
+                    fence.scopeGeneration === plan.scopeGeneration,
+                )
+              );
+            })
+          : [];
+      const observed = new Set(plans.map((plan) => plan.execution.id));
+      for (const entry of this.#executions.values())
+        if (entry.admission.pending && !observed.has(entry.plan.execution.id))
+          plans.push(entry.plan);
+    } catch (error) {
+      if (revision !== this.#connectionRevision) return;
+      this.disconnect();
+      throw error;
+    }
+    schedule(plans);
   }
 
   fence(scopeId: string, scopeGeneration: string): void {
@@ -1218,7 +1347,12 @@ export class Runtime {
 
   async flushProofs(): Promise<void> {
     try {
-      await this.#outbox.flush(this.#control, this.#authority);
+      await this.#outbox.flush(this.#control, this.#authority, (proof) => {
+        if (proof.scopeKind !== "execution") return;
+        const entry = this.#executions.get(proof.execution.id);
+        if (entry && sameExecution(entry.plan.execution, proof.execution))
+          this.#forgetExecution(entry);
+      });
     } finally {
       for (const [operationId, admission] of this.#admissions) {
         if (
@@ -1235,11 +1369,23 @@ export class Runtime {
   async close(signal?: AbortSignal): Promise<readonly CloseOutcome[]> {
     this.#connection = "closed";
     this.#connectionRevision++;
-    const exits = [...this.#executions.values()].map((entry) =>
-      entry.lifetime.beginClose(),
+    const entries = [...this.#executions.values()];
+    const unresolved = new Set(
+      entries.filter((entry) => entry.admission.pending),
+    );
+    const exits = entries.map((entry) => entry.lifetime.beginClose());
+    await Promise.allSettled(
+      entries.map((entry) =>
+        entry.admission.resolve(this.#control, this.#authority, signal),
+      ),
     );
     const outcomes = await Promise.all(
-      exits.map((exit) => exit.settled(signal)),
+      exits.map((exit, index) => {
+        const entry = entries[index]!;
+        return unresolved.has(entry) && !entry.admission.pending
+          ? exit.wait(signal)
+          : exit.settled(signal);
+      }),
     );
     await this.flushProofs();
     return Object.freeze(outcomes);

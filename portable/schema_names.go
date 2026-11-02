@@ -34,7 +34,7 @@ func ReadableDefinitions(raw []byte) ([]byte, error) {
 		return bytes.Clone(raw), nil
 	}
 	renamed := readableNames(slices.Collect(maps.Keys(definitions)))
-	rewriteSchemaReferences(document, renamed)
+	rewriteSchemaReferences(document, renamed, ProfileSchema())
 	canonical := make(map[string]any, len(definitions))
 	for name, body := range definitions {
 		canonical[renamed[name]] = body
@@ -44,14 +44,14 @@ func ReadableDefinitions(raw []byte) ([]byte, error) {
 }
 
 // Schema-looking strings in const, enum, examples and default are application values.
-func rewriteSchemaReferences(value any, names map[string]string) {
+func rewriteSchemaReferences(value any, names map[string]string, profile SchemaProfile) {
 	object, ok := value.(map[string]any)
 	if !ok {
 		return
 	}
 	for key, child := range object {
 		switch key {
-		case "$ref", "$dynamicRef":
+		case "$ref":
 			ref, ok := child.(string)
 			if !ok || !strings.HasPrefix(ref, definitionRef) {
 				continue
@@ -64,18 +64,21 @@ func rewriteSchemaReferences(value any, names map[string]string) {
 				}
 				object[key] = ref
 			}
-		case "$defs", "definitions", "properties", "patternProperties", "dependentSchemas":
-			children, _ := child.(map[string]any)
-			for _, schema := range children {
-				rewriteSchemaReferences(schema, names)
+		default:
+			switch profile.Keywords[key].Children {
+			case SchemaMap:
+				children, _ := child.(map[string]any)
+				for _, schema := range children {
+					rewriteSchemaReferences(schema, names, profile)
+				}
+			case SchemaArray:
+				children, _ := child.([]any)
+				for _, schema := range children {
+					rewriteSchemaReferences(schema, names, profile)
+				}
+			case SchemaChild:
+				rewriteSchemaReferences(child, names, profile)
 			}
-		case "allOf", "anyOf", "oneOf", "prefixItems":
-			children, _ := child.([]any)
-			for _, schema := range children {
-				rewriteSchemaReferences(schema, names)
-			}
-		case "additionalProperties", "items", "contains", "propertyNames", "not", "if", "then", "else", "unevaluatedItems", "unevaluatedProperties", "contentSchema":
-			rewriteSchemaReferences(child, names)
 		}
 	}
 }
@@ -99,10 +102,8 @@ func readableNames(keys []string) map[string]string {
 	return names
 }
 
-// goDefinitionSource reads the package path and type name from a reflector
-// key; any other key is its own name. Base64url and Go type names may both
-// contain '_', so the separator is the first one after which the prefix
-// decodes to an import path and the rest begins a type name.
+// Base64url and Go type names may both contain '_', so the separator is the first
+// one after which the prefix decodes to an import path and the rest begins a type name.
 func goDefinitionSource(key string) (pkg, name string) {
 	encoded, ok := strings.CutPrefix(key, "go_")
 	if !ok {
@@ -129,9 +130,7 @@ func importPath(value string) bool {
 	})
 }
 
-// SchemaFor derives T's JSON Schema with readable definition names. It is the
-// one way Go types become schemas, so every contract, tool and point names a
-// type the same way.
+// Every contract, tool and point must derive the same name for a Go type.
 func SchemaFor[T any]() ([]byte, error) {
 	derived, err := jsonschema.For[T]()
 	if err != nil {

@@ -153,7 +153,7 @@ func (e *bridgeEnvironment) start(id string) browser.LocalPlan {
 		case <-time.After(time.Millisecond):
 		}
 	}
-	e.plans = append(e.plans, plan)
+	e.admit(plan)
 	objects := []browser.ObjectRef{}
 	contributions := []browser.PreparedContribution{}
 	for _, declaration := range plan.Units[0].Exports {
@@ -172,9 +172,18 @@ func (e *bridgeEnvironment) start(id string) browser.LocalPlan {
 	return plan
 }
 
+func (e *bridgeEnvironment) admit(plan browser.LocalPlan) {
+	e.t.Helper()
+	result, err := e.bridge.AdmitPlan(e.ctx, e.credentials.Token, plan)
+	if err != nil || result.Decision != browser.PlanAdmitted || result.Authority != e.credentials.Authority || result.Realm != plan.Realm || result.Execution != plan.Execution {
+		e.t.Fatalf("admit original plan: %+v %v", result, err)
+	}
+	e.plans = append(e.plans, plan)
+}
+
 func (e *bridgeEnvironment) selectionRequest(plan browser.LocalPlan, operation string) browser.AcquireRequest {
 	e.t.Helper()
-	snapshot, err := e.bridge.Snapshot(e.ctx, e.credentials.Token, []string{e.first.Ref().Name, e.second.Ref().Name})
+	snapshot, err := e.bridge.Snapshot(e.ctx, e.credentials.Token, snapshotRequest(e.first.Ref().Name, e.second.Ref().Name))
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -233,7 +242,7 @@ func TestBridgeExactPlanCaptureUseAndProof(t *testing.T) {
 	}
 	forged := plan
 	forged.ApprovalToken = "not-the-original"
-	if err := e.bridge.ValidatePlan(e.ctx, e.credentials.Token, forged); !errors.Is(err, frame.ErrStaleBinding) {
+	if _, err := e.bridge.AdmitPlan(e.ctx, e.credentials.Token, forged); !errors.Is(err, frame.ErrStaleBinding) {
 		t.Fatalf("forged plan accepted: %v", err)
 	}
 	request, grant := e.acquire(plan, "first-use")
@@ -406,7 +415,7 @@ func TestPublicationWithdrawalPreservesAcceptedUse(t *testing.T) {
 	if err := e.bridge.ValidateUse(e.ctx, e.credentials.Token, grant); err != nil {
 		t.Fatalf("withdrawal revoked an already admitted Use: %v", err)
 	}
-	snapshot, err := e.bridge.Snapshot(e.ctx, e.credentials.Token, []string{e.first.Ref().Name})
+	snapshot, err := e.bridge.Snapshot(e.ctx, e.credentials.Token, snapshotRequest(e.first.Ref().Name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +479,7 @@ func TestExecutionExitCoversAcceptedPublicationWithoutSeparateWithdrawal(t *test
 	if err != nil || len(uses) != 1 || !uses[0].Released {
 		t.Fatalf("execution exit was acknowledged before its Use released: %+v %v", uses, err)
 	}
-	snapshot, err := e.bridge.Snapshot(e.ctx, e.credentials.Token, []string{e.first.Ref().Name})
+	snapshot, err := e.bridge.Snapshot(e.ctx, e.credentials.Token, snapshotRequest(e.first.Ref().Name))
 	if err != nil || len(snapshot.Points) != 1 || len(snapshot.Points[0].Candidates) != 0 {
 		t.Fatalf("execution exit left its dynamic publication visible: %+v %v", snapshot, err)
 	}
@@ -498,9 +507,11 @@ func TestControlHTTPAuthenticationAndStrictInput(t *testing.T) {
 	if response := call(e.credentials.Token, `{"method":"poll","input":{"unknown":true}}`); response.Code != http.StatusBadRequest {
 		t.Fatalf("unknown member accepted: %d", response.Code)
 	}
-	encoded, _ := json.Marshal(map[string]any{"method": "validatePlan", "input": plan})
-	if response := call(e.credentials.Token, string(encoded)); response.Code != http.StatusOK || response.Body.String() != "null" {
-		t.Fatalf("actual HTTP plan validation: %d %s", response.Code, response.Body.String())
+	encoded, _ := json.Marshal(map[string]any{"method": "admitPlan", "input": plan})
+	response := call(e.credentials.Token, string(encoded))
+	var admission browser.PlanAdmission
+	if err := json.Unmarshal(response.Body.Bytes(), &admission); err != nil || response.Code != http.StatusOK || admission.Decision != browser.PlanAdmitted || admission.Execution != plan.Execution {
+		t.Fatalf("actual HTTP plan admission: %d %s", response.Code, response.Body.String())
 	}
 }
 

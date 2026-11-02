@@ -51,7 +51,7 @@ func (b *Bridge) checkResponse(output any) error {
 }
 
 func (b *Bridge) checkPlanCapacity(plan LocalPlan) error {
-	if err := b.checkRequest(validatePlanMethod, plan); err != nil {
+	if err := b.checkRequest(admitPlanMethod, plan); err != nil {
 		return err
 	}
 	ready := ReadyReport{OperationID: plan.ApprovalToken, Authority: plan.Authority, Realm: plan.Realm, Execution: plan.Execution, Objects: []ObjectRef{}, Contributions: []PreparedContribution{}}

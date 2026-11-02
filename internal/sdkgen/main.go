@@ -28,7 +28,8 @@ func main() {
 		Limits   portable.Limits        `json:"limits"`
 		Pattern  portable.PatternSyntax `json:"pattern"`
 		Formats  portable.StringFormats `json:"formats"`
-	}{portable.Protocol, portable.ProfileLimits(), portable.ProfilePatternSyntax(), portable.ProfileStringFormats()}
+		Schema   portable.SchemaProfile `json:"schema"`
+	}{portable.Protocol, portable.ProfileLimits(), portable.ProfilePatternSyntax(), portable.ProfileStringFormats(), portable.ProfileSchema()}
 	encodedProfile, err := json.MarshalIndent(profile, "", "  ")
 	if err != nil {
 		log.Fatal(err)

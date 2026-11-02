@@ -64,7 +64,7 @@ func (s *Server) AcknowledgeExit(ctx context.Context, receipt ExitReceipt) error
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed || s.fenced {
+	if s.closed {
 		return ErrFenced
 	}
 	item, found, err := s.lookupAttempt(receipt.AttemptID)

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -117,11 +118,10 @@ type journal struct {
 }
 
 type process struct {
-	command  *exec.Cmd
-	kill     func() error
-	stdin    io.WriteCloser
-	stdout   io.ReadCloser
-	attached bool
+	command *exec.Cmd
+	kill    func() error
+	stdin   io.WriteCloser
+	stdout  io.ReadCloser
 
 	closeState  processCloseState
 	environment []string
@@ -129,18 +129,20 @@ type process struct {
 }
 
 type Server struct {
-	config        Config
-	id            string
-	lock          *os.File
-	mu            sync.Mutex
-	journal       journal
-	processes     map[string]*process
-	fenced        bool
-	closed        bool
-	closeOnce     sync.Once
-	closeRequests chan chan error
-	closeDone     chan struct{}
-	closeErr      error
+	config               Config
+	id                   string
+	lock                 *os.File
+	mu                   sync.Mutex
+	journal              journal
+	processes            map[string]*process
+	terminalObservations map[string]Observation
+	listener             *controlListener
+	fenced               bool
+	closed               bool
+	closeOnce            sync.Once
+	closeRequests        chan chan error
+	closeDone            chan struct{}
+	closeErr             error
 }
 
 func Open(config Config) (_ *Server, err error) {
@@ -180,7 +182,11 @@ func Open(config Config) (_ *Server, err error) {
 	if err != nil {
 		return nil, err
 	}
-	server := &Server{config: config, id: randomID(), lock: lock, processes: map[string]*process{}, fenced: true, journal: journal{Version: journalVersion, Attempts: map[string]storedAttempt{}}}
+	server := &Server{
+		config: config, id: randomID(), lock: lock, fenced: true,
+		processes: make(map[string]*process), terminalObservations: make(map[string]Observation),
+		journal: journal{Version: journalVersion, Attempts: make(map[string]storedAttempt)},
+	}
 	defer func() {
 		if err != nil {
 			err = errors.Join(err, unlockDirectory(lock))
@@ -271,7 +277,7 @@ func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ Observati
 	s.journal.Attempts[request.AttemptID] = storedAttempt{Observation: observation, RequestDigest: digest}
 	if err := s.persist(); err != nil {
 		s.fenced = true
-		return observation, errors.Join(ErrUnknown, err)
+		return s.failedStart(request.AttemptID, "attempt reservation failed", err)
 	}
 	path, err := s.snapshotExecutable(request)
 	if err != nil {
@@ -337,12 +343,20 @@ func (s *Server) replayLaunch(request LaunchRequest, digest framevalue.Digest) (
 	if live := s.processes[request.AttemptID]; live != nil && !slices.Equal(live.environment, request.Env) {
 		return Observation{}, true, ErrConflict
 	}
-	return old.Observation.clone(), true, nil
+	observation, err := s.inspect(request.AttemptID)
+	return observation, true, err
 }
 
 func (s *Server) Inspect(_ context.Context, id string) (Observation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.inspect(id)
+}
+
+func (s *Server) inspect(id string) (Observation, error) {
+	if _, pending := s.terminalObservations[id]; pending {
+		return s.commitTerminal(id)
+	}
 	item, exists, err := s.lookupAttempt(id)
 	if err != nil {
 		return Observation{}, err
@@ -355,41 +369,37 @@ func (s *Server) Inspect(_ context.Context, id string) (Observation, error) {
 
 func (s *Server) CloseAttempt(ctx context.Context, ref AttemptRef) (Observation, error) {
 	s.mu.Lock()
-	item, exists, err := s.lookupAttempt(ref.AttemptID)
+	observation, err := s.inspect(ref.AttemptID)
 	if err != nil {
 		s.mu.Unlock()
-		return Observation{}, err
+		return observation, err
 	}
-	if !exists {
-		s.mu.Unlock()
-		return Observation{}, ErrNotFound
-	}
-	if item.Observation.Reference() != ref {
+	if observation.Reference() != ref {
 		s.mu.Unlock()
 		return Observation{}, ErrFenced
 	}
-	if item.Observation.State == Unknown {
+	if observation.State == Unknown {
 		s.mu.Unlock()
-		return item.Observation.clone(), ErrUnknown
+		return observation, ErrUnknown
 	}
-	if item.Observation.State == Exited {
+	if observation.State == Exited {
 		s.mu.Unlock()
-		return item.Observation.clone(), nil
+		return observation, nil
 	}
 	live := s.processes[ref.AttemptID]
 	if live == nil {
 		s.mu.Unlock()
-		return item.Observation.clone(), ErrUnknown
+		return observation, ErrUnknown
 	}
 	if err := live.requestClose(); err != nil {
 		s.mu.Unlock()
-		return item.Observation.clone(), err
+		return observation, err
 	}
 	done := live.done
 	s.mu.Unlock()
 	select {
 	case <-ctx.Done():
-		return item.Observation.clone(), ctx.Err()
+		return observation, ctx.Err()
 	case <-done:
 		return s.Inspect(context.Background(), ref.AttemptID)
 	}
@@ -425,13 +435,13 @@ func (s *Server) wait(id string, live *process, path string) {
 			item.Observation.Reason += ": " + err.Error()
 		}
 	}
-	_, _ = s.publishTerminal(id, item)
-	attached := live.attached
+	_, _ = s.publishTerminal(id, item.Observation)
+	if exited && live.stdout != nil {
+		_ = live.stdout.Close()
+		live.stdout = nil
+	}
 	close(live.done)
 	s.mu.Unlock()
-	if exited && !attached {
-		_ = live.stdout.Close()
-	}
 }
 
 func releaseExecutable(path string) error {
@@ -446,22 +456,30 @@ func (s *Server) failedStart(id, reason string, cause error) (Observation, error
 	item.Observation.State = Exited
 	item.Observation.ProofID = randomID()
 	item.Observation.Reason = reason
-	observed, err := s.publishTerminal(id, item)
+	observed, err := s.publishTerminal(id, item.Observation)
 	return observed, errors.Join(cause, err)
 }
 
-func (s *Server) publishTerminal(id string, item storedAttempt) (Observation, error) {
-	s.journal.Attempts[id] = item
+func (s *Server) publishTerminal(id string, observation Observation) (Observation, error) {
+	if _, pending := s.terminalObservations[id]; pending || s.journal.Attempts[id].Observation.State == Exited {
+		return Observation{}, ErrConflict
+	}
+	// Persistence may delay publication, but cannot replace the original Wait's
+	// observation or mint another proof for it.
+	s.terminalObservations[id] = observation
+	return s.commitTerminal(id)
+}
+
+func (s *Server) commitTerminal(id string) (Observation, error) {
+	observation := s.terminalObservations[id]
 	if err := s.persist(); err != nil {
 		s.fenced = true
-		item.Observation.State = Unknown
-		item.Observation.ProofID = ""
-		item.Observation.ExitCode = nil
-		item.Observation.Reason = "exit evidence could not be persisted"
-		s.journal.Attempts[id] = item
-		return item.Observation.clone(), errors.Join(ErrUnknown, err)
+		return Observation{
+			AttemptID: observation.AttemptID, Epoch: observation.Epoch, RunnerID: observation.RunnerID,
+			State: Unknown, Reason: "terminal observation is not durable",
+		}, errors.Join(ErrUnknown, err)
 	}
-	return item.Observation.clone(), nil
+	return observation.clone(), nil
 }
 
 func (s *Server) snapshotExecutable(request LaunchRequest) (_ string, err error) {
@@ -506,7 +524,21 @@ func (s *Server) snapshotExecutable(request LaunchRequest) (_ string, err error)
 }
 
 func (s *Server) persist() error {
-	return storeRecord(filepath.Join(s.config.Directory, "attempts.json"), s.journal)
+	projection := s.journal
+	if len(s.terminalObservations) != 0 {
+		projection.Attempts = maps.Clone(s.journal.Attempts)
+		for id, observation := range s.terminalObservations {
+			item := projection.Attempts[id]
+			item.Observation = observation
+			projection.Attempts[id] = item
+		}
+	}
+	if err := storeRecord(filepath.Join(s.config.Directory, "attempts.json"), projection); err != nil {
+		return err
+	}
+	s.journal = projection
+	clear(s.terminalObservations)
+	return nil
 }
 
 func storeRecord(path string, value any) error {

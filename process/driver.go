@@ -273,7 +273,7 @@ func (d *Driver) release(ctx context.Context, attempt sqlite.Attempt, observed r
 	if err != nil {
 		return err
 	}
-	proof := sqlite.ExitProof{AttemptID: attempt.ID, Realm: attempt.Realm, ExitID: observed.ProofID, Kind: "runner-wait", Evidence: evidence}
+	proof := sqlite.ExitProof{AttemptID: attempt.ID, Realm: attempt.Realm, ExitID: observed.ProofID, Kind: runnerWaitProofKind, Evidence: evidence}
 	if err := d.config.Store.AcceptExit(ctx, attempt.ID, proof); err != nil {
 		return err
 	}
@@ -368,9 +368,6 @@ func (d *Driver) recoverAttempt(ctx context.Context, identity runner.Identity, r
 	return d.release(ctx, attempt, observed)
 }
 
-func undispatchedProof(a sqlite.Attempt) sqlite.ExitProof {
-	return sqlite.ExitProof{AttemptID: a.ID, Realm: a.Realm, ExitID: a.ID + ":not-dispatched", Kind: "not-dispatched", Evidence: []byte(`{"dispatched":false}`)}
-}
 func runnerAttempt(attempt sqlite.Attempt) runner.AttemptRef {
 	return runner.AttemptRef{AttemptID: attempt.ID, Epoch: attempt.Epoch, RunnerID: attempt.Realm}
 }
@@ -388,5 +385,5 @@ func (d *Driver) releaseAbsentAttempt(ctx context.Context, attempt sqlite.Attemp
 	if err != nil {
 		return err
 	}
-	return d.config.Store.ReleaseAttempt(ctx, attempt.ID, sqlite.ExitProof{AttemptID: attempt.ID, Realm: attempt.Realm, ExitID: proof.ProofID, Kind: "sealed-not-started", Evidence: evidence})
+	return d.config.Store.ReleaseAttempt(ctx, attempt.ID, sqlite.ExitProof{AttemptID: attempt.ID, Realm: attempt.Realm, ExitID: proof.ProofID, Kind: sealedAbsenceProofKind, Evidence: evidence})
 }

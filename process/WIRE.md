@@ -28,6 +28,11 @@ a framework rejection by returning one of the framework error codes. Neither
 cancellation nor unknown outcome authorizes replay; reconciliation uses the
 original business operation identity and owner.
 
+The sender checks cancellation again when it holds outbound admission, after
+payload encoding and any wait for the queue lock. Cancellation already visible
+at that boundary consumes no request ID, pending slot or output frame. A
+cancellation racing after admission retains the original unknown-outcome rules.
+
 | Direction | Method | Request | Success |
 | --- | --- | --- | --- |
 | Host → child | hello | version, maxFrameBytes | version, unit, maxFrameBytes, imports and exports (name → contract digest) |

@@ -83,6 +83,39 @@ func (d ImportDeclaration) Clone() ImportDeclaration {
 	return d
 }
 
+func (d ImportDeclaration) Validate() error {
+	if err := validateName("import slot", d.Slot); err != nil {
+		return err
+	}
+	if err := d.Contract.Validate(); err != nil {
+		return err
+	}
+	if d.Providers == nil {
+		return nil
+	}
+	return d.validateProviders()
+}
+
+func (d ImportDeclaration) validateProviders() error {
+	if !d.Optional && len(d.Providers) == 0 || d.Contract.Kind == ServiceKind && len(d.Providers) > 1 {
+		return fmt.Errorf("%w: import cardinality", ErrInvalid)
+	}
+	providers := make(map[ExportRef]bool, len(d.Providers))
+	for _, provider := range d.Providers {
+		if err := provider.Validate(); err != nil {
+			return err
+		}
+		if provider.Contract != d.Contract {
+			return ErrContractMismatch
+		}
+		if providers[provider] {
+			return fmt.Errorf("%w: duplicate import provider", ErrInvalid)
+		}
+		providers[provider] = true
+	}
+	return nil
+}
+
 type ExportDeclaration struct {
 	Name     string      `json:"name"`
 	Contract ContractRef `json:"contract"`
@@ -126,24 +159,13 @@ func (d UnitDeclaration) Validate() error {
 	}
 	seen = make(map[string]bool)
 	for _, value := range d.Imports {
-		if err := validateName("import slot", value.Slot); err != nil {
+		if err := value.Validate(); err != nil {
 			return err
 		}
 		if seen[value.Slot] {
 			return fmt.Errorf("%w: duplicate import slot %s", ErrInvalid, value.Slot)
 		}
 		seen[value.Slot] = true
-		if err := value.Contract.Validate(); err != nil {
-			return err
-		}
-		for _, provider := range value.Providers {
-			if err := provider.Validate(); err != nil {
-				return err
-			}
-			if provider.Contract != value.Contract {
-				return ErrContractMismatch
-			}
-		}
 	}
 	return nil
 }
@@ -254,9 +276,6 @@ func (u UnitBinding) validate() error {
 	}
 	slots := make(map[string]bool)
 	for _, binding := range u.Imports {
-		if err := validateName("import slot", binding.Slot); err != nil {
-			return err
-		}
 		if slots[binding.Slot] {
 			return fmt.Errorf("%w: duplicate bound import", ErrInvalid)
 		}
@@ -268,29 +287,11 @@ func (u UnitBinding) validate() error {
 	return nil
 }
 
-// validateBound checks a resolved import: its providers satisfy the contract's
-// cardinality and each provides exactly that contract.
 func (d ImportDeclaration) validateBound() error {
-	if err := d.Contract.Validate(); err != nil {
-		return err
+	if d.Providers == nil {
+		return fmt.Errorf("%w: unresolved import", ErrInvalid)
 	}
-	if d.Providers == nil || (!d.Optional && len(d.Providers) == 0) || (d.Contract.Kind == ServiceKind && len(d.Providers) > 1) {
-		return fmt.Errorf("%w: bound import cardinality", ErrInvalid)
-	}
-	providers := make(map[ExportRef]bool)
-	for _, provider := range d.Providers {
-		if err := provider.Validate(); err != nil {
-			return err
-		}
-		if provider.Contract != d.Contract {
-			return ErrContractMismatch
-		}
-		if providers[provider] {
-			return fmt.Errorf("%w: duplicate bound provider", ErrInvalid)
-		}
-		providers[provider] = true
-	}
-	return nil
+	return d.Validate()
 }
 
 func (b BindingSnapshot) validateRoots(units map[UnitRef]UnitBinding) error {
@@ -363,6 +364,12 @@ func (b BindingSnapshot) validateReachability(units map[UnitRef]UnitBinding) err
 		return fmt.Errorf("%w: binding includes unreachable units", ErrInvalid)
 	}
 	return nil
+}
+
+func (b BindingSnapshot) requiresInstallation(id InstallationID) bool {
+	return slices.ContainsFunc(b.Units, func(unit UnitBinding) bool {
+		return unit.Source.InstallationID == id
+	})
 }
 
 func (b BindingSnapshot) Dependencies() []Dependency {

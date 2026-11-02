@@ -384,3 +384,150 @@ func acquireExports(host *frame.Host, ctx context.Context, binding frame.Binding
 	}
 	return host.Acquire(ctx, plan, config)
 }
+
+func TestReleaseDeclarationsAreImmutableAcrossInstallationTransitions(t *testing.T) {
+	h := testHost(t, frame.HostConfig{})
+	plugin := installNative(t, h, "original")
+	before, _ := h.Installation("original")
+	changed, err := frame.Define(frame.Definition{Revision: plugin.Revision(), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "new", Profile: frame.NativeGo}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) { return nil, nil }}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, actual := range []error{
+		h.Update(t.Context(), before, frame.InstallationConfig{ID: before.ID, Plugin: changed, Enabled: true}),
+		h.Replace(t.Context(), before.ID, changed, nil),
+	} {
+		if !errors.Is(actual, frame.ErrContractMismatch) {
+			t.Fatalf("conflicting release: %v", actual)
+		}
+	}
+	if _, err := h.Install(t.Context(), frame.InstallationConfig{ID: "second", Plugin: changed}); !errors.Is(err, frame.ErrContractMismatch) {
+		t.Fatalf("same release declared by another installation: %v", err)
+	}
+	revision := h.Admission().Revision()
+	if err := h.Replace(t.Context(), before.ID, plugin, before.Configuration); err != nil || revision != h.Admission().Revision() {
+		t.Fatalf("equivalent replacement advanced release: %v", err)
+	}
+}
+
+type pausedInstallationStore struct {
+	entered, resume chan struct{}
+	paused          bool
+}
+
+func (s *pausedInstallationStore) CommitInstallation(context.Context, frame.InstallationChange) (frame.CommitState, error) {
+	if s.paused {
+		close(s.entered)
+		<-s.resume
+	}
+	return frame.CommitSucceeded, nil
+}
+func (*pausedInstallationStore) ConfirmInstallation(context.Context, frame.InstallationID) error {
+	return nil
+}
+func (*pausedInstallationStore) Installations(context.Context) ([]frame.InstallationRecord, error) {
+	return nil, nil
+}
+
+func TestHostCloseJoinsAdmittedInstallationChanges(t *testing.T) {
+	for _, action := range []string{"install", "update", "uninstall"} {
+		t.Run(action, func(t *testing.T) {
+			ctx := testContext(t)
+			store := &pausedInstallationStore{entered: make(chan struct{}), resume: make(chan struct{})}
+			h := testHost(t, frame.HostConfig{Installations: store})
+			plugin, err := frame.Define(frame.Definition{Revision: framevalue.Hash([]byte("original"))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			config := frame.InstallationConfig{ID: "change", Plugin: plugin, Enabled: true}
+			var before frame.InstallationRecord
+			if action != "install" {
+				before, err = h.Install(ctx, config)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			store.paused = true
+			finished := make(chan error, 1)
+			go func() {
+				var err error
+				switch action {
+				case "install":
+					_, err = h.Install(ctx, config)
+				case "update":
+					config.Enabled = false
+					err = h.Update(ctx, before, config)
+				case "uninstall":
+					err = h.Uninstall(ctx, config.ID)
+				}
+				finished <- err
+			}()
+			select {
+			case <-store.entered:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			canceled, cancel := context.WithCancel(ctx)
+			cancel()
+			outcome, waitErr := h.Close(canceled)
+			close(store.resume)
+			if err = <-finished; err != nil {
+				t.Fatal(err)
+			}
+			if outcome.Released || !errors.Is(waitErr, context.Canceled) {
+				t.Fatalf("in-flight commit was reported released: %+v %v", outcome, waitErr)
+			}
+			if outcome, err = h.Close(ctx); !outcome.Released || err != nil {
+				t.Fatalf("settled close: %+v %v", outcome, err)
+			}
+		})
+	}
+}
+
+type waitingMetadata struct{ entered, resume chan struct{} }
+
+func (m waitingMetadata) MarshalJSON() ([]byte, error) {
+	close(m.entered)
+	<-m.resume
+	return []byte(`"metadata"`), nil
+}
+
+func TestActivationRegistrationEndsWhenPreparationReturns(t *testing.T) {
+	ctx := testContext(t)
+	h := testHost(t, frame.HostConfig{})
+	descriptor := []byte(`{"protocol":"example"}`)
+	ref := frame.ContractRef{Name: "stage.value", Version: "1", Kind: frame.ServiceKind, Mode: frame.PortableMode, Digest: framevalue.Hash(descriptor)}
+	value, err := frame.BindContract[string](ref, descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	point, err := frame.NewPortablePoint[string]("stage.point", "1", []byte(`{"type":"string"}`), value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Register(point, value); err != nil {
+		t.Fatal(err)
+	}
+	metadata := waitingMetadata{make(chan struct{}), make(chan struct{})}
+	prepared := make(chan frame.Setup, 1)
+	plugin := installNative(t, h, "p", frame.Unit{Declaration: frame.UnitDeclaration{ID: "u", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "e", Contract: point.Ref()}}}, Setup: func(_ context.Context, s *frame.Setup) ([]frame.ExportValue, error) {
+		prepared <- *s
+		return []frame.ExportValue{{Name: "e", Contract: point.Ref(), Metadata: metadata, Value: "v", Durable: true}}, nil
+	}})
+	finished := make(chan error, 1)
+	go func() { _, err := h.Activate(ctx, source("p", plugin, "u", "e", point.Ref())); finished <- err }()
+	select {
+	case <-metadata.entered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	setup := <-prepared
+	err = setup.OnActivate(func(context.Context) error { t.Error("late activation ran"); return nil })
+	close(metadata.resume)
+	if !errors.Is(err, frame.ErrClosed) {
+		t.Errorf("late activation registration: %v", err)
+	}
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+}

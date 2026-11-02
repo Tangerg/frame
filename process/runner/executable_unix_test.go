@@ -13,7 +13,7 @@ func TestFIFOIsRejectedBeforeReading(t *testing.T) {
 	if err := c.Fence(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
-	r := launchFixture(t, "fifo", 1, t.TempDir())
+	r := launchFixture(t, c, "fifo", 1, t.TempDir())
 	r.Command = filepath.Join(r.Directory, "pipe")
 	if err := syscall.Mkfifo(r.Command, 0600); err != nil {
 		t.Fatal(err)

@@ -1,6 +1,7 @@
 package buildcheck
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -45,6 +46,8 @@ func execute(ctx context.Context, source SourceRevision, passes []frame.Member[P
 		base = func(ctx context.Context, input SourceRevision) (Result, error) {
 			var mu sync.Mutex
 			open, called := true, false
+			inner, cancel := context.WithCancelCause(ctx)
+			defer cancel(nil)
 			var running sync.WaitGroup
 			continuation := Next(func(nextCtx context.Context, nextInput SourceRevision) (Result, error) {
 				mu.Lock()
@@ -61,19 +64,33 @@ func execute(ctx context.Context, source SourceRevision, passes []frame.Member[P
 				mu.Unlock()
 				defer running.Done()
 				owned, cancel := context.WithCancelCause(nextCtx)
-				stop := context.AfterFunc(ctx, func() { cancel(context.Cause(ctx)) })
+				stop := context.AfterFunc(inner, func() { cancel(context.Cause(inner)) })
 				defer stop()
 				defer cancel(nil)
-				if err := ctx.Err(); err != nil {
+				if err := context.Cause(inner); err != nil {
+					return Result{}, err
+				}
+				if err := context.Cause(owned); err != nil {
 					return Result{}, err
 				}
 				return next(owned, nextInput)
 			})
-			result, err := wrapper.Value(ctx, input, continuation)
-			mu.Lock()
-			open = false
-			mu.Unlock()
-			running.Wait()
+			var result Result
+			var err error
+			func() {
+				returned := false
+				defer func() {
+					mu.Lock()
+					open = false
+					mu.Unlock()
+					if !returned || err != nil {
+						cancel(err)
+					}
+					running.Wait()
+				}()
+				result, err = wrapper.Value(inner, input, continuation)
+				returned = true
+			}()
 			if !called && err == nil {
 				return result, errors.New("buildcheck: around contract requires one continuation")
 			}
@@ -122,7 +139,7 @@ func analyze(ctx context.Context, source SourceRevision, analyzers []frame.Membe
 	}
 	slices.SortFunc(diagnostics, func(a, b Diagnostic) int {
 		if a.Line != b.Line {
-			return a.Line - b.Line
+			return cmp.Compare(a.Line, b.Line)
 		}
 		return strings.Compare(a.Analyzer, b.Analyzer)
 	})

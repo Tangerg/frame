@@ -160,6 +160,15 @@ func TestDuplicateInstallReturnsAndTrustsTheFinalCachedSnapshot(t *testing.T) {
 	if err := errors.Join(lease.Close(), again.Close()); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(filepath.Join(store.directory, first.Digest.String()), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ImportDirectoryHeld(t.Context(), source); !errors.Is(err, ErrUntrusted) {
+		t.Fatal(err)
+	}
+	if _, err := store.Inspect(t.Context(), first.Digest); !errors.Is(err, ErrIntegrity) {
+		t.Fatalf("rejected recovery exposed cached tree: %v", err)
+	}
 	if err := store.Remove(t.Context(), first.Digest); err != nil {
 		t.Fatalf("refused cached projection retained a leaked lease: %v", err)
 	}

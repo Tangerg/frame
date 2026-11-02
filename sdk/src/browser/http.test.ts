@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Lifetime } from "../index.js";
 import { type ReadyReport } from "../protocol.generated.js";
 import { HTTPControl } from "./http";
+import { readResponseBytes } from "./response";
 
 const ready: ReadyReport = {
   operationId: "ready",
@@ -133,4 +134,30 @@ describe("authenticated control transport", () => {
     await request;
     expect(fetch).toHaveBeenCalledOnce();
   });
+});
+
+it("bounds streamed bytes across chunks and cancels an oversized body", async () => {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(Uint8Array.of(1));
+      controller.enqueue(new Uint8Array());
+      controller.enqueue(Uint8Array.of(2, 3));
+      controller.close();
+    },
+  });
+  expect(await readResponseBytes(new Response(body), 3)).toEqual(
+    Uint8Array.of(1, 2, 3),
+  );
+  const cancel = vi.fn();
+  const overflow = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(Uint8Array.of(1, 2));
+    },
+    cancel,
+  });
+  await expect(readResponseBytes(new Response(overflow), 1)).rejects.toThrow(
+    "byte limit",
+  );
+  expect(cancel).toHaveBeenCalledOnce();
+  expect(overflow.locked).toBe(false);
 });

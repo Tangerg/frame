@@ -2,20 +2,24 @@ import { Lifetime, Point, type Unit } from "@frame/sdk";
 import { parseJSON, projectNumber, stringifyJSON } from "@frame/sdk/json";
 import {
   ControlPump,
+  readResponseBytes,
   HTTPControl,
   RealmModules,
   Runtime,
   select,
   type Use,
 } from "@frame/sdk/browser";
-import type { ContractRef, Execution } from "@frame/sdk/protocol";
+import type {
+  AcquireRequest,
+  ContractRef,
+  Execution,
+} from "@frame/sdk/protocol";
 import type {
   Converted,
   Credentials,
   PreviewMetadata,
   TaskView,
 } from "./api.generated.ts";
-import { readLimited } from "./read.ts";
 import "./style.css";
 
 interface Preview {
@@ -38,6 +42,7 @@ let control: HTTPControl | undefined;
 let execution: Execution | undefined;
 let point: Point<PreviewMetadata, Preview> | undefined;
 let mounted: Use | undefined;
+let pendingAdmission: AcquireRequest | undefined;
 let pumpAbort: AbortController | undefined;
 let pumpWork: Promise<void> | undefined;
 let opening: { operationId: string; resumeToken: string } | undefined;
@@ -57,7 +62,7 @@ async function api<T>(path: string, input?: unknown): Promise<T> {
       ...(input === undefined ? {} : { body: stringifyJSON(input) }),
     });
     const text = new TextDecoder("utf-8", { fatal: true }).decode(
-      await readLimited(response, 32 * 1024 * 1024),
+      await readResponseBytes(response, 32 * 1024 * 1024),
     );
     const value = parseJSON(text) as T & { error?: string };
     if (!response.ok)
@@ -97,7 +102,7 @@ async function connect(): Promise<void> {
       redirect: "error",
     });
     if (!response.ok) throw new Error("approved module is unavailable");
-    const bytes = await readLimited(response, 1024 * 1024);
+    const bytes = await readResponseBytes(response, 1024 * 1024);
     const digest = [
       ...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
     ]
@@ -137,18 +142,82 @@ async function connect(): Promise<void> {
     `Realm ${credentials.realm.id.slice(0, 12)} / Host epoch ${credentials.authority.epoch}`;
 }
 
-async function preview(task: TaskView): Promise<void> {
-  if (!task.result || !runtime || !control || !point || !execution) return;
-  if (mounted) {
-    const outcome = await mounted.close();
-    if (outcome.status !== "released")
-      throw new Error("previous preview has not released");
-    await runtime.flushProofs();
-    mounted = undefined;
-  }
-  const snapshot = await control.snapshot([point.ref.name]);
+let pendingPreview: Promise<void> = Promise.resolve();
+
+function serializePreview(work: () => Promise<void>): Promise<void> {
+  const completion = pendingPreview.then(work);
+  pendingPreview = completion.catch(() => {});
+  return completion;
+}
+
+function preview(task: TaskView): Promise<void> {
+  return serializePreview(() => mountPreview(task));
+}
+
+async function closeSnapshotAfterFailure(
+  channel: HTTPControl,
+  snapshotId: string,
+  failure: unknown,
+): Promise<never> {
   try {
-    const choice = select(
+    await channel.closeSnapshot(snapshotId);
+  } catch (cleanup) {
+    throw new AggregateError(
+      [failure, cleanup],
+      "preview selection and cleanup failed",
+    );
+  }
+  throw failure;
+}
+
+async function acquirePreview(
+  owner: Runtime,
+  channel: HTTPControl,
+  request: AcquireRequest,
+): Promise<Use> {
+  try {
+    const use = await owner.acquire(request);
+    pendingAdmission = undefined;
+    return use;
+  } catch (error) {
+    // Reuse the exact Host operation if its grant may have been created.
+    if (owner.hasPendingAcquisition(request.operationId)) {
+      pendingAdmission = request;
+      throw error;
+    }
+    pendingAdmission = undefined;
+    return closeSnapshotAfterFailure(channel, request.snapshotId, error);
+  }
+}
+
+async function closeMounted(owner: Runtime): Promise<void> {
+  if (!mounted) return;
+  const outcome = await mounted.close();
+  if (outcome.status !== "released")
+    throw new Error("preview release is unconfirmed");
+  await owner.flushProofs();
+  mounted = undefined;
+}
+
+async function recoverPreview(
+  owner: Runtime,
+  channel: HTTPControl,
+): Promise<void> {
+  if (!pendingAdmission) return;
+  mounted = await acquirePreview(owner, channel, pendingAdmission);
+  await closeMounted(owner);
+}
+
+async function mountPreview(task: TaskView): Promise<void> {
+  if (!task.result || !runtime || !control || !point || !execution) return;
+  const owner = runtime,
+    channel = control;
+  await recoverPreview(owner, channel);
+  await closeMounted(owner);
+  const snapshot = await channel.snapshot([point.ref.name]);
+  let choice;
+  try {
+    choice = select(
       snapshot,
       point,
       "documents.html-preview-priority/1",
@@ -167,13 +236,17 @@ async function preview(task: TaskView): Promise<void> {
         };
       },
     );
-    const use = await runtime.acquire({
-      operationId: crypto.randomUUID(),
-      snapshotId: snapshot.id,
-      execution,
-      selections: [choice],
-    });
-    mounted = use;
+  } catch (error) {
+    return closeSnapshotAfterFailure(channel, snapshot.id, error);
+  }
+  const use = await acquirePreview(owner, channel, {
+    operationId: crypto.randomUUID(),
+    snapshotId: snapshot.id,
+    execution,
+    selections: [choice],
+  });
+  mounted = use;
+  try {
     const selected = snapshot.points[0]?.candidates.find(
       (candidate) => candidate.token === choice.candidates[0],
     );
@@ -196,11 +269,11 @@ async function preview(task: TaskView): Promise<void> {
     );
   } catch (error) {
     try {
-      await control.closeSnapshot(snapshot.id);
+      await closeMounted(owner);
     } catch (closeFailure) {
       throw new AggregateError(
         [error, closeFailure],
-        "snapshot selection and cleanup failed",
+        "preview preparation and cleanup failed",
       );
     }
     throw error;
@@ -284,6 +357,11 @@ action("reconnect", async () => {
     intervalMilliseconds: 100,
     onError: report,
   }).run(pumpAbort.signal);
+  if (runtime.connection === "connected") {
+    const owner = runtime,
+      channel = control;
+    await serializePreview(() => recoverPreview(owner, channel));
+  }
   element("connection-state").textContent =
     `Original Realm: ${runtime.connection}`;
 });
@@ -304,6 +382,7 @@ action("close", async () => {
   realmReleased = true;
   credentials = undefined;
   mounted = undefined;
+  pendingAdmission = undefined;
   execution = undefined;
   opening = undefined;
   element<HTMLButtonElement>("connect").disabled = true;

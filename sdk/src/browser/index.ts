@@ -11,3 +11,4 @@ export { select, type Choice } from "./selection.js";
 export { type HostControl } from "./control.js";
 export { HTTPControl, type HTTPControlOptions } from "./http.js";
 export { ControlPump, type PumpOptions } from "./pump.js";
+export { readResponseBytes } from "./response.js";

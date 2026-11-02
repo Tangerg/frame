@@ -234,7 +234,14 @@ func (t *TypeScript) keyword(name SchemaType, node *Schema) string {
 		}
 		object := "{ " + strings.Join(fields, "; ") + " }"
 		if child, ok := node.AdditionalProps.(*Schema); ok {
-			return object + " & Record<string, " + t.TypeOf(child) + ">"
+			// An index signature includes named properties as well as additional members.
+			members := []string{t.TypeOf(child)}
+			for _, name := range slices.Sorted(maps.Keys(node.Properties)) {
+				if property, ok := node.Properties[name].(*Schema); ok {
+					members = append(members, t.TypeOf(property))
+				}
+			}
+			return object + " & Record<string, " + unionOf(members) + ">"
 		}
 		return object
 	default:

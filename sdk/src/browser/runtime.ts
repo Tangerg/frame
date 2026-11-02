@@ -207,6 +207,21 @@ interface AdmissionEntry {
   granted?: boolean;
 }
 
+// Only authenticated protocol refusals settle a request that may have been sent.
+function confirmedRefusal(error: unknown): boolean {
+  return (
+    error instanceof FrameError &&
+    [
+      "permission_denied",
+      "invalid_plan",
+      "contract_mismatch",
+      "stale_binding",
+      "capacity",
+      "closed",
+    ].includes(error.code)
+  );
+}
+
 function immutable<T>(value: T): T {
   const copy = cloneJSON(value);
   const freeze = (item: unknown): void => {
@@ -359,6 +374,15 @@ export class Runtime {
       );
   }
 
+  #assertRevision(revision: number): void {
+    this.#assertConnected();
+    if (revision !== this.#connectionRevision)
+      throw new FrameError(
+        "unavailable",
+        "preparation belongs to a retired control channel",
+      );
+  }
+
   async prepare(received: LocalPlan): Promise<ExecutionHandle> {
     this.#assertConnected();
     const plan = immutable(received);
@@ -380,12 +404,7 @@ export class Runtime {
       );
     const revision = this.#connectionRevision;
     await this.#control.validatePlan(plan);
-    if (revision !== this.#connectionRevision)
-      throw new FrameError(
-        "unavailable",
-        "plan validation arrived on a retired control channel",
-      );
-    this.#assertConnected();
+    this.#assertRevision(revision);
     const ordered = orderUnits(plan, this.#instances);
     const fingerprint = stringifyJSON(plan, true);
     const existing = this.#executions.get(plan.execution.id);
@@ -401,7 +420,7 @@ export class Runtime {
           "invalid_plan",
           "execution has no prepared report",
         );
-      existing.prepared = this.#submitReady(existing).finally(() => {
+      existing.prepared = this.#submitReady(existing, revision).finally(() => {
         existing.prepared = undefined;
       });
       return existing.prepared;
@@ -434,7 +453,7 @@ export class Runtime {
       plan.execution.id,
       ordered.map((unit) => unit.instance.id),
     );
-    entry.prepared = this.#prepare(entry, ordered).finally(() => {
+    entry.prepared = this.#prepare(entry, ordered, revision).finally(() => {
       entry.prepared = undefined;
     });
     return entry.prepared;
@@ -443,6 +462,7 @@ export class Runtime {
   async #prepare(
     entry: ExecutionEntry,
     ordered: readonly PlannedUnit[],
+    revision: number,
   ): Promise<ExecutionHandle> {
     try {
       for (const unit of ordered) {
@@ -465,15 +485,16 @@ export class Runtime {
         for (const unit of ordered) {
           const owner = entry.units.get(unit.instance.id)!.lifetime;
           owner.assertOpen();
+          this.#assertRevision(revision);
           const definition = await this.#load(unit, owner, entry.plan);
-          this.#assertConnected();
+          this.#assertRevision(revision);
           owner.assertOpen();
           if (definition.id !== unit.instance.source.unitId)
             throw new FrameError(
               "contract_mismatch",
               "module does not declare the approved unit",
             );
-          const imports: Record<string, unknown> = {};
+          const imports: Record<string, unknown> = Object.create(null);
           if (Object.keys(definition.imports).length !== unit.imports.length)
             throw new FrameError(
               "contract_mismatch",
@@ -481,7 +502,7 @@ export class Runtime {
             );
           for (const binding of unit.imports) {
             const declared = definition.imports[binding.slot];
-            if (!declared)
+            if (!Object.hasOwn(definition.imports, binding.slot) || !declared)
               throw new FrameError(
                 "contract_mismatch",
                 "module is missing an approved import slot",
@@ -514,6 +535,8 @@ export class Runtime {
               imports[binding.slot] = local.value;
             } else {
               imports[binding.slot] = await this.#remote(binding, owner);
+              this.#assertRevision(revision);
+              owner.assertOpen();
             }
           }
           if (Object.keys(definition.exports).length !== unit.exports.length)
@@ -523,6 +546,7 @@ export class Runtime {
             );
           for (const declared of unit.exports) {
             if (
+              !Object.hasOwn(definition.exports, declared.name) ||
               !definition.exports[declared.name] ||
               !sameContract(
                 definition.exports[declared.name]!.ref,
@@ -539,7 +563,9 @@ export class Runtime {
             configuration: parseJSON(unit.configurationJson),
             lifetime: owner,
           });
+          this.#assertRevision(revision);
           const exports = await owner.run(() => definition.setup(context));
+          this.#assertRevision(revision);
           owner.assertOpen();
           if (!exports || Object.keys(exports).length !== unit.exports.length)
             throw new FrameError(
@@ -612,6 +638,7 @@ export class Runtime {
           }
         }
       });
+      this.#assertRevision(revision);
     } catch (error) {
       await entry.lifetime.close();
       throw error;
@@ -625,10 +652,14 @@ export class Runtime {
       objects: entry.view.objects,
       contributions: entry.preparations,
     });
-    return this.#submitReady(entry);
+    return this.#submitReady(entry, revision);
   }
 
-  async #submitReady(entry: ExecutionEntry): Promise<ExecutionHandle> {
+  async #submitReady(
+    entry: ExecutionEntry,
+    revision: number,
+  ): Promise<ExecutionHandle> {
+    this.#assertRevision(revision);
     entry.lifetime.assertOpen();
     let result: PublicationResult;
     try {
@@ -656,6 +687,7 @@ export class Runtime {
         "outcome_unknown",
         "prepared acknowledgement remains unknown",
       );
+    this.#assertRevision(revision);
     entry.lifetime.assertOpen();
     return entry.view;
   }
@@ -698,6 +730,11 @@ export class Runtime {
     entry.objects.set(objectKey(reference), object);
     this.#objects.set(objectKey(reference), object);
     return object;
+  }
+
+  hasPendingAcquisition(operationId: string): boolean {
+    const admission = this.#admissions.get(operationId);
+    return !!admission && !admission.granted && !admission.lifetime.closing;
   }
 
   async acquire(received: AcquireRequest): Promise<Use> {
@@ -744,9 +781,16 @@ export class Runtime {
     }
     const captured = admission;
     const revision = this.#connectionRevision;
+    let refused = false;
     admission.pending = admission.lifetime
       .run(async () => {
-        const grant = await this.#control.acquire(captured.request);
+        let grant: UseGrant;
+        try {
+          grant = await this.#control.acquire(captured.request);
+        } catch (error) {
+          refused = confirmedRefusal(error);
+          throw error;
+        }
         const closing =
           revision !== this.#connectionRevision || captured.lifetime.closing;
         const use = this.#attachGrant(
@@ -769,7 +813,8 @@ export class Runtime {
         }
         return use;
       })
-      .finally(() => {
+      .finally(async () => {
+        if (refused) await captured.lifetime.close();
         captured.pending = undefined;
       });
     return admission.pending;
@@ -953,6 +998,11 @@ export class Runtime {
     let withdrawalAcknowledged = false;
     const receive = (result: PublicationResult): PublicationResult => {
       if (
+        !result ||
+        !["unknown", "accepted", "rejected"].includes(result.decision)
+      )
+        throw new FrameError("invalid_plan", "invalid publication decision");
+      if (
         result.publication &&
         (!sameObject(result.publication.object, object.reference) ||
           result.publication.operationId !== operationId)
@@ -1034,20 +1084,30 @@ export class Runtime {
       }
     });
     const handle = publicationView(state);
+    let result: PublicationResult;
     try {
-      await owner.run(async () =>
-        receive(await this.#control.publish(request)),
-      );
+      result = await owner.run(() => this.#control.publish(request));
     } catch (cause) {
-      if (
-        cause instanceof FrameError &&
-        cause.code !== "outcome_unknown" &&
-        cause.code !== "unavailable"
-      )
+      if (confirmedRefusal(cause)) {
+        await owner.close();
         throw cause;
-      // Preserve the original operation and object. Only observation resolves an
-      // uncertain acknowledgement; a retry must never invent another identity.
+      }
+      // The original operation remains observable after an uncertain acknowledgement.
+      return handle;
     }
+    try {
+      receive(result);
+    } catch (cause) {
+      // A malformed acknowledgement leaves the original operation observable.
+      state.outcome = Object.freeze({
+        decision: "unknown",
+        problem:
+          cause instanceof FrameError
+            ? cause.message
+            : "invalid publication acknowledgement",
+      });
+    }
+    if (state.outcome.decision === "rejected") await owner.close();
     return handle;
   }
 

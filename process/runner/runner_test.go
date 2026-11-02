@@ -20,7 +20,9 @@ import (
 	framevalue "github.com/Tangerg/frame/value"
 )
 
-func launchFixture(t *testing.T, id string, epoch uint64, directory string) LaunchRequest {
+func launchFixture(t *testing.T, owner interface {
+	Identity(context.Context) (Identity, error)
+}, id string, epoch uint64, directory string) LaunchRequest {
 	t.Helper()
 	executable, err := os.Executable()
 	if err != nil {
@@ -30,7 +32,11 @@ func launchFixture(t *testing.T, id string, epoch uint64, directory string) Laun
 	if err != nil {
 		t.Fatal(err)
 	}
-	return LaunchRequest{AttemptID: id, Epoch: epoch, Command: executable, ExecutableDigest: framevalue.Hash(data), Configuration: framevalue.Hash([]byte(directory)), Args: []string{"-test.run=^TestRunnerProcessHelper$"}, Env: append(os.Environ(), "FRAME_RUNNER_HELPER=echo", "FRAME_RUNNER_COUNT="+filepath.Join(directory, "created")), Directory: directory}
+	authority, err := owner.Identity(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return LaunchRequest{AttemptRef: AttemptRef{AttemptID: id, Epoch: epoch, RunnerID: authority.ID}, Command: executable, ExecutableDigest: framevalue.Hash(data), Configuration: framevalue.Hash([]byte(directory)), Args: []string{"-test.run=^TestRunnerProcessHelper$"}, Env: append(os.Environ(), "FRAME_RUNNER_HELPER=echo", "FRAME_RUNNER_COUNT="+filepath.Join(directory, "created")), Directory: directory}
 }
 
 func serveFixture(t *testing.T) (*Server, *Client, context.Context) {
@@ -68,12 +74,12 @@ func TestAttemptStartsOnceAndAttachCarriesActualProcessIO(t *testing.T) {
 	if err := client.Fence(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
-	request := launchFixture(t, "convert-1", 1, t.TempDir())
+	request := launchFixture(t, client, "convert-1", 1, t.TempDir())
 	observation, err := client.Launch(ctx, request)
 	if err != nil || observation.State != Running {
 		t.Fatalf("launch: %+v %v", observation, err)
 	}
-	stream, err := client.Attach(ctx, request.AttemptID)
+	stream, err := client.Attach(ctx, request.AttemptRef)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +90,7 @@ func TestAttemptStartsOnceAndAttachCarriesActualProcessIO(t *testing.T) {
 	if err != nil || line != "exact binding\n" {
 		t.Fatalf("process stream: %q %v", line, err)
 	}
-	if _, err := client.Attach(ctx, request.AttemptID); !errors.Is(err, ErrAttached) {
+	if _, err := client.Attach(ctx, request.AttemptRef); !errors.Is(err, ErrAttached) {
 		t.Fatalf("second attachment: %v", err)
 	}
 	changed := request
@@ -92,7 +98,7 @@ func TestAttemptStartsOnceAndAttachCarriesActualProcessIO(t *testing.T) {
 	if _, err := client.Launch(ctx, changed); !errors.Is(err, ErrConflict) {
 		t.Fatalf("changed attempt: %v", err)
 	}
-	closed, err := client.CloseAttempt(ctx, request.AttemptID)
+	closed, err := client.CloseAttempt(ctx, request.AttemptRef)
 	if err != nil || closed.State != Exited || closed.ProofID == "" {
 		t.Fatalf("exit: %+v %v", closed, err)
 	}
@@ -115,7 +121,7 @@ func TestFenceSettlesOldCreationAndKeepsOriginalExitReachable(t *testing.T) {
 	if err := client.Fence(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
-	request := launchFixture(t, "old", 1, t.TempDir())
+	request := launchFixture(t, client, "old", 1, t.TempDir())
 	if _, err := client.Launch(ctx, request); err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +133,7 @@ func TestFenceSettlesOldCreationAndKeepsOriginalExitReachable(t *testing.T) {
 	if _, err := client.Launch(ctx, late); !errors.Is(err, ErrFenced) {
 		t.Fatalf("late old creation: %v", err)
 	}
-	if _, err := client.CloseAttempt(ctx, request.AttemptID); err != nil {
+	if _, err := client.CloseAttempt(ctx, request.AttemptRef); err != nil {
 		t.Fatal(err)
 	}
 	current := request
@@ -136,7 +142,7 @@ func TestFenceSettlesOldCreationAndKeepsOriginalExitReachable(t *testing.T) {
 	if _, err := client.Launch(ctx, current); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.CloseAttempt(ctx, current.AttemptID); err != nil {
+	if _, err := client.CloseAttempt(ctx, current.AttemptRef); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -146,7 +152,7 @@ func TestFailedExecutableIsTerminalAndNeverStartsOnRetry(t *testing.T) {
 	if err := client.Fence(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
-	request := launchFixture(t, "bad", 1, t.TempDir())
+	request := launchFixture(t, client, "bad", 1, t.TempDir())
 	request.ExecutableDigest = framevalue.Hash([]byte("not the executable"))
 	first, err := client.Launch(ctx, request)
 	if err == nil || first.State != Exited || first.ProofID == "" {
@@ -177,7 +183,7 @@ func TestFailedProcessCreationReleasesVerifiedExecutable(t *testing.T) {
 			if err := client.Fence(ctx, 1); err != nil {
 				t.Fatal(err)
 			}
-			request := launchFixture(t, failure, 1, t.TempDir())
+			request := launchFixture(t, client, failure, 1, t.TempDir())
 			if failure == "invalid-format" {
 				data := []byte("not an executable format\n")
 				request.Command = filepath.Join(request.Directory, "invalid")
@@ -212,7 +218,7 @@ func TestChildWaitOwnsExecutableReleaseAndReportsCleanupFailure(t *testing.T) {
 			if err := client.Fence(ctx, 1); err != nil {
 				t.Fatal(err)
 			}
-			request := launchFixture(t, "live-snapshot", 1, t.TempDir())
+			request := launchFixture(t, client, "live-snapshot", 1, t.TempDir())
 			if _, err := client.Launch(ctx, request); err != nil {
 				t.Fatal(err)
 			}
@@ -231,7 +237,7 @@ func TestChildWaitOwnsExecutableReleaseAndReportsCleanupFailure(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			observation, err := client.CloseAttempt(ctx, request.AttemptID)
+			observation, err := client.CloseAttempt(ctx, request.AttemptRef)
 			if err != nil || observation.State != Exited || observation.ProofID == "" {
 				t.Fatalf("child exit: %+v, %v", observation, err)
 			}
@@ -285,7 +291,7 @@ func TestSeparateRunnerSurvivesClientAndLosesNoAttemptOnRestart(t *testing.T) {
 	if err := client.Fence(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
-	request := launchFixture(t, "retained-attempt", 1, t.TempDir())
+	request := launchFixture(t, client, "retained-attempt", 1, t.TempDir())
 	first, err := client.Launch(ctx, request)
 	if err != nil {
 		t.Fatal(err)
@@ -297,7 +303,7 @@ func TestSeparateRunnerSurvivesClientAndLosesNoAttemptOnRestart(t *testing.T) {
 	if err != nil || seen.PID != first.PID || seen.RunnerID != first.RunnerID {
 		t.Fatalf("reconnected observation: %+v %v", seen, err)
 	}
-	stream, err := reconnected.Attach(ctx, request.AttemptID)
+	stream, err := reconnected.Attach(ctx, request.AttemptRef)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +333,7 @@ func TestSeparateRunnerSurvivesClientAndLosesNoAttemptOnRestart(t *testing.T) {
 	if err != nil || old.State != Unknown || old.PID != 0 || old.ProofID != "" {
 		t.Fatalf("restart fabricated ownership: %+v %v", old, err)
 	}
-	if _, err := server.CloseAttempt(ctx, request.AttemptID); !errors.Is(err, ErrUnknown) {
+	if _, err := server.CloseAttempt(ctx, request.AttemptRef); !errors.Is(err, ErrUnknown) {
 		t.Fatalf("unknown process was killed by stale identity: %v", err)
 	}
 	count, err := os.ReadFile(filepath.Join(request.Directory, "created"))
@@ -389,13 +395,13 @@ func TestJournalContainsNoEnvironmentSecrets(t *testing.T) {
 	if err := client.Fence(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
-	request := launchFixture(t, "secret", 1, t.TempDir())
+	request := launchFixture(t, client, "secret", 1, t.TempDir())
 	request.CredentialRevision = "credential-1"
 	request.Env = append(request.Env, "FRAME_TEST_PRIVATE_TOKEN=must-not-be-persisted")
 	if _, err := client.Launch(ctx, request); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.CloseAttempt(ctx, request.AttemptID); err != nil {
+	if _, err := client.CloseAttempt(ctx, request.AttemptRef); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(server.config.Directory, "attempts.json"))
@@ -416,11 +422,11 @@ func TestAttachmentDisconnectClosesOriginalProcess(t *testing.T) {
 	if err := client.Fence(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
-	request := launchFixture(t, "disconnect", 1, t.TempDir())
+	request := launchFixture(t, client, "disconnect", 1, t.TempDir())
 	if _, err := client.Launch(ctx, request); err != nil {
 		t.Fatal(err)
 	}
-	stream, err := client.Attach(ctx, request.AttemptID)
+	stream, err := client.Attach(ctx, request.AttemptRef)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,7 +439,7 @@ func TestAttachmentDisconnectClosesOriginalProcess(t *testing.T) {
 	if err := stream.Close(); err != nil {
 		t.Fatal(err)
 	}
-	observation, err := client.CloseAttempt(ctx, request.AttemptID)
+	observation, err := client.CloseAttempt(ctx, request.AttemptRef)
 	if err != nil || observation.State != Exited || observation.ProofID == "" {
 		t.Fatalf("disconnect did not settle original exit: %+v %v", observation, err)
 	}
@@ -452,7 +458,7 @@ func TestExplicitEmptyEnvironmentSurvivesTransport(t *testing.T) {
 	}{
 		{"default-empty", nil, ""}, {"empty", []string{}, ""}, {"explicit", []string{"FRAME_ENV_TEST_MARKER=child"}, "child"},
 	} {
-		request := launchFixture(t, tc.name, 1, t.TempDir())
+		request := launchFixture(t, client, tc.name, 1, t.TempDir())
 		request.Env = tc.env
 		request.Args = append(request.Args, "--", "report-environment")
 		if _, err := client.Launch(ctx, request); err != nil {
@@ -489,11 +495,11 @@ func TestReturnedExitIsDetachedFromJournal(t *testing.T) {
 	if err := c.Fence(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
-	r := launchFixture(t, "exit-alias", 1, t.TempDir())
+	r := launchFixture(t, c, "exit-alias", 1, t.TempDir())
 	if _, err := c.Launch(ctx, r); err != nil {
 		t.Fatal(err)
 	}
-	o, err := s.CloseAttempt(ctx, r.AttemptID)
+	o, err := s.CloseAttempt(ctx, r.AttemptRef)
 	if err != nil || o.ExitCode == nil {
 		t.Fatal(err)
 	}
@@ -510,11 +516,11 @@ func TestFailedStartRequiresDurableExitBeforePublishingProof(t *testing.T) {
 	if err := c.Fence(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
-	r := launchFixture(t, "failed-proof", 1, t.TempDir())
+	r := launchFixture(t, c, "failed-proof", 1, t.TempDir())
 	if _, err := c.Launch(ctx, r); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.CloseAttempt(ctx, r.AttemptID); err != nil {
+	if _, err := c.CloseAttempt(ctx, r.AttemptRef); err != nil {
 		t.Fatal(err)
 	}
 	journal := filepath.Join(s.config.Directory, "attempts.json")
@@ -533,7 +539,7 @@ func TestFailedStartRequiresDurableExitBeforePublishingProof(t *testing.T) {
 	if o, err := c.Inspect(ctx, r.AttemptID); err != nil || o.State != Unknown || o.ProofID != "" {
 		t.Fatalf("inspect: %+v %v", o, err)
 	}
-	if o, err := c.CloseAttempt(ctx, r.AttemptID); !errors.Is(err, ErrUnknown) || o.ProofID != "" {
+	if o, err := c.CloseAttempt(ctx, r.AttemptRef); !errors.Is(err, ErrUnknown) || o.ProofID != "" {
 		t.Fatalf("close: %+v %v", o, err)
 	}
 }
@@ -544,11 +550,11 @@ func TestOnlyAcceptedExitReleasesCapacityAndPreventsReplay(t *testing.T) {
 	if err := c.Fence(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
-	first := launchFixture(t, "first", 1, t.TempDir())
+	first := launchFixture(t, c, "first", 1, t.TempDir())
 	if _, err := c.Launch(ctx, first); err != nil {
 		t.Fatal(err)
 	}
-	o, err := c.CloseAttempt(ctx, first.AttemptID)
+	o, err := c.CloseAttempt(ctx, first.AttemptRef)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -578,10 +584,10 @@ func TestOnlyAcceptedExitReleasesCapacityAndPreventsReplay(t *testing.T) {
 	if err := c.Fence(ctx, 2); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.ProveAbsent(ctx, AbsenceRequest{AttemptID: o.AttemptID, Epoch: o.Epoch, RunnerID: o.RunnerID}); !errors.Is(err, ErrUnknown) {
+	if _, err := c.ProveAbsent(ctx, AttemptRef{AttemptID: o.AttemptID, Epoch: o.Epoch, RunnerID: o.RunnerID}); !errors.Is(err, ErrUnknown) {
 		t.Fatalf("false absence: %v", err)
 	}
-	if _, err := c.CloseAttempt(ctx, next.AttemptID); err != nil {
+	if _, err := c.CloseAttempt(ctx, next.AttemptRef); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -605,11 +611,11 @@ func TestHandedOffIdentitySurvivesRunnerRestartAndNewEpoch(t *testing.T) {
 		return s
 	}
 	first := open(1)
-	req := launchFixture(t, "retained-attempt", 1, t.TempDir())
+	req := launchFixture(t, first, "retained-attempt", 1, t.TempDir())
 	if _, err := first.Launch(ctx, req); err != nil {
 		t.Fatal(err)
 	}
-	exit, err := first.CloseAttempt(ctx, req.AttemptID)
+	exit, err := first.CloseAttempt(ctx, req.AttemptRef)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -634,6 +640,7 @@ func TestHandedOffIdentitySurvivesRunnerRestartAndNewEpoch(t *testing.T) {
 		t.Fatalf("repurposed attempt ID: %v", err)
 	}
 	req.AttemptID = "new-attempt"
+	req.RunnerID = replacement.id
 	if o, err := replacement.Launch(ctx, req); err != nil || o.State != Running {
 		t.Fatalf("free capacity: %+v %v", o, err)
 	}

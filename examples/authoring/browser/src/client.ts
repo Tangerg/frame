@@ -9,6 +9,7 @@ import {
 import { projectNumber } from "@frame/sdk/json";
 import {
   ControlPump,
+  readResponseBytes,
   HTTPControl,
   RealmModules,
   Runtime,
@@ -48,10 +49,10 @@ export function connect(bootstrap: Bootstrap) {
   });
   const modules = new RealmModules(async (unit, signal) => {
     const response = await fetch(new URL(unit.module.path, bootstrap.origin), {
-      signal,
+      signal, redirect: "error", credentials: "omit",
     });
     if (!response.ok) throw new Error("approved module is unavailable");
-    const bytes = new Uint8Array(await response.arrayBuffer());
+    const bytes = await readResponseBytes(response, 16 << 20);
     const digest = await sha256(bytes);
     // Node's native ESM loader does not import HTTP. This local test loader
     // imports only the verified original bytes; actual browser evidence lives

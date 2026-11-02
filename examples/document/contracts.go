@@ -12,6 +12,7 @@ import (
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
 	"github.com/Tangerg/frame/distribution"
+	"github.com/Tangerg/frame/internal/localfile"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -83,10 +84,26 @@ func NewContracts() (Contracts, error) {
 }
 
 func readDocument(ctx context.Context, root *os.Root, reference DocumentRef) (Document, error) {
-	if !fs.ValidPath(reference.Path) || reference.Path == "." || reference.Revision.Validate() != nil {
+	if reference.Revision.Validate() != nil {
 		return Document{}, errors.New("document: exact source identity is required")
 	}
-	file, err := root.Open(reference.Path)
+	source, err := loadDocument(ctx, root, reference.Path)
+	if err != nil {
+		return Document{}, err
+	}
+	if source.Ref.Revision != reference.Revision {
+		return Document{}, ErrSourceChanged
+	}
+	return source, nil
+}
+
+const maximumDocumentBytes = 4 << 20
+
+func loadDocument(ctx context.Context, root *os.Root, path string) (Document, error) {
+	if !fs.ValidPath(path) || path == "." {
+		return Document{}, frame.ErrInvalid
+	}
+	file, err := localfile.OpenRegularIn(root, path)
 	if err != nil {
 		return Document{}, err
 	}
@@ -95,24 +112,21 @@ func readDocument(ctx context.Context, root *os.Root, reference DocumentRef) (Do
 	if err != nil {
 		return Document{}, err
 	}
-	if !info.Mode().IsRegular() || info.Size() > 4<<20 {
-		return Document{}, errors.New("document: source is not a bounded regular file")
+	if info.Size() > maximumDocumentBytes {
+		return Document{}, frame.ErrCapacity
 	}
 	if err := ctx.Err(); err != nil {
 		return Document{}, err
 	}
-	data, err := io.ReadAll(io.LimitReader(file, (4<<20)+1))
+	data, err := io.ReadAll(io.LimitReader(file, maximumDocumentBytes+1))
 	if err != nil {
 		return Document{}, err
 	}
-	if len(data) > 4<<20 {
-		return Document{}, errors.New("document: source is too large")
-	}
-	if value.Hash(data) != reference.Revision {
-		return Document{}, ErrSourceChanged
+	if len(data) > maximumDocumentBytes {
+		return Document{}, frame.ErrCapacity
 	}
 	if err := ctx.Err(); err != nil {
 		return Document{}, err
 	}
-	return Document{Ref: reference, Text: string(data)}, nil
+	return Document{Ref: DocumentRef{Path: path, Revision: value.Hash(data)}, Text: string(data)}, nil
 }

@@ -76,3 +76,10 @@ extra work within their declared execution and cleanup contract. The runner does
 not claim cgroup, Job Object or whole-process-tree containment. Platform conformance
 must verify exactly the scope that a product advertises. The Unix implementation
 does not silently substitute a weaker mechanism on unsupported platforms.
+
+Launch, Attach and CloseAttempt take the original AttemptRef, which binds the
+attempt ID and creation epoch to the approved runner incarnation. A replacement
+runner can replay an immutable terminal receipt, but cannot create an attempt
+on behalf of its predecessor. State and socket paths must have trusted owners
+and be protected from replacement by other users. Root-owned sticky temporary
+directories may contain the private runner directory.

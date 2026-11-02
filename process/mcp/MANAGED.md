@@ -65,12 +65,12 @@ The Qimu provider address carries installation, release and contribution. Frame 
 
 ## Reproduce independent interoperability tests
 
-Use a checkout of `Tangerg/flame` at `07ec19bb6376914b45fbdc2ea882b0464cfffac5`. The test script builds the unmodified upstream peers in that checkout and runs Frame from its own module:
+Use a full Git checkout of `Tangerg/flame` at the revision pinned in [the release workflow](../../.github/workflows/flame-interop.yml). The test script builds the unmodified upstream peers in that checkout and runs Frame from its own module:
 
 ```sh
-./scripts/check-flame-interop.sh /absolute/path/to/flame
+node scripts/check-flame-interop.mjs /absolute/path/to/flame
 ```
 
-At the pinned commit the corpus contains 18 managed contribution descriptors in 15 plugin packages. The hooks test invokes a query, dispatches a command and reads the original receipt. The trajectory renderer reads one host-authorized document range, sends Markdown through an independent stream grant, and returns the content identity of the rendered document. A third peer built against upstream Qimu checks the ordered chunk protocol. Each execution uses the real Host, SQLite store and local runner.
+The corpus is derived from the published contribution declarations in that checkout. The hooks test invokes a query, dispatches a command and reads the original receipt. The trajectory renderer reads one host-authorized document range, sends Markdown through an independent stream grant, and returns the content identity of the rendered document. A third peer built against upstream Qimu checks the ordered chunk protocol. Each execution uses the real Host, SQLite store and local runner.
 
 A descriptor check establishes schema admission. Exercising a plugin's external provider, desktop components, scheduler or other product effects requires its host's permissions and integration tests.

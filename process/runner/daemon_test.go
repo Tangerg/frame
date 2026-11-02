@@ -89,11 +89,11 @@ func TestDaemonKeepsTheOriginalProcessAuthorityAndJoinsItsExit(t *testing.T) {
 	if err := original.Fence(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
-	request := launchFixture(t, "daemon-original", 1, t.TempDir())
+	request := launchFixture(t, original, "daemon-original", 1, t.TempDir())
 	if actual, err := original.Launch(ctx, request); err != nil || actual.State != Running {
 		t.Fatalf("launch: %+v %v", actual, err)
 	}
-	if actual, err := original.CloseAttempt(ctx, request.AttemptID); err != nil || actual.State != Exited || actual.ProofID == "" {
+	if actual, err := original.CloseAttempt(ctx, request.AttemptRef); err != nil || actual.State != Exited || actual.ProofID == "" {
 		t.Fatalf("original child exit: %+v %v", actual, err)
 	}
 	withdrawn, stop := context.WithCancel(ctx)

@@ -211,8 +211,8 @@ func featureNames(descriptors []portable.MethodDescriptor) (map[string]string, m
 		}
 	}
 	for target, encoders := range encodedBy {
-		name := typeName(target)
-		if len(encoders) == 1 && keys[target] != nil && unicode.IsLower([]rune(name)[0]) {
+		initial, _ := utf8.DecodeRuneInString(typeName(target))
+		if len(encoders) == 1 && keys[target] != nil && unicode.IsLower(initial) {
 			renamed[target] = renamed[encoders[0]]
 		}
 	}

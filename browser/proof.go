@@ -35,15 +35,19 @@ func (b *Bridge) Prove(ctx context.Context, token string, proof CloseProof) (Pro
 	if err != nil {
 		return ProofAcknowledgement{}, err
 	}
-	scope, publication, err := b.bindProofScope(ctx, session, attempt, proof)
-	if err != nil {
-		return ProofAcknowledgement{}, err
-	}
 	prior, err := b.config.Store.ExitProof(ctx, attempt.ID, proof.ProofID)
 	if err == nil && !bytes.Equal(prior, encoded) {
 		return ProofAcknowledgement{}, sqlite.ErrConflict
 	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return ProofAcknowledgement{}, err
+	}
+	ack := ProofAcknowledgement{CloseID: proof.CloseID, ProofID: proof.ProofID, Recorded: true, Authority: b.authority}
+	if err == nil && proof.ScopeKind == PublicationScope {
+		return ack, nil
+	}
+	scope, publication, err := b.bindProofScope(ctx, session, attempt, proof)
+	if err != nil {
 		return ProofAcknowledgement{}, err
 	}
 	if err := b.config.Store.RecordExitProof(ctx, attempt.ID, scope, proof.ProofID, encoded); err != nil {
@@ -53,7 +57,7 @@ func (b *Bridge) Prove(ctx context.Context, token string, proof CloseProof) (Pro
 	if err := b.releaseProven(ctx, proof, attempt, publication, exit); err != nil {
 		return ProofAcknowledgement{}, err
 	}
-	return ProofAcknowledgement{CloseID: proof.CloseID, ProofID: proof.ProofID, Recorded: true, Authority: b.authority}, nil
+	return ack, nil
 }
 
 func (b *Bridge) releaseProven(ctx context.Context, proof CloseProof, attempt sqlite.Attempt, publication *controlOperation, exit sqlite.ExitProof) error {
@@ -63,11 +67,11 @@ func (b *Bridge) releaseProven(ctx context.Context, proof CloseProof, attempt sq
 	case ExecutionScope:
 		return b.releaseExecution(ctx, attempt, exit)
 	case PublicationScope:
-		if publication != nil {
-			b.mu.Lock()
-			publication.released = true
-			b.mu.Unlock()
+		b.mu.Lock()
+		if publication != nil && b.publications[proof.PublicationID] == publication {
+			delete(b.publications, proof.PublicationID)
 		}
+		b.mu.Unlock()
 	}
 	return nil
 }
@@ -75,15 +79,14 @@ func (b *Bridge) releaseProven(ctx context.Context, proof CloseProof, attempt sq
 // provenAttempt finds the browser attempt a proof closes and refuses a proof
 // minted for an earlier epoch, generation or scope of it.
 func (b *Bridge) provenAttempt(ctx context.Context, session *realmSession, proof CloseProof) (sqlite.Attempt, error) {
-	records, err := b.config.Store.Attempts(ctx)
+	record, err := b.config.Store.Attempt(ctx, proof.Execution.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return sqlite.Attempt{}, frame.ErrUnavailable
+	}
 	if err != nil {
 		return sqlite.Attempt{}, err
 	}
-	index := slices.IndexFunc(records, func(record sqlite.AttemptRecord) bool { return record.Attempt.ID == proof.Execution.ID })
-	if index < 0 {
-		return sqlite.Attempt{}, frame.ErrUnavailable
-	}
-	attempt := records[index].Attempt
+	attempt := record.Attempt
 	if attempt.Profile != frame.BrowserJS || attempt.Realm != string(RealmID(session.realm)) || proof.Authority.Epoch != strconv.FormatUint(attempt.Epoch, 10) || proof.Execution.Generation != strconv.FormatUint(attempt.Generation, 10) || proof.ScopeID != string(attempt.Scope) || proof.ScopeGeneration != strconv.FormatUint(attempt.ScopeGeneration, 10) {
 		return sqlite.Attempt{}, frame.ErrStaleBinding
 	}
@@ -116,25 +119,21 @@ func (b *Bridge) bindProofScope(ctx context.Context, session *realmSession, atte
 			return "", nil, frame.ErrInvalid
 		}
 		publication, err := b.bindProofPublication(session, attempt, proof)
-		if err != nil {
-			return "", nil, err
-		}
-		return scope + ":" + proof.PublicationID, publication, nil
+		return scope + ":" + proof.PublicationID, publication, err
 	default:
 		return "", nil, frame.ErrInvalid
 	}
 }
 
 func (b *Bridge) bindProofUse(ctx context.Context, session *realmSession, attempt sqlite.Attempt, proof CloseProof) error {
-	uses, err := b.config.Store.Uses(ctx)
+	record, err := b.config.Store.Use(ctx, proof.UseID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return frame.ErrStaleBinding
+	}
 	if err != nil {
 		return err
 	}
-	index := slices.IndexFunc(uses, func(use sqlite.UseRecord) bool { return use.Approval.ID == proof.UseID })
-	if index < 0 {
-		return frame.ErrStaleBinding
-	}
-	approval := uses[index].Approval
+	approval := record.Approval
 	if approval.ExecutionID != attempt.ID || approval.Realm != RealmID(session.realm) || approval.Epoch != attempt.Epoch || approval.Scope != attempt.Scope || approval.ScopeGeneration != attempt.ScopeGeneration || !sameSet(approval.Instances, proof.Instances) {
 		return frame.ErrStaleBinding
 	}
@@ -144,22 +143,19 @@ func (b *Bridge) bindProofUse(ctx context.Context, session *realmSession, attemp
 func (b *Bridge) bindProofPublication(session *realmSession, attempt sqlite.Attempt, proof CloseProof) (*controlOperation, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	var publication *controlOperation
-	for _, candidate := range b.operations {
-		if candidate.kind == "publish" && candidate.execution == attempt.ID && candidate.publication.Publication != nil && candidate.publication.Publication.ID == proof.PublicationID {
-			publication = candidate
-			break
+	publication := b.publications[proof.PublicationID]
+	if publication != nil {
+		if publication.execution != attempt.ID || publication.realm != session.realm || !publication.withdrawn {
+			return nil, frame.ErrStaleBinding
 		}
+		return publication, nil
 	}
-	live := b.executions[attempt.ID] != nil
-	valid := publication != nil && publication.realm == session.realm && publication.withdrawn
-	if live && !valid {
+	if b.executions[attempt.ID] != nil {
 		return nil, frame.ErrStaleBinding
 	}
-	// After Host reconstruction the old public catalog is sealed. A
-	// subordinate object proof records evidence but releases no attempt or
-	// delegated Use, so it cannot widen the original execution authority.
-	return publication, nil
+	// Reconstruction may retain a subordinate proof after its catalog is gone.
+	// Such evidence owns no transition in the current catalog.
+	return nil, nil
 }
 
 // A Use's actual exit covers the child range delegated through that original
@@ -171,7 +167,7 @@ func (b *Bridge) releaseUseTree(ctx context.Context, id string, attempt sqlite.A
 	var records []sqlite.UseRecord
 	for {
 		var err error
-		records, err = b.config.Store.Uses(ctx)
+		records, err = b.config.Store.ExecutionUses(ctx, attempt.ID)
 		if err != nil {
 			return err
 		}
@@ -251,6 +247,14 @@ func (b *Bridge) releaseUse(ctx context.Context, id string, attempt sqlite.Attem
 		if !outcome.Released {
 			return errors.Join(frame.ErrUnconfirmedRelease, err)
 		}
+		b.mu.Lock()
+		delete(b.uses, id)
+		for routeID, route := range b.routes {
+			if route.grant.Use.ID == id {
+				delete(b.routes, routeID)
+			}
+		}
+		b.mu.Unlock()
 		// Released cleanup diagnostics are retained by the original Close. They
 		// do not turn confirmed release back into uncertainty.
 		return nil
@@ -268,7 +272,7 @@ func (b *Bridge) releaseExecution(ctx context.Context, attempt sqlite.Attempt, p
 	b.mu.Lock()
 	entry := b.executions[attempt.ID]
 	if entry != nil {
-		entry.released = true
+		entry.retiring = true
 	}
 	var pending []<-chan struct{}
 	for _, operation := range b.operations {
@@ -291,7 +295,7 @@ func (b *Bridge) releaseExecution(ctx context.Context, attempt sqlite.Attempt, p
 			return err
 		}
 	}
-	uses, err := b.config.Store.Uses(ctx)
+	uses, err := b.config.Store.ExecutionUses(ctx, attempt.ID)
 	if err != nil {
 		return err
 	}
@@ -340,12 +344,15 @@ func (b *Bridge) releaseExecution(ctx context.Context, attempt sqlite.Attempt, p
 			delete(b.routes, id)
 		}
 	}
-	for id, operation := range b.operations {
+	for id, operation := range b.publications {
 		if operation.execution == attempt.ID {
-			delete(b.operations, id)
+			delete(b.publications, id)
 		}
 	}
 	delete(b.executions, attempt.ID)
+	if entry != nil {
+		b.reapRealmLocked(entry.plan.Realm)
+	}
 	if session := b.sessions[attempt.Realm]; session != nil {
 		session.revision++
 	}
@@ -376,7 +383,7 @@ func (b *Bridge) Reconnect(ctx context.Context, token string, request ReconnectR
 	entries := make([]*browserExecution, 0, len(request.Executions))
 	for _, execution := range request.Executions {
 		entry := b.executions[execution.ID]
-		if entry == nil || entry.plan.Execution != execution || entry.plan.Realm != session.realm || entry.released {
+		if entry == nil || entry.plan.Execution != execution || entry.plan.Realm != session.realm || entry.retiring {
 			cleanupOnly = true
 			continue
 		}
@@ -392,11 +399,8 @@ func (b *Bridge) Reconnect(ctx context.Context, token string, request ReconnectR
 		}
 	}
 	if cleanupOnly {
-		b.mu.Lock()
-		b.sealSessionLocked(session)
-		b.mu.Unlock()
-		for _, entry := range entries {
-			b.fence(entry)
+		if err := b.SealRealm(ctx, token); err != nil {
+			return ReconnectResult{}, err
 		}
 		result.Mode = CleanupOnly
 		return result, nil
@@ -436,10 +440,11 @@ func (b *Bridge) SealRealm(ctx context.Context, token string) error {
 	b.sealSessionLocked(session)
 	var entries []*browserExecution
 	for _, entry := range b.executions {
-		if entry.plan.Realm == session.realm && !entry.released {
+		if entry.plan.Realm == session.realm {
 			entries = append(entries, entry)
 		}
 	}
+	b.reapRealmLocked(session.realm)
 	b.mu.Unlock()
 	var failures []error
 	for _, entry := range entries {
@@ -448,25 +453,8 @@ func (b *Bridge) SealRealm(ctx context.Context, token string) error {
 			failures = append(failures, err)
 			continue
 		}
-		b.mu.Lock()
-		unseen := !entry.exposed
-		if unseen {
-			entry.released = true
-		}
-		b.mu.Unlock()
-		if !unseen {
-			continue
-		}
-		proof := sqlite.ExitProof{AttemptID: entry.attempt.ID, Realm: entry.attempt.Realm, ExitID: entry.attempt.ID + ":not-delivered", Kind: "not-delivered", Evidence: []byte(`{"delivered":false}`)}
-		if err := b.config.Store.ReleaseAttempt(ctx, entry.attempt.ID, proof); err != nil {
-			failures = append(failures, err)
-			continue
-		}
-		_ = entry.resource.ConfirmReleased(nil)
-		select {
-		case entry.ready <- preparedResult{err: frame.ErrFenced}:
-		default:
-		}
+		_, err := b.closeExecution(ctx, entry)
+		failures = append(failures, err)
 	}
 	return errors.Join(failures...)
 }

@@ -62,20 +62,15 @@ func (d *ResourceDriver) Prepare(ctx context.Context, setup *frame.Setup) ([]fra
 	value := &Resources{lease: lease, files: slices.Clone(declared.Resources)}
 	values := make([]frame.ExportValue, 0, len(declaration.Exports))
 	for _, export := range declaration.Exports {
-		if export.Contract.Mode != frame.NativeMode {
-			return nil, frame.ErrContractMismatch
-		}
 		var metadata any
 		for _, contribution := range lease.release.Manifest.Contributions {
 			if contribution.Unit == declaration.ID && contribution.Export == export.Name {
-				if contribution.Point != export.Contract || metadata != nil {
-					return nil, frame.ErrContractMismatch
-				}
 				admitted, err := framevalue.ParseJSON(contribution.Metadata)
 				if err != nil {
 					return nil, err
 				}
 				metadata = admitted
+				break
 			}
 		}
 		values = append(values, frame.ExportValue{Name: export.Name, Contract: export.Contract, Metadata: metadata, Value: value, Durable: true})

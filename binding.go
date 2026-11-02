@@ -199,8 +199,29 @@ func compareUnit(a, b UnitRef) int {
 	return cmp.Or(cmp.Compare(a.InstallationID, b.InstallationID), a.Release.Compare(b.Release), cmp.Compare(a.UnitID, b.UnitID))
 }
 
+const bindingFormatVersion = 1
+
+func newBindingSnapshot(roots []ExportRef, unitRoots []UnitRef, units []UnitBinding) BindingSnapshot {
+	if roots == nil {
+		roots = []ExportRef{}
+	}
+	if units == nil {
+		units = []UnitBinding{}
+	}
+	return BindingSnapshot{FormatVersion: bindingFormatVersion, Roots: slices.Clone(roots), UnitRoots: slices.Clone(unitRoots), Units: units}
+}
+
+func (b BindingSnapshot) sameIdentity(other BindingSnapshot) (bool, error) {
+	left, err := b.Identity()
+	if err != nil {
+		return false, err
+	}
+	right, err := other.Identity()
+	return left == right, err
+}
+
 func (b BindingSnapshot) Validate() error {
-	if b.FormatVersion != 1 || b.Roots == nil || b.Units == nil {
+	if b.FormatVersion != bindingFormatVersion || b.Roots == nil || b.Units == nil {
 		return fmt.Errorf("%w: binding format or missing arrays", ErrInvalid)
 	}
 	if b.Rule != "" {

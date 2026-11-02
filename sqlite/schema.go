@@ -7,13 +7,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"maps"
 	"net/url"
 	"path/filepath"
-	"slices"
-	"strings"
 	"time"
-	"unicode"
 
 	sqlitedriver "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -56,59 +52,88 @@ func admitWAL(ctx context.Context, db *sql.DB) (err error) {
 	if _, err := connection.ExecContext(ctx, `PRAGMA busy_timeout=0`); err != nil {
 		return err
 	}
-	wait, cancel := context.WithTimeout(ctx, busyTimeout)
-	defer cancel()
-	for {
+	err = waitForSQLite(ctx, busyTimeout, func() error {
 		var mode string
-		err := connection.QueryRowContext(wait, `PRAGMA journal_mode=WAL`).Scan(&mode)
-		if err == nil {
-			if mode != "wal" {
-				return fmt.Errorf("journal mode is %q, require wal", mode)
-			}
-			_, err = connection.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout=%d", busyTimeout/time.Millisecond))
+		if err := connection.QueryRowContext(ctx, `PRAGMA journal_mode=WAL`).Scan(&mode); err != nil {
 			return err
 		}
+		if mode != "wal" {
+			return fmt.Errorf("journal mode is %q, require wal", mode)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	_, err = connection.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout=%d", busyTimeout/time.Millisecond))
+	return err
+}
+
+// SQLite's busy handler may sleep beyond Go cancellation. Retry only lock
+// admission with that handler disabled, before any application SQL has run.
+func waitForSQLite(ctx context.Context, limit time.Duration, attempt func() error) error {
+	deadline := time.NewTimer(limit)
+	defer deadline.Stop()
+	for {
+		if err := cancellationError(ctx); err != nil {
+			return err
+		}
+		err := attempt()
 		var busy *sqlitedriver.Error
-		// Extended results such as SQLITE_BUSY_RECOVERY retain the primary code in the low byte.
-		if !errors.As(err, &busy) || busy.Code()&0xff != sqlite3.SQLITE_BUSY {
+		// Extended busy result codes share the primary code in the low byte.
+		if !errors.As(err, &busy) || busy.Code()&0xff != sqlite3.SQLITE_BUSY || limit == 0 {
 			return err
 		}
-		// WAL conversion can bypass SQLite's busy handler to avoid a lock-upgrade
-		// deadlock. Wait only for this idempotent configuration, before owner SQL;
-		// WAL persists, so replacement pool connections need no mode transition.
 		timer := time.NewTimer(time.Millisecond)
 		select {
-		case <-wait.Done():
+		case <-ctx.Done():
 			timer.Stop()
-			return wait.Err()
+			return cancellationError(ctx)
+		case <-deadline.C:
+			timer.Stop()
+			return err
 		case <-timer.C:
 		}
 	}
 }
 
 func InstallSchema(ctx context.Context, db *sql.DB, stmts []string) error {
+	expected, err := schemaShape(ctx, stmts)
+	if err != nil {
+		return fmt.Errorf("sqlite: declared schema: %w", err)
+	}
+	inspect := func(ctx context.Context, tx Executor) (bool, error) {
+		shape, err := readSchemaShape(ctx, tx)
+		if err != nil {
+			return false, err
+		}
+		if shape.IsZero() {
+			return false, nil
+		}
+		if shape != expected {
+			return false, errors.New("sqlite: incompatible database schema; open a fresh data directory")
+		}
+		return true, nil
+	}
 	var current bool
-	err := runIndependentTx(ctx, db, &sql.TxOptions{ReadOnly: true}, func(ctx context.Context) error {
+	err = runIndependentTx(ctx, db, &sql.TxOptions{ReadOnly: true}, func(ctx context.Context) error {
 		var err error
-		current, err = requireCurrentSchema(ctx, Connection(ctx, db), stmts)
+		current, err = inspect(ctx, Connection(ctx, db))
 		return err
 	})
 	if err != nil {
 		return fmt.Errorf("sqlite: inspect current schema: %w", err)
 	}
-	// Reexecuting initialization on an existing schema competes with recovery
-	// writes and can recreate missing owner facts instead of exposing corruption.
 	if current {
 		return nil
 	}
-	err = RunIndependentTx(ctx, db, func(ctx context.Context) error {
+	// A competing initializer can commit before this writer acquires its slot.
+	// Replaying seed statements would recreate business facts the owner deleted.
+	return RunIndependentTx(ctx, db, func(ctx context.Context) error {
 		tx := Connection(ctx, db)
-		current, err := requireCurrentSchema(ctx, tx, stmts)
-		if err != nil {
+		current, err := inspect(ctx, tx)
+		if err != nil || current {
 			return err
-		}
-		if current {
-			return nil
 		}
 		for _, stmt := range stmts {
 			if _, err := tx.ExecContext(ctx, stmt); err != nil {
@@ -117,71 +142,4 @@ func InstallSchema(ctx context.Context, db *sql.DB, stmts []string) error {
 		}
 		return nil
 	})
-	if err != nil {
-		return fmt.Errorf("sqlite: install current schema: %w", err)
-	}
-	return nil
-}
-
-// requireCurrentSchema admits a data directory that is empty or exactly
-// current: every table, index and trigger the current statements define, with
-// their definitions, and nothing else. The statements would only partly apply
-// to any other directory, so it is refused before one of them runs; there is
-// no migration path, and a former shape is never repaired in place.
-func requireCurrentSchema(ctx context.Context, tx Executor, stmts []string) (bool, error) {
-	rows, err := tx.QueryContext(ctx,
-		`SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite\_%' ESCAPE '\'`)
-	if err != nil {
-		return false, fmt.Errorf("sqlite: inspect schema: %w", err)
-	}
-	stored := map[string]string{}
-	for rows.Next() {
-		var name, definition string
-		if err := rows.Scan(&name, &definition); err != nil {
-			_ = rows.Close()
-			return false, fmt.Errorf("sqlite: inspect schema: %w", err)
-		}
-		if _, present := stored[name]; present {
-			return false, errors.Join(fmt.Errorf("sqlite: multiple schema objects named %s", name), rows.Close())
-		}
-		stored[name] = definition
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return false, fmt.Errorf("sqlite: inspect schema: %w", err)
-	}
-	if len(stored) == 0 {
-		return false, nil
-	}
-	for _, stmt := range stmts {
-		if !strings.HasPrefix(stmt, "CREATE ") {
-			continue
-		}
-		name, definition, err := schemaObject(stmt)
-		if err != nil {
-			return false, err
-		}
-		if stored[name] != definition {
-			return false, fmt.Errorf("sqlite: incompatible %s schema; open a fresh data directory", name)
-		}
-		delete(stored, name)
-	}
-	for _, name := range slices.Sorted(maps.Keys(stored)) {
-		return false, fmt.Errorf("sqlite: incompatible schema object %s; open a fresh data directory", name)
-	}
-	return true, nil
-}
-
-// schemaObject names the object a current statement creates and the definition
-// SQLite records for it, which omits the IF NOT EXISTS clause.
-func schemaObject(stmt string) (name, definition string, err error) {
-	const clause = " IF NOT EXISTS "
-	before, after, found := strings.Cut(stmt, clause)
-	if !found {
-		return "", "", fmt.Errorf("sqlite: schema statement lacks %q: %.40s", strings.TrimSpace(clause), stmt)
-	}
-	end := strings.IndexFunc(after, func(r rune) bool { return unicode.IsSpace(r) || r == '(' })
-	if end <= 0 {
-		return "", "", fmt.Errorf("sqlite: schema statement names no object: %.40s", stmt)
-	}
-	return after[:end], before + " " + after, nil
 }

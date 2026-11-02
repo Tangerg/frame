@@ -185,3 +185,65 @@ func TestConcurrentSchemaInitializationAdmitsOneOwnerFact(t *testing.T) {
 		}
 	}
 }
+
+func TestSchemaRoundTripUsesSQLiteObjectDefinitions(t *testing.T) {
+	statements := []string{`create table "user facts"(id INTEGER);`, `CREATE INDEX "by id" ON "user facts"(id)`, `INSERT INTO "user facts" VALUES (1)`}
+	path := filepath.Join(t.TempDir(), "facts.db")
+	for range 2 {
+		db, err := sqlite.OpenSchema(t.Context(), path, statements)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var n int
+		err = db.QueryRow(`SELECT count(*) FROM "user facts"`).Scan(&n)
+		if closeErr := db.Close(); err != nil || closeErr != nil || n != 1 {
+			t.Fatalf("schema or seed changed after reopen: %d %v %v", n, err, closeErr)
+		}
+	}
+}
+
+func TestIndependentWriterCanCancelWhileAnotherOwnerHoldsTheSlot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "busy.db")
+	schema := []string{`CREATE TABLE facts (n INTEGER)`}
+	owner, err := sqlite.OpenSchema(t.Context(), path, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	peer, err := sqlite.OpenSchema(t.Context(), path, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+	writer, err := owner.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback()
+	cause := errors.New("caller stopped waiting")
+	ctx, cancel := context.WithTimeoutCause(t.Context(), 50*time.Millisecond, cause)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- sqlite.RunIndependentTx(ctx, peer, func(context.Context) error { t.Error("canceled writer ran"); return nil })
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, cause) {
+			t.Fatalf("writer cancellation: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		_ = writer.Rollback()
+		<-done
+		t.Fatal("BEGIN waited for the other writer despite cancellation")
+	}
+	if err := writer.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlite.RunInTx(t.Context(), peer, func(ctx context.Context) error {
+		_, err := sqlite.Connection(ctx, peer).ExecContext(ctx, "INSERT INTO facts VALUES(1)")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

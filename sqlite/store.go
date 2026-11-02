@@ -25,6 +25,7 @@ import (
 var (
 	ErrConflict          = errors.New("sqlite: submission identity conflict")
 	ErrEvidenceExpired   = errors.New("sqlite: settlement evidence expired")
+	errCommitUnresolved  = errors.New("sqlite: original commit requires reconciliation")
 	ErrIndeterminate     = errors.New("sqlite: submission settlement is indeterminate")
 	ErrUnsettled         = errors.New("sqlite: submission is not settled and synchronized")
 	ErrUnknownSubmission = errors.New("sqlite: submission was not issued by this owner")
@@ -57,26 +58,27 @@ type Config struct {
 }
 
 type Store struct {
-	db                  *sql.DB
-	lock                *os.File
-	admission           *frame.Admission
-	id                  string
-	epoch               uint64
-	owners              map[string]*Owner
-	control             *Owner
-	maxRequestBytes     int
-	maxSubmissions      int
-	lifecycleMu         sync.Mutex
-	transactions        sync.WaitGroup
-	closing             bool
-	databaseSealed      bool
-	databaseCloseErr    error
-	unconfirmed         []*sql.Conn
-	closeOnce           sync.Once
-	closeRequests       chan chan error
-	closeDone           chan struct{}
-	closeErr            error
-	projectInstallation func(context.Context, Executor, frame.InstallationChange) error
+	db                    *sql.DB
+	expiredTransactionRow *sql.Row
+	lock                  *os.File
+	admission             *frame.Admission
+	id                    string
+	epoch                 uint64
+	owners                map[string]*Owner
+	control               *Owner
+	maxRequestBytes       int
+	maxSubmissions        int
+	lifecycleMu           sync.Mutex
+	transactions          sync.WaitGroup
+	closing               bool
+	databaseSealed        bool
+	databaseCloseErr      error
+	unconfirmed           []*sql.Conn
+	closeOnce             sync.Once
+	closeRequests         chan chan error
+	closeDone             chan struct{}
+	closeErr              error
+	projectInstallation   func(context.Context, Executor, frame.InstallationChange) error
 }
 
 type Owner struct {
@@ -91,11 +93,14 @@ CREATE TABLE frame_owners (id TEXT PRIMARY KEY,next_sequence INTEGER NOT NULL DE
 CREATE TABLE frame_submissions (owner_id TEXT NOT NULL REFERENCES frame_owners(id),sequence INTEGER NOT NULL,digest TEXT NOT NULL,request BLOB NOT NULL,state TEXT NOT NULL CHECK(state IN ('prepared','committed','not_committed')),evidence BLOB,synchronized INTEGER NOT NULL DEFAULT 0 CHECK(synchronized IN (0,1)),PRIMARY KEY(owner_id,sequence));
 CREATE TABLE frame_evidence_references (owner_id TEXT NOT NULL,sequence INTEGER NOT NULL,holder TEXT NOT NULL,PRIMARY KEY(owner_id,sequence,holder),FOREIGN KEY(owner_id,sequence) REFERENCES frame_submissions(owner_id,sequence));
 CREATE TABLE frame_attempts (id TEXT PRIMARY KEY,epoch INTEGER NOT NULL,request BLOB NOT NULL,request_digest TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('approved','handoff','released')),proof BLOB);
+CREATE INDEX frame_attempts_by_state ON frame_attempts(state,id);
 CREATE TABLE frame_installations (id TEXT PRIMARY KEY,record BLOB NOT NULL);
-CREATE TABLE frame_use_approvals (id TEXT PRIMARY KEY,request BLOB NOT NULL,request_digest TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('approved','released')),proof BLOB);
+CREATE TABLE frame_use_approvals (id TEXT PRIMARY KEY,request BLOB NOT NULL,execution_id TEXT GENERATED ALWAYS AS (json_extract(CAST(request AS TEXT),'$.ExecutionID')) VIRTUAL,request_digest TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('approved','released')),proof BLOB);
+CREATE INDEX frame_use_approvals_by_state ON frame_use_approvals(state,id);
+CREATE INDEX frame_uses_by_execution ON frame_use_approvals(execution_id,id);
 CREATE TABLE frame_realms (id TEXT NOT NULL,epoch TEXT NOT NULL,operation_id TEXT NOT NULL UNIQUE,resume_verifier TEXT NOT NULL,PRIMARY KEY(id,epoch));
 CREATE TABLE frame_exit_proofs (attempt_id TEXT NOT NULL REFERENCES frame_attempts(id),scope TEXT NOT NULL,proof_id TEXT NOT NULL,evidence BLOB NOT NULL,PRIMARY KEY(attempt_id,proof_id),UNIQUE(attempt_id,scope));
-`
+` + realmReceiptSchema
 
 // Open returns a sealed Store together with an error only when its original
 // cleanup is unconfirmed. That Store permits Close and identity diagnostics,
@@ -151,6 +156,7 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 	}
 	owners := slices.Clone(config.Owners)
 	slices.SortFunc(owners, func(a, b OwnerSchema) int { return strings.Compare(a.ID, b.ID) })
+	statements := []string{schema}
 	declarations := schema
 	for _, owner := range owners {
 		if !validID(owner.ID) || strings.HasPrefix(owner.ID, "frame.") || owner.References == nil {
@@ -160,10 +166,11 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 			return nil, errors.New("sqlite: duplicate owner")
 		}
 		store.owners[owner.ID] = &Owner{store: store, id: owner.ID, references: owner.References}
+		statements = append(statements, owner.Statements...)
 		declarations += "\n-- owner " + owner.ID + "\n" + strings.Join(owner.Statements, ";\n")
 	}
 	digest := framevalue.Hash([]byte(declarations))
-	expectedShape, err := schemaShape(ctx, owners)
+	expectedShape, err := schemaShape(ctx, statements)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: owner schema: %w", err)
 	}
@@ -172,6 +179,11 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 	if err != nil {
 		return nil, err
 	}
+	// database/sql exposes a single-row error via Scan only. A canceled pool
+	// query produces a detached immutable error row without opening a connection.
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+	store.expiredTransactionRow = store.db.QueryRowContext(expired, "")
 	store.db.SetMaxOpenConns(1)
 	store.db.SetMaxIdleConns(1)
 	var journal string
@@ -233,6 +245,9 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 		if storedDigest != digest {
 			return errors.New("sqlite: incompatible owner schema; open a fresh data directory")
 		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM frame_realm_receipts`); err != nil {
+			return err
+		}
 		store.epoch++
 		_, err = tx.ExecContext(ctx, `UPDATE frame_meta SET epoch=? WHERE singleton=1`, store.epoch)
 		return err
@@ -250,28 +265,23 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 	return store, nil
 }
 
-func schemaShape(ctx context.Context, owners []OwnerSchema) (framevalue.Digest, error) {
+func schemaShape(ctx context.Context, statements []string) (framevalue.Digest, error) {
 	database, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		return framevalue.Digest{}, err
 	}
 	defer database.Close()
 	database.SetMaxOpenConns(1)
-	if _, err := database.ExecContext(ctx, schema); err != nil {
-		return framevalue.Digest{}, err
-	}
-	for _, owner := range owners {
-		for _, statement := range owner.Statements {
-			if _, err := database.ExecContext(ctx, statement); err != nil {
-				return framevalue.Digest{}, err
-			}
+	for _, statement := range statements {
+		if _, err := database.ExecContext(ctx, statement); err != nil {
+			return framevalue.Digest{}, err
 		}
 	}
 	return readSchemaShape(ctx, database)
 }
 
 func readSchemaShape(ctx context.Context, executor Executor) (framevalue.Digest, error) {
-	rows, err := executor.QueryContext(ctx, `SELECT type,name,tbl_name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type,name`)
+	rows, err := executor.QueryContext(ctx, `SELECT type,name,tbl_name,sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*' ORDER BY type,name`)
 	if err != nil {
 		return framevalue.Digest{}, err
 	}
@@ -313,7 +323,7 @@ func (o *Owner) ID() string { return o.id }
 // mutation callback; that callback already has the current transaction.
 func (o *Owner) Held(ctx context.Context, installation frame.InstallationID) ([]frame.Dependency, error) {
 	var dependencies []frame.Dependency
-	err := o.store.transaction(ctx, func(tx Executor) error {
+	err := o.store.Read(ctx, func(tx Executor) error {
 		var err error
 		dependencies, err = o.references(ctx, tx, installation)
 		return err
@@ -335,7 +345,17 @@ func validID(value string) bool {
 
 // The connection stays exclusively owned until COMMIT or rollback has settled.
 // Cancellation never abandons a transaction that can commit after admission opens.
-func (s *Store) transaction(ctx context.Context, apply func(Executor) error) (err error) {
+type transactionMode uint8
+
+const (
+	writeTransaction transactionMode = iota
+	readTransaction
+)
+
+func (s *Store) transaction(ctx context.Context, apply func(Executor) error) error {
+	return s.transact(ctx, writeTransaction, apply)
+}
+func (s *Store) transact(ctx context.Context, mode transactionMode, apply func(Executor) error) (err error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -360,16 +380,24 @@ func (s *Store) transaction(ctx context.Context, apply func(Executor) error) (er
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	if _, err := connection.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+	begin := "BEGIN IMMEDIATE"
+	if mode == readTransaction {
+		begin = "BEGIN"
+	}
+	if _, err := connection.ExecContext(ctx, begin); err != nil {
 		return err
 	}
 	settled := false
+	commitIssued := false
 	defer func() {
 		if settled {
 			return
 		}
 		_, rollbackErr := connection.ExecContext(context.Background(), `ROLLBACK`)
-		if rollbackErr != nil {
+		if rollbackErr != nil || errors.Is(err, errReadModeUnconfirmed) {
+			if rollbackErr != nil && commitIssued {
+				err = errors.Join(err, errCommitUnresolved)
+			}
 			released, closeErr := closeOriginalConnection(connection)
 			if !released {
 				returnConnection = false
@@ -379,12 +407,23 @@ func (s *Store) transaction(ctx context.Context, apply func(Executor) error) (er
 			err = errors.Join(err, rollbackErr)
 		}
 	}()
-	if err = apply(connection); err != nil {
+	access := newTransactionAccess(s, connection, mode)
+	body := func() error {
+		defer access.seal()
+		return apply(access)
+	}
+	if mode == readTransaction {
+		err = withQueryOnly(ctx, connection, body)
+	} else {
+		err = body()
+	}
+	if err != nil {
 		return err
 	}
 	if err = ctx.Err(); err != nil {
 		return err
 	}
+	commitIssued = true
 	if _, err = connection.ExecContext(context.Background(), `COMMIT`); err != nil {
 		return err
 	}

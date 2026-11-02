@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/url"
 	"strconv"
 	"strings"
@@ -147,6 +148,15 @@ func (g *schemaGraph) visitKeyword(index int, key string, field any, path string
 			return errors.New("portable: schema pattern must be a string")
 		}
 		return checkPattern(pattern)
+	case "minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties":
+		number, ok := field.(json.Number)
+		if !ok {
+			return fmt.Errorf("portable: %s must be a nonnegative integer", key)
+		}
+		size, ok := new(big.Rat).SetString(number.String())
+		if !ok || !size.IsInt() || size.Sign() < 0 || !size.Num().IsInt64() || size.Num().Int64() > g.limits.MaxSizeConstraint {
+			return fmt.Errorf("portable: %s must be an integer between 0 and %d", key, g.limits.MaxSizeConstraint)
+		}
 	case "enum":
 		return g.enum(index, field)
 	case "const":

@@ -125,13 +125,7 @@ func (h *Host) resolveLocked(roots []ExportRef, unitRoots []UnitRef, realm Realm
 			return nil, err
 		}
 	}
-	result := BindingSnapshot{FormatVersion: 1, Roots: slices.Clone(roots), UnitRoots: slices.Clone(unitRoots), Units: resolution.units}
-	if result.Roots == nil {
-		result.Roots = []ExportRef{}
-	}
-	if result.Units == nil {
-		result.Units = []UnitBinding{}
-	}
+	result := newBindingSnapshot(roots, unitRoots, resolution.units)
 	if err := result.Validate(); err != nil {
 		return nil, err
 	}
@@ -335,10 +329,8 @@ func subsetBindingRoots(source BindingSnapshot, roots []ExportRef, unitRoots []U
 	for _, unit := range source.Units {
 		units[unit.Source] = unit
 	}
-	result := BindingSnapshot{FormatVersion: 1, Roots: slices.Clone(roots), UnitRoots: slices.Clone(unitRoots), Units: []UnitBinding{}, Rule: source.Rule}
-	if result.Roots == nil {
-		result.Roots = []ExportRef{}
-	}
+	result := newBindingSnapshot(roots, unitRoots, nil)
+	result.Rule = source.Rule
 	seen := make(map[UnitRef]bool)
 	var visit func(UnitRef) error
 	visit = func(ref UnitRef) error {
@@ -452,6 +444,9 @@ func (h *Host) Restore(ctx context.Context, records []InstallationRecord, plugin
 		if plugin == nil {
 			return ErrInvalid
 		}
+		if existing := definitions[plugin.revision]; existing != nil && !sameUnitDeclarations(existing.Units(), plugin.Units()) {
+			return ErrContractMismatch
+		}
 		definitions[plugin.revision] = plugin
 	}
 	return h.admission.Maintenance(ctx, func() error {
@@ -467,6 +462,9 @@ func (h *Host) Restore(ctx context.Context, records []InstallationRecord, plugin
 		var scopes []scopeKey
 		for _, record := range records {
 			if err := record.ID.Validate(); err != nil {
+				return err
+			}
+			if err := h.checkReleaseLocked(record); err != nil {
 				return err
 			}
 			plugin := definitions[record.Release]

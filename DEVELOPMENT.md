@@ -19,8 +19,8 @@ Run `make hooks` to enable local whitespace and conventional commit checks. Go f
 For a committed tree, `python3 scripts/go-consumer.py --version v0.0.1` creates a temporary standard Go module proxy and compiles a separate consumer without a replace or workspace link. `--proxy <directory>` retains the module for local distribution. Verify a public release separately through the public Go module proxy.
 
 To exercise published Flame contracts and unmodified plugin binaries, run
-`./scripts/check-flame-interop.sh /absolute/path/to/flame` from Frame. This
-optional suite builds its peers in the supplied Flame workspace, then tests the
+`node scripts/check-flame-interop.mjs /absolute/path/to/flame` from Frame. This
+optional suite prepares Flame’s pinned candidate modules using its own tooling, builds its peers in the supplied full Git checkout, then tests the
 adapter from the Frame module. It checks the managed descriptor corpus, the
 hooks backend, the trajectory renderer and the Qimu stream fixture. It writes
 its outputs to a temporary directory. See [managed MCP](process/mcp/MANAGED.md)

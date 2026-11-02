@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Tangerg/frame"
@@ -463,5 +464,87 @@ func TestInitialStoreRefusesAnyForeignSchemaObject(t *testing.T) {
 		if err := db.Close(); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestProtectionQueriesDoNotReadReleasedHistory(t *testing.T) {
+	store, _, a := testStore(t)
+	ctx := t.Context()
+	ref := frame.UnitRef{InstallationID: "one", Release: value.Hash([]byte("release")), UnitID: "u"}
+	binding := frame.BindingSnapshot{FormatVersion: 1, Roots: []frame.ExportRef{}, UnitRoots: []frame.UnitRef{ref}, Units: []frame.UnitBinding{{Source: ref, Configuration: value.Hash(nil)}}}
+	active := Attempt{ID: "active", Epoch: store.Epoch(), Source: ref, Binding: binding, Realm: "runner", Profile: frame.LocalProcess}
+	if err := store.RecordAttempt(ctx, active); err != nil {
+		t.Fatal(err)
+	}
+	approval := frame.UseApproval{ID: "use", ExecutionID: active.ID, Realm: "realm", Scope: "scope", ScopeGeneration: 1, Epoch: store.Epoch(), Binding: binding}
+	if err := a.Admit(ctx, func(ctx context.Context) error { return store.ApproveUse(ctx, approval) }); err != nil {
+		t.Fatal(err)
+	}
+	historicalApproval := approval
+	historicalApproval.ExecutionID = "closed-execution"
+	historical, err := json.Marshal(historicalApproval)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Invalid historical proof bytes make accidental full-history decoding observable.
+	err = store.transaction(ctx, func(tx Executor) error {
+		const history = `WITH RECURSIVE ids(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM ids WHERE n<1000) `
+		if _, err := tx.ExecContext(ctx, history+`INSERT INTO frame_attempts(id,epoch,request,request_digest,state,proof) SELECT 'old-'||n,1,'{}',?,'released','!' FROM ids`, value.Hash([]byte("{}"))); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, history+`INSERT INTO frame_use_approvals(id,request,request_digest,state,proof) SELECT 'old-'||n,?,?,'released','!' FROM ids`, historical, value.Hash(historical))
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps, err := store.ExecutionDependencies(ctx)
+	if err != nil || len(deps) != 1 || deps[0] != ref.Dependency() {
+		t.Fatalf("active protection=%+v %v", deps, err)
+	}
+	for _, q := range []string{protectedAttempts, protectedUses} {
+		rows, err := store.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var indexed bool
+		for rows.Next() {
+			var node, parent, empty int
+			var detail string
+			if err := rows.Scan(&node, &parent, &empty, &detail); err != nil {
+				t.Fatal(err)
+			}
+			indexed = indexed || strings.Contains(detail, "USING INDEX")
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil || !indexed {
+			t.Fatalf("active projection lost its state index: %v", err)
+		}
+	}
+	if _, err := store.Attempt(ctx, active.ID); err != nil {
+		t.Fatal(err)
+	}
+	if uses, err := store.ExecutionUses(ctx, active.ID); err != nil || len(uses) != 1 || uses[0].Approval.ID != approval.ID {
+		t.Fatalf("execution-specific query read unrelated history: %+v %v", uses, err)
+	}
+	if _, err := store.Use(ctx, approval.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Attempt(ctx, "unissued"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing original: %v", err)
+	}
+	proof := ExitProof{AttemptID: active.ID, Realm: active.Realm, ExitID: "exit", Kind: "exit", Evidence: []byte("original")}
+	if err := store.AcceptExit(ctx, active.ID, proof); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := store.PendingAttempts(ctx)
+	if err != nil || len(pending) != 1 || !pending[0].PendingHandoff {
+		t.Fatalf("pending handoff=%+v %v", pending, err)
+	}
+	if err := store.ReleaseAttempt(ctx, active.ID, proof); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = store.PendingAttempts(ctx)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("acknowledged exit still pending: %+v %v", pending, err)
 	}
 }

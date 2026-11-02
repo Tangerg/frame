@@ -6,12 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-
-	framevalue "github.com/Tangerg/frame/value"
 )
 
-// Activate prepares the exact graph outside admission. Its accepted attempts
-// follow Host lifetime; canceling this caller only cancels its wait.
 type instanceKey struct {
 	source UnitRef
 	realm  RealmID
@@ -20,7 +16,7 @@ type instanceKey struct {
 func (i *Instance) key() instanceKey { return instanceKey{source: i.binding.Source, realm: i.realm} }
 
 func (h *Host) realmLocked(unit UnitDeclaration, realm RealmID) (RealmID, error) {
-	if driver, ok := h.drivers[unit.Profile].(RealmDriver); ok && driver.RealmBound() {
+	if h.drivers[unit.Profile].realmBound {
 		if err := realm.Validate(); err != nil {
 			return "", err
 		}
@@ -29,6 +25,7 @@ func (h *Host) realmLocked(unit UnitDeclaration, realm RealmID) (RealmID, error)
 	return "", nil
 }
 
+// Canceling the caller stops its wait; accepted attempts belong to the Host.
 func (h *Host) Activate(ctx context.Context, roots ...ExportRef) (BindingSnapshot, error) {
 	return h.activate(ctx, "", "", nil, roots, ScopeGrant{})
 }
@@ -296,7 +293,7 @@ func (i *Instance) prepare() {
 	h := i.host
 	work, err := i.lifetime.Enter(i.lifetime.Context())
 	if err != nil {
-		i.finishPrepare(nil, err)
+		i.finishPrepare(nil, nil, err)
 		return
 	}
 	defer work.Finish()
@@ -305,7 +302,7 @@ func (i *Instance) prepare() {
 		select {
 		case <-dependency.ready:
 		case <-work.Context().Done():
-			i.finishPrepare(nil, contextError(work.Context()))
+			i.finishPrepare(nil, nil, contextError(work.Context()))
 			return
 		}
 		h.mu.Lock()
@@ -313,7 +310,7 @@ func (i *Instance) prepare() {
 		retiring := dependency.retiring
 		h.mu.Unlock()
 		if err != nil || retiring {
-			i.finishPrepare(nil, errors.Join(ErrUnavailable, err))
+			i.finishPrepare(nil, nil, errors.Join(ErrUnavailable, err))
 			return
 		}
 	}
@@ -340,10 +337,10 @@ func (i *Instance) prepare() {
 		}
 		setup.imports[requirement.Slot] = values
 	}
-	driver := h.drivers[i.unit.Profile]
+	driver := h.drivers[i.unit.Profile].Driver
 	h.mu.Unlock()
 	if err != nil {
-		i.finishPrepare(nil, err)
+		i.finishPrepare(nil, nil, err)
 		return
 	}
 	var exports []ExportValue
@@ -357,7 +354,7 @@ func (i *Instance) prepare() {
 	if err == nil {
 		err = contextError(work.Context())
 	}
-	i.finishPrepare(exports, err)
+	i.finishPrepare(exports, setup.sealPreparation(), err)
 }
 
 func invokeSetup(setup SetupFunc, ctx context.Context, value *Setup) (exports []ExportValue, err error) {
@@ -378,44 +375,42 @@ func (i *Instance) validateScopes() error {
 	return i.host.admission.ValidateScope(i.scope)
 }
 
-func (i *Instance) finishPrepare(exports []ExportValue, setupErr error) {
+func (i *Instance) validateCurrentLocked() error {
+	h := i.host
+	if h.closed || i.retiring || h.instances[i.key()] != i || i.lifetime.Context().Err() != nil {
+		return ErrStaleBinding
+	}
+	if err := i.validateScopes(); err != nil {
+		return err
+	}
+	if err := h.validateBindingLocked(i.snapshot); err != nil {
+		return err
+	}
+	return h.validateBindingReadsLocked(i.preparation)
+}
+
+func (i *Instance) finishPrepare(exports []ExportValue, activate func(context.Context) error, setupErr error) {
 	h := i.host
 	var prepared []*publication
 	if setupErr == nil {
 		prepared, setupErr = h.prepareExports(i, exports)
 	}
-	if setupErr == nil && i.activate != nil {
+	if setupErr == nil && activate != nil {
 		setupErr = h.admission.Admit(i.lifetime.Context(), func(context.Context) error {
-			if err := i.validateScopes(); err != nil {
-				return err
-			}
 			h.mu.Lock()
 			defer h.mu.Unlock()
-			if h.closed || i.retiring || h.instances[i.key()] != i {
-				return ErrStaleBinding
-			}
-			return h.validateBindingReadsLocked(i.preparation)
+			return i.validateCurrentLocked()
 		})
 		if setupErr == nil {
-			setupErr = invokeActivation(i.activate, i.lifetime.Context())
+			setupErr = invokeActivation(activate, i.lifetime.Context())
 		}
 	}
 	if setupErr == nil {
 		setupErr = h.admission.Admit(i.lifetime.Context(), func(context.Context) error {
-			if err := i.validateScopes(); err != nil {
-				return err
-			}
 			h.mu.Lock()
 			defer h.mu.Unlock()
-			if h.closed || i.retiring || h.instances[i.key()] != i {
-				return ErrStaleBinding
-			}
-			if err := h.validateBindingReadsLocked(i.preparation); err != nil {
+			if err := i.validateCurrentLocked(); err != nil {
 				return err
-			}
-			installation := h.installations[i.binding.Source.InstallationID]
-			if installation == nil || !installation.record.Enabled || installation.record.Release != i.binding.Source.Release || framevalue.Hash(installation.record.Configuration) != i.binding.Configuration {
-				return ErrStaleBinding
 			}
 			for _, dependency := range i.dependencies {
 				if dependency.retiring || dependency.readyErr != nil {

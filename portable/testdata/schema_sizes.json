@@ -1,0 +1,10 @@
+[
+  {"literal": "2", "admitted": true},
+  {"literal": "2.0", "admitted": true},
+  {"literal": "2e0", "admitted": true},
+  {"literal": "-0", "admitted": true},
+  {"literal": "9007199254740991", "admitted": true},
+  {"literal": "9007199254740992", "admitted": false},
+  {"literal": "-1", "admitted": false},
+  {"literal": "1.5", "admitted": false}
+]

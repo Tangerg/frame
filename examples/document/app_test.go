@@ -3,8 +3,12 @@ package document_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -159,5 +163,128 @@ func TestQueuedTaskRestoresExactGraphAndRejectsChangedSource(t *testing.T) {
 	}
 	if err := restored.ReplaceConverter(ctx, "2"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestBootstrapResumesEachCommittedPrefix(t *testing.T) {
+	for installed := 0; installed <= 4; installed++ {
+		t.Run(fmt.Sprint(installed), func(t *testing.T) {
+			first, config, ctx := application(t)
+			if err := first.Close(ctx); err != nil {
+				t.Fatal(err)
+			}
+			db, err := sql.Open("sqlite", config.Database)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = db.Exec(`DELETE FROM document_bootstrap`); err != nil {
+				t.Fatal(err)
+			}
+			for _, missing := range []string{"files", "converter", "validators", "preview"}[installed:] {
+				if _, err = db.Exec(`DELETE FROM frame_installations WHERE id=?`, missing); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err = db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			restored, err := document.Open(ctx, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer restored.Close(ctx)
+			records, err := restored.Store.Installations(ctx)
+			if err != nil || len(records) != 4 {
+				t.Fatal(records, err)
+			}
+		})
+	}
+}
+
+func TestCompletedBootstrapHonorsLaterUninstall(t *testing.T) {
+	first, config, ctx := application(t)
+	if err := first.Host.Uninstall(ctx, "preview"); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := document.Open(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close(ctx)
+	if _, present := restored.Host.Installation("preview"); present {
+		t.Fatal("uninstalled default resurrected")
+	}
+}
+
+func TestTaskFinishesWithNoReceiptCapacity(t *testing.T) {
+	a, cfg, ctx := application(t)
+	if err := a.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cfg.MaxSubmissionsPerOwner = 2
+	var err error
+	a, err = document.Open(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close(ctx)
+	if _, _, err = a.Queue(ctx, "first", "hello.md"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := a.Queue(ctx, "waiting", "hello.md"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := a.Run(ctx, "first")
+	if err != nil || result.State != document.Completed {
+		t.Fatal(result, err)
+	}
+	if _, _, err = a.Queue(ctx, "second", "hello.md"); err != nil {
+		t.Fatal(err)
+	}
+	if err = a.Cancel(ctx, "second"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExplicitHeadingCanMatchDocumentName(t *testing.T) {
+	a, cfg, ctx := application(t)
+	if err := os.WriteFile(filepath.Join(cfg.DocumentsDirectory, "hello.md"), []byte("# hello.md"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := a.Queue(ctx, "title", "hello.md"); err != nil {
+		t.Fatal(err)
+	}
+	task, err := a.Run(ctx, "title")
+	if err != nil || task.Result == nil || len(task.Result.Diagnostics) != 0 {
+		t.Fatal(task, err)
+	}
+}
+
+func TestHTTPDistinguishesCredentialsAndMissingTasks(t *testing.T) {
+	a, _, _ := application(t)
+	token := strings.Repeat("a", 32)
+	h, err := a.Handler(document.HTTPConfig{ApplicationToken: token})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		auth   string
+		status int
+		code   string
+	}{{token, 401, "unauthenticated"}, {"Bearer " + token, 404, "not_found"}} {
+		req := httptest.NewRequest(http.MethodGet, "/api/tasks/missing", nil)
+		req.Header.Set("Authorization", tc.auth)
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, req)
+		var body struct {
+			Code string
+			Task json.RawMessage
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || body.Code != tc.code || len(body.Task) != 0 || response.Code != tc.status {
+			t.Fatal(response.Body, err)
+		}
 	}
 }

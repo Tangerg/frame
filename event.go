@@ -151,6 +151,10 @@ func DeliverEvent[T any](ctx context.Context, host *Host, route *EventRoute, eve
 		return ErrContractMismatch
 	}
 	host.mu.Lock()
+	if !sameDeclaration(host.contracts[event.Ref()], event.value) {
+		host.mu.Unlock()
+		return ErrContractMismatch
+	}
 	record, err := host.eventRouteLocked(route)
 	if err != nil {
 		host.mu.Unlock()

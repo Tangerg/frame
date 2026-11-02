@@ -104,7 +104,7 @@ func (b *Bridge) Acquire(ctx context.Context, token string, request AcquireReque
 	if err != nil {
 		return UseGrant{}, err
 	}
-	if request.OperationID == "" {
+	if !frame.ValidName(request.OperationID) {
 		return UseGrant{}, frame.ErrInvalid
 	}
 	digest, err := requestDigest(request)
@@ -112,8 +112,13 @@ func (b *Bridge) Acquire(ctx context.Context, token string, request AcquireReque
 		return UseGrant{}, err
 	}
 	b.mu.Lock()
-	if old := b.operations[request.OperationID]; old != nil {
-		if old.kind != "acquire" || old.realm != session.realm || old.digest != digest {
+	old, lookupErr := b.operationLocked(ctx, request.OperationID)
+	if lookupErr != nil {
+		b.mu.Unlock()
+		return UseGrant{}, lookupErr
+	}
+	if old != nil {
+		if old.kind != acquireOperation || old.realm != session.realm || old.digest != digest {
 			b.mu.Unlock()
 			return UseGrant{}, sqlite.ErrConflict
 		}
@@ -137,7 +142,7 @@ func (b *Bridge) Acquire(ctx context.Context, token string, request AcquireReque
 	}
 	entry := b.executions[request.Execution.ID]
 	selection := b.snapshots[request.SnapshotID]
-	if entry == nil || entry.plan.Execution != request.Execution || entry.plan.Realm != session.realm || entry.released || selection == nil || selection.realm != string(RealmID(session.realm)) {
+	if entry == nil || entry.plan.Execution != request.Execution || entry.plan.Realm != session.realm || entry.retiring || selection == nil || selection.realm != string(RealmID(session.realm)) {
 		b.mu.Unlock()
 		return UseGrant{}, frame.ErrStaleBinding
 	}
@@ -145,7 +150,7 @@ func (b *Bridge) Acquire(ctx context.Context, token string, request AcquireReque
 		b.mu.Unlock()
 		return UseGrant{}, frame.ErrCapacity
 	}
-	operation := &controlOperation{kind: "acquire", realm: session.realm, digest: digest, execution: entry.plan.Execution.ID, parentID: request.ParentUseID, done: make(chan struct{})}
+	operation := &controlOperation{kind: acquireOperation, realm: session.realm, digest: digest, execution: entry.plan.Execution.ID, parentID: request.ParentUseID, done: make(chan struct{})}
 	b.operations[request.OperationID] = operation
 	delete(b.snapshots, request.SnapshotID)
 	b.mu.Unlock()
@@ -156,7 +161,7 @@ func (b *Bridge) Acquire(ctx context.Context, token string, request AcquireReque
 			operation.failure = frame.ErrUnavailable
 		}
 		b.mu.Unlock()
-		close(operation.done)
+		returned = errors.Join(returned, b.complete(ctx, request.OperationID, operation))
 	}()
 	selections := make([]frame.SelectionRef, 0, len(request.Selections))
 	for _, chosen := range request.Selections {
@@ -209,7 +214,7 @@ func (b *Bridge) useConfig(session *realmSession, entry *browserExecution, paren
 }
 
 func (b *Bridge) deliverUse(ctx context.Context, session *realmSession, entry *browserExecution, use *frame.Use, operation *controlOperation) (UseGrant, error) {
-	grant := UseGrant{ID: use.ID(), ApprovalToken: newToken(), Authority: b.authority, Realm: session.realm, Execution: entry.plan.Execution, ScopeID: entry.plan.ScopeID, ScopeGeneration: entry.plan.ScopeGeneration, Objects: []ObjectRef{}}
+	grant := UseGrant{ID: use.ID(), ApprovalToken: b.signer.approval(use.ID()), Authority: b.authority, Realm: session.realm, Execution: entry.plan.Execution, ScopeID: entry.plan.ScopeID, ScopeGeneration: entry.plan.ScopeGeneration, Objects: []ObjectRef{}}
 	for _, source := range use.Sources() {
 		err := frame.BorrowExport(ctx, use, source, func(_ context.Context, object Object) error {
 			grant.Objects = append(grant.Objects, object.Reference)
@@ -220,7 +225,7 @@ func (b *Bridge) deliverUse(ctx context.Context, session *realmSession, entry *b
 			return UseGrant{}, err
 		}
 	}
-	retained := &browserUse{grant: grant, use: use}
+	retained := &browserUse{grant: clone(grant), use: use}
 	resource, err := use.Lifetime().Own(frame.Resource{Name: "browser use " + use.ID(), Cancel: func(error) { b.fence(entry) }, Close: func(context.Context) (frame.ReleaseState, error) {
 		b.mu.Lock()
 		released := retained.releaseID != ""
@@ -237,7 +242,7 @@ func (b *Bridge) deliverUse(ctx context.Context, session *realmSession, entry *b
 	}
 	retained.resource = resource
 	b.mu.Lock()
-	if entry.released || session.cleanupOnly {
+	if entry.retiring || session.cleanupOnly {
 		b.mu.Unlock()
 		_ = resource.ConfirmReleased(nil)
 		use.BeginClose(frame.ErrFenced)
@@ -288,7 +293,10 @@ func (b *Bridge) Route(ctx context.Context, token string, grant UseGrant, source
 	}
 	b.mu.Lock()
 	retained := b.uses[grant.ID]
-	atCapacity := len(b.routes) >= b.config.MaxPending
+	atCapacity := len(b.routes)+b.openingRoutes >= b.config.MaxPending
+	if !atCapacity && retained != nil {
+		b.openingRoutes++
+	}
 	b.mu.Unlock()
 	if retained == nil {
 		return RouteGrant{}, frame.ErrClosed
@@ -296,6 +304,7 @@ func (b *Bridge) Route(ctx context.Context, token string, grant UseGrant, source
 	if atCapacity {
 		return RouteGrant{}, frame.ErrCapacity
 	}
+	defer func() { b.mu.Lock(); b.openingRoutes--; b.mu.Unlock() }()
 	sourceRef, err := localSource(ctx, retained.use, source)
 	if err != nil {
 		return RouteGrant{}, err
@@ -310,6 +319,10 @@ func (b *Bridge) Route(ctx context.Context, token string, grant UseGrant, source
 	}
 	route := RouteGrant{ID: original.ID(), Use: grant, Source: source, Receiver: receiver}
 	b.mu.Lock()
+	if b.uses[grant.ID] != retained || retained.releaseID != "" {
+		b.mu.Unlock()
+		return RouteGrant{}, frame.ErrClosed
+	}
 	b.routes[route.ID] = browserRoute{grant: clone(route), original: original}
 	b.mu.Unlock()
 	return route, nil
@@ -343,5 +356,8 @@ func localSource(ctx context.Context, use *frame.Use, local LocalExport) (frame.
 }
 
 func definitiveRejection(err error) bool {
+	if errors.Is(err, sqlite.ErrIndeterminate) || errors.Is(err, frame.ErrUnconfirmedRelease) {
+		return false
+	}
 	return errors.Is(err, frame.ErrInvalid) || errors.Is(err, frame.ErrUnavailable) || errors.Is(err, frame.ErrStaleBinding) || errors.Is(err, frame.ErrContractMismatch) || errors.Is(err, frame.ErrFenced) || errors.Is(err, frame.ErrClosed) || errors.Is(err, frame.ErrCapacity)
 }

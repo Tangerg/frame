@@ -140,11 +140,11 @@ func (d *Daemon) Launch(ctx context.Context, request LaunchRequest) (Observation
 	}
 	return d.client.Launch(ctx, request)
 }
-func (d *Daemon) Attach(ctx context.Context, id string) (io.ReadWriteCloser, error) {
+func (d *Daemon) Attach(ctx context.Context, ref AttemptRef) (io.ReadWriteCloser, error) {
 	if err := d.connect(ctx); err != nil {
 		return nil, err
 	}
-	return d.client.Attach(ctx, id)
+	return d.client.Attach(ctx, ref)
 }
 func (d *Daemon) Inspect(ctx context.Context, id string) (Observation, error) {
 	if err := d.connect(ctx); err != nil {
@@ -152,11 +152,11 @@ func (d *Daemon) Inspect(ctx context.Context, id string) (Observation, error) {
 	}
 	return d.client.Inspect(ctx, id)
 }
-func (d *Daemon) CloseAttempt(ctx context.Context, id string) (Observation, error) {
+func (d *Daemon) CloseAttempt(ctx context.Context, ref AttemptRef) (Observation, error) {
 	if err := d.connect(ctx); err != nil {
 		return Observation{}, err
 	}
-	return d.client.CloseAttempt(ctx, id)
+	return d.client.CloseAttempt(ctx, ref)
 }
 
 func (d *Daemon) AcknowledgeExit(ctx context.Context, receipt ExitReceipt) error {
@@ -166,7 +166,7 @@ func (d *Daemon) AcknowledgeExit(ctx context.Context, receipt ExitReceipt) error
 	return d.client.AcknowledgeExit(ctx, receipt)
 }
 
-func (d *Daemon) ProveAbsent(ctx context.Context, request AbsenceRequest) (AbsenceProof, error) {
+func (d *Daemon) ProveAbsent(ctx context.Context, request AttemptRef) (AbsenceProof, error) {
 	if err := d.connect(ctx); err != nil {
 		return AbsenceProof{}, err
 	}

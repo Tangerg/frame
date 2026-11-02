@@ -6,6 +6,9 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -360,5 +363,49 @@ func TestFeatureDefinitionsRefuseOneNameForTwoBodies(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("two methods published different domain.Item definitions and were accepted")
+	}
+}
+
+func TestGeneratedConsumersRoundTripDateAndMixedObjectOutputs(t *testing.T) {
+	directory := t.TempDir()
+	methods := []portable.MethodDescriptor{
+		{Name: "date", Kind: portable.Query, Description: "Read date.", Input: []byte(`{"type":"object"}`), Output: []byte(`{"type":"string","format":"date-time","$defs":{"pkg.":{"type":"string"},"Wrapper":{"$ref":"#/$defs/pkg."}}}`)},
+		{Name: "mixed", Kind: portable.Query, Description: "Read object.", Input: []byte(`{"type":"object"}`), Output: []byte(`{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"],"additionalProperties":{"type":"string"}} `)},
+	}
+	descriptor, err := featureDescriptor(methods...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(directory, "source.json")
+	if err := os.WriteFile(source, descriptor, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Generate(source, "", directory, GoOutput{Path: filepath.Join(directory, "types.go"), Package: "consumer"}); err != nil {
+		t.Fatal(err)
+	}
+	ts, err := os.ReadFile(filepath.Join(directory, "methods.generated.ts"))
+	if err != nil || !strings.Contains(string(ts), "{ id: JSONNumber } & Record<string, string | JSONNumber>") {
+		t.Fatalf("unusable mixed object projection: %s, %v", ts, err)
+	}
+	test := `package consumer
+import ("testing"; json "encoding/json/v2")
+func TestConsumer(t *testing.T){
+ for _,sample:=range []struct{wire string;value any}{
+  {"\"2025-01-01T00:00:00Z\"",new(DateOutput)},
+  {"{\"id\":1,\"memo\":\"ok\"}",new(MixedOutput)},
+ }{
+   if err:=json.Unmarshal([]byte(sample.wire),sample.value);err!=nil{t.Fatal(err)}
+   got,err:=json.Marshal(sample.value,json.Deterministic(true))
+   if err!=nil||string(got)!=sample.wire{t.Fatalf("%s: %s %v",sample.wire,got,err)}
+ }
+}
+`
+	if err := os.WriteFile(filepath.Join(directory, "consumer_test.go"), []byte(test), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(t.Context(), "go", "test", "types.go", "consumer_test.go")
+	cmd.Dir = directory
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("actual generated consumer: %s %v", output, err)
 	}
 }

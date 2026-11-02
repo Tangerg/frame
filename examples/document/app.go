@@ -18,25 +18,25 @@ import (
 )
 
 type Config struct {
-	Database           string
-	ContentDirectory   string
-	DocumentsDirectory string
+	MaxSubmissionsPerOwner int
+	Database               string
+	ContentDirectory       string
+	DocumentsDirectory     string
 }
 
 type App struct {
-	Host          *frame.Host
-	Store         *sqlite.Store
-	Content       *distribution.Store
-	Bridge        *browser.Bridge
-	Contracts     Contracts
-	owner         *sqlite.Owner
-	lifetime      *frame.Lifetime
-	scope         frame.ScopeGrant
-	preview       distribution.Release
-	plugins       []*frame.Plugin
-	mu            sync.Mutex
-	running       map[string]bool
-	reconstructed bool
+	Host       *frame.Host
+	Store      *sqlite.Store
+	Content    *distribution.Store
+	Bridge     *browser.Bridge
+	Contracts  Contracts
+	owner      *sqlite.Owner
+	lifetime   *frame.Lifetime
+	scope      frame.ScopeGrant
+	preview    distribution.Release
+	recoveryMu sync.Mutex
+	mu         sync.Mutex
+	running    map[string]bool
 }
 
 func Open(ctx context.Context, config Config) (_ *App, err error) {
@@ -48,7 +48,7 @@ func Open(ctx context.Context, config Config) (_ *App, err error) {
 		return nil, err
 	}
 	admission := frame.NewAdmission()
-	store, err := sqlite.Open(ctx, sqlite.Config{Path: config.Database, Admission: admission, Owners: []sqlite.OwnerSchema{taskSchema()}, MaxRequestBytes: 32 << 20})
+	store, err := sqlite.Open(ctx, sqlite.Config{Path: config.Database, Admission: admission, Owners: []sqlite.OwnerSchema{taskSchema()}, MaxRequestBytes: maximumTaskBytes, MaxSubmissionsPerOwner: config.MaxSubmissionsPerOwner})
 	if err != nil {
 		return nil, errors.Join(err, store.Close())
 	}
@@ -57,12 +57,12 @@ func Open(ctx context.Context, config Config) (_ *App, err error) {
 			err = errors.Join(err, store.Close())
 		}
 	}()
-	owner, err := store.Owner("document.tasks")
+	owner, err := store.Owner(taskOwnerID)
 	if err != nil {
 		return nil, err
 	}
 	lifetime := frame.NewLifetime(context.Background())
-	a := &App{Store: store, Contracts: contracts, owner: owner, lifetime: lifetime, running: map[string]bool{}, reconstructed: true}
+	a := &App{Store: store, Contracts: contracts, owner: owner, lifetime: lifetime, running: map[string]bool{}}
 	host, err := frame.NewHost(context.Background(), frame.HostConfig{ReadAcceptedBinding: a.readQueuedBinding, Admission: admission, Lifetime: lifetime, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store, UseOwners: []frame.UseOwner{owner}})
 	if err != nil {
 		return nil, err
@@ -126,87 +126,110 @@ func Open(ctx context.Context, config Config) (_ *App, err error) {
 	if err := host.RegisterDriver(bridge); err != nil {
 		return nil, err
 	}
-	files, err := FilePlugin(contracts)
-	if err != nil {
-		return nil, err
-	}
-	converter, err := ConverterPlugin(contracts, "1")
-	if err != nil {
-		return nil, err
-	}
-	second, err := ConverterPlugin(contracts, "2")
-	if err != nil {
-		return nil, err
-	}
-	validators, err := ValidationPlugin(contracts)
-	if err != nil {
-		return nil, err
-	}
-	records, err := store.RecoverInstallations(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if err := owner.RecoverPrepared(ctx); err != nil {
-		return nil, err
-	}
-	if len(records) == 0 {
-		// This distribution is built from files embedded in this executable.
-		// Remote or user-authored packages require their own trust decision.
-		a.preview, err = buildPreview(ctx, content, contracts, func(digest value.Digest) { trustedArchive = digest })
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		for _, record := range records {
-			if record.ID == "preview" {
-				a.preview, err = content.Inspect(ctx, record.Release)
-				if err != nil {
-					return nil, err
-				}
-			}
-		}
-		if a.preview.Digest.IsZero() {
-			return nil, errors.New("document: retained preview release is missing")
-		}
-	}
-	preview, err := previewDefinition(a.preview)
-	if err != nil {
-		return nil, err
-	}
-	a.plugins = []*frame.Plugin{files, converter, second, validators, preview}
-	if len(records) == 0 {
-		directory, err := filepath.Abs(config.DocumentsDirectory)
-		if err != nil {
-			return nil, err
-		}
-		configuration, _ := json.Marshal(FileConfiguration{Directory: directory})
-		for _, installation := range []frame.InstallationConfig{{ID: "files", Plugin: files, Configuration: configuration, Enabled: true}, {ID: "converter", Plugin: converter, Enabled: true}, {ID: "validators", Plugin: validators, Enabled: true}, {ID: "preview", Plugin: preview, Enabled: true}} {
-			if _, err := host.Install(ctx, installation); err != nil {
-				return nil, err
-			}
-		}
-	} else {
-		if err := host.Restore(ctx, records, a.plugins); err != nil {
-			return nil, err
-		}
-		if err := store.ConfirmRestoredInstallations(ctx); err != nil {
-			return nil, err
-		}
-	}
-	if err := a.Recover(ctx); err != nil && !errors.Is(err, frame.ErrRecoveryRequired) {
+	if err := a.restore(ctx, config.DocumentsDirectory, func(digest value.Digest) { trustedArchive = digest }); err != nil {
 		return nil, err
 	}
 	return a, nil
+}
+
+func (a *App) restore(ctx context.Context, directory string, trustPreview func(value.Digest)) error {
+	records, err := a.Store.RecoverInstallations(ctx)
+	if err != nil {
+		return err
+	}
+	if err := a.owner.RecoverPrepared(ctx); err != nil {
+		return err
+	}
+	var initialized bool
+	if err := a.Store.Read(ctx, func(tx sqlite.Executor) error {
+		return tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM document_bootstrap)`).Scan(&initialized)
+	}); err != nil {
+		return err
+	}
+
+	files, err := FilePlugin(a.Contracts)
+	if err != nil {
+		return err
+	}
+	converter, err := ConverterPlugin(a.Contracts, "1")
+	if err != nil {
+		return err
+	}
+	second, err := ConverterPlugin(a.Contracts, "2")
+	if err != nil {
+		return err
+	}
+	validators, err := ValidationPlugin(a.Contracts)
+	if err != nil {
+		return err
+	}
+	definitions := []*frame.Plugin{files, converter, second, validators}
+	for _, record := range records {
+		if record.ID == "preview" {
+			a.preview, err = a.Content.Inspect(ctx, record.Release)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	if a.preview.Digest.IsZero() && !initialized {
+		a.preview, err = buildPreview(ctx, a.Content, a.Contracts, trustPreview)
+		if err != nil {
+			return err
+		}
+	}
+	var preview *frame.Plugin
+	if !a.preview.Digest.IsZero() {
+		preview, err = previewDefinition(a.preview)
+		if err != nil {
+			return err
+		}
+		definitions = append(definitions, preview)
+	}
+	if err := a.Host.Restore(ctx, records, definitions); err != nil {
+		return err
+	}
+	if err := a.Store.ConfirmRestoredInstallations(ctx); err != nil {
+		return err
+	}
+	if err := a.Recover(ctx); err != nil {
+		if initialized && errors.Is(err, frame.ErrRecoveryRequired) {
+			return nil
+		}
+		return err
+	}
+	if initialized {
+		return nil
+	}
+	directory, err = filepath.Abs(directory)
+	if err != nil {
+		return err
+	}
+	configuration, err := json.Marshal(FileConfiguration{Directory: directory})
+	if err != nil {
+		return err
+	}
+	for _, installation := range []frame.InstallationConfig{{ID: "files", Plugin: files, Configuration: configuration, Enabled: true}, {ID: "converter", Plugin: converter, Enabled: true}, {ID: "validators", Plugin: validators, Enabled: true}, {ID: "preview", Plugin: preview, Enabled: true}} {
+		if _, installed := a.Host.Installation(installation.ID); installed {
+			continue
+		}
+		if _, err := a.Host.Install(ctx, installation); err != nil {
+			return err
+		}
+	}
+	return a.owner.Update(ctx, func(ctx context.Context, tx sqlite.Executor) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO document_bootstrap(singleton) VALUES(1)`)
+		return err
+	})
 }
 
 // Recover does not replay a task that reached running. Such a task remains an
 // application-owned unknown result until the user explicitly cancels it. Old
 // surviving Realms keep recovery closed until their original proofs arrive.
 func (a *App) Recover(ctx context.Context) error {
-	a.mu.Lock()
-	reconstructed := a.reconstructed
-	a.mu.Unlock()
-	if !reconstructed {
+	a.recoveryMu.Lock()
+	defer a.recoveryMu.Unlock()
+	if a.currentScope() != (frame.ScopeGrant{}) {
 		return a.Host.Admission().RecoveryError()
 	}
 	dependencies, err := a.Store.ExecutionDependencies(ctx)
@@ -225,10 +248,11 @@ func (a *App) Recover(ctx context.Context) error {
 	}
 	a.mu.Lock()
 	a.scope = scope
-	a.reconstructed = false
 	a.mu.Unlock()
 	return nil
 }
+
+func (a *App) currentScope() frame.ScopeGrant { a.mu.Lock(); defer a.mu.Unlock(); return a.scope }
 
 func (a *App) activateDocumentProviders(ctx context.Context) error {
 	records, err := a.Store.Installations(ctx)
@@ -303,12 +327,15 @@ func (a *App) ReplaceConverter(ctx context.Context, version string) error {
 }
 
 func (a *App) Theme(ctx context.Context) (string, error) {
+	if a.preview.Digest.IsZero() {
+		return "", frame.ErrUnavailable
+	}
 	root := frame.ExportRef{InstallationID: "preview", Release: a.preview.Digest, UnitID: "theme", Export: "theme", Contract: a.Contracts.Theme.Ref()}
 	plan, err := a.Host.Plan(ctx, root)
 	if err != nil {
 		return "", err
 	}
-	use, err := a.Host.Acquire(ctx, plan, frame.UseConfig{Owner: a.lifetime, Scope: a.scope})
+	use, err := a.Host.Acquire(ctx, plan, frame.UseConfig{Owner: a.lifetime, Scope: a.currentScope()})
 	if err != nil {
 		return "", err
 	}
@@ -323,6 +350,9 @@ func (a *App) Theme(ctx context.Context) (string, error) {
 }
 
 func (a *App) ActivatePreview(ctx context.Context, credentials browser.Credentials) error {
+	if a.preview.Digest.IsZero() {
+		return frame.ErrUnavailable
+	}
 	poll, err := a.Bridge.Poll(ctx, credentials.Token)
 	if err != nil {
 		return err

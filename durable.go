@@ -57,5 +57,5 @@ func (h *Host) Driver(profile Profile) (Driver, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	driver, ok := h.drivers[profile]
-	return driver, ok
+	return driver.Driver, ok
 }

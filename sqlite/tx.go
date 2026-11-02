@@ -6,28 +6,25 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"time"
 )
-
-// Cross-store transactions. The stores in this package each own their own
-// table(s) but share one *sql.DB. Some use cases need a write-set that spans
-// several stores atomically, so a mid-sequence failure must leave no partial
-// state.
-//
-// A caller-supplied transaction is carried on the context: [RunInTx] begins it
-// (or joins an outer one) and binds it to that exact database; every store statement
-// runs through [Connection], which uses that transaction when present and the shared
-// pool otherwise. This is mandatory rather than an optimization: the pool runs
-// at MaxOpenConns(1), so a store that opened its OWN BeginTx while a context
-// transaction was live would deadlock — the single connection is already held.
-
-// Executor is the statement surface shared by *sql.DB and *sql.Tx. Statements
-// join a caller transaction only when they name the same database owner.
 
 type txKey struct{ database *sql.DB }
 
 type transaction struct {
 	tx       Executor
 	readOnly bool
+}
+
+func (t transaction) checkActive() error {
+	if access, ok := t.tx.(*transactionAccess); ok {
+		access.mu.RLock()
+		defer access.mu.RUnlock()
+		if access.owner == nil {
+			return sql.ErrTxDone
+		}
+	}
+	return nil
 }
 
 // Connection returns the transaction carried by [RunInTx] for this exact database,
@@ -40,18 +37,16 @@ func Connection(ctx context.Context, db *sql.DB) Executor {
 	return db
 }
 
-// RunInTx runs fn inside a single transaction exposed to fn's store calls via
-// the returned context (they pick it up through [Connection]). It commits on success
-// and joins rollback on error or panic, so a multi-step write-set is atomic. A
-// nested RunInTx joins the outer transaction (a single connection can't nest
-// transactions, and the outer owns the commit), so a store method that wraps
-// its own body in RunInTx is atomic standalone yet folds into a caller's
-// transaction transparently.
+// Nested writers join the exact database's original transaction. Taking a
+// second connection here could deadlock owners with a single-slot pool.
 func RunInTx(ctx context.Context, db *sql.DB, fn func(context.Context) error) error {
 	if err := cancellationError(ctx); err != nil {
 		return err
 	}
 	if owned, ok := ctx.Value(txKey{database: db}).(transaction); ok {
+		if err := owned.checkActive(); err != nil {
+			return err
+		}
 		if owned.readOnly {
 			return errors.New("sqlite: write transaction cannot enter a read snapshot")
 		}
@@ -70,18 +65,23 @@ func RunReadSnapshot(ctx context.Context, db *sql.DB, read func(context.Context)
 	if err := cancellationError(ctx); err != nil {
 		return err
 	}
-	if _, ok := ctx.Value(txKey{database: db}).(transaction); ok {
-		return errors.Join(read(ctx), cancellationError(ctx))
+	if owned, ok := ctx.Value(txKey{database: db}).(transaction); ok {
+		if err := owned.checkActive(); err != nil {
+			return err
+		}
+		if owned.readOnly {
+			return errors.Join(read(ctx), cancellationError(ctx))
+		}
+		owned.readOnly = true
+		return withQueryOnly(ctx, owned.tx, func() error {
+			return errors.Join(read(context.WithValue(ctx, txKey{database: db}, owned)), cancellationError(ctx))
+		})
 	}
 	return runIndependentTx(ctx, db, &sql.TxOptions{ReadOnly: true}, read)
 }
 
-// RunIndependentTx owns a fresh write-set and refuses an active transaction for
-// the same database. Another database remains an independent fact owner.
-// Acquisition and statements retain caller cancellation. The transaction has
-// an owned lifetime so database/sql cannot race this boundary's rollback and
-// discard its diagnostic. Workspace intents and schema admission deliberately
-// enter here rather than joining an ambient write-set.
+// Independent transactions refuse an ambient write-set on the same database.
+// Once BEGIN succeeds, this owner joins the original rollback or commit.
 func RunIndependentTx(ctx context.Context, db *sql.DB, fn func(context.Context) error) (err error) {
 	return runIndependentTx(ctx, db, nil, fn)
 }
@@ -105,13 +105,13 @@ func runIndependentTx(ctx context.Context, db *sql.DB, options *sql.TxOptions, f
 	if err := cancellationError(ctx); err != nil {
 		return err
 	}
-	tx, err := connection.BeginTx(context.WithoutCancel(ctx), options)
+	tx, err := beginTransaction(ctx, connection, options)
 	if err != nil {
 		return errors.Join(err, discardConnection(connection), cancellationError(ctx))
 	}
 	defer func() {
 		rollbackErr := rollbackTransaction(tx)
-		if rollbackErr != nil {
+		if rollbackErr != nil || errors.Is(err, errReadModeUnconfirmed) {
 			rollbackErr = errors.Join(rollbackErr, discardConnection(connection))
 		}
 		if recovered := recover(); recovered != nil {
@@ -127,7 +127,13 @@ func runIndependentTx(ctx context.Context, db *sql.DB, options *sql.TxOptions, f
 		err = errors.Join(err, rollbackErr)
 	}()
 	if err = cancellationError(ctx); err == nil {
-		err = fn(context.WithValue(ctx, txKey{database: db}, transaction{tx: tx, readOnly: options != nil && options.ReadOnly}))
+		readOnly := options != nil && options.ReadOnly
+		scoped := context.WithValue(ctx, txKey{database: db}, transaction{tx: tx, readOnly: readOnly})
+		if readOnly {
+			err = withQueryOnly(scoped, tx, func() error { return fn(scoped) })
+		} else {
+			err = fn(scoped)
+		}
 	}
 	err = errors.Join(err, cancellationError(ctx))
 	if err != nil {
@@ -137,6 +143,59 @@ func runIndependentTx(ctx context.Context, db *sql.DB, options *sql.TxOptions, f
 		return errors.Join(err, discardConnection(connection), cancellationError(ctx))
 	}
 	return nil
+}
+
+var errReadModeUnconfirmed = errors.New("sqlite: connection read mode could not be restored")
+
+// modernc's ReadOnly option selects a deferred BEGIN. SQLite's query_only
+// setting enforces the read scope even when a trusted adapter issues DML directly.
+func withQueryOnly(ctx context.Context, executor Executor, read func() error) (err error) {
+	var previous int
+	if err := executor.QueryRowContext(ctx, "PRAGMA query_only").Scan(&previous); err != nil {
+		return err
+	}
+	if previous != 0 {
+		return read()
+	}
+	if _, err := executor.ExecContext(ctx, "PRAGMA query_only=ON"); err != nil {
+		return err
+	}
+	defer func() {
+		if _, restoreErr := executor.ExecContext(context.WithoutCancel(ctx), "PRAGMA query_only=OFF"); restoreErr != nil {
+			err = errors.Join(err, errReadModeUnconfirmed, restoreErr)
+		}
+	}()
+	return read()
+}
+
+func beginTransaction(ctx context.Context, conn *sql.Conn, options *sql.TxOptions) (*sql.Tx, error) {
+	var timeout int
+	if err := conn.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&timeout); err != nil {
+		return nil, err
+	}
+	if _, err := conn.ExecContext(ctx, "PRAGMA busy_timeout=0"); err != nil {
+		return nil, err
+	}
+	var tx *sql.Tx
+	err := waitForSQLite(ctx, time.Duration(timeout)*time.Millisecond, func() error {
+		var err error
+		// Each BEGIN is nonblocking. Its lifetime belongs to the caller of
+		// Commit/Rollback once it wins the writer slot.
+		tx, err = conn.BeginTx(context.WithoutCancel(ctx), options)
+		return err
+	})
+	var executor Executor = conn
+	if tx != nil {
+		executor = tx
+	}
+	_, restoreErr := executor.ExecContext(context.WithoutCancel(ctx), fmt.Sprintf("PRAGMA busy_timeout=%d", timeout))
+	if restoreErr != nil && tx != nil {
+		restoreErr = errors.Join(restoreErr, tx.Rollback())
+	}
+	if err != nil || restoreErr != nil {
+		return nil, errors.Join(err, restoreErr)
+	}
+	return tx, nil
 }
 
 func rollbackTransaction(tx *sql.Tx) error {

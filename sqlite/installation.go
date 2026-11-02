@@ -98,7 +98,8 @@ func (s *Store) CommitInstallation(ctx context.Context, change frame.Installatio
 	case Committed:
 		return frame.CommitSucceeded, err
 	case NotCommitted:
-		return frame.CommitRejected, err
+		// The private control owner has no caller to release a rejected receipt.
+		return frame.CommitRejected, errors.Join(err, s.control.compactSettled(context.WithoutCancel(ctx)))
 	default:
 		return frame.CommitIndeterminate, err
 	}
@@ -248,44 +249,37 @@ type UseProof struct {
 	Realm *ExitProof          `json:"realm,omitempty"`
 }
 
-func (s *Store) Uses(ctx context.Context) (records []UseRecord, err error) {
-	err = s.transaction(ctx, func(tx Executor) error {
-		rows, err := tx.QueryContext(ctx, `SELECT request,request_digest,state,proof FROM frame_use_approvals ORDER BY id`)
-		if err != nil {
-			return err
+const useRecords = `SELECT request,request_digest,state,proof FROM frame_use_approvals`
+const protectedUses = useRecords + ` WHERE state='approved' ORDER BY id`
+
+func (s *Store) Uses(ctx context.Context) ([]UseRecord, error) {
+	return readRecords(ctx, s, useRecords+" ORDER BY id", decodeUse)
+}
+func (s *Store) Use(ctx context.Context, id string) (UseRecord, error) {
+	return readRecord(ctx, s, useRecords+" WHERE id=?", decodeUse, id)
+}
+func (s *Store) ExecutionUses(ctx context.Context, id string) ([]UseRecord, error) {
+	return readRecords(ctx, s, useRecords+` WHERE execution_id=? ORDER BY id`, decodeUse, id)
+}
+
+func decodeUse(row protectedRecord) (UseRecord, error) {
+	var record UseRecord
+	if err := jsonv2.Unmarshal(row.request, &record.Approval, jsonv2.RejectUnknownMembers(true)); err != nil {
+		return record, err
+	}
+	if err := record.Approval.Binding.Validate(); err != nil {
+		return record, err
+	}
+	record.Released = row.state == "released"
+	if len(row.proof) != 0 {
+		if err := jsonv2.Unmarshal(row.proof, &record.Proof, jsonv2.RejectUnknownMembers(true)); err != nil {
+			return record, err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var request, proof []byte
-			var digest value.Digest
-			var state string
-			if err := rows.Scan(&request, &digest, &state, &proof); err != nil {
-				return err
-			}
-			if value.Hash(request) != digest {
-				return errors.New("sqlite: use approval integrity failure")
-			}
-			var record UseRecord
-			if err := jsonv2.Unmarshal(request, &record.Approval, jsonv2.RejectUnknownMembers(true)); err != nil {
-				return err
-			}
-			if err := record.Approval.Binding.Validate(); err != nil {
-				return err
-			}
-			record.Released = state == "released"
-			if len(proof) != 0 {
-				if err := jsonv2.Unmarshal(proof, &record.Proof, jsonv2.RejectUnknownMembers(true)); err != nil {
-					return err
-				}
-			}
-			if record.Released && (record.Proof == nil || record.Proof.Host == nil && record.Proof.Realm == nil || record.Proof.Host != nil && !record.Proof.Host.Released) {
-				return errors.New("sqlite: released use lacks proof")
-			}
-			records = append(records, record)
-		}
-		return rows.Err()
-	})
-	return records, err
+	}
+	if record.Released && (record.Proof == nil || record.Proof.Host == nil && record.Proof.Realm == nil || record.Proof.Host != nil && !record.Proof.Host.Released) {
+		return record, errors.New("sqlite: released use lacks proof")
+	}
+	return record, nil
 }
 
 func (s *Store) ReleaseUse(ctx context.Context, id string, outcome frame.CloseOutcome) error {

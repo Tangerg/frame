@@ -1,8 +1,6 @@
 package distribution
 
 import (
-	"archive/zip"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,10 +10,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/localfile"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -134,10 +134,7 @@ func (s *Store) ImportDirectoryHeld(ctx context.Context, directory string) (leas
 			return nil
 		}
 		if entry.IsDir() {
-			if !validPath(name) {
-				return ErrInvalid
-			}
-			return nil
+			return staged.admitPath(name, true)
 		}
 		info, err := entry.Info()
 		if err != nil {
@@ -146,7 +143,7 @@ func (s *Store) ImportDirectoryHeld(ctx context.Context, directory string) (leas
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("%w: only regular files are accepted", ErrInvalid)
 		}
-		file, err := input.Open(name)
+		file, err := localfile.OpenRegularIn(input, name)
 		if err != nil {
 			return err
 		}
@@ -183,7 +180,7 @@ func (s *Store) ImportArchiveHeld(ctx context.Context, fileName string, expected
 	if expected.Validate() != nil {
 		return nil, ErrInvalid
 	}
-	file, err := os.Open(fileName)
+	file, err := localfile.OpenRegular(fileName)
 	if err != nil {
 		return nil, err
 	}
@@ -208,35 +205,27 @@ func (s *Store) ImportArchiveHeld(ctx context.Context, fileName string, expected
 	if value.Hash(data) != expected {
 		return nil, ErrIntegrity
 	}
-	archive, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	archive, err := s.limits.openArchive(data)
 	if err != nil {
-		return nil, errors.Join(ErrInvalid, err)
-	}
-	if len(archive.File) > s.limits.Files {
-		return nil, ErrCapacity
+		return nil, err
 	}
 	staged, err := s.stage()
 	if err != nil {
 		return nil, err
 	}
 	defer func() { err = errors.Join(err, staged.discard()) }()
-	entries := map[string]bool{}
 	for _, entry := range archive.File {
 		name := strings.TrimSuffix(entry.Name, "/")
-		if !validPath(name) || entries[strings.ToLower(name)] {
-			return nil, ErrInvalid
-		}
-		entries[strings.ToLower(name)] = true
 		if entry.Mode().Type() != 0 && entry.Mode().Type() != fs.ModeDir {
 			return nil, ErrInvalid
 		}
 		if entry.Mode().IsDir() {
+			if err := staged.admitPath(name, true); err != nil {
+				return nil, err
+			}
 			continue
 		}
-		if entry.UncompressedSize64 > uint64(s.limits.ExpandedBytes) || entry.CompressedSize64 == 0 && entry.UncompressedSize64 > 0 {
-			return nil, ErrCapacity
-		}
-		if entry.CompressedSize64 > 0 && entry.UncompressedSize64/entry.CompressedSize64 > s.limits.CompressionRatio {
+		if !s.limits.admitsExpansion(entry.UncompressedSize64, entry.CompressedSize64) {
 			return nil, ErrCapacity
 		}
 		input, err := entry.Open()
@@ -478,15 +467,15 @@ func (s *Store) publishHeld(ctx context.Context, staged *staging, source Source)
 	if err := s.checkTrust(ctx, source, release); err != nil {
 		return nil, errors.Join(ErrUntrusted, err)
 	}
-	if err := staged.sealContents(); err != nil {
+	if err := sealContents(staged.root); err != nil {
 		return nil, err
 	}
 	lease := &Lease{store: s, release: release}
-	var existing bool
+	var existing fs.FileInfo
 	err = s.admission.Under(ctx, func() error {
 		destination := release.Digest.String()
-		if _, err := s.root.Lstat(destination); err == nil {
-			existing = true
+		if info, err := s.root.Lstat(destination); err == nil {
+			existing = info
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		} else {
@@ -516,17 +505,61 @@ func (s *Store) publishHeld(ctx context.Context, staged *staging, source Source)
 	if err != nil {
 		return nil, err
 	}
-	if existing {
-		cached, err := s.inspect(ctx, release.Digest)
+	if existing != nil {
+		cached, err := s.admitCached(ctx, source, release.Digest, existing)
 		if err != nil {
 			return nil, errors.Join(err, lease.Close())
-		}
-		if err := s.checkTrust(ctx, source, cached); err != nil {
-			return nil, errors.Join(ErrUntrusted, err, lease.Close())
 		}
 		lease.release = cached
 	}
 	return lease, nil
+}
+
+// A crash can leave a renamed root writable. The original lease pins that
+// directory while application trust evaluates the exact cached projection.
+func (s *Store) admitCached(ctx context.Context, source Source, digest value.Digest, original fs.FileInfo) (_ Release, err error) {
+	if !original.IsDir() || original.Mode().Perm() != 0500 && original.Mode().Perm() != 0700 {
+		return Release{}, ErrIntegrity
+	}
+	root, err := s.root.OpenRoot(digest.String())
+	if err != nil {
+		return Release{}, err
+	}
+	defer func() { err = errors.Join(err, root.Close()) }()
+	opened, err := root.Stat(".")
+	if err != nil || !os.SameFile(opened, original) {
+		return Release{}, errors.Join(ErrIntegrity, err)
+	}
+	cached, err := s.validate(ctx, root)
+	if err != nil || cached.Digest != digest {
+		return Release{}, errors.Join(ErrIntegrity, err)
+	}
+	if err := s.checkTrust(ctx, source, cached); err != nil {
+		return Release{}, errors.Join(ErrUntrusted, err)
+	}
+	if original.Mode().Perm() == 0500 {
+		return cached, nil
+	}
+	err = s.admission.Under(ctx, func() error {
+		current, err := s.root.Lstat(digest.String())
+		if err != nil || !os.SameFile(current, original) {
+			return errors.Join(ErrIntegrity, err)
+		}
+		// Optional manifest fields can differ without changing a release digest.
+		// Seal only the projection that this source's trust callback approved.
+		checked, err := s.validate(ctx, root)
+		if err != nil || !reflect.DeepEqual(checked, cached) {
+			return errors.Join(ErrIntegrity, err)
+		}
+		if err := sealContents(root); err != nil {
+			return err
+		}
+		if err := root.Chmod(".", 0500); err != nil {
+			return err
+		}
+		return s.lock.Sync()
+	})
+	return cached, err
 }
 
 func (s *Store) validate(ctx context.Context, root *os.Root) (Release, error) {
@@ -584,7 +617,7 @@ func (s *Store) validate(ctx context.Context, root *os.Root) (Release, error) {
 		if size > s.limits.ExpandedBytes {
 			return ErrCapacity
 		}
-		if name == ManifestName || name == LockName {
+		if isReleaseMetadata(name) {
 			return nil
 		}
 		artifact, ok := expected[name]
@@ -616,7 +649,7 @@ type staging struct {
 	identity fs.FileInfo
 	root     *os.Root
 	limits   Limits
-	paths    map[string]string
+	paths    archivePaths
 	bytes    int64
 }
 
@@ -625,27 +658,38 @@ func (s *Store) stage() (*staging, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &staging{store: s, name: name, identity: identity, root: root, limits: s.limits, paths: map[string]string{}}, nil
+	return &staging{store: s, name: name, identity: identity, root: root, limits: s.limits, paths: archivePaths{}}, nil
 }
 
 func (s *staging) discard() error {
 	return errors.Join(s.root.Close(), s.store.removePrivate(s.name, s.identity))
 }
 
-func (s *staging) write(ctx context.Context, name string, mode fs.FileMode, reader io.Reader) error {
-	if mode.Type() != 0 || mode&(fs.ModeSetuid|fs.ModeSetgid|fs.ModeSticky) != 0 {
-		return ErrInvalid
-	}
-	if err := admitPath(s.paths, name); err != nil {
+func (s *staging) admitPath(name string, directory bool) error {
+	if err := s.paths.admit(name, directory); err != nil {
 		return err
 	}
 	if len(s.paths) > s.limits.Files {
 		return ErrCapacity
 	}
+	return nil
+}
+
+func (s *staging) write(ctx context.Context, name string, mode fs.FileMode, reader io.Reader) error {
+	if mode.Type() != 0 || mode&(fs.ModeSetuid|fs.ModeSetgid|fs.ModeSticky) != 0 {
+		return ErrInvalid
+	}
+	if err := s.admitPath(name, false); err != nil {
+		return err
+	}
 	if err := s.root.MkdirAll(path.Dir(name), 0700); err != nil {
 		return err
 	}
-	data, err := readBounded(ctx, reader, s.limits.ExpandedBytes-s.bytes)
+	limit := s.limits.ExpandedBytes - s.bytes
+	if isReleaseMetadata(name) {
+		limit = min(limit, s.limits.ManifestBytes)
+	}
+	data, err := readBounded(ctx, reader, limit)
 	if err != nil {
 		return err
 	}
@@ -658,8 +702,8 @@ func (s *staging) write(ctx context.Context, name string, mode fs.FileMode, read
 	return errors.Join(writeErr, file.Sync(), file.Close())
 }
 
-func (s *staging) sealContents() error {
-	return fs.WalkDir(s.root.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
+func sealContents(root *os.Root) error {
+	return fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -676,7 +720,7 @@ func (s *staging) sealContents() error {
 			}
 			mode |= info.Mode().Perm() & 0111
 		}
-		return s.root.Chmod(name, mode)
+		return root.Chmod(name, mode)
 	})
 }
 
@@ -707,7 +751,7 @@ func readRegular(ctx context.Context, root *os.Root, name string, limit int64) (
 	if !info.Mode().IsRegular() || info.Size() > limit {
 		return nil, ErrIntegrity
 	}
-	file, err := root.Open(name)
+	file, err := localfile.OpenRegularIn(root, name)
 	if err != nil {
 		return nil, err
 	}

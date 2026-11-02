@@ -15,11 +15,12 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/distribution"
+	"github.com/Tangerg/frame/internal/localfile"
 	"github.com/Tangerg/frame/value"
 )
 
 func boundedFile(path string, limit int64) ([]byte, error) {
-	file, err := os.Open(path)
+	file, err := localfile.OpenRegular(path)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +123,7 @@ func inspectCommand(args []string, output io.Writer, verify bool) error {
 		return errors.New("expected --format json and no extra arguments")
 	}
 	limits := distribution.DefaultLimits()
-	file, err := os.Open(archive)
+	file, err := localfile.OpenRegular(archive)
 	if err != nil {
 		return err
 	}

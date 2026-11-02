@@ -26,17 +26,18 @@ func Build(ctx context.Context, source string, manifest Manifest, output io.Writ
 	manifest.Artifacts = slices.Clone(manifest.Artifacts)
 	slices.SortFunc(manifest.Artifacts, func(a, b Artifact) int { return strings.Compare(a.Path, b.Path) })
 	limits := DefaultLimits()
-	if len(manifest.Artifacts)+2 > limits.Files {
+	paths := releasePaths()
+	if len(manifest.Artifacts)+len(paths) > limits.Files {
 		return Lock{}, ErrCapacity
 	}
-	files := make(map[string][]byte, len(manifest.Artifacts)+2)
+	files := make(map[string][]byte, len(manifest.Artifacts)+len(paths))
 	var total int64
 	for i, artifact := range manifest.Artifacts {
-		if !validPath(artifact.Path) || artifact.Path == ManifestName || artifact.Path == LockName {
-			return Lock{}, ErrInvalid
+		if err := paths.admit(artifact.Path, false); err != nil {
+			return Lock{}, err
 		}
-		if _, exists := files[artifact.Path]; exists {
-			return Lock{}, ErrInvalid
+		if len(paths) > limits.Files {
+			return Lock{}, ErrCapacity
 		}
 		data, err := readRegular(ctx, input, artifact.Path, limits.ExpandedBytes-total)
 		if err != nil {
@@ -60,6 +61,13 @@ func Build(ctx context.Context, source string, manifest Manifest, output io.Writ
 	files[LockName], err = json.MarshalIndent(lock, "", "  ")
 	if err != nil {
 		return Lock{}, err
+	}
+	for _, name := range []string{ManifestName, LockName} {
+		size := int64(len(files[name]))
+		if size > limits.ManifestBytes || size > limits.ExpandedBytes-total {
+			return Lock{}, ErrCapacity
+		}
+		total += size
 	}
 	archive := zip.NewWriter(&limitedWriter{writer: output, remaining: limits.ArchiveBytes})
 	names := make([]string, 0, len(files))

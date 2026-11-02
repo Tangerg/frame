@@ -40,6 +40,7 @@ type Admission struct {
 	mu           sync.Mutex
 	preparations map[*Preparation]struct{}
 	owners       map[string]UseOwner
+	ownersSealed bool
 	scopes       map[scopeKey]scopeState
 	limits       AdmissionLimits
 	recovery     error
@@ -63,10 +64,7 @@ type recoveryReport struct {
 
 func (r *recoveryReport) Error() string {
 	const maxDetailBytes = 2048
-	detail := r.cause.Error()
-	if len(detail) > maxDetailBytes {
-		detail = detail[:maxDetailBytes]
-	}
+	detail := boundedDetail(r.cause.Error(), maxDetailBytes)
 	text := ErrRecoveryRequired.Error() + ": " + detail
 	if r.additional != 0 {
 		text += fmt.Sprintf("; %d additional recovery reports", r.additional)
@@ -419,6 +417,9 @@ func (a *Admission) registerUseOwners(owners []UseOwner) error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if len(pending) != 0 && a.ownersSealed {
+		return fmt.Errorf("%w: business owners already sealed", ErrClosed)
+	}
 	for id := range pending {
 		if _, exists := a.owners[id]; exists {
 			return fmt.Errorf("%w: duplicate use owner %s", ErrInvalid, id)
@@ -526,7 +527,18 @@ func onlyRequestCancellation(ctx context.Context, err error) bool {
 	}
 }
 
+// Destructive decisions rely on the complete owner set. Once one can observe
+// absence, a late owner cannot introduce references to an already removed release.
 func (a *Admission) CheckUnused(ctx context.Context, id InstallationID) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	if err := id.Validate(); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.ownersSealed = true
+	a.mu.Unlock()
 	values, err := a.Held(ctx, id)
 	if err != nil {
 		return err

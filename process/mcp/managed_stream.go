@@ -54,8 +54,8 @@ func (d *managedDelivery) receive(wait context.Context, sequence uint64, chunk v
 	if d.maxBytes == 0 || sequence == 0 || sequence != d.received+1 {
 		return errors.New("mcp: invalid managed stream sequence")
 	}
-	if int64(len(chunk.String())) > d.maxBytes {
-		return frame.ErrCapacity
+	if err := d.checkBytes(len(chunk.String())); err != nil {
+		return err
 	}
 	if err := d.method.ValidateChunk(chunk.Bytes()); err != nil {
 		return err
@@ -68,6 +68,13 @@ func (d *managedDelivery) receive(wait context.Context, sequence uint64, chunk v
 		return err
 	}
 	d.received = sequence
+	return nil
+}
+
+func (d *managedDelivery) checkBytes(size int) error {
+	if int64(size) > d.maxBytes {
+		return frame.ErrCapacity
+	}
 	return nil
 }
 
@@ -101,6 +108,9 @@ func (s *ManagedService) stream(ctx context.Context, method *portable.Method, pa
 	if !delivery.mu.TryLock() {
 		delivery.mu.Lock()
 		err = errors.Join(err, errors.New("mcp: managed stream ended with pending delivery"))
+	}
+	if err == nil {
+		err = delivery.checkBytes(len(raw))
 	}
 	delivery.mu.Unlock()
 	return raw, managedDispatchError(method, err)

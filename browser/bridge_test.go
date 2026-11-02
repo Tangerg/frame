@@ -43,6 +43,10 @@ type bridgeEnvironment struct {
 }
 
 func openBridge(t *testing.T, path string, cleanup bool) *bridgeEnvironment {
+	return openConfiguredBridge(t, path, cleanup, nil)
+}
+
+func openConfiguredBridge(t *testing.T, path string, cleanup bool, configure func(*browser.BridgeConfig)) *bridgeEnvironment {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
@@ -66,7 +70,11 @@ func openBridge(t *testing.T, path string, cleanup bool) *bridgeEnvironment {
 	if err := host.Register(first, second); err != nil {
 		t.Fatal(err)
 	}
-	bridge, err := browser.NewBridge(browser.BridgeConfig{Host: host, Store: store, Source: testModules{}, Points: []frame.ContractRef{first.Ref(), second.Ref()}})
+	config := browser.BridgeConfig{Host: host, Store: store, Source: testModules{}, Points: []frame.ContractRef{first.Ref(), second.Ref()}}
+	if configure != nil {
+		configure(&config)
+	}
+	bridge, err := browser.NewBridge(config)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,7 +10,9 @@ The consumer captures one converter and an ordered validator collection in one
 Snapshot. `CommitTask` validates that capture under the same Admission and SQLite
 transaction that creates the original queued task. The business table retains
 its complete binding while queued or running, so replacement is refused even
-when no callback is executing. Completion removes the business reference while
+when no callback is executing. Starting and finishing update the original task row under admission and never allocate a second submission. The owner compacts synchronized, unretained submission evidence when its admission budget fills. The task row remains observable by its original ID.
+
+Completion removes the business reference while
 preserving the original task and its submission conclusion.
 
 The same application installs a neutral ZIP release containing a browser preview

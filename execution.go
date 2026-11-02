@@ -23,6 +23,11 @@ type RealmDriver interface {
 	RealmBound() bool
 }
 
+type registeredDriver struct {
+	Driver
+	realmBound bool
+}
+
 type SetupFunc func(context.Context, *Setup) ([]ExportValue, error)
 
 type ExportValue struct {
@@ -82,17 +87,44 @@ func (s *Setup) Cleanup(name string, closeResource func() error, dependencies ..
 	return s.work.Cleanup(name, closeResource, dependencies...)
 }
 
+func (h *Host) OwnsSetup(s *Setup) bool { return h != nil && s != nil && s.host == h }
+
+// ValidateCurrent checks the original instance and frozen binding together,
+// before a driver exposes a previously prepared execution to its realm.
+func (s *Setup) ValidateCurrent(ctx context.Context) error {
+	if s == nil || s.host == nil || s.instance == nil {
+		return ErrInvalid
+	}
+	return s.host.admission.Under(ctx, func() error {
+		s.host.mu.Lock()
+		defer s.host.mu.Unlock()
+		return s.instance.validateCurrentLocked()
+	})
+}
+
 func (s *Setup) OnActivate(activate func(context.Context) error) error {
-	if activate == nil {
+	if s == nil || s.host == nil || activate == nil {
 		return ErrInvalid
 	}
 	s.host.mu.Lock()
 	defer s.host.mu.Unlock()
-	if s.instance.activate != nil || s.instance.readyDone || s.instance.retiring {
+	if s.instance.preparationSealed || s.instance.retiring {
+		return ErrClosed
+	}
+	if s.instance.activation != nil {
 		return ErrInvalid
 	}
-	s.instance.activate = activate
+	s.instance.activation = activate
 	return nil
+}
+
+func (s *Setup) sealPreparation() func(context.Context) error {
+	s.host.mu.Lock()
+	defer s.host.mu.Unlock()
+	s.instance.preparationSealed = true
+	activation := s.instance.activation
+	s.instance.activation = nil
+	return activation
 }
 
 func (s *Setup) Imports(slot string) ([]BoundValue, error) {

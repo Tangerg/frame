@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -111,5 +112,166 @@ func TestSubmissionCapacityRetainsUnsettledPrefixAndReclaimsOnlyConfirmedEvidenc
 		return nil, nil
 	}, nil); !errors.Is(err, ErrEvidenceExpired) {
 		t.Fatalf("expired commit = %v", err)
+	}
+}
+
+func TestOnlyTheMatchedRequestCanSettleOrSynchronize(t *testing.T) {
+	_, owner, admission := testStore(t)
+	request := []byte("original")
+	id, err := owner.Prepare(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkedReplay := func() {
+		t.Helper()
+		err := admission.Admit(t.Context(), func(admitted context.Context) error {
+			ctx, cancel := context.WithCancel(admitted)
+			cancel()
+			settlement, err := owner.CommitUnder(ctx, id, []byte("different"),
+				func(context.Context, Executor) ([]byte, error) { t.Fatal("wrong mutation ran"); return nil, nil },
+				func(Settlement) error { t.Fatal("wrong request synchronized an original result"); return nil })
+			if settlement.Evidence != nil || !settlement.Digest.IsZero() || settlement.State != "" {
+				t.Fatalf("wrong request observed original data: %+v", settlement)
+			}
+			return err
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled unauthenticated request: %v", err)
+		}
+	}
+	checkedReplay()
+	applied := false
+	state, err := owner.Commit(t.Context(), id, request, func(context.Context, Executor) ([]byte, error) { applied = true; return []byte("evidence"), nil }, nil)
+	if err != nil || !applied || state.State != Committed {
+		t.Fatalf("original submission did not execute: %+v %v", state, err)
+	}
+	checkedReplay()
+	state, err = owner.Settlement(t.Context(), id, []byte("different"))
+	if !errors.Is(err, ErrConflict) || state.Evidence != nil || !state.Digest.IsZero() {
+		t.Fatalf("read conflict exposed original data: %+v %v", state, err)
+	}
+}
+
+func TestPostcommitPanicFencesAdmissionUntilTheOwnerRestores(t *testing.T) {
+	_, owner, a := testStore(t)
+	req := []byte("original")
+	id, err := owner.Prepare(t.Context(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("projection panicked")
+	func() {
+		defer func() {
+			if got := recover(); got != failure {
+				t.Fatalf("original callback panic changed: %v", got)
+			}
+		}()
+		_, _ = owner.Commit(t.Context(), id, req, func(context.Context, Executor) ([]byte, error) { return []byte("original"), nil }, func(Settlement) error { panic(failure) })
+	}()
+	pending, err := owner.Settlement(t.Context(), id, req)
+	if err != nil || pending.State != Committed || pending.Synchronized || string(pending.Evidence) != "original" {
+		t.Fatalf("lost the real commit: %+v, %v", pending, err)
+	}
+	if _, err := owner.Prepare(t.Context(), []byte("next")); !errors.Is(err, frame.ErrRecoveryRequired) {
+		t.Fatalf("new work crossed the unsynchronized commit: %v", err)
+	}
+	if err := owner.Confirm(t.Context(), id); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Recover(t.Context(), func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Prepare(t.Context(), []byte("next")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRejectedInstallationReclaimsItsPrivateSubmissionCapacity(t *testing.T) {
+	a := frame.NewAdmission()
+	cfg := testConfig(filepath.Join(t.TempDir(), "state"), a)
+	cfg.MaxSubmissionsPerOwner = 1
+	reject := errors.New("index unavailable")
+	cfg.ProjectInstallation = func(context.Context, Executor, frame.InstallationChange) error { return reject }
+	store, err := Open(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	h, err := frame.NewHost(t.Context(), frame.HostConfig{Admission: a, Installations: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close(context.Background())
+	p, err := frame.Define(frame.Definition{Revision: value.Hash(nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	install := frame.InstallationConfig{ID: "example", Plugin: p}
+	if _, err := h.Install(t.Context(), install); !errors.Is(err, reject) {
+		t.Fatalf("first rejection: %v", err)
+	}
+	reject = nil
+	if _, err := h.Install(t.Context(), install); err != nil {
+		t.Fatalf("settled rejection still occupies the private receipt budget: %v", err)
+	}
+}
+
+func TestApplicationTransactionBelongsToItsStoreAndCallback(t *testing.T) {
+	s1, owner, _ := testStore(t)
+	s2, _, _ := testStore(t)
+	wrong := func(context.Context) error { t.Fatal("mismatched transaction entered"); return nil }
+	if err := s1.WithTransaction(t.Context(), s2.Database(), wrong); err == nil {
+		t.Fatal("foreign pool accepted as a transaction")
+	}
+	var escaped context.Context
+	if err := s1.Read(t.Context(), func(tx Executor) error {
+		if _, err := tx.ExecContext(t.Context(), `INSERT INTO documents VALUES('denied','p','r',1)`); err == nil {
+			t.Fatal("read projection originated a business write")
+		}
+		return s1.WithTransaction(t.Context(), tx, func(ctx context.Context) error {
+			if err := RunInTx(ctx, s1.Database(), wrong); err == nil {
+				t.Fatal("nested writer entered read admission")
+			}
+			return nil
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var issued Executor
+	rolledBack := errors.New("rollback")
+	err := owner.Update(t.Context(), func(ctx context.Context, tx Executor) error {
+		issued = tx
+		if err := s2.WithTransaction(ctx, tx, wrong); err == nil {
+			t.Fatal("foreign owner accepted")
+		}
+		err := s1.WithTransaction(ctx, tx, func(joined context.Context) error {
+			escaped = joined
+			return RunInTx(joined, s1.Database(), func(ctx context.Context) error {
+				_, err := Connection(ctx, s1.Database()).ExecContext(ctx, `INSERT INTO documents VALUES('original','p','r',1)`)
+				return err
+			})
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := Connection(escaped, s1.Database()).ExecContext(ctx, `DELETE FROM documents`); !errors.Is(err, sql.ErrTxDone) {
+			t.Fatalf("escaped sibling executor retained access: %v", err)
+		}
+		return rolledBack
+	})
+	if !errors.Is(err, rolledBack) {
+		t.Fatal(err)
+	}
+	if err := s1.WithTransaction(t.Context(), issued, wrong); !errors.Is(err, sql.ErrTxDone) {
+		t.Fatalf("expired transaction admitted: %v", err)
+	}
+	if err := RunInTx(escaped, s1.Database(), wrong); !errors.Is(err, sql.ErrTxDone) {
+		t.Fatalf("expired context admitted: %v", err)
+	}
+	for _, store := range []*Store{s1, s2} {
+		var n int
+		if err := store.Database().QueryRow("SELECT count(*) FROM documents").Scan(&n); err != nil || n != 0 {
+			t.Fatalf("write escaped original transaction: %d %v", n, err)
+		}
 	}
 }

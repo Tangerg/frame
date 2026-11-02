@@ -71,7 +71,8 @@ type ExecutionProtection interface {
 }
 
 // AcceptedBindingReader reads a currently authorized business record under
-// Host admission. Only the original business owner may supply the stored graph.
+// Host admission, before preparation and again before the final grant. Reading
+// must not consume the record or change its authorization.
 type AcceptedBindingReader func(ctx context.Context, recordID string, scope ScopeGrant) (BindingSnapshot, error)
 
 type HostConfig struct {
@@ -126,6 +127,8 @@ type InstanceObservation struct {
 }
 
 type Instance struct {
+	activation            func(context.Context) error
+	preparationSealed     bool
 	startGrant            ScopeGrant
 	starts                int
 	host                  *Host
@@ -133,7 +136,6 @@ type Instance struct {
 	generation            uint64
 	scope                 ScopeGrant
 	realm                 RealmID
-	activate              func(context.Context) error
 	unit                  UnitDeclaration
 	binding               UnitBinding
 	snapshot              BindingSnapshot
@@ -174,7 +176,7 @@ type Host struct {
 	epoch                    uint64
 	identity                 *authorityIdentity
 	closed                   bool
-	drivers                  map[Profile]Driver
+	drivers                  map[Profile]registeredDriver
 	contracts                map[ContractRef]*declaration
 	contractNames            map[nominalContract]ContractRef
 	installations            map[InstallationID]*installed
@@ -230,7 +232,7 @@ func NewHost(ctx context.Context, config HostConfig) (*Host, error) {
 	if config.MaxInstallations < 1 || config.MaxPublications < 1 || config.MaxPublicationOperations < 1 || config.WatchCapacity < 1 || config.MaxWatches < 1 || config.MaxUses < 1 || config.MaxEventRoutes < 1 {
 		return nil, ErrInvalid
 	}
-	h := &Host{readAcceptedBinding: config.ReadAcceptedBinding, admission: config.Admission, lifetime: config.Lifetime, epoch: config.Epoch, identity: &authorityIdentity{}, drivers: make(map[Profile]Driver), contracts: make(map[ContractRef]*declaration), contractNames: make(map[nominalContract]ContractRef), installations: make(map[InstallationID]*installed), instances: make(map[instanceKey]*Instance), allInstances: make(map[string]*Instance), catalog: make(map[ContractRef]*pointStore), uses: make(map[string]*Use), watches: make(map[*Watch]struct{}), store: config.Installations, protection: config.ExecutionProtection, maxPublications: config.MaxPublications, maxPublicationOperations: config.MaxPublicationOperations, watchCapacity: config.WatchCapacity}
+	h := &Host{readAcceptedBinding: config.ReadAcceptedBinding, admission: config.Admission, lifetime: config.Lifetime, epoch: config.Epoch, identity: &authorityIdentity{}, drivers: make(map[Profile]registeredDriver), contracts: make(map[ContractRef]*declaration), contractNames: make(map[nominalContract]ContractRef), installations: make(map[InstallationID]*installed), instances: make(map[instanceKey]*Instance), allInstances: make(map[string]*Instance), catalog: make(map[ContractRef]*pointStore), uses: make(map[string]*Use), watches: make(map[*Watch]struct{}), store: config.Installations, protection: config.ExecutionProtection, maxPublications: config.MaxPublications, maxPublicationOperations: config.MaxPublicationOperations, watchCapacity: config.WatchCapacity}
 	h.routes = make(map[string]*eventRoute)
 	h.maxEventRoutes = config.MaxEventRoutes
 	h.maxInstallations = config.MaxInstallations
@@ -272,6 +274,10 @@ func (h *Host) RegisterDriver(driver Driver) error {
 	if profile == NativeGo {
 		return fmt.Errorf("%w: native setup belongs to its declaration", ErrInvalid)
 	}
+	var realmBound bool
+	if bound, ok := driver.(RealmDriver); ok {
+		realmBound = bound.RealmBound()
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.closed {
@@ -280,7 +286,7 @@ func (h *Host) RegisterDriver(driver Driver) error {
 	if _, exists := h.drivers[profile]; exists {
 		return fmt.Errorf("%w: duplicate execution profile", ErrInvalid)
 	}
-	h.drivers[profile] = driver
+	h.drivers[profile] = registeredDriver{Driver: driver, realmBound: realmBound}
 	return nil
 }
 
@@ -399,13 +405,9 @@ func (h *Host) Update(ctx context.Context, expected InstallationRecord, config I
 	if next.ID != expected.ID {
 		return ErrInvalid
 	}
-	destructive := next.Release != expected.Release || !bytes.Equal(next.Configuration, expected.Configuration)
-	return h.changeInstallation(ctx, next.ID, destructive, func(current *installed) (*installed, error) {
+	return h.changeInstallation(ctx, next.ID, func(current *installed) (*installed, error) {
 		if !sameInstallationRecord(current.record, expected) {
 			return nil, ErrStaleBinding
-		}
-		if sameInstallationRecord(current.record, next) {
-			return current, nil
 		}
 		return &installed{record: next, plugin: config.Plugin}, nil
 	})
@@ -474,7 +476,7 @@ func (h *Host) Install(ctx context.Context, config InstallationConfig) (Installa
 		return InstallationRecord{}, err
 	}
 	state := CommitRejected
-	err = h.admission.Admit(ctx, func(admitted context.Context) error {
+	err = h.admitInstallation(ctx, func(admitted context.Context) error {
 		h.mu.Lock()
 		if h.closed {
 			h.mu.Unlock()
@@ -487,6 +489,10 @@ func (h *Host) Install(ctx context.Context, config InstallationConfig) (Installa
 		if len(h.installations) >= h.maxInstallations {
 			h.mu.Unlock()
 			return ErrCapacity
+		}
+		if err := h.checkReleaseLocked(record); err != nil {
+			h.mu.Unlock()
+			return err
 		}
 		if err := h.validateUnitsLocked(record.Units); err != nil {
 			h.mu.Unlock()
@@ -523,9 +529,31 @@ func (h *Host) Install(ctx context.Context, config InstallationConfig) (Installa
 	return record.Clone(), installationFailure(config.ID, state, err)
 }
 
+func (h *Host) checkReleaseLocked(record InstallationRecord) error {
+	for _, original := range h.installations {
+		if original.record.Release == record.Release && !sameUnitDeclarations(original.record.Units, record.Units) {
+			return fmt.Errorf("%w: release declarations changed", ErrContractMismatch)
+		}
+	}
+	return nil
+}
+
+// The close outcome must include control transactions already admitted, even
+// if they have yet to create a resource or to publish their local projection.
+func (h *Host) admitInstallation(ctx context.Context, apply func(context.Context) error) error {
+	return h.admission.Admit(ctx, func(admitted context.Context) error {
+		work, err := h.lifetime.Enter(admitted)
+		if err != nil {
+			return err
+		}
+		defer work.Finish()
+		return apply(admitted)
+	})
+}
+
 func (h *Host) validateUnitsLocked(units []UnitDeclaration) error {
 	for _, unit := range units {
-		if unit.Profile != NativeGo && h.drivers[unit.Profile] == nil {
+		if unit.Profile != NativeGo && h.drivers[unit.Profile].Driver == nil {
 			return fmt.Errorf("%w: execution profile %s", ErrUnavailable, unit.Profile)
 		}
 		for _, export := range unit.Exports {
@@ -553,7 +581,7 @@ func (h *Host) Installation(id InstallationID) (InstallationRecord, bool) {
 }
 
 func (h *Host) SetEnabled(ctx context.Context, id InstallationID, enabled bool) error {
-	return h.changeInstallation(ctx, id, false, func(current *installed) (*installed, error) {
+	return h.changeInstallation(ctx, id, func(current *installed) (*installed, error) {
 		if current.record.Enabled == enabled {
 			return current, nil
 		}
@@ -568,22 +596,22 @@ func (h *Host) Replace(ctx context.Context, id InstallationID, plugin *Plugin, c
 		return ErrInvalid
 	}
 	configuration = bytes.Clone(configuration)
-	return h.changeInstallation(ctx, id, true, func(current *installed) (*installed, error) {
+	return h.changeInstallation(ctx, id, func(current *installed) (*installed, error) {
 		return &installed{record: InstallationRecord{ID: id, Release: plugin.revision, Configuration: configuration, Enabled: current.record.Enabled, Units: plugin.Units()}, plugin: plugin}, nil
 	})
 }
 
 func (h *Host) Uninstall(ctx context.Context, id InstallationID) error {
-	return h.changeInstallation(ctx, id, true, func(*installed) (*installed, error) { return nil, nil })
+	return h.changeInstallation(ctx, id, func(*installed) (*installed, error) { return nil, nil })
 }
 
-func (h *Host) changeInstallation(ctx context.Context, id InstallationID, destructive bool, prepare func(*installed) (*installed, error)) error {
+func (h *Host) changeInstallation(ctx context.Context, id InstallationID, prepare func(*installed) (*installed, error)) error {
 	if err := id.Validate(); err != nil {
 		return err
 	}
 	state := CommitRejected
 	var retire []*Instance
-	err := h.admission.Admit(ctx, func(admitted context.Context) error {
+	err := h.admitInstallation(ctx, func(admitted context.Context) error {
 		h.mu.Lock()
 		if h.closed {
 			h.mu.Unlock()
@@ -599,10 +627,17 @@ func (h *Host) changeInstallation(ctx context.Context, id InstallationID, destru
 			h.mu.Unlock()
 			return err
 		}
-		if next == current {
+		if next == current || next != nil && sameInstallationRecord(current.record, next.record) {
 			h.mu.Unlock()
 			return nil
 		}
+		if next != nil {
+			if err := h.checkReleaseLocked(next.record); err != nil {
+				h.mu.Unlock()
+				return err
+			}
+		}
+		destructive := next == nil || next.record.Release != current.record.Release || !bytes.Equal(next.record.Configuration, current.record.Configuration)
 		if destructive {
 			for _, use := range h.uses {
 				for _, dependency := range use.binding.Dependencies() {

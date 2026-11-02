@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { Decimal } from "decimal.js";
 import { ExactNumber } from "../json.js";
 import {
@@ -309,4 +310,32 @@ describe("Go-owned portable profile budgets", () => {
     expect(() => unique([1, 2, 3])).not.toThrow();
     expect(() => unique([1, 1])).toThrow(/does not satisfy/);
   });
+});
+
+it("checks the portable size corpus without changing descriptor lexemes", () => {
+  const cases = JSON.parse(
+    readFileSync(
+      new URL("../../../portable/testdata/schema_sizes.json", import.meta.url),
+      "utf8",
+    ),
+  ) as { literal: string; admitted: boolean }[];
+  for (const sample of cases) {
+    const bound = new ExactNumber(sample.literal);
+    for (const keyword of [
+      "minLength",
+      "maxLength",
+      "minItems",
+      "maxItems",
+      "minProperties",
+      "maxProperties",
+    ]) {
+      const schema = { [keyword]: bound };
+      if (sample.admitted) expect(() => compileSchema(schema)).not.toThrow();
+      else expect(() => compileSchema(schema)).toThrow();
+      expect(schema[keyword]!.text).toBe(sample.literal);
+    }
+  }
+  const validate = compileSchema({ minLength: new ExactNumber("2.0") });
+  validate("ab");
+  expect(() => validate("😀")).toThrow();
 });

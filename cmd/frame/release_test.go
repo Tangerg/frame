@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -132,5 +133,30 @@ func TestArchiveInspectionSeparatesIntegrityTrustAndExecution(t *testing.T) {
 	}
 	if err = runVerify([]string{archive, "--policy", policy}, &output); !errors.Is(err, distribution.ErrUntrusted) {
 		t.Fatal(err)
+	}
+}
+
+func TestContractFlagFailureHasOneJSONDiagnostic(t *testing.T) {
+	const probe = "FRAME_TEST_INVALID_CONTRACT_FLAG"
+	if os.Getenv(probe) == "1" {
+		os.Args = []string{"frame", "contract", "--unknown"}
+		main()
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestContractFlagFailureHasOneJSONDiagnostic$")
+	cmd.Env = append(os.Environ(), probe+"=1")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.Output()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 || len(stdout) != 0 {
+		t.Fatalf("exit %v, stdout %q", err, stdout)
+	}
+	var diagnostic struct {
+		Version int
+		Code    string
+	}
+	if err := json.Unmarshal(stderr.Bytes(), &diagnostic); err != nil || diagnostic.Version != 1 || diagnostic.Code != "invalid_request" {
+		t.Fatalf("diagnostic %q: %v", stderr.String(), err)
 	}
 }

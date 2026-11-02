@@ -76,6 +76,9 @@ func TestReadSnapshotJoinsItsOwnerButCannotPromoteToAWriteSet(t *testing.T) {
 			return err
 		}
 		return sqlite.RunReadSnapshot(ctx, db, func(ctx context.Context) error {
+			if _, err := sqlite.Connection(ctx, db).ExecContext(ctx, `DELETE FROM facts`); err == nil {
+				t.Fatal("nested read scope modified the enclosing writer")
+			}
 			var value string
 			if err := sqlite.Connection(ctx, db).QueryRowContext(ctx, `SELECT value FROM facts`).Scan(&value); err != nil {
 				return err
@@ -90,6 +93,9 @@ func TestReadSnapshotJoinsItsOwnerButCannotPromoteToAWriteSet(t *testing.T) {
 	}
 	if err := sqlite.RunReadSnapshot(t.Context(), db, func(ctx context.Context) error {
 		return sqlite.RunReadSnapshot(ctx, db, func(ctx context.Context) error {
+			if _, err := sqlite.Connection(ctx, db).ExecContext(ctx, `INSERT INTO facts VALUES ('forbidden')`); err == nil {
+				t.Fatal("SQLite executed a write in a read-only snapshot")
+			}
 			if err := sqlite.RunInTx(ctx, db, func(context.Context) error { t.Fatal("read snapshot entered a mutation"); return nil }); err == nil {
 				t.Fatal("read snapshot accepted a write-set")
 			}

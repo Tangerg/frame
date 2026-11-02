@@ -42,7 +42,6 @@ type CloseOutcome struct {
 }
 
 type resourceEntry struct {
-	id           uint64
 	resource     Resource
 	dependencies []*resourceEntry
 	attempted    bool
@@ -71,7 +70,6 @@ type Lifetime struct {
 	work            map[*Work]struct{}
 	resources       []*resourceEntry
 	limits          LifetimeLimits
-	nextResource    uint64
 	closing         *Close
 	released        bool
 	failures        []CloseFailure
@@ -241,39 +239,30 @@ func (l *Lifetime) ownLocked(resource Resource, dependencies []*ResourceHandle) 
 		seen[dependency.entry] = true
 		entry.dependencies = append(entry.dependencies, dependency.entry)
 	}
-	l.nextResource++
-	entry.id = l.nextResource
 	l.resources = append(l.resources, entry)
 	l.signalLocked()
 	return &ResourceHandle{lifetime: l, entry: entry}, nil
 }
 
+func cleanupResource(name string, closeResource func() error) Resource {
+	resource := Resource{Name: name}
+	if closeResource != nil {
+		resource.Close = func(context.Context) (ReleaseState, error) {
+			if err := closeResource(); err != nil {
+				return ResourceUnconfirmed, err
+			}
+			return ResourceReleased, nil
+		}
+	}
+	return resource
+}
+
 func (l *Lifetime) Cleanup(name string, closeResource func() error, dependencies ...*ResourceHandle) (*ResourceHandle, error) {
-	if closeResource == nil {
-		return nil, ErrInvalid
-	}
-	return l.Own(Resource{Name: name, Close: func(context.Context) (ReleaseState, error) {
-		err := closeResource()
-		if err != nil {
-			return ResourceUnconfirmed, err
-		}
-		return ResourceReleased, nil
-	}}, dependencies...)
+	return l.Own(cleanupResource(name, closeResource), dependencies...)
 }
-
 func (w *Work) Cleanup(name string, closeResource func() error, dependencies ...*ResourceHandle) (*ResourceHandle, error) {
-	if closeResource == nil {
-		return nil, ErrInvalid
-	}
-	return w.Own(Resource{Name: name, Close: func(context.Context) (ReleaseState, error) {
-		err := closeResource()
-		if err != nil {
-			return ResourceUnconfirmed, err
-		}
-		return ResourceReleased, nil
-	}}, dependencies...)
+	return w.Own(cleanupResource(name, closeResource), dependencies...)
 }
-
 func (l *Lifetime) Go(ctx context.Context, run func(context.Context)) error {
 	if run == nil {
 		return ErrInvalid
@@ -462,7 +451,11 @@ func closeFailureDetail(err error) string {
 		return ""
 	}
 	const maxDetailBytes = 2048
-	detail := strings.ToValidUTF8(fmt.Sprint(err), "\uFFFD")
+	return boundedDetail(fmt.Sprint(err), maxDetailBytes)
+}
+
+func boundedDetail(detail string, maxDetailBytes int) string {
+	detail = strings.ToValidUTF8(detail, "\uFFFD")
 	if len(detail) > maxDetailBytes {
 		detail = detail[:maxDetailBytes]
 		for !utf8.ValidString(detail) {

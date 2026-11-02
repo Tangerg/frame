@@ -48,3 +48,15 @@ arrives. A Use proof settles the original parent-to-child delegated closure,
 including an unknown child acknowledgement. An execution proof settles only
 that original execution's Uses. Proof acknowledgement waits for durable release;
 repeating it never starts cleanup again or substitutes a new exit identity.
+
+A Bridge admits only Setup values from its original Host. Poll does not expose a
+retired plan for the first time. The Host settles an unexposed plan with its
+original non-delivery evidence and retries that evidence if persistence fails.
+An already exposed plan still requires its execution owner's proof.
+
+MaxRealms bounds resident Realms and MaxPending bounds active operations. On
+seal, an empty Realm relinquishes its slot. Its credential can still submit
+idempotent cleanup observations. Completed control replies live in the original
+authority epoch's SQLite receipt journal and do not consume active capacity.
+Rebuilding the Host rotates the epoch and its signing key; use ResumeRealm to
+submit the old execution's proofs on the new cleanup-only channel.

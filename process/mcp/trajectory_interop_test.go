@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,60 +133,37 @@ func TestFlameTrajectoryInterop(t *testing.T) {
 	})
 }
 
-// Discovery of Flame manifests belongs to this product-specific test.
 func TestFlameManagedContractCorpus(t *testing.T) {
-	root, err := os.OpenRoot(os.Getenv("FRAME_FLAME_ROOT"))
+	raw, err := os.ReadFile(os.Getenv("FRAME_FLAME_CORPUS"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer root.Close()
-	entries, err := os.ReadDir(filepath.Join(root.Name(), "plugins"))
-	if err != nil {
-		t.Fatal(err)
+	var packages []struct {
+		Plugin    string
+		Contracts []string
 	}
-	contributions, servers := 0, 0
-	for _, plugin := range entries {
-		if !plugin.IsDir() {
-			continue
-		}
-		base := filepath.Join("plugins", plugin.Name(), "package")
-		if _, err := root.Stat(filepath.Join(base, "mcp.json")); errors.Is(err, os.ErrNotExist) {
-			continue
-		} else if err != nil {
-			t.Fatal(err)
-		}
-		raw, err := root.ReadFile(filepath.Join(base, "io.github.tangerg.flame", "declaration.json"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var manifest struct {
-			Contributions []struct{ ID, Contract, Server string } `json:"contributions"`
-		}
-		if err := json.Unmarshal(raw, &manifest); err != nil {
-			t.Fatal(err)
-		}
-		count := 0
-		for _, c := range manifest.Contributions {
-			if c.Server == "" {
-				continue
-			}
-			d, err := root.ReadFile(filepath.Join(base, c.Contract))
+	if err := json.Unmarshal(raw, &packages); err != nil || len(packages) == 0 {
+		t.Fatalf("invalid build plan corpus: %v", err)
+	}
+	total := 0
+	for _, pkg := range packages {
+		t.Run(pkg.Plugin, func(t *testing.T) {
+			root, err := os.OpenRoot(filepath.Join(os.Getenv("FRAME_FLAME_ROOT"), "plugins", pkg.Plugin, "package"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := ParseManagedContract(d); err != nil {
-				t.Fatalf("%s/%s: %v", plugin.Name(), c.ID, err)
+			defer root.Close()
+			for _, path := range pkg.Contracts {
+				raw, err := root.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := ParseManagedContract(raw); err != nil {
+					t.Fatalf("%s: %v", path, err)
+				}
 			}
-			count++
-		}
-		if count == 0 {
-			t.Fatalf("%s has no managed contracts", plugin.Name())
-		}
-		servers++
-		contributions += count
+		})
+		total += len(pkg.Contracts)
 	}
-	if servers == 0 {
-		t.Fatal("no MCP package manifests found")
-	}
-	t.Logf("admitted %d managed descriptors across %d plugin packages", contributions, servers)
+	t.Logf("admitted %d managed descriptors across %d plugin packages", total, len(packages))
 }

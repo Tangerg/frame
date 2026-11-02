@@ -191,12 +191,12 @@ func (m Manifest) Validate() error {
 
 func indexArtifacts(declared []Artifact) (map[string]Artifact, error) {
 	artifacts := make(map[string]Artifact, len(declared))
-	paths := map[string]string{}
+	paths := releasePaths()
 	for _, artifact := range declared {
-		if !validPath(artifact.Path) || artifact.Path == ManifestName || artifact.Path == LockName || artifact.Size < 0 || artifact.Digest.Validate() != nil {
+		if artifact.Size < 0 || artifact.Digest.Validate() != nil {
 			return nil, fmt.Errorf("%w: artifact %q", ErrInvalid, artifact.Path)
 		}
-		if err := admitPath(paths, artifact.Path); err != nil {
+		if err := paths.admit(artifact.Path, false); err != nil {
 			return nil, err
 		}
 		artifacts[artifact.Path] = artifact
@@ -361,6 +361,11 @@ func (u Unit) profileShape() (bool, error) {
 			return true, fmt.Errorf("%w: browser unit entry", ErrInvalid)
 		}
 	case frame.StaticResource:
+		for _, export := range u.Exports {
+			if export.Contract.Mode != frame.NativeMode {
+				return true, fmt.Errorf("%w: static resource export %q must be native", ErrInvalid, export.Name)
+			}
+		}
 		if len(u.Resources) == 0 || u.Module != nil || len(u.Variants) != 0 || len(u.Imports) != 0 {
 			return true, fmt.Errorf("%w: resource unit entry", ErrInvalid)
 		}
@@ -381,6 +386,11 @@ func validateContributions(declared []Contribution, units map[frame.UnitID]Unit,
 		point, key string
 	}
 	keys := map[contributionKey]struct{}{}
+	type resourceSlot struct {
+		unit   frame.UnitID
+		export string
+	}
+	resourceExports := map[resourceSlot]bool{}
 	for _, contribution := range declared {
 		unit, ok := units[contribution.Unit]
 		if !ok || !frame.ValidName(contribution.Key) || !frame.ValidName(contribution.Export) {
@@ -393,6 +403,13 @@ func validateContributions(declared []Contribution, units map[frame.UnitID]Unit,
 			return export.Name == contribution.Export && export.Contract == contribution.Point
 		}) {
 			return fmt.Errorf("%w: contribution %q export %q", ErrInvalid, contribution.Key, contribution.Export)
+		}
+		if unit.Profile == frame.StaticResource {
+			slot := resourceSlot{unit.ID, contribution.Export}
+			if len(contribution.Metadata) == 0 || resourceExports[slot] {
+				return fmt.Errorf("%w: static resource contribution %q requires one metadata value", ErrInvalid, contribution.Export)
+			}
+			resourceExports[slot] = true
 		}
 		key := contributionKey{contribution.Unit, contribution.Point.Name, contribution.Key}
 		if _, ok := keys[key]; ok {
@@ -495,21 +512,38 @@ func validPath(value string) bool {
 	return true
 }
 
-func admitPath(paths map[string]string, value string) error {
-	if !validPath(value) {
+func isReleaseMetadata(name string) bool { return name == ManifestName || name == LockName }
+
+type archivePath struct {
+	name      string
+	directory bool
+	explicit  bool
+}
+
+type archivePaths map[string]archivePath
+
+func releasePaths() archivePaths {
+	return archivePaths{ManifestName: {name: ManifestName, explicit: true}, LockName: {name: LockName, explicit: true}}
+}
+
+func (paths archivePaths) admit(name string, directory bool) error {
+	if !validPath(name) {
 		return fmt.Errorf("%w: unsafe path", ErrInvalid)
 	}
-	key := strings.ToLower(value)
-	if _, exists := paths[key]; exists {
+	key := strings.ToLower(name)
+	if prior, exists := paths[key]; exists && (prior.explicit || !directory || !prior.directory || prior.name != name) {
 		return fmt.Errorf("%w: duplicate or aliased path", ErrInvalid)
 	}
-	for ancestor := path.Dir(value); ancestor != "."; ancestor = path.Dir(ancestor) {
-		ancestorKey := strings.ToLower(ancestor)
-		if prior, exists := paths[ancestorKey]; exists && prior != ancestor+"/" {
-			return fmt.Errorf("%w: file or alias is a path ancestor", ErrInvalid)
+	for ancestor := path.Dir(name); ancestor != "."; ancestor = path.Dir(ancestor) {
+		key := strings.ToLower(ancestor)
+		if prior, ok := paths[key]; ok {
+			if !prior.directory || prior.name != ancestor {
+				return fmt.Errorf("%w: file or alias is a path ancestor", ErrInvalid)
+			}
+		} else {
+			paths[key] = archivePath{name: ancestor, directory: true}
 		}
-		paths[ancestorKey] = ancestor + "/"
 	}
-	paths[key] = value
+	paths[key] = archivePath{name: name, directory: directory, explicit: true}
 	return nil
 }

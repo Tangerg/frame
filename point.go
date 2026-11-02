@@ -446,32 +446,15 @@ func Candidates[M, V any](snapshot *Snapshot, point Point[M, V]) ([]Candidate[M,
 }
 
 func Select[M, V any](snapshot *Snapshot, point Point[M, V], rule string, candidates ...Candidate[M, V]) (Selection[M, V], error) {
-	if snapshot == nil || point.value == nil {
+	if point.value == nil {
 		return Selection[M, V]{}, ErrInvalid
 	}
-	if err := validateName("selection rule", rule); err != nil {
-		return Selection[M, V]{}, err
+	refs := make([]CandidateRef, len(candidates))
+	for i, candidate := range candidates {
+		refs[i] = CandidateRef{snapshot: candidate.snapshot, member: candidate.member}
 	}
-	if _, found := snapshot.members[point.Ref()]; !found {
-		return Selection[M, V]{}, ErrContractMismatch
-	}
-	id, err := randomID()
-	if err != nil {
-		return Selection[M, V]{}, err
-	}
-	ref := SelectionRef{id: id, snapshot: snapshot, contract: point.Ref(), rule: rule, members: []snapshotMember{}}
-	seen := make(map[string]bool)
-	for _, candidate := range candidates {
-		if candidate.snapshot != snapshot || candidate.member.source.Contract != point.Ref() {
-			return Selection[M, V]{}, ErrContractMismatch
-		}
-		if seen[candidate.member.id] {
-			return Selection[M, V]{}, fmt.Errorf("%w: duplicate selected publication", ErrInvalid)
-		}
-		seen[candidate.member.id] = true
-		ref.members = append(ref.members, candidate.member)
-	}
-	return Selection[M, V]{value: ref}, nil
+	ref, err := SelectRefs(snapshot, point.Ref(), rule, refs...)
+	return Selection[M, V]{value: ref}, err
 }
 
 func SelectOne[M, V any](snapshot *Snapshot, point Point[M, V], rule string, choose func([]Candidate[M, V]) (Candidate[M, V], error)) (Selection[M, V], error) {
@@ -508,7 +491,7 @@ func Capture(snapshot *Snapshot, selections ...SelectionRef) (*BindingPlan, erro
 	if snapshot == nil {
 		return nil, ErrInvalid
 	}
-	plan := &BindingPlan{owner: snapshot.owner, reads: slices.Clone(snapshot.reads), selections: slices.Clone(selections), realm: snapshot.realm, durable: true, binding: BindingSnapshot{FormatVersion: 1, Roots: []ExportRef{}, Units: []UnitBinding{}}}
+	plan := &BindingPlan{owner: snapshot.owner, reads: slices.Clone(snapshot.reads), selections: slices.Clone(selections), realm: snapshot.realm, durable: true, binding: newBindingSnapshot(nil, nil, nil)}
 	units := make(map[UnitRef]UnitBinding)
 	rules := make([]struct {
 		Contract ContractRef `json:"contract"`

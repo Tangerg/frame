@@ -114,69 +114,119 @@ func (s *Store) RecordAttempt(ctx context.Context, attempt Attempt) error {
 	})
 }
 
-func (s *Store) Attempts(ctx context.Context) (records []AttemptRecord, err error) {
-	err = s.transaction(ctx, func(tx Executor) error {
-		rows, err := tx.QueryContext(ctx, `SELECT request,request_digest,state,proof FROM frame_attempts ORDER BY id`)
-		if err != nil {
-			return err
+const attemptRecords = `SELECT request,request_digest,state,proof FROM frame_attempts`
+const protectedAttempts = attemptRecords + ` WHERE state='approved' ORDER BY id`
+
+func (s *Store) Attempts(ctx context.Context) ([]AttemptRecord, error) {
+	return readRecords(ctx, s, attemptRecords+" ORDER BY id", decodeAttempt)
+}
+func (s *Store) PendingAttempts(ctx context.Context) ([]AttemptRecord, error) {
+	return readRecords(ctx, s, attemptRecords+" WHERE state IN ('approved','handoff') ORDER BY id", decodeAttempt)
+}
+func (s *Store) Attempt(ctx context.Context, id string) (AttemptRecord, error) {
+	return readRecord(ctx, s, attemptRecords+" WHERE id=?", decodeAttempt, id)
+}
+
+type protectedRecord struct {
+	request, proof []byte
+	state          string
+}
+
+func decodeAttempt(row protectedRecord) (AttemptRecord, error) {
+	var record AttemptRecord
+	if err := jsonv2.Unmarshal(row.request, &record.Attempt, jsonv2.RejectUnknownMembers(true)); err != nil {
+		return record, err
+	}
+	if err := record.Attempt.Validate(); err != nil {
+		return record, err
+	}
+	record.PendingHandoff = row.state == "handoff"
+	record.Released = record.PendingHandoff || row.state == "released"
+	if record.Released {
+		if err := jsonv2.Unmarshal(row.proof, &record.Proof, jsonv2.RejectUnknownMembers(true)); err != nil {
+			return record, err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var request, proof []byte
-			var digest value.Digest
-			var state string
-			if err := rows.Scan(&request, &digest, &state, &proof); err != nil {
-				return err
-			}
-			if value.Hash(request) != digest {
-				return errors.New("sqlite: execution request integrity failure")
-			}
-			var record AttemptRecord
-			if err := jsonv2.Unmarshal(request, &record.Attempt, jsonv2.RejectUnknownMembers(true)); err != nil {
-				return err
-			}
-			if err := record.Attempt.Validate(); err != nil {
-				return err
-			}
-			record.PendingHandoff = state == "handoff"
-			record.Released = record.PendingHandoff || state == "released"
-			if record.Released {
-				if err := jsonv2.Unmarshal(proof, &record.Proof, jsonv2.RejectUnknownMembers(true)); err != nil {
-					return err
-				}
-				if record.Proof == nil || record.Proof.AttemptID != record.Attempt.ID || record.Proof.Realm != record.Attempt.Realm {
-					return errors.New("sqlite: invalid stored exit proof")
-				}
-			}
-			records = append(records, record)
+		if record.Proof == nil || record.Proof.AttemptID != record.Attempt.ID || record.Proof.Realm != record.Attempt.Realm {
+			return record, errors.New("sqlite: invalid stored exit proof")
 		}
-		return rows.Err()
+	}
+	return record, nil
+}
+
+func readRecord[T any](ctx context.Context, store *Store, query string, decode func(protectedRecord) (T, error), id string) (T, error) {
+	var zero T
+	records, err := readRecords(ctx, store, query, decode, id)
+	if err != nil {
+		return zero, err
+	}
+	if len(records) == 0 {
+		return zero, sql.ErrNoRows
+	}
+	return records[0], nil
+}
+
+func readRecords[T any](ctx context.Context, store *Store, query string, decode func(protectedRecord) (T, error), args ...any) ([]T, error) {
+	var records []T
+	err := store.Read(ctx, func(tx Executor) error {
+		var err error
+		records, err = scanRecords(ctx, tx, query, decode, args...)
+		return err
 	})
-	return records, err
+	if err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
+func scanRecords[T any](ctx context.Context, tx Executor, query string, decode func(protectedRecord) (T, error), args ...any) ([]T, error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var records []T
+	for rows.Next() {
+		var row protectedRecord
+		var digest value.Digest
+		if err := rows.Scan(&row.request, &digest, &row.state, &row.proof); err != nil {
+			return nil, err
+		}
+		if value.Hash(row.request) != digest {
+			return nil, errors.New("sqlite: execution protection integrity failure")
+		}
+		record, err := decode(row)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
 }
 
 // ExecutionDependencies is deliberately separate from business Held queries.
 // A Ready idle instance may be retired first; its protection remains here until
 // actual exit is confirmed, including attempts with an unknown creation result.
 func (s *Store) ExecutionDependencies(ctx context.Context) ([]frame.Dependency, error) {
-	records, err := s.Attempts(ctx)
-	if err != nil {
-		return nil, err
-	}
 	var dependencies []frame.Dependency
-	for _, record := range records {
-		if !record.Released {
+	err := s.Read(ctx, func(tx Executor) error {
+		attempts, err := scanRecords(ctx, tx, protectedAttempts, decodeAttempt)
+		if err != nil {
+			return err
+		}
+		for _, record := range attempts {
 			dependencies = append(dependencies, record.Attempt.Binding.Dependencies()...)
 		}
-	}
-	uses, err := s.Uses(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, record := range uses {
-		if !record.Released {
+		uses, err := scanRecords(ctx, tx, protectedUses, decodeUse)
+		if err != nil {
+			return err
+		}
+		for _, record := range uses {
 			dependencies = append(dependencies, record.Approval.Binding.Dependencies()...)
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return frame.CompactDependencies(dependencies), nil
 }
@@ -239,5 +289,5 @@ func (s *Store) Read(ctx context.Context, query func(Executor) error) error {
 	if query == nil {
 		return errors.New("sqlite: query is required")
 	}
-	return s.transaction(ctx, query)
+	return s.transact(ctx, readTransaction, query)
 }

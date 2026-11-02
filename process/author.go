@@ -42,6 +42,7 @@ const (
 	described
 	preparing
 	prepared
+	activating
 	active
 	closed
 )
@@ -98,16 +99,24 @@ func (s *server) handle(ctx context.Context, method string, raw jsontext.Value) 
 		if err := decode(raw, &struct{}{}); err != nil {
 			return nil, err
 		}
-		if err := s.transition(prepared, active); err != nil {
+		work, err := s.life.Enter(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer work.Finish()
+		if err := s.transition(prepared, activating); err != nil {
 			return nil, err
 		}
 		if s.activate != nil {
-			if err := s.activate(ctx); err != nil {
+			if err := s.activate(work.Context()); err != nil {
 				s.mu.Lock()
 				s.state = closed
 				s.mu.Unlock()
 				return nil, err
 			}
+		}
+		if err := s.transition(activating, active); err != nil {
+			return nil, err
 		}
 		return jsontext.Value("true"), nil
 	case profile.Methods.Call:
@@ -129,9 +138,13 @@ func (s *server) handle(ctx context.Context, method string, raw jsontext.Value) 
 		if err := decode(raw, &struct{}{}); err != nil {
 			return nil, err
 		}
-		if err := s.transition(active, closed); err != nil {
-			return nil, err
+		s.mu.Lock()
+		if s.state != active && s.state != activating {
+			s.mu.Unlock()
+			return nil, &Problem{profile.Errors.Invalid, "invalid lifecycle transition"}
 		}
+		s.state = closed
+		s.mu.Unlock()
 		outcome, err := s.life.Close(ctx)
 		if err != nil || !outcome.Released {
 			return nil, errors.Join(ErrOutcomeUnknown, err)

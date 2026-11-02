@@ -44,7 +44,7 @@ func ConverterPlugin(contracts Contracts, revision string) (*frame.Plugin, error
 			if err != nil {
 				return Converted{}, err
 			}
-			result := Converted{Source: reference, Title: reference.Path}
+			result := Converted{Source: reference}
 			var output strings.Builder
 			for _, line := range strings.Split(document.Text, "\n") {
 				if err := ctx.Err(); err != nil {
@@ -72,7 +72,7 @@ func ValidationPlugin(contracts Contracts) (*frame.Plugin, error) {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			if converted.Title == converted.Source.Path {
+			if converted.Title == "" {
 				return []Diagnostic{{Rule: "title", Message: "document has no level-one heading"}}, nil
 			}
 			return nil, nil

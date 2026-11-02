@@ -4,6 +4,60 @@ export const PROTOCOL = "io.github.tangerg.frame/control/1" as const;
 
 export const MAX_NAME_BYTES = 256 as const;
 
+export interface ControlInputs {
+  readonly validatePlan: LocalPlan;
+  readonly ready: ReadyReport;
+  readonly acquire: AcquireRequest;
+  readonly validateUse: UseGrant;
+  readonly validateRoute: RouteGrant;
+  readonly snapshot: readonly string[];
+  readonly closeSnapshot: string;
+  readonly publish: PublicationRequest;
+  readonly publication: string;
+  readonly withdraw: Withdrawal;
+  readonly prove: CloseProof;
+  readonly reconnect: ReconnectRequest;
+  readonly poll: Record<string, never>;
+}
+
+export interface ControlOutputs {
+  readonly validatePlan: void;
+  readonly ready: PublicationResult;
+  readonly acquire: UseGrant;
+  readonly validateUse: void;
+  readonly validateRoute: void;
+  readonly snapshot: Snapshot;
+  readonly closeSnapshot: void;
+  readonly publish: PublicationResult;
+  readonly publication: PublicationResult;
+  readonly withdraw: PublicationResult;
+  readonly prove: ProofAcknowledgement;
+  readonly reconnect: ReconnectResult;
+  readonly poll: Poll;
+}
+
+export const CONTROL_ERROR_CODES = [
+  "permission_denied",
+  "invalid_plan",
+  "capacity",
+  "outcome_unknown",
+  "contract_mismatch",
+  "stale_binding",
+  "closed",
+  "close_unconfirmed",
+  "unavailable",
+] as const;
+
+export const CONTROL_MUTATIONS = [
+  "ready",
+  "acquire",
+  "closeSnapshot",
+  "publish",
+  "withdraw",
+  "prove",
+  "reconnect",
+] as const;
+
 export interface AcquireRequest {
   readonly operationId: string;
   readonly snapshotId: string;

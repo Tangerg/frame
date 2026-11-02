@@ -15,6 +15,7 @@
     "maxNumberBytes": 1024,
     "maxAbsExponent": 4096,
     "maxPatternBytes": 512,
-    "maxPatternRepeat": 256
+    "maxPatternRepeat": 256,
+    "maxSizeConstraint": 9007199254740991
   }
 }

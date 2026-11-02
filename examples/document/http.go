@@ -2,10 +2,12 @@ package document
 
 import (
 	"crypto/subtle"
+	"database/sql"
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"errors"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"strconv"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	"github.com/Tangerg/frame/sqlite"
 )
 
 type HTTPConfig struct {
@@ -20,8 +23,7 @@ type HTTPConfig struct {
 	WebDirectory     string
 }
 
-// TaskView is the application's browser projection. Numeric storage identities
-// remain decimal strings; they are never rounded through JavaScript numbers.
+// Storage identities travel as strings to preserve integers outside the JavaScript safe range.
 type SubmissionView struct {
 	Store    string `json:"store"`
 	Owner    string `json:"owner"`
@@ -159,9 +161,10 @@ func (a *App) Handler(config HTTPConfig) (http.Handler, error) {
 	})
 	mux.Handle("/api/", http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Cache-Control", "no-store")
-		received := strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer ")
-		if subtle.ConstantTimeCompare([]byte(received), []byte(config.ApplicationToken)) != 1 {
-			http.Error(writer, "application authentication required", http.StatusUnauthorized)
+		scheme, received, ok := strings.Cut(request.Header.Get("Authorization"), " ")
+		if !ok || !strings.EqualFold(scheme, "Bearer") || subtle.ConstantTimeCompare([]byte(received), []byte(config.ApplicationToken)) != 1 {
+			writer.Header().Set("WWW-Authenticate", "Bearer")
+			respond(writer, nil, errAuthentication)
 			return
 		}
 		api.ServeHTTP(writer, request)
@@ -175,7 +178,11 @@ func (a *App) Handler(config HTTPConfig) (http.Handler, error) {
 func decodeRequest(writer http.ResponseWriter, request *http.Request, target any) bool {
 	data, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, 64<<10))
 	if err != nil {
-		respond(writer, nil, frame.ErrCapacity)
+		var limit *http.MaxBytesError
+		if errors.As(err, &limit) {
+			err = frame.ErrCapacity
+		}
+		respond(writer, nil, err)
 		return false
 	}
 	if err := jsonv2.Unmarshal(data, target, jsonv2.RejectUnknownMembers(true)); err != nil {
@@ -184,22 +191,50 @@ func decodeRequest(writer http.ResponseWriter, request *http.Request, target any
 	}
 	return true
 }
-func respond(writer http.ResponseWriter, value any, err error) {
-	if task, ok := value.(Task); ok {
-		value = view(task)
+
+var errAuthentication = errors.New("document: authentication required")
+
+type apiFailure struct {
+	Code    string    `json:"code"`
+	Message string    `json:"error"`
+	Task    *TaskView `json:"task,omitempty"`
+}
+
+func describeError(err error) (int, apiFailure) {
+	switch {
+	case errors.Is(err, errAuthentication):
+		return http.StatusUnauthorized, apiFailure{Code: "unauthenticated", Message: "application authentication required"}
+	case errors.Is(err, sql.ErrNoRows), errors.Is(err, fs.ErrNotExist):
+		return http.StatusNotFound, apiFailure{Code: "not_found", Message: "resource not found"}
+	case errors.Is(err, frame.ErrCapacity):
+		return http.StatusRequestEntityTooLarge, apiFailure{Code: "capacity", Message: "request exceeds the available capacity"}
+	case errors.Is(err, frame.ErrInvalid):
+		return http.StatusBadRequest, apiFailure{Code: "invalid_request", Message: "invalid request"}
+	case errors.Is(err, frame.ErrFenced):
+		return http.StatusForbidden, apiFailure{Code: "fenced", Message: "authorization is no longer valid"}
+	case errors.Is(err, frame.ErrRecoveryRequired), errors.Is(err, sqlite.ErrIndeterminate):
+		return http.StatusServiceUnavailable, apiFailure{Code: "recovery_required", Message: "observe the original operation after recovery"}
+	case errors.Is(err, ErrTaskFinished), errors.Is(err, ErrSourceChanged), errors.Is(err, sqlite.ErrConflict), errors.Is(err, frame.ErrInUse), errors.Is(err, frame.ErrStaleBinding), errors.Is(err, frame.ErrUnavailable):
+		return http.StatusConflict, apiFailure{Code: "conflict", Message: err.Error()}
+	default:
+		return http.StatusInternalServerError, apiFailure{Code: "internal", Message: "application operation failed"}
 	}
+}
+
+func respond(writer http.ResponseWriter, value any, err error) {
 	writer.Header().Set("Content-Type", "application/json")
 	if err != nil {
-		status := http.StatusConflict
-		if errors.Is(err, frame.ErrCapacity) {
-			status = http.StatusRequestEntityTooLarge
+		status, failure := describeError(err)
+		if task, ok := value.(Task); ok && task.Definition.ID != "" {
+			detail := view(task)
+			failure.Task = &detail
 		}
 		writer.WriteHeader(status)
-		_ = json.NewEncoder(writer).Encode(struct {
-			Error string `json:"error"`
-			Task  any    `json:"task,omitempty"`
-		}{err.Error(), value})
+		_ = json.NewEncoder(writer).Encode(failure)
 		return
+	}
+	if task, ok := value.(Task); ok {
+		value = view(task)
 	}
 	_ = json.NewEncoder(writer).Encode(value)
 }

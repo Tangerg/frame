@@ -62,18 +62,6 @@ function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException("waiting cancelled", "AbortError");
 }
 
-function waitSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(abortReason(signal));
-  return new Promise<T>((resolve, reject) => {
-    const abort = () => reject(abortReason(signal));
-    signal.addEventListener("abort", abort, { once: true });
-    promise
-      .then(resolve, reject)
-      .finally(() => signal.removeEventListener("abort", abort));
-  });
-}
-
 export interface Exit {
   readonly id: string;
   readonly outcome: CloseOutcome;
@@ -87,10 +75,7 @@ class ExitRecord {
   readonly view: Exit;
   readonly id: string;
   #outcome: CloseOutcome;
-  #first?: Promise<CloseOutcome>;
-  #settleFirst?: (outcome: CloseOutcome) => void;
-  #terminal?: Promise<CloseOutcome>;
-  #settleTerminal?: (outcome: CloseOutcome) => void;
+  #published = false;
   #observers = new Set<(outcome: CloseOutcome) => void>();
 
   constructor(id: string) {
@@ -101,12 +86,6 @@ class ExitRecord {
       pending: Object.freeze([]),
       failures: Object.freeze([]),
       omittedFailures: 0,
-    });
-    this.#first = new Promise((resolve) => {
-      this.#settleFirst = resolve;
-    });
-    this.#terminal = new Promise((resolve) => {
-      this.#settleTerminal = resolve;
     });
     const current = () => this.outcome;
     this.view = Object.freeze({
@@ -126,11 +105,30 @@ class ExitRecord {
   }
 
   settled(signal?: AbortSignal): Promise<CloseOutcome> {
-    return waitSignal(this.#first ?? Promise.resolve(this.#outcome), signal);
+    return this.#waitFor(false, signal);
   }
 
   wait(signal?: AbortSignal): Promise<CloseOutcome> {
-    return waitSignal(this.#terminal ?? Promise.resolve(this.#outcome), signal);
+    return this.#waitFor(true, signal);
+  }
+
+  #waitFor(terminal: boolean, signal?: AbortSignal): Promise<CloseOutcome> {
+    if (signal?.aborted) return Promise.reject(abortReason(signal));
+    if (this.#published && (!terminal || this.#outcome.status === "released"))
+      return Promise.resolve(this.#outcome);
+    return new Promise((resolve, reject) => {
+      const abort = () => {
+        unsubscribe();
+        reject(abortReason(signal!));
+      };
+      const unsubscribe = this.subscribe((outcome) => {
+        if (terminal && outcome.status !== "released") return;
+        unsubscribe();
+        signal?.removeEventListener("abort", abort);
+        resolve(outcome);
+      });
+      signal?.addEventListener("abort", abort, { once: true });
+    });
   }
 
   subscribe(observer: (outcome: CloseOutcome) => void): () => void {
@@ -145,14 +143,7 @@ class ExitRecord {
   publish(outcome: CloseOutcome): void {
     if (this.#outcome.status === "released") return;
     this.#outcome = outcome;
-    this.#settleFirst?.(outcome);
-    this.#settleFirst = undefined;
-    this.#first = undefined;
-    if (outcome.status === "released") {
-      this.#settleTerminal?.(outcome);
-      this.#settleTerminal = undefined;
-      this.#terminal = undefined;
-    }
+    this.#published = true;
     const observers = [...this.#observers];
     if (outcome.status === "released") this.#observers.clear();
     for (const observer of observers) {

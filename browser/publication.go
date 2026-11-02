@@ -13,12 +13,12 @@ import (
 // Publish retains the original operation before asking the sole Host catalog
 // owner to publish. Repeating a request observes that operation, never another
 // object or another membership.
-func (b *Bridge) Publish(ctx context.Context, token string, request PublicationRequest) (PublicationResult, error) {
+func (b *Bridge) Publish(ctx context.Context, token string, request PublicationRequest) (out PublicationResult, returned error) {
 	session, err := b.session(token, true)
 	if err != nil {
 		return PublicationResult{}, err
 	}
-	if request.OperationID == "" || request.Authority != b.authority || request.Realm != session.realm {
+	if !frame.ValidName(request.OperationID) || request.Authority != b.authority || request.Realm != session.realm {
 		return PublicationResult{}, frame.ErrInvalid
 	}
 	digest, err := requestDigest(request)
@@ -26,8 +26,13 @@ func (b *Bridge) Publish(ctx context.Context, token string, request PublicationR
 		return PublicationResult{}, err
 	}
 	b.mu.Lock()
-	if prior := b.operations[request.OperationID]; prior != nil {
-		if prior.kind != "publish" || prior.realm != session.realm || prior.digest != digest {
+	prior, lookupErr := b.operationLocked(ctx, request.OperationID)
+	if lookupErr != nil {
+		b.mu.Unlock()
+		return PublicationResult{}, lookupErr
+	}
+	if prior != nil {
+		if prior.kind != publishOperation || prior.realm != session.realm || prior.digest != digest {
 			b.mu.Unlock()
 			return PublicationResult{}, sqlite.ErrConflict
 		}
@@ -35,7 +40,7 @@ func (b *Bridge) Publish(ctx context.Context, token string, request PublicationR
 		return b.waitPublication(ctx, prior)
 	}
 	entry := b.executions[request.Execution.ID]
-	if entry == nil || entry.released || entry.plan.Execution != request.Execution || entry.plan.Realm != session.realm || entry.readyOperation == "" {
+	if session.cleanupOnly || entry == nil || entry.retiring || entry.plan.Execution != request.Execution || entry.plan.Realm != session.realm || entry.readyOperation == "" {
 		b.mu.Unlock()
 		return PublicationResult{}, frame.ErrUnavailable
 	}
@@ -50,10 +55,10 @@ func (b *Bridge) Publish(ctx context.Context, token string, request PublicationR
 		b.mu.Unlock()
 		return PublicationResult{}, frame.ErrContractMismatch
 	}
-	operation := &controlOperation{kind: "publish", realm: session.realm, digest: digest, execution: request.Execution.ID, done: make(chan struct{})}
+	operation := &controlOperation{kind: publishOperation, realm: session.realm, digest: digest, execution: request.Execution.ID, done: make(chan struct{})}
 	b.operations[request.OperationID] = operation
 	b.mu.Unlock()
-	defer close(operation.done)
+	defer func() { returned = errors.Join(returned, b.complete(ctx, request.OperationID, operation)) }()
 	metadata, err := b.config.Host.DecodeMetadata(request.Object.Export.Contract, []byte(request.MetadataJSON))
 	var result PublicationResult
 	if err == nil {
@@ -65,7 +70,7 @@ func (b *Bridge) Publish(ctx context.Context, token string, request PublicationR
 	}
 	if err != nil {
 		if definitiveRejection(err) {
-			result = PublicationResult{Decision: Rejected, Problem: err.Error()}
+			result = PublicationResult{Decision: Rejected, Problem: classifyProblem(err).message}
 			err = nil
 		} else {
 			result = PublicationResult{Decision: Unknown}
@@ -73,6 +78,9 @@ func (b *Bridge) Publish(ctx context.Context, token string, request PublicationR
 	}
 	b.mu.Lock()
 	operation.publication = clone(result)
+	if result.Publication != nil {
+		b.publications[result.Publication.ID] = operation
+	}
 	operation.failure = err
 	b.mu.Unlock()
 	return result, err
@@ -95,8 +103,12 @@ func (b *Bridge) Publication(ctx context.Context, token, operationID string) (Pu
 		return PublicationResult{}, err
 	}
 	b.mu.Lock()
-	operation := b.operations[operationID]
-	if operation == nil || operation.kind != "publish" || operation.realm != session.realm {
+	operation, err := b.operationLocked(ctx, operationID)
+	if err != nil {
+		b.mu.Unlock()
+		return PublicationResult{}, err
+	}
+	if operation == nil || operation.kind != publishOperation || operation.realm != session.realm {
 		b.mu.Unlock()
 		return PublicationResult{Decision: Unknown}, nil
 	}
@@ -104,12 +116,12 @@ func (b *Bridge) Publication(ctx context.Context, token, operationID string) (Pu
 	return b.waitPublication(ctx, operation)
 }
 
-func (b *Bridge) Withdraw(ctx context.Context, token string, request Withdrawal) (PublicationResult, error) {
+func (b *Bridge) Withdraw(ctx context.Context, token string, request Withdrawal) (out PublicationResult, returned error) {
 	session, err := b.session(token, false)
 	if err != nil {
 		return PublicationResult{}, err
 	}
-	if request.OperationID == "" || request.Authority != b.authority || request.PublicationID == "" {
+	if !frame.ValidName(request.OperationID) || request.Authority != b.authority || request.PublicationID == "" {
 		return PublicationResult{}, frame.ErrInvalid
 	}
 	digest, err := requestDigest(request)
@@ -117,22 +129,21 @@ func (b *Bridge) Withdraw(ctx context.Context, token string, request Withdrawal)
 		return PublicationResult{}, err
 	}
 	b.mu.Lock()
-	if prior := b.operations[request.OperationID]; prior != nil {
-		if prior.kind != "withdraw" || prior.realm != session.realm || prior.digest != digest {
+	prior, lookupErr := b.operationLocked(ctx, request.OperationID)
+	if lookupErr != nil {
+		b.mu.Unlock()
+		return PublicationResult{}, lookupErr
+	}
+	if prior != nil {
+		if prior.kind != withdrawOperation || prior.realm != session.realm || prior.digest != digest {
 			b.mu.Unlock()
 			return PublicationResult{}, sqlite.ErrConflict
 		}
 		b.mu.Unlock()
 		return b.waitPublication(ctx, prior)
 	}
-	var original *controlOperation
-	for _, operation := range b.operations {
-		if operation.kind == "publish" && operation.realm == session.realm && operation.publication.Publication != nil && operation.publication.Publication.ID == request.PublicationID {
-			original = operation
-			break
-		}
-	}
-	if original == nil {
+	original := b.publications[request.PublicationID]
+	if original == nil || original.realm != session.realm {
 		b.mu.Unlock()
 		return PublicationResult{Decision: Unknown}, nil
 	}
@@ -140,11 +151,11 @@ func (b *Bridge) Withdraw(ctx context.Context, token string, request Withdrawal)
 		b.mu.Unlock()
 		return PublicationResult{}, frame.ErrCapacity
 	}
-	operation := &controlOperation{kind: "withdraw", realm: session.realm, digest: digest, execution: original.execution, done: make(chan struct{})}
+	operation := &controlOperation{kind: withdrawOperation, realm: session.realm, digest: digest, execution: original.execution, done: make(chan struct{})}
 	b.operations[request.OperationID] = operation
 	alreadyWithdrawn := original.withdrawn
 	b.mu.Unlock()
-	defer close(operation.done)
+	defer func() { returned = errors.Join(returned, b.complete(ctx, request.OperationID, operation)) }()
 	if !alreadyWithdrawn {
 		err = b.config.Host.Withdraw(ctx, request.PublicationID)
 	}

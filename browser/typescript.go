@@ -15,12 +15,12 @@ import (
 // WriteTypeScript projects compiled protocol types. It neither scans another
 // checkout nor owns a second description of fields or enum values.
 func WriteTypeScript(out io.Writer) error {
-	roots := []reflect.Type{
-		reflect.TypeFor[LocalPlan](), reflect.TypeFor[ReadyReport](), reflect.TypeFor[UseGrant](),
-		reflect.TypeFor[Snapshot](), reflect.TypeFor[AcquireRequest](), reflect.TypeFor[PublicationRequest](),
-		reflect.TypeFor[PublicationResult](), reflect.TypeFor[Withdrawal](), reflect.TypeFor[RouteGrant](),
-		reflect.TypeFor[CloseProof](), reflect.TypeFor[ProofAcknowledgement](), reflect.TypeFor[ReconnectRequest](),
-		reflect.TypeFor[ReconnectResult](), reflect.TypeFor[Poll](),
+	var roots []reflect.Type
+	for _, m := range controlMethods {
+		roots = append(roots, m.input)
+		if m.output != nil {
+			roots = append(roots, m.output)
+		}
 	}
 	return writeTypeScript(out, true, roots...)
 }
@@ -79,10 +79,14 @@ func writeTypeScript(out io.Writer, includeProtocol bool, roots ...reflect.Type)
 		fmt.Fprintf(&result, "export const PROTOCOL = %s as const;\n\n", contractgen.TypeScriptStringLiteral(Protocol))
 		fmt.Fprintf(&result, "export const MAX_NAME_BYTES = %d as const;\n\n", frame.MaxNameBytes)
 	}
-	var render func(reflect.Type) (string, error)
-	render = func(t reflect.Type) (string, error) {
+	var render func(reflect.Type, bool) (string, error)
+	render = func(t reflect.Type, optional bool) (string, error) {
 		if t.Kind() == reflect.Pointer {
-			return render(t.Elem())
+			name, err := render(t.Elem(), false)
+			if !optional && err == nil {
+				name += " | null"
+			}
+			return name, err
 		}
 		if t.Name() != "" && t.PkgPath() != "" {
 			return t.Name(), nil
@@ -95,11 +99,54 @@ func writeTypeScript(out io.Writer, includeProtocol bool, roots ...reflect.Type)
 		case reflect.Int, reflect.Uint, reflect.Int8, reflect.Uint8, reflect.Int16, reflect.Uint16, reflect.Int32, reflect.Uint32, reflect.Int64, reflect.Uint64, reflect.Float32, reflect.Float64:
 			return "number", nil
 		case reflect.Slice, reflect.Array:
-			value, err := render(t.Elem())
+			if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
+				return "string", nil
+			}
+			value, err := render(t.Elem(), false)
+			if strings.HasPrefix(value, "readonly ") || strings.Contains(value, " | ") {
+				value = "(" + value + ")"
+			}
 			return "readonly " + value + "[]", err
 		default:
 			return "", fmt.Errorf("control: unsupported protocol type %s", t)
 		}
+	}
+	if includeProtocol {
+		for _, direction := range []string{"ControlInputs", "ControlOutputs"} {
+			fmt.Fprintf(&result, "export interface %s {\n", direction)
+			for _, m := range controlMethods {
+				target := m.input
+				if direction == "ControlOutputs" {
+					target = m.output
+				}
+				var name string
+				var err error
+				switch {
+				case target == nil:
+					name = "void"
+				case target == reflect.TypeFor[struct{}]():
+					name = "Record<string, never>"
+				default:
+					name, err = render(target, false)
+					if err != nil {
+						return err
+					}
+				}
+				fmt.Fprintf(&result, "  readonly %s: %s;\n", contractgen.PropertyKey(m.name), name)
+			}
+			result.WriteString("}\n\n")
+		}
+		result.WriteString("export const CONTROL_ERROR_CODES = [\n")
+		for _, p := range controlProblems {
+			fmt.Fprintf(&result, "  %s,\n", contractgen.TypeScriptStringLiteral(p.code))
+		}
+		result.WriteString("] as const;\n\nexport const CONTROL_MUTATIONS = [\n")
+		for _, m := range controlMethods {
+			if m.mutates {
+				fmt.Fprintf(&result, "  %s,\n", contractgen.TypeScriptStringLiteral(m.name))
+			}
+		}
+		result.WriteString("] as const;\n\n")
 	}
 	for _, name := range names {
 		t := types[name]
@@ -122,7 +169,7 @@ func writeTypeScript(out io.Writer, includeProtocol bool, roots ...reflect.Type)
 		}
 		fmt.Fprintf(&result, "export interface %s {\n", name)
 		for _, field := range framevalue.Fields(t) {
-			value, err := render(field.Type)
+			value, err := render(field.Type, field.Optional)
 			if err != nil {
 				return err
 			}

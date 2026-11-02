@@ -8,12 +8,15 @@ import (
 	"github.com/Tangerg/frame/value"
 )
 
-// AbsenceRequest names the original authority and creation epoch of an attempt
-// recorded before dispatch. A missing entry alone is not non-creation evidence.
-type AbsenceRequest struct {
+// AttemptRef binds creation and control to the authority approved before dispatch.
+type AttemptRef struct {
 	AttemptID string `json:"attemptId"`
 	Epoch     uint64 `json:"epoch"`
 	RunnerID  string `json:"runnerId"`
+}
+
+func (r AttemptRef) valid() bool {
+	return validID(r.AttemptID) && validID(r.RunnerID) && r.Epoch != 0
 }
 
 type AbsenceProof struct {
@@ -24,8 +27,8 @@ type AbsenceProof struct {
 	ProofID    string `json:"proofId"`
 }
 
-func (p AbsenceProof) Validate(request AbsenceRequest) error {
-	if !validID(request.AttemptID) || !validID(request.RunnerID) || request.Epoch == 0 ||
+func (p AbsenceProof) Validate(request AttemptRef) error {
+	if !request.valid() ||
 		p.AttemptID != request.AttemptID || p.Epoch != request.Epoch || p.RunnerID != request.RunnerID || p.FenceEpoch <= p.Epoch {
 		return ErrUnknown
 	}
@@ -39,11 +42,11 @@ func (p AbsenceProof) Validate(request AbsenceRequest) error {
 // ProveAbsent reads the original journal and its durable creation fence under
 // one lock. A replacement authority cannot prove absence for its predecessor,
 // including when it replaces that authority between a client's control calls.
-func (s *Server) ProveAbsent(ctx context.Context, request AbsenceRequest) (AbsenceProof, error) {
+func (s *Server) ProveAbsent(ctx context.Context, request AttemptRef) (AbsenceProof, error) {
 	if err := ctx.Err(); err != nil {
 		return AbsenceProof{}, err
 	}
-	if !validID(request.AttemptID) || !validID(request.RunnerID) || request.Epoch == 0 {
+	if !request.valid() {
 		return AbsenceProof{}, frame.ErrInvalid
 	}
 	s.mu.Lock()
@@ -57,11 +60,11 @@ func (s *Server) ProveAbsent(ctx context.Context, request AbsenceRequest) (Absen
 	return absentProof(request, s.journal.Epoch)
 }
 
-func absentProof(request AbsenceRequest, fenceEpoch uint64) (AbsenceProof, error) {
+func absentProof(request AttemptRef, fenceEpoch uint64) (AbsenceProof, error) {
 	encoded, err := json.Marshal(struct {
-		Kind       string         `json:"kind"`
-		Attempt    AbsenceRequest `json:"attempt"`
-		FenceEpoch uint64         `json:"fenceEpoch"`
+		Kind       string     `json:"kind"`
+		Attempt    AttemptRef `json:"attempt"`
+		FenceEpoch uint64     `json:"fenceEpoch"`
 	}{"runner-sealed-absence", request, fenceEpoch})
 	if err != nil {
 		return AbsenceProof{}, err

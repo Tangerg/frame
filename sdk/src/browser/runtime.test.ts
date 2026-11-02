@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   contribution,
+  FrameError,
+  optional,
   defineUnit,
   Event,
   Point,
@@ -461,10 +463,12 @@ describe("approved browser execution", () => {
       selections: [],
     };
     await expect(f.runtime.acquire(request)).rejects.toThrow("lost reply");
+    expect(f.runtime.hasPendingAcquisition(request.operationId)).toBe(true);
     await expect(
       f.runtime.acquire({ ...request, snapshotId: "changed" }),
     ).rejects.toMatchObject({ code: "invalid_plan" });
     const use = await f.runtime.acquire(request);
+    expect(f.runtime.hasPendingAcquisition(request.operationId)).toBe(false);
     expect(await f.runtime.acquire(request)).toBe(use);
     expect(f.control.acquire).toHaveBeenCalledTimes(2);
     expect(
@@ -952,3 +956,173 @@ async function closedHandles() {
     ],
   };
 }
+
+it.each(["disconnect", "reconnect", "fence"])(
+  "rechecks authority after slow proxy creation on %s",
+  async (mode) => {
+    const service = new Service({ ...files.ref, mode: "portable" });
+    const setup = vi.fn(() => ({}));
+    const definition = defineUnit({
+      id: "sink",
+      imports: { value: service },
+      exports: {},
+      setup,
+    });
+    const f = fixture({});
+    const entered = Promise.withResolvers<void>(),
+      proceed = Promise.withResolvers<void>();
+    const runtime = new Runtime({
+      authority,
+      realm,
+      control: f.control,
+      proofCapacity: 2,
+      load: () => definition,
+      remote: async () => {
+        entered.resolve();
+        await proceed.promise;
+        return {};
+      },
+    });
+    const item = unit(
+      "u",
+      "sink",
+      [],
+      [
+        {
+          slot: "value",
+          kind: "remote",
+          contract: service.ref,
+          remote: {
+            token: "approved",
+            source: {
+              installationId: "src",
+              release: digest,
+              unitId: "source",
+              export: "service",
+              contract: service.ref,
+            },
+          },
+        },
+      ],
+    );
+    const preparing = runtime.prepare(plan("scope", [item]));
+    await entered.promise;
+    if (mode === "fence") runtime.fence("scope", "1");
+    else {
+      runtime.disconnect();
+      if (mode === "reconnect") await runtime.reconnect(f.control);
+    }
+    proceed.resolve();
+    await expect(preparing).rejects.toThrow();
+    expect(setup).not.toHaveBeenCalled();
+    expect(f.control.ready).not.toHaveBeenCalled();
+    await runtime.close();
+  },
+);
+
+it("represents optional prototype-named slots as own absent properties", async () => {
+  const names = ["__proto__", "constructor", "toString"];
+  const f = fixture({
+    sink: defineUnit({
+      id: "sink",
+      imports: Object.fromEntries(names.map((name) => [name, optional(files)])),
+      exports: {},
+      setup({ imports }) {
+        for (const name of names) {
+          expect(Object.hasOwn(imports, name)).toBe(true);
+          expect(imports[name]).toBeUndefined();
+        }
+        return {};
+      },
+    }),
+  });
+  await f.runtime.prepare(
+    plan("scope", [
+      unit(
+        "u",
+        "sink",
+        [],
+        names.map((slot) => ({ slot, contract: files.ref, kind: "absent" })),
+      ),
+    ]),
+  );
+  await f.runtime.close();
+});
+
+it("returns each confirmed refusal's reservation without closing the execution", async () => {
+  const f = fixture({});
+  const definition = defineUnit({
+    id: "sink",
+    imports: {},
+    exports: { point: additions },
+    setup: () => ({
+      point: contribution({ title: "base" }, { value: "base" }),
+    }),
+  });
+  const runtime = new Runtime({
+    authority,
+    realm,
+    control: f.control,
+    proofCapacity: 2,
+    load: () => definition,
+    remote: () => {},
+  });
+  const { identity } = await runtime.prepare(
+    plan("scope", [
+      unit("u", "sink", [{ name: "point", contract: additions.ref }]),
+    ]),
+  );
+  const refusal = new FrameError("capacity", "confirmed refusal");
+  vi.mocked(f.control.acquire).mockRejectedValue(refusal);
+  vi.mocked(f.control.publish).mockRejectedValue(refusal);
+  for (let index = 0; index < 12; index++) {
+    await expect(
+      runtime.acquire({
+        operationId: String(index),
+        execution: identity,
+        snapshotId: "expired",
+        selections: [],
+      }),
+    ).rejects.toBe(refusal);
+    expect(runtime.hasPendingAcquisition(String(index))).toBe(false);
+    await expect(
+      runtime.publish(
+        identity,
+        "u",
+        additions,
+        "item",
+        { title: "x" },
+        { value: "x" },
+      ),
+    ).rejects.toBe(refusal);
+  }
+  vi.mocked(f.control.publish).mockResolvedValue({ decision: "rejected" });
+  expect(
+    (
+      await runtime.publish(
+        identity,
+        "u",
+        additions,
+        "item",
+        { title: "x" },
+        { value: "x" },
+      )
+    ).outcome.decision,
+  ).toBe("rejected");
+  vi.mocked(f.control.publish).mockResolvedValue({ decision: "accepted" });
+  const unknown = await runtime.publish(
+    identity,
+    "u",
+    additions,
+    "item",
+    { title: "x" },
+    { value: "x" },
+  );
+  expect(unknown.outcome).toMatchObject({
+    decision: "unknown",
+    problem: expect.any(String),
+  });
+  vi.mocked(f.control.publication).mockResolvedValue({ decision: "rejected" });
+  expect((await unknown.observe()).decision).toBe("rejected");
+  await runtime.close();
+});

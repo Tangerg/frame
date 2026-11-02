@@ -18,8 +18,10 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/localfile"
 	framevalue "github.com/Tangerg/frame/value"
 )
 
@@ -41,8 +43,7 @@ const (
 )
 
 type LaunchRequest struct {
-	AttemptID          string            `json:"attemptId"`
-	Epoch              uint64            `json:"epoch"`
+	AttemptRef
 	Command            string            `json:"command"`
 	ExecutableDigest   framevalue.Digest `json:"executableDigest"`
 	Args               []string          `json:"args,omitempty"`
@@ -61,6 +62,10 @@ type Observation struct {
 	ExitCode  *int   `json:"exitCode,omitempty"`
 	ProofID   string `json:"proofId,omitempty"`
 	Reason    string `json:"reason,omitempty"`
+}
+
+func (o Observation) Reference() AttemptRef {
+	return AttemptRef{AttemptID: o.AttemptID, RunnerID: o.RunnerID, Epoch: o.Epoch}
 }
 
 func (o Observation) clone() Observation {
@@ -86,9 +91,11 @@ func (s *Server) Identity(_ context.Context) (Identity, error) {
 }
 
 type Config struct {
-	Directory          string
-	MaxAttempts        int
-	MaxExecutableBytes int64
+	Directory             string
+	MaxAttempts           int
+	MaxExecutableBytes    int64
+	MaxControlConnections int
+	ControlTimeout        time.Duration
 }
 
 type storedAttempt struct {
@@ -105,11 +112,11 @@ type journal struct {
 }
 
 type process struct {
-	command     *exec.Cmd
-	stdin       io.WriteCloser
-	stdout      io.ReadCloser
-	attached    bool
-	attachment  io.Closer
+	command  *exec.Cmd
+	stdin    io.WriteCloser
+	stdout   io.ReadCloser
+	attached bool
+
 	closing     bool
 	environment []string
 	done        chan struct{}
@@ -138,7 +145,13 @@ func Open(config Config) (_ *Server, err error) {
 	if config.MaxExecutableBytes == 0 {
 		config.MaxExecutableBytes = 512 << 20
 	}
-	if config.MaxAttempts < 1 || config.MaxExecutableBytes < 1 {
+	if config.MaxControlConnections == 0 {
+		config.MaxControlConnections = defaultControlConnections
+	}
+	if config.ControlTimeout == 0 {
+		config.ControlTimeout = defaultControlTimeout
+	}
+	if config.MaxAttempts < 1 || config.MaxExecutableBytes < 1 || config.MaxControlConnections < 1 || config.ControlTimeout < 0 {
 		return nil, frame.ErrCapacity
 	}
 	config.Directory, err = filepath.Abs(config.Directory)
@@ -150,6 +163,9 @@ func Open(config Config) (_ *Server, err error) {
 	}
 	config.Directory, err = filepath.EvalSymlinks(config.Directory)
 	if err != nil {
+		return nil, err
+	}
+	if err := verifyAuthorityDirectory(config.Directory); err != nil {
 		return nil, err
 	}
 	lock, err := lockDirectory(filepath.Join(config.Directory, "authority.lock"))
@@ -234,8 +250,11 @@ func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ Observati
 	if previous, found, err := s.replayLaunch(request, digest); err != nil || found {
 		return previous, err
 	}
-	if s.closed || s.fenced || request.Epoch != s.journal.Epoch {
+	if s.closed || s.fenced || request.RunnerID != s.id || request.Epoch != s.journal.Epoch {
 		return Observation{}, ErrFenced
+	}
+	if err := ctx.Err(); err != nil {
+		return Observation{}, context.Cause(ctx)
 	}
 	if len(s.journal.Attempts) >= s.config.MaxAttempts {
 		return Observation{}, frame.ErrCapacity
@@ -327,9 +346,9 @@ func (s *Server) Inspect(_ context.Context, id string) (Observation, error) {
 	return item.Observation.clone(), nil
 }
 
-func (s *Server) CloseAttempt(ctx context.Context, id string) (Observation, error) {
+func (s *Server) CloseAttempt(ctx context.Context, ref AttemptRef) (Observation, error) {
 	s.mu.Lock()
-	item, exists, err := s.lookupAttempt(id)
+	item, exists, err := s.lookupAttempt(ref.AttemptID)
 	if err != nil {
 		s.mu.Unlock()
 		return Observation{}, err
@@ -337,6 +356,10 @@ func (s *Server) CloseAttempt(ctx context.Context, id string) (Observation, erro
 	if !exists {
 		s.mu.Unlock()
 		return Observation{}, ErrNotFound
+	}
+	if item.Observation.Reference() != ref {
+		s.mu.Unlock()
+		return Observation{}, ErrFenced
 	}
 	if item.Observation.State == Unknown {
 		s.mu.Unlock()
@@ -346,7 +369,7 @@ func (s *Server) CloseAttempt(ctx context.Context, id string) (Observation, erro
 		s.mu.Unlock()
 		return item.Observation.clone(), nil
 	}
-	live := s.processes[id]
+	live := s.processes[ref.AttemptID]
 	if live == nil {
 		s.mu.Unlock()
 		return item.Observation.clone(), ErrUnknown
@@ -365,7 +388,7 @@ func (s *Server) CloseAttempt(ctx context.Context, id string) (Observation, erro
 	case <-ctx.Done():
 		return item.Observation.clone(), ctx.Err()
 	case <-done:
-		return s.Inspect(context.Background(), id)
+		return s.Inspect(context.Background(), ref.AttemptID)
 	}
 }
 
@@ -436,7 +459,7 @@ func (s *Server) publishTerminal(id string, item storedAttempt) (Observation, er
 }
 
 func (s *Server) snapshotExecutable(request LaunchRequest) (_ string, err error) {
-	input, err := openExecutable(request.Command)
+	input, err := localfile.OpenRegular(request.Command)
 	if err != nil {
 		return "", err
 	}
@@ -445,7 +468,7 @@ func (s *Server) snapshotExecutable(request LaunchRequest) (_ string, err error)
 	if err != nil {
 		return "", err
 	}
-	if !info.Mode().IsRegular() || info.Size() > s.config.MaxExecutableBytes {
+	if info.Size() > s.config.MaxExecutableBytes {
 		return "", errors.New("runner: invalid executable")
 	}
 	file, err := os.CreateTemp(s.config.Directory, "executable-")
@@ -517,9 +540,9 @@ func (s *Server) Close() error {
 		s.mu.Lock()
 		s.closed = true
 		s.fenced = true
-		ids := make([]string, 0, len(s.processes))
+		ids := make([]AttemptRef, 0, len(s.processes))
 		for id := range s.processes {
-			ids = append(ids, id)
+			ids = append(ids, s.journal.Attempts[id].Observation.Reference())
 		}
 		s.mu.Unlock()
 		for _, id := range ids {
@@ -532,7 +555,7 @@ func (s *Server) Close() error {
 }
 
 func validateLaunch(request LaunchRequest) error {
-	if !validID(request.AttemptID) || request.Epoch == 0 || !filepath.IsAbs(request.Command) || request.ExecutableDigest.Validate() != nil || request.Configuration.Validate() != nil {
+	if !request.AttemptRef.valid() || !filepath.IsAbs(request.Command) || request.ExecutableDigest.Validate() != nil || request.Configuration.Validate() != nil {
 		return errors.New("runner: exact launch identity is required")
 	}
 	if request.Directory != "" && !filepath.IsAbs(request.Directory) {

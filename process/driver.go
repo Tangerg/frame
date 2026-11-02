@@ -43,11 +43,11 @@ type Runner interface {
 	Identity(context.Context) (runner.Identity, error)
 	Fence(context.Context, uint64) error
 	Launch(context.Context, runner.LaunchRequest) (runner.Observation, error)
-	Attach(context.Context, string) (io.ReadWriteCloser, error)
+	Attach(context.Context, runner.AttemptRef) (io.ReadWriteCloser, error)
 	Inspect(context.Context, string) (runner.Observation, error)
-	CloseAttempt(context.Context, string) (runner.Observation, error)
+	CloseAttempt(context.Context, runner.AttemptRef) (runner.Observation, error)
 	AcknowledgeExit(context.Context, runner.ExitReceipt) error
-	ProveAbsent(context.Context, runner.AbsenceRequest) (runner.AbsenceProof, error)
+	ProveAbsent(context.Context, runner.AttemptRef) (runner.AbsenceProof, error)
 }
 
 type Config struct {
@@ -181,7 +181,7 @@ func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 	if err != nil {
 		cancel(err)
 		// No creation was dispatched; this proof is local, exact and final.
-		proof := sqlite.ExitProof{AttemptID: attempt.ID, Realm: attempt.Realm, ExitID: attempt.ID + ":not-dispatched", Kind: "not-dispatched", Evidence: []byte(`{"dispatched":false}`)}
+		proof := undispatchedProof(attempt)
 		return nil, errors.Join(err, d.config.Store.ReleaseAttempt(context.WithoutCancel(ctx), attempt.ID, proof))
 	}
 	e.resource = resource
@@ -196,7 +196,7 @@ func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 	e.started = true
 	e.mu.Unlock()
 	observation, err := d.config.Runner.Launch(ownedCtx, runner.LaunchRequest{
-		AttemptID: attempt.ID, Epoch: attempt.Epoch, Command: program.Command,
+		AttemptRef: runnerAttempt(attempt), Command: program.Command,
 		ExecutableDigest: program.ExecutableDigest, Args: program.Args, Env: program.Env,
 		Directory: program.Directory, Configuration: setup.Binding().Configuration,
 		CredentialRevision: program.CredentialRevision,
@@ -204,10 +204,10 @@ func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 	if err != nil {
 		return nil, err
 	}
-	if observation.RunnerID != attempt.Realm || observation.State != runner.Running {
+	if observation.Reference() != runnerAttempt(attempt) || observation.State != runner.Running {
 		return nil, runner.ErrUnknown
 	}
-	attached, err := d.config.Runner.Attach(ownedCtx, attempt.ID)
+	attached, err := d.config.Runner.Attach(ownedCtx, runnerAttempt(attempt))
 	if err != nil {
 		return nil, err
 	}
@@ -243,14 +243,14 @@ func (e *execution) close(ctx context.Context) (frame.ReleaseState, error) {
 		transportErr = errors.Join(transportErr, channel.Close())
 	}
 	if !started {
-		proof := sqlite.ExitProof{AttemptID: e.attempt.ID, Realm: e.attempt.Realm, ExitID: e.attempt.ID + ":not-dispatched", Kind: "not-dispatched", Evidence: []byte(`{"dispatched":false}`)}
+		proof := undispatchedProof(e.attempt)
 		if err := e.driver.config.Store.ReleaseAttempt(ctx, e.attempt.ID, proof); err != nil {
 			return frame.ResourceUnconfirmed, errors.Join(transportErr, err)
 		}
 		e.driver.forget(e.attempt.ID)
 		return frame.ResourceReleased, transportErr
 	}
-	observed, err := e.driver.config.Runner.CloseAttempt(ctx, e.attempt.ID)
+	observed, err := e.driver.config.Runner.CloseAttempt(ctx, runnerAttempt(e.attempt))
 	if err != nil {
 		return frame.ResourceUnconfirmed, errors.Join(transportErr, err)
 	}
@@ -316,12 +316,12 @@ func (d *Driver) Reconcile(ctx context.Context, id string) error {
 // Recover seals old creation before examining absence. Only the same live
 // runner can prove an old attempt did not start or has actually exited.
 func (d *Driver) Recover(ctx context.Context) error {
-	records, err := d.config.Store.Attempts(ctx)
+	records, err := d.config.Store.PendingAttempts(ctx)
 	if err != nil {
 		return err
 	}
 	pending := slices.DeleteFunc(records, func(record sqlite.AttemptRecord) bool {
-		return record.Attempt.Profile != d.profile || (record.Released && !record.PendingHandoff)
+		return record.Attempt.Profile != d.profile
 	})
 	if len(pending) == 0 {
 		return nil
@@ -360,7 +360,7 @@ func (d *Driver) recoverAttempt(ctx context.Context, identity runner.Identity, r
 		}
 		return nil
 	}
-	observed, err := d.config.Runner.CloseAttempt(ctx, attempt.ID)
+	observed, err := d.config.Runner.CloseAttempt(ctx, runnerAttempt(attempt))
 	if errors.Is(err, runner.ErrNotFound) {
 		return d.releaseAbsentAttempt(ctx, attempt)
 	}
@@ -370,8 +370,15 @@ func (d *Driver) recoverAttempt(ctx context.Context, identity runner.Identity, r
 	return d.release(ctx, attempt, observed)
 }
 
+func undispatchedProof(a sqlite.Attempt) sqlite.ExitProof {
+	return sqlite.ExitProof{AttemptID: a.ID, Realm: a.Realm, ExitID: a.ID + ":not-dispatched", Kind: "not-dispatched", Evidence: []byte(`{"dispatched":false}`)}
+}
+func runnerAttempt(attempt sqlite.Attempt) runner.AttemptRef {
+	return runner.AttemptRef{AttemptID: attempt.ID, Epoch: attempt.Epoch, RunnerID: attempt.Realm}
+}
+
 func (d *Driver) releaseAbsentAttempt(ctx context.Context, attempt sqlite.Attempt) error {
-	request := runner.AbsenceRequest{AttemptID: attempt.ID, Epoch: attempt.Epoch, RunnerID: attempt.Realm}
+	request := runnerAttempt(attempt)
 	proof, err := d.config.Runner.ProveAbsent(ctx, request)
 	if err == nil {
 		err = proof.Validate(request)

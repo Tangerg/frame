@@ -166,3 +166,32 @@ describe("Realm module ownership", () => {
     expect(await loading).toMatchObject({ code: "closed" });
   });
 });
+
+it("evaluates each exact installation and artifact even when their slash paths collide", async () => {
+  const first = unit("b/c.js"),
+    second = unit("c.js");
+  const entries = [first, second].map((entry, index) => ({
+    ...entry,
+    instance: {
+      ...entry.instance,
+      source: {
+        ...entry.instance.source,
+        installationId: ["a", "a/b"][index]!,
+      },
+    },
+    module: { ...entry.module, digest: ["a", "b"][index]!.repeat(64) },
+  }));
+  const modules = new RealmModules(async (entry) => ({
+    digest: entry.module.digest,
+    url:
+      "data:text/javascript,export default " +
+      JSON.stringify(entry.module.path),
+    close() {},
+  }));
+  const owner = new Lifetime("cache");
+  for (const entry of entries)
+    expect((await modules.evaluate(entry, owner, plan(entry))).default).toBe(
+      entry.module.path,
+    );
+  await owner.close();
+});

@@ -128,3 +128,30 @@ func TestUseOwnerCancellationDoesNotHideConcurrentFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestDestructiveReadSealsItsBusinessOwnerSet(t *testing.T) {
+	a := frame.NewAdmission()
+	entered, resume := make(chan struct{}), make(chan struct{})
+	original := &retainedUseOwner{read: func(context.Context, frame.InstallationID) ([]frame.Dependency, error) {
+		close(entered)
+		<-resume
+		return nil, nil
+	}}
+	if err := a.RegisterUseOwner(original); err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan error, 1)
+	go func() {
+		finished <- a.Under(t.Context(), func() error { return a.CheckUnused(t.Context(), "install") })
+	}()
+	<-entered
+	late := &diagnosticUseOwner{id: "late", values: []frame.Dependency{{InstallationID: "install", Release: value.Hash(nil)}}}
+	err := a.RegisterUseOwner(late)
+	close(resume)
+	if !errors.Is(err, frame.ErrClosed) {
+		t.Errorf("late business owner entered destructive decision: %v", err)
+	}
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+}

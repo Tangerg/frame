@@ -33,6 +33,13 @@ func TestNativeEventRouteIsOwnedByUsesAndCallbackCanReenter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wrong, _ := frame.NewEvent[string]("example.progress", "1")
+	if err := frame.DeliverEvent(ctx, host, route, wrong, "different type", func(context.Context, string) error {
+		t.Fatal("unregistered payload reached native receiver")
+		return nil
+	}); !errors.Is(err, frame.ErrContractMismatch) {
+		t.Fatalf("mismatched local event type: %v", err)
+	}
 	value := 7
 	if err := frame.DeliverEvent(ctx, host, route, event, &value, func(callbackCtx context.Context, payload *int) error {
 		if payload != &value {

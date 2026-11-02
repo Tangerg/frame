@@ -482,3 +482,23 @@ func TestStoreCloseJoinsAnInFlightOriginalCommit(t *testing.T) {
 	}
 	assertFaultDocumentCount(t, reopened, 1)
 }
+
+func TestBusinessRowUpdateFencesAnUnacknowledgedCommit(t *testing.T) {
+	store, owner, a := testStore(t)
+	lost := errors.New("commit reply lost")
+	var injected atomic.Bool
+	installTransactionFault(t, store, transactionFault{afterExec: func(query string) error {
+		if query == "COMMIT" && injected.CompareAndSwap(false, true) {
+			return lost
+		}
+		return nil
+	}})
+	err := owner.Update(t.Context(), func(ctx context.Context, tx Executor) error {
+		_, err := insertFaultDocument(ctx, tx, "original")
+		return err
+	})
+	if !errors.Is(err, lost) || !errors.Is(err, ErrIndeterminate) || !errors.Is(a.RecoveryError(), frame.ErrRecoveryRequired) {
+		t.Fatalf("unacknowledged business commit reopened admission: %v %v", err, a.RecoveryError())
+	}
+	assertFaultDocumentCount(t, store, 1)
+}

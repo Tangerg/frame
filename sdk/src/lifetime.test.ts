@@ -180,3 +180,26 @@ describe("structured lifetime", () => {
     expect((await owner.close()).status).toBe("unconfirmed");
   });
 });
+
+it("releases cancelled waiters while exit evidence is still outstanding", async () => {
+  const owner = new Lifetime("long-lived");
+  const resource = owner.cleanup(() => ({ status: "unconfirmed" }));
+  await owner.close();
+  const waiting = owner.wait();
+  const discarded = async () => {
+    const cancel = new AbortController();
+    const weak = new WeakRef(cancel.signal);
+    const wait = owner.wait(cancel.signal);
+    cancel.abort("no longer observing");
+    await wait.catch(() => {});
+    return weak;
+  };
+  const signal = await discarded();
+  for (let i = 0; i < 25 && signal.deref(); i++) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    global.gc!();
+  }
+  expect(signal.deref()).toBeUndefined();
+  resource.confirmReleased("original exit");
+  expect((await waiting).status).toBe("released");
+});

@@ -5,6 +5,7 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -301,5 +302,27 @@ func TestPortableEqualityWorkIncludesTextAndOnlyChargesRelevantSchemas(t *testin
 	}
 	if err := unique.Validate([]byte(`[1,1]`)); err == nil || errors.Is(err, portable.ErrLimit) {
 		t.Fatalf("duplicate verdict must remain the schema engine's: %v", err)
+	}
+}
+
+func TestSchemaSizeConstraintsUseExactNonnegativeIntegers(t *testing.T) {
+	data, err := os.ReadFile("testdata/schema_sizes.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var samples []struct {
+		Literal  string `json:"literal"`
+		Admitted bool   `json:"admitted"`
+	}
+	if err := json.Unmarshal(data, &samples); err != nil {
+		t.Fatal(err)
+	}
+	for _, sample := range samples {
+		for _, keyword := range []string{"minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties"} {
+			_, err := portable.AdmitSchema([]byte(fmt.Sprintf("{%q:%s}", keyword, sample.Literal)))
+			if (err == nil) != sample.Admitted {
+				t.Errorf("%s %s admission: %v", keyword, sample.Literal, err)
+			}
+		}
 	}
 }

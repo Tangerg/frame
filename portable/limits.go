@@ -30,6 +30,9 @@ type Limits struct {
 	MaxAbsExponent     int `json:"maxAbsExponent"`
 	MaxPatternBytes    int `json:"maxPatternBytes"`
 	MaxPatternRepeat   int `json:"maxPatternRepeat"`
+
+	// Portable runtimes must compare each length and count without rounding.
+	MaxSizeConstraint int64 `json:"maxSizeConstraint"`
 }
 
 // ProfileLimits is the single source projected to the Node authoring SDK.
@@ -51,6 +54,7 @@ func ProfileLimits() Limits {
 		MaxAbsExponent:     4_096,
 		MaxPatternBytes:    512,
 		MaxPatternRepeat:   256,
+		MaxSizeConstraint:  1<<53 - 1,
 	}
 }
 

@@ -116,8 +116,12 @@ func (h *Host) Acquire(ctx context.Context, plan *BindingPlan, config UseConfig)
 		if err != nil {
 			return nil, err
 		}
-		return h.acquireReadyBinding(preparing.Context(), binding, config)
+		return h.acquireReadyBinding(preparing.Context(), binding, config, "")
 	}
+	return h.acquirePrepared(ctx, plan, config, "")
+}
+
+func (h *Host) acquirePrepared(ctx context.Context, plan *BindingPlan, config UseConfig, recordID string) (*Use, error) {
 	id, err := randomID()
 	if err != nil {
 		return nil, err
@@ -129,6 +133,19 @@ func (h *Host) Acquire(ctx context.Context, plan *BindingPlan, config UseConfig)
 	err = h.admission.Admit(ctx, func(admitted context.Context) error {
 		if err := h.admission.ValidateScope(config.Scope); err != nil {
 			return err
+		}
+		if recordID != "" {
+			authorized, err := h.readAcceptedBinding(admitted, recordID, config.Scope)
+			if err != nil {
+				return err
+			}
+			same, err := use.binding.sameIdentity(authorized)
+			if err != nil {
+				return err
+			}
+			if !same {
+				return ErrStaleBinding
+			}
 		}
 		if err := h.attachPlanMembers(ctx, use, plan); err != nil {
 			return err
@@ -529,10 +546,10 @@ func (h *Host) AcquireRecord(ctx context.Context, recordID string, config UseCon
 	if err != nil {
 		return nil, err
 	}
-	return h.acquireReadyBinding(ctx, binding, config)
+	return h.acquireReadyBinding(ctx, binding, config, recordID)
 }
 
-func (h *Host) acquireReadyBinding(ctx context.Context, binding BindingSnapshot, config UseConfig) (*Use, error) {
+func (h *Host) acquireReadyBinding(ctx context.Context, binding BindingSnapshot, config UseConfig, recordID string) (*Use, error) {
 	h.mu.Lock()
 	plan := &BindingPlan{owner: h.identity, realm: config.Realm, binding: binding.Clone(), durable: true, members: []snapshotMember{}}
 	for _, source := range binding.Roots {
@@ -574,7 +591,7 @@ func (h *Host) acquireReadyBinding(ctx context.Context, binding BindingSnapshot,
 		plan.unitMembers = append(plan.unitMembers, unitMember{source: source, instanceID: instance.id})
 	}
 	h.mu.Unlock()
-	return h.Acquire(ctx, plan, config)
+	return h.acquirePrepared(ctx, plan, config, recordID)
 }
 
 func (h *Host) AcquireUnit(ctx context.Context, root UnitRef, config UseConfig) (*Use, error) {

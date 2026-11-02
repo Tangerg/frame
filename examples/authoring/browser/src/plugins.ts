@@ -1,3 +1,4 @@
+import { readResponseBytes } from "@frame/sdk/browser";
 import { contribution, defineUnit, type Unit } from "@frame/sdk";
 import {
   files,
@@ -44,7 +45,7 @@ export const fileReader = defineUnit({
       );
       if (!response.ok)
         throw new Error(`document source returned ${response.status}`);
-      const bytes = new Uint8Array(await response.arrayBuffer());
+      const bytes = await readResponseBytes(response, 4 << 20);
       signal.throwIfAborted();
       if ((await sha256(bytes)) !== reference.revision)
         throw new Error("document source revision changed");

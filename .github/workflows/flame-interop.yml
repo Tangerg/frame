@@ -1,0 +1,28 @@
+name: Flame interoperability
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          path: frame
+      - uses: actions/checkout@v7.0.1
+        with:
+          repository: Tangerg/flame
+          ref: 8027bd71390662b9365cadcbfb32c84f4826251d
+          fetch-depth: 0
+          path: flame
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: frame/go.mod
+          cache-dependency-path: frame/go.sum
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+      - run: node frame/scripts/check-flame-interop.mjs flame

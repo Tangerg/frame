@@ -14,7 +14,8 @@ independent writers or atomic transactions across databases.
 `Open` accepts the complete current set of `OwnerSchema` declarations. A different
 schema requires a fresh data directory. Each owner supplies its original business
 tables and a trusted reference query. Register the resulting `Owner` with the same
-Admission through `RegisterUseOwner`. Frame does not create a competing business
+Admission through `RegisterUseOwner` before its first destructive dependency check.
+That check seals the owner set for the life of this Admission. Frame does not create a competing business
 reference-count ledger. Every admission read uses a new current transaction.
 
 ## Business submission
@@ -30,6 +31,13 @@ admitted context and transaction. Validate the prepared binding through
 write the original business record in this same transaction. Use the supplied
 context and Executor for all SQL. Do not call another admission or transaction
 entry from the callback. Plugin effects and network calls run after Commit returns.
+
+For a later transition identified by the original business row, `Owner.Update`
+admits the row's compare-and-set in its own transaction. When its commit cannot
+be proved, recovery reads the original row before any new admission.
+`Store.WithTransaction` joins business adapters to the executor issued by this
+Store. Both the executor and the joined context expire with their respective
+callbacks. Standalone `RunReadSnapshot` enables SQLite query-only mode.
 
 The mutation returns bounded evidence locating its committed change. This is
 submission evidence, not a plugin's business receipt. Actual business results stay
@@ -79,6 +87,10 @@ epoch before first creation. A short-lived child uses its own attempt and exact
 binding; it cannot silently enlarge an earlier approval. Repeated recording must
 match the original identity and bytes.
 
+`Attempt` and `Use` look up an immutable operation by ID. `PendingAttempts`
+returns approved attempts and outstanding exit acknowledgements.
+`ExecutionUses` reads one execution's approvals. `ExecutionDependencies` reads
+the still-protected rows from both tables in the same transaction.
 `Attempts` and `ExecutionDependencies` remain separate from business `Held`
 queries. An idle Ready process may be retired by Host policy; its bytes and setup
 dependencies remain protected until actual exit is proved. A runner crash, lost

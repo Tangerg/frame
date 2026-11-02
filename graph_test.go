@@ -394,3 +394,78 @@ func TestFreshPlanCannotCommitAfterAnotherSetupOwnsItsUnit(t *testing.T) {
 		t.Fatalf("accepted original binding was invalidated: %v", err)
 	}
 }
+
+func TestRestoredUseReauthorizesTheOriginalRecordAfterPreparation(t *testing.T) {
+	for _, change := range []string{"unchanged", "revoked", "rebound"} {
+		t.Run(change, func(t *testing.T) {
+			ctx := testContext(t)
+			var original frame.BindingSnapshot
+			var refusal error
+			var reads int
+			h := testHost(t, frame.HostConfig{ReadAcceptedBinding: func(context.Context, string, frame.ScopeGrant) (frame.BindingSnapshot, error) {
+				reads++
+				return original, refusal
+			}})
+			entered, resume := make(chan struct{}), make(chan struct{})
+			contract, _ := frame.NewContract[string]("records.text", "1")
+			if err := h.Register(contract); err != nil {
+				t.Fatal(err)
+			}
+			plugin := installNative(t, h, "provider", frame.Unit{
+				Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "value", Contract: contract.Ref()}}},
+				Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
+					close(entered)
+					<-resume
+					return []frame.ExportValue{frame.Provide("value", contract, "original")}, nil
+				},
+			})
+			plan, err := h.Plan(ctx, source("provider", plugin, "main", "value", contract.Ref()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			original, err = plan.Snapshot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			owner, scope := ownerAndScope(t, h)
+			result := make(chan error, 1)
+			go func() {
+				use, err := h.AcquireRecord(ctx, "record", frame.UseConfig{Owner: owner, Scope: scope})
+				if use != nil {
+					_, closeErr := use.Close(ctx)
+					err = errors.Join(err, closeErr)
+				}
+				result <- err
+			}()
+			select {
+			case <-entered:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			err = h.Admission().Under(ctx, func() error {
+				switch change {
+				case "revoked":
+					refusal = frame.ErrUnavailable
+				case "rebound":
+					original.Rule = "other"
+				}
+				return nil
+			})
+			close(resume)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = <-result
+			var want error
+			switch change {
+			case "revoked":
+				want = frame.ErrUnavailable
+			case "rebound":
+				want = frame.ErrStaleBinding
+			}
+			if !errors.Is(err, want) || reads != 2 {
+				t.Fatalf("owner reads=%d, acquisition=%v, want %v", reads, err, want)
+			}
+		})
+	}
+}

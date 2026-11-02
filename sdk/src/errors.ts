@@ -1,13 +1,7 @@
+import type { CONTROL_ERROR_CODES } from "./protocol.generated.js";
+
 export type ErrorCode =
-  | "closed"
-  | "capacity"
-  | "contract_mismatch"
-  | "invalid_plan"
-  | "unavailable"
-  | "stale_binding"
-  | "permission_denied"
-  | "outcome_unknown"
-  | "close_unconfirmed"
+  | (typeof CONTROL_ERROR_CODES)[number]
   | "close_failed"
   | "resync_required"
   | "reload_required"

@@ -62,3 +62,17 @@ func TestSocketParentUsesTheOriginalPhysicalDirectory(t *testing.T) {
 		t.Fatal("socket escaped its original directory")
 	}
 }
+
+func TestRunnerRejectsAuthorityDirectoryWithForeignWriters(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0777); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := Open(Config{Directory: dir}); err == nil {
+		_ = s.Close()
+		t.Fatal("accepted shared state directory")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "authority.lock")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("untrusted directory used: %v", err)
+	}
+}

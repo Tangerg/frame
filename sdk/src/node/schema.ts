@@ -139,7 +139,11 @@ function* subschemas(key: string, field: unknown): Generator<Subschema> {
   }
 }
 
-function admitNumericConstraints(key: string, field: unknown): void {
+function admitNumericConstraints(
+  schema: RecordValue,
+  key: string,
+  field: unknown,
+): void {
   if (
     [
       "minimum",
@@ -160,10 +164,18 @@ function admitNumericConstraints(key: string, field: unknown): void {
       "maxItems",
       "minProperties",
       "maxProperties",
-    ].includes(key) &&
-    (typeof field !== "number" || !Number.isSafeInteger(field) || field < 0)
-  )
-    throw new Error("plugin: schema size constraint is invalid");
+    ].includes(key)
+  ) {
+    if (
+      !numeric(field) ||
+      !isJSONInteger(field) ||
+      compareJSONNumbers(field, 0) < 0 ||
+      compareJSONNumbers(field, PORTABLE_LIMITS.maxSizeConstraint) > 0
+    )
+      throw new Error("plugin: schema size constraint is invalid");
+    // Only the engine projection uses JS numbers. The published identity retains its lexeme.
+    schema[key] = Number(field.toString());
+  }
 }
 
 function admitChoiceConstraints(key: string, field: unknown): void {
@@ -253,7 +265,7 @@ function admitSchema(value: unknown): void {
       for (const name of Object.keys(field as RecordValue)) checkPattern(name);
     }
     for (const child of subschemas(key, field)) admitSchema(child.value);
-    admitNumericConstraints(key, field);
+    admitNumericConstraints(value, key, field);
     admitChoiceConstraints(key, field);
     admitAnnotations(key, field);
   }

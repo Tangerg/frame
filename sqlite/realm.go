@@ -19,7 +19,7 @@ type RealmCredential struct {
 }
 
 func (s *Store) RegisterRealm(ctx context.Context, credential RealmCredential) error {
-	if !validID(credential.ID) || !validID(credential.Epoch) || !validID(credential.OperationID) || credential.ResumeVerifier.Validate() != nil {
+	if !validID(credential.ID) || !validID(credential.Epoch) || !frame.ValidName(credential.OperationID) || credential.ResumeVerifier.Validate() != nil {
 		return frame.ErrInvalid
 	}
 	return s.admission.Under(ctx, func() error {
@@ -53,7 +53,7 @@ func (s *Store) RealmCredential(ctx context.Context, id, epoch string) (RealmCre
 }
 
 func (s *Store) RealmOperation(ctx context.Context, operationID string) (RealmCredential, error) {
-	if !validID(operationID) {
+	if !frame.ValidName(operationID) {
 		return RealmCredential{}, frame.ErrInvalid
 	}
 	credential := RealmCredential{OperationID: operationID}

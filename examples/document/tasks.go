@@ -7,15 +7,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
+	"strings"
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/sqlite"
-	"github.com/Tangerg/frame/value"
 )
 
+const maximumTaskBytes = 32 << 20
+const taskOwnerID = "document.tasks"
 const taskPolicy = "documents.convert-and-validate/1"
 
 type TaskState string
@@ -27,6 +28,10 @@ const (
 	Failed    TaskState = "failed"
 	Cancelled TaskState = "cancelled"
 )
+
+func (state TaskState) terminal() bool {
+	return state == Completed || state == Failed || state == Cancelled
+}
 
 func (TaskState) Values() []string {
 	return []string{string(Queued), string(Running), string(Completed), string(Failed), string(Cancelled)}
@@ -70,8 +75,13 @@ func (p *PreparedTask) Definition() TaskDefinition {
 }
 
 func taskSchema() sqlite.OwnerSchema {
-	return sqlite.OwnerSchema{ID: "document.tasks", Statements: []string{`CREATE TABLE document_tasks (id TEXT PRIMARY KEY,admission_sequence INTEGER NOT NULL UNIQUE,definition BLOB NOT NULL,state TEXT NOT NULL CHECK(state IN ('queued','running','completed','failed','cancelled')),run_epoch INTEGER NOT NULL DEFAULT 0,result BLOB,failure TEXT NOT NULL DEFAULT '')`}, References: func(ctx context.Context, tx sqlite.Executor, id frame.InstallationID) ([]frame.Dependency, error) {
-		rows, err := tx.QueryContext(ctx, `SELECT definition FROM document_tasks WHERE state IN ('queued','running')`)
+	states := TaskState("").Values()
+	for i, state := range states {
+		states[i] = "'" + strings.ReplaceAll(state, "'", "''") + "'"
+	}
+	taskTable := fmt.Sprintf(`CREATE TABLE document_tasks (id TEXT PRIMARY KEY,admission_sequence INTEGER NOT NULL UNIQUE,definition BLOB NOT NULL,state TEXT NOT NULL CHECK(state IN (%s)),run_epoch INTEGER NOT NULL DEFAULT 0,result BLOB,failure TEXT NOT NULL DEFAULT '')`, strings.Join(states, ","))
+	return sqlite.OwnerSchema{ID: taskOwnerID, Statements: []string{taskTable, `CREATE TABLE document_bootstrap (singleton INTEGER PRIMARY KEY CHECK(singleton=1))`}, References: func(ctx context.Context, tx sqlite.Executor, id frame.InstallationID) ([]frame.Dependency, error) {
+		rows, err := tx.QueryContext(ctx, `SELECT definition FROM document_tasks WHERE state IN (?,?)`, Queued, Running)
 		if err != nil {
 			return nil, err
 		}
@@ -100,9 +110,6 @@ func taskSchema() sqlite.OwnerSchema {
 }
 
 func (a *App) Reference(ctx context.Context, path string) (DocumentRef, error) {
-	if !fs.ValidPath(path) || path == "." {
-		return DocumentRef{}, errors.New("document: a relative document path is required")
-	}
 	records, err := a.Store.Installations(ctx)
 	if err != nil {
 		return DocumentRef{}, err
@@ -123,33 +130,12 @@ func (a *App) Reference(ctx context.Context, path string) (DocumentRef, error) {
 		return DocumentRef{}, err
 	}
 	defer root.Close()
-	file, err := root.Open(path)
-	if err != nil {
-		return DocumentRef{}, err
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return DocumentRef{}, err
-	}
-	if !info.Mode().IsRegular() {
-		return DocumentRef{}, errors.New("document: input must be a regular file")
-	}
-	data, err := io.ReadAll(io.LimitReader(file, (4<<20)+1))
-	if err != nil {
-		return DocumentRef{}, err
-	}
-	if len(data) > 4<<20 {
-		return DocumentRef{}, frame.ErrCapacity
-	}
-	if err := ctx.Err(); err != nil {
-		return DocumentRef{}, err
-	}
-	return DocumentRef{Path: path, Revision: value.Hash(data)}, nil
+	source, err := loadDocument(ctx, root, path)
+	return source.Ref, err
 }
 
 func (a *App) PrepareTask(ctx context.Context, id string, source DocumentRef) (*PreparedTask, error) {
-	if frame.InstallationID(id).Validate() != nil || !fs.ValidPath(source.Path) || source.Revision.Validate() != nil {
+	if frame.InstallationID(id).Validate() != nil || !fs.ValidPath(source.Path) || source.Path == "." || source.Revision.Validate() != nil {
 		return nil, frame.ErrInvalid
 	}
 	plan, err := a.plan(ctx)
@@ -165,7 +151,20 @@ func (a *App) PrepareTask(ctx context.Context, id string, source DocumentRef) (*
 	if err != nil {
 		return nil, err
 	}
-	submission, err := a.owner.Prepare(ctx, request)
+	var submission sqlite.SubmissionID
+	err = a.Host.Admission().Admit(ctx, func(admitted context.Context) error {
+		var err error
+		submission, err = a.owner.PrepareUnder(admitted, request)
+		if !errors.Is(err, frame.ErrCapacity) {
+			return err
+		}
+		// Task rows keep their original identity after synchronized receipts expire.
+		if err := a.owner.CompactSettledUnder(admitted); err != nil {
+			return err
+		}
+		submission, err = a.owner.PrepareUnder(admitted, request)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +191,7 @@ func (a *App) CommitTask(ctx context.Context, prepared *PreparedTask) (sqlite.Se
 		if !bytes.Equal(left, right) {
 			return nil, frame.ErrStaleBinding
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO document_tasks(id,admission_sequence,definition,state) VALUES(?,?,?,'queued')`, prepared.definition.ID, prepared.Submission.Sequence, prepared.request); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO document_tasks(id,admission_sequence,definition,state) VALUES(?,?,?,?)`, prepared.definition.ID, prepared.Submission.Sequence, prepared.request, Queued); err != nil {
 			return nil, err
 		}
 		return []byte(prepared.definition.ID), nil
@@ -236,7 +235,7 @@ func (a *App) Queue(ctx context.Context, id, path string) (Task, sqlite.Submissi
 
 func (a *App) Task(ctx context.Context, id string) (Task, error) {
 	var task Task
-	task.Submission = sqlite.SubmissionID{Store: a.Store.ID(), Owner: "document.tasks"}
+	task.Submission = sqlite.SubmissionID{Store: a.Store.ID(), Owner: taskOwnerID}
 	err := a.Store.Read(ctx, func(tx sqlite.Executor) error {
 		var definition, result []byte
 		if err := tx.QueryRowContext(ctx, `SELECT admission_sequence,definition,state,run_epoch,result,failure FROM document_tasks WHERE id=?`, id).Scan(&task.Submission.Sequence, &definition, &task.State, &task.RunEpoch, &result, &task.Failure); err != nil {
@@ -287,7 +286,7 @@ func (a *App) Run(ctx context.Context, id string) (returned Task, returnErr erro
 	if err != nil {
 		return Task{}, err
 	}
-	if task.State == Completed || task.State == Failed || task.State == Cancelled {
+	if task.State.terminal() {
 		return task, nil
 	}
 	if task.State != Queued {
@@ -307,35 +306,50 @@ func (a *App) Run(ctx context.Context, id string) (returned Task, returnErr erro
 			returnErr = errors.Join(returnErr, frame.ErrUnconfirmedRelease)
 		}
 	}()
-	startRequest, _ := json.Marshal(struct {
-		Operation string
-		ID        string
-		Epoch     uint64
-	}{"start", id, a.Store.Epoch()})
-	start, err := a.owner.Prepare(ctx, startRequest)
-	if err != nil {
+	if err := a.startTask(ctx, task); err != nil {
 		return task, err
 	}
-	settlement, err := a.owner.Commit(ctx, start, startRequest, func(ctx context.Context, tx sqlite.Executor) ([]byte, error) {
-		if err := a.Host.ValidateBindingUnder(ctx, task.Definition.Binding); err != nil {
-			return nil, err
+	result, runErr := a.convert(ctx, task, use)
+	var payload []byte
+	if runErr == nil {
+		payload, runErr = json.Marshal(result)
+		if len(payload) > maximumTaskBytes {
+			payload = nil
+			runErr = frame.ErrCapacity
 		}
-		result, err := tx.ExecContext(ctx, `UPDATE document_tasks SET state='running',run_epoch=? WHERE id=? AND state='queued'`, a.Store.Epoch(), id)
-		if err != nil {
-			return nil, err
-		}
-		changed, err := result.RowsAffected()
-		if err != nil {
-			return nil, err
-		}
-		if changed != 1 {
-			return nil, ErrTaskFinished
-		}
-		return []byte(id), nil
-	}, nil)
-	if err != nil || settlement.State != sqlite.Committed {
-		return task, errors.Join(err, sqlite.ErrUnsettled)
 	}
+	finishCtx := context.WithoutCancel(ctx)
+	if err := a.finishTask(finishCtx, id, payload, runErr); err != nil {
+		return task, errors.Join(runErr, err)
+	}
+	finished, err := a.Task(finishCtx, id)
+	return finished, errors.Join(runErr, err)
+}
+
+func changedTask(result sql.Result, err error) error {
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return ErrTaskFinished
+	}
+	return nil
+}
+
+func (a *App) startTask(ctx context.Context, task Task) error {
+	return a.owner.Update(ctx, func(ctx context.Context, tx sqlite.Executor) error {
+		if err := a.Host.ValidateBindingUnder(ctx, task.Definition.Binding); err != nil {
+			return err
+		}
+		return changedTask(tx.ExecContext(ctx, `UPDATE document_tasks SET state=?,run_epoch=? WHERE id=? AND state=?`, Running, a.Store.Epoch(), task.Definition.ID, Queued))
+	})
+}
+
+func (a *App) convert(ctx context.Context, task Task, use *frame.Use) (TaskResult, error) {
 	result := TaskResult{Diagnostics: []Diagnostic{}}
 	var runErr error
 	converted := false
@@ -375,82 +389,36 @@ func (a *App) Run(ctx context.Context, id string) (returned Task, returnErr erro
 	if len(result.Converted.HTML) > 8<<20 {
 		runErr = frame.ErrCapacity
 	}
+	return result, runErr
+}
+
+func (a *App) finishTask(ctx context.Context, id string, payload []byte, runErr error) error {
 	state := Completed
-	failure := ""
-	var storedResult *TaskResult = &result
+	var failure string
 	if runErr != nil {
-		state = Failed
-		failure = runErr.Error()
-		storedResult = nil
+		state, failure = Failed, runErr.Error()
 	}
-	finishRequest, err := json.Marshal(struct {
-		Operation string
-		ID        string
-		Epoch     uint64
-		State     TaskState
-		Result    *TaskResult
-		Failure   string
-	}{"finish", id, a.Store.Epoch(), state, storedResult, failure})
-	if err != nil {
-		return task, err
-	}
-	settlementContext := context.WithoutCancel(ctx)
-	finish, err := a.owner.Prepare(settlementContext, finishRequest)
-	if err != nil {
-		return task, errors.Join(runErr, err)
-	}
-	_, err = a.owner.Commit(settlementContext, finish, finishRequest, func(ctx context.Context, tx sqlite.Executor) ([]byte, error) {
-		var encoded []byte
-		if storedResult != nil {
-			var err error
-			encoded, err = json.Marshal(storedResult)
-			if err != nil {
-				return nil, err
-			}
-		}
-		changed, err := tx.ExecContext(ctx, `UPDATE document_tasks SET state=?,result=?,failure=? WHERE id=? AND state='running' AND run_epoch=?`, state, encoded, failure, id, a.Store.Epoch())
-		if err != nil {
-			return nil, err
-		}
-		count, err := changed.RowsAffected()
-		if err != nil {
-			return nil, err
-		}
-		if count != 1 {
-			return nil, ErrTaskFinished
-		}
-		return []byte(id), nil
-	}, nil)
-	if err != nil {
-		return task, errors.Join(runErr, err)
-	}
-	finished, err := a.Task(settlementContext, id)
-	return finished, errors.Join(runErr, err)
+	return a.owner.Update(ctx, func(ctx context.Context, tx sqlite.Executor) error {
+		return changedTask(tx.ExecContext(ctx, `UPDATE document_tasks SET state=?,result=?,failure=? WHERE id=? AND state=? AND run_epoch=?`, state, payload, failure, id, Running, a.Store.Epoch()))
+	})
 }
 
 // Cancel only changes an idle queued task or an original execution whose Host
 // epoch has ended. A current native callback must first observe cancellation
 // and join through its Run owner; this method cannot declare it stopped.
 func (a *App) Cancel(ctx context.Context, id string) error {
-	request, _ := json.Marshal(struct{ Operation, ID string }{"cancel", id})
-	submission, err := a.owner.Prepare(ctx, request)
-	if err != nil {
-		return err
-	}
-	_, err = a.owner.Commit(ctx, submission, request, func(ctx context.Context, tx sqlite.Executor) ([]byte, error) {
+	return a.owner.Update(ctx, func(ctx context.Context, tx sqlite.Executor) error {
 		var state TaskState
 		var epoch uint64
 		if err := tx.QueryRowContext(ctx, `SELECT state,run_epoch FROM document_tasks WHERE id=?`, id).Scan(&state, &epoch); err != nil {
-			return nil, err
+			return err
 		}
-		if state == Completed || state == Failed || state == Cancelled {
-			return []byte(id), nil
+		if state.terminal() {
+			return nil
 		}
 		if state == Running && epoch == a.Store.Epoch() {
-			return nil, frame.ErrInUse
+			return frame.ErrInUse
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE document_tasks SET state='cancelled' WHERE id=?`, id)
-		return []byte(id), err
-	}, nil)
-	return err
+		return changedTask(tx.ExecContext(ctx, `UPDATE document_tasks SET state=? WHERE id=?`, Cancelled, id))
+	})
 }

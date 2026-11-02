@@ -18,7 +18,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: go generate ./...
-      - run: git diff --exit-code
+      - name: Verify generated outputs in a clean checkout
+        run: test -z "$(git status --porcelain --untracked-files=all)"
+      - name: Verify independent Go module consumer
+        run: python3 scripts/go-consumer.py
       - run: make check
       - run: make example
       - name: Verify browser plugins against live Go hosts

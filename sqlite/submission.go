@@ -53,10 +53,10 @@ func (o *Owner) PrepareUnder(ctx context.Context, request []byte) (SubmissionID,
 }
 
 func (o *Owner) prepare(ctx context.Context, request []byte) (id SubmissionID, err error) {
-	request = bytes.Clone(request)
 	if len(request) == 0 || len(request) > o.store.maxRequestBytes {
 		return id, errors.New("sqlite: request exceeds its admitted byte range")
 	}
+	request = bytes.Clone(request)
 	err = func() error {
 		var sequence uint64
 		err := o.store.transaction(ctx, func(tx Executor) error {
@@ -118,137 +118,173 @@ func (o *Owner) CommitUnder(ctx context.Context, id SubmissionID, request []byte
 	return o.commit(ctx, id, request, mutation, synchronize, true)
 }
 
-func (o *Owner) commit(ctx context.Context, id SubmissionID, request []byte, mutation func(context.Context, Executor) ([]byte, error), synchronize func(Settlement) error, confirm bool) (settlement Settlement, err error) {
-	if err := o.validate(id); err != nil {
-		return settlement, err
-	}
-	if mutation == nil {
-		return settlement, errors.New("sqlite: mutation is required")
-	}
-	request = bytes.Clone(request)
-	if len(request) == 0 || len(request) > o.store.maxRequestBytes {
-		return settlement, errors.New("sqlite: request exceeds its admitted byte range")
-	}
-	err = func() (err error) {
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				_, resolveErr := o.settlePrepared(context.Background(), id)
-				if resolveErr != nil {
-					o.store.admission.RequireRecovery(resolveErr)
-				}
-				panic(recovered)
-			}
-		}()
-		var prior bool
-		var mutationErr error
-		var mutationEntered bool
-		err = o.store.transaction(ctx, func(tx Executor) error {
-			var stored []byte
-			var state string
-			var synchronized bool
-			var evidence []byte
-			var digest value.Digest
-			if err := o.requireIssued(ctx, tx, id); err != nil {
-				return err
-			}
-			if err := tx.QueryRowContext(ctx, `SELECT digest,request,state,evidence,synchronized FROM frame_submissions WHERE owner_id=? AND sequence=?`, o.id, id.Sequence).Scan(&digest, &stored, &state, &evidence, &synchronized); err != nil {
-				return err
-			}
-			if digest != value.Hash(request) || !bytes.Equal(request, stored) {
-				return ErrConflict
-			}
-			settlement = Settlement{ID: id, State: stateFor(state), Digest: digest, Evidence: bytes.Clone(evidence), Synchronized: synchronized}
-			if state != "prepared" {
-				prior = true
-				return nil
-			}
-			mutationEntered = true
-			evidence, mutationErr = mutation(ctx, tx)
-			if mutationErr != nil {
-				return mutationErr
-			}
-			if len(evidence) > o.store.maxRequestBytes {
-				return errors.New("sqlite: settlement evidence exceeds its byte limit")
-			}
-			if _, err := tx.ExecContext(ctx, `UPDATE frame_submissions SET state='committed',evidence=? WHERE owner_id=? AND sequence=? AND state='prepared'`, evidence, o.id, id.Sequence); err != nil {
-				return err
-			}
-			settlement.State = Committed
-			settlement.Evidence = bytes.Clone(evidence)
-			return nil
-		})
-		if err != nil {
-			if !mutationEntered && (errors.Is(err, ErrConflict) || errors.Is(err, ErrEvidenceExpired) || errors.Is(err, ErrUnknownSubmission)) {
-				return err
-			}
-			originalErr := err
-			if errors.Is(err, ErrIndeterminate) {
-				settlement.State = Indeterminate
-				settlement.Evidence = nil
-				settlement.Synchronized = false
-				o.store.admission.RequireRecovery(err)
-				return err
-			}
-			settlement, err = o.settlePrepared(context.Background(), id)
-			if err != nil {
-				settlement.State = Indeterminate
-				settlement.Evidence = nil
-				settlement.Synchronized = false
-				o.store.admission.RequireRecovery(err)
-				return errors.Join(ErrIndeterminate, originalErr, err)
-			}
-			if settlement.State != Committed {
-				if confirmErr := o.confirm(context.Background(), id); confirmErr != nil {
-					o.store.admission.RequireRecovery(confirmErr)
-					return errors.Join(originalErr, confirmErr)
-				}
-				settlement.Synchronized = true
-				return errors.Join(originalErr, mutationErr)
-			}
-		}
-		if prior && settlement.Synchronized {
-			return nil
-		}
-		if synchronize != nil {
-			if err := synchronize(settlement); err != nil {
-				o.store.admission.RequireRecovery(err)
-				return err
-			}
-		}
-		if !confirm {
-			return nil
-		}
-		if err := o.confirm(context.Background(), id); err != nil {
-			o.store.admission.RequireRecovery(err)
-			return err
-		}
-		settlement.Synchronized = true
-		return nil
-	}()
-	return settlement, err
+type submissionMutation struct {
+	owner      *Owner
+	id         SubmissionID
+	request    []byte
+	settlement Settlement
+	entered    bool
 }
 
-func (o *Owner) Settlement(ctx context.Context, id SubmissionID, request []byte) (settlement Settlement, err error) {
+func (o *Owner) commit(ctx context.Context, id SubmissionID, request []byte, mutation func(context.Context, Executor) ([]byte, error), synchronize func(Settlement) error, confirm bool) (Settlement, error) {
 	if err := o.validate(id); err != nil {
-		return settlement, err
+		return Settlement{}, err
 	}
-	err = o.store.transaction(ctx, func(tx Executor) error {
-		if err := o.requireIssued(ctx, tx, id); err != nil {
+	if mutation == nil {
+		return Settlement{}, errors.New("sqlite: mutation is required")
+	}
+	if len(request) == 0 || len(request) > o.store.maxRequestBytes {
+		return Settlement{}, errors.New("sqlite: request exceeds its admitted byte range")
+	}
+	attempt := submissionMutation{owner: o, id: id, request: bytes.Clone(request)}
+	if err := attempt.execute(ctx, mutation); err != nil {
+		if err = attempt.resolveFailure(err); err != nil {
+			return attempt.settlement, err
+		}
+	}
+	return o.synchronize(attempt.settlement, synchronize, confirm)
+}
+
+func (m *submissionMutation) execute(ctx context.Context, mutate func(context.Context, Executor) ([]byte, error)) error {
+	defer m.onPanic()
+	return m.owner.store.transaction(ctx, func(tx Executor) error {
+		original, err := m.owner.readSettlement(ctx, tx, m.id, m.request)
+		if err != nil {
 			return err
 		}
-		var state string
-		var stored []byte
-		settlement.ID = id
-		if err := tx.QueryRowContext(ctx, `SELECT digest,request,state,evidence,synchronized FROM frame_submissions WHERE owner_id=? AND sequence=?`, o.id, id.Sequence).Scan(&settlement.Digest, &stored, &state, &settlement.Evidence, &settlement.Synchronized); err != nil {
+		m.settlement = original
+		if original.State != Indeterminate {
+			return nil
+		}
+		m.entered = true
+		evidence, err := mutate(ctx, tx)
+		if err != nil {
 			return err
 		}
-		if !bytes.Equal(stored, request) {
-			return ErrConflict
+		if len(evidence) > m.owner.store.maxRequestBytes {
+			return errors.New("sqlite: settlement evidence exceeds its byte limit")
 		}
-		settlement.State = stateFor(state)
-		return nil
+		_, err = tx.ExecContext(ctx, `UPDATE frame_submissions SET state='committed',evidence=? WHERE owner_id=? AND sequence=? AND digest=? AND state='prepared'`, evidence, m.owner.id, m.id.Sequence, original.Digest)
+		if err == nil {
+			m.settlement.State = Committed
+			m.settlement.Evidence = bytes.Clone(evidence)
+		}
+		return err
 	})
-	return settlement, err
+}
+
+func (m *submissionMutation) onPanic() {
+	cause := recover()
+	if cause == nil {
+		return
+	}
+	if m.entered {
+		original, err := m.owner.settlePrepared(context.Background(), m.id, m.request)
+		if err == nil && original.State == NotCommitted {
+			err = m.owner.confirm(context.Background(), m.id)
+		}
+		if err != nil || original.State == Committed {
+			m.owner.store.admission.RequireRecovery(errors.Join(ErrUnsettled, err))
+		}
+	}
+	panic(cause)
+}
+
+// Only a mutation whose original bytes matched can need reconciliation after
+// a lost commit response. An identity read that failed grants no such authority.
+func (m *submissionMutation) resolveFailure(failure error) error {
+	if !m.entered {
+		m.settlement = Settlement{}
+		if errors.Is(failure, ErrIndeterminate) {
+			m.owner.store.admission.RequireRecovery(failure)
+		}
+		return failure
+	}
+	if errors.Is(failure, ErrIndeterminate) {
+		m.owner.store.admission.RequireRecovery(failure)
+		m.settlement = Settlement{ID: m.id, Digest: m.settlement.Digest, State: Indeterminate}
+		return failure
+	}
+	original, err := m.owner.settlePrepared(context.Background(), m.id, m.request)
+	if err != nil {
+		m.settlement = Settlement{ID: m.id, State: Indeterminate}
+		m.owner.store.admission.RequireRecovery(err)
+		return errors.Join(ErrIndeterminate, failure, err)
+	}
+	m.settlement = original
+	if original.State == Committed {
+		return nil
+	}
+	m.settlement, err = m.owner.synchronize(original, nil, true)
+	return errors.Join(failure, err)
+}
+
+func (o *Owner) synchronize(settlement Settlement, apply func(Settlement) error, confirm bool) (Settlement, error) {
+	if settlement.Synchronized {
+		return settlement, nil
+	}
+	defer func() {
+		if cause := recover(); cause != nil {
+			o.store.admission.RequireRecovery(ErrUnsettled)
+			panic(cause)
+		}
+	}()
+	if apply != nil {
+		projection := settlement
+		projection.Evidence = bytes.Clone(settlement.Evidence)
+		if err := apply(projection); err != nil {
+			o.store.admission.RequireRecovery(err)
+			return settlement, err
+		}
+	}
+	if confirm {
+		if err := o.confirm(context.Background(), settlement.ID); err != nil {
+			o.store.admission.RequireRecovery(err)
+			return settlement, err
+		}
+		settlement.Synchronized = true
+	}
+	return settlement, nil
+}
+
+func (o *Owner) readSettlement(ctx context.Context, tx Executor, id SubmissionID, request []byte) (Settlement, error) {
+	if err := o.requireIssued(ctx, tx, id); err != nil {
+		return Settlement{}, err
+	}
+	var state string
+	var stored []byte
+	result := Settlement{ID: id}
+	err := tx.QueryRowContext(ctx, `SELECT digest,request,state,evidence,synchronized FROM frame_submissions WHERE owner_id=? AND sequence=?`, o.id, id.Sequence).Scan(&result.Digest, &stored, &state, &result.Evidence, &result.Synchronized)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Settlement{}, fmt.Errorf("%w: issued intent has no evidence", ErrIndeterminate)
+	}
+	if err != nil {
+		return Settlement{}, err
+	}
+	if !bytes.Equal(request, stored) {
+		return Settlement{}, ErrConflict
+	}
+	if result.Digest != value.Hash(stored) {
+		return Settlement{}, ErrIndeterminate
+	}
+	result.State = stateFor(state)
+	return result, nil
+}
+
+func (o *Owner) Settlement(ctx context.Context, id SubmissionID, request []byte) (Settlement, error) {
+	if err := o.validate(id); err != nil {
+		return Settlement{}, err
+	}
+	var result Settlement
+	err := o.store.transaction(ctx, func(tx Executor) error {
+		var err error
+		result, err = o.readSettlement(ctx, tx, id, request)
+		return err
+	})
+	if err != nil {
+		return Settlement{}, err
+	}
+	return result, nil
 }
 
 // RecoverPrepared is called after this Store acquired the exclusive authority.
@@ -417,29 +453,24 @@ func (o *Owner) requireIssued(ctx context.Context, tx Executor, id SubmissionID)
 	return nil
 }
 
-func (o *Owner) settlePrepared(ctx context.Context, id SubmissionID) (settlement Settlement, err error) {
-	settlement.ID = id
-	err = o.store.transaction(ctx, func(tx Executor) error {
-		if err := o.requireIssued(ctx, tx, id); err != nil {
+func (o *Owner) settlePrepared(ctx context.Context, id SubmissionID, request []byte) (Settlement, error) {
+	var result Settlement
+	err := o.store.transaction(ctx, func(tx Executor) error {
+		var err error
+		result, err = o.readSettlement(ctx, tx, id, request)
+		if err != nil || result.State != Indeterminate {
 			return err
 		}
-		var state string
-		if err := tx.QueryRowContext(ctx, `SELECT digest,state,evidence,synchronized FROM frame_submissions WHERE owner_id=? AND sequence=?`, o.id, id.Sequence).Scan(&settlement.Digest, &state, &settlement.Evidence, &settlement.Synchronized); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("%w: issued intent has no evidence", ErrIndeterminate)
-			}
-			return err
+		_, err = tx.ExecContext(ctx, `UPDATE frame_submissions SET state='not_committed' WHERE owner_id=? AND sequence=? AND digest=? AND state='prepared'`, o.id, id.Sequence, result.Digest)
+		if err == nil {
+			result.State = NotCommitted
 		}
-		if state == "prepared" {
-			if _, err := tx.ExecContext(ctx, `UPDATE frame_submissions SET state='not_committed' WHERE owner_id=? AND sequence=? AND state='prepared'`, o.id, id.Sequence); err != nil {
-				return err
-			}
-			state = "not_committed"
-		}
-		settlement.State = stateFor(state)
-		return nil
+		return err
 	})
-	return settlement, err
+	if err != nil {
+		return Settlement{}, err
+	}
+	return result, nil
 }
 
 func stateFor(state string) SettlementState {

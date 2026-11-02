@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"errors"
+	"github.com/Tangerg/frame"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -137,5 +138,33 @@ func TestProtocolDiscriminatorsCannotBeForgedWithNull(t *testing.T) {
 	valid, err := parseEnvelope([]byte(`{"id":"1","result":null}`))
 	if err != nil || string(valid.Result) != "null" {
 		t.Fatalf("legitimate null lost: %s %v", valid.Result, err)
+	}
+}
+
+func TestCloseCannotAcknowledgeAnActiveActivationHook(t *testing.T) {
+	started := make(chan struct{})
+	unblock := make(chan struct{})
+	s := &server{state: prepared, life: frame.NewLifetime(t.Context()), activate: func(context.Context) error {
+		close(started)
+		<-unblock
+		return errors.New("injected activation failure")
+	}}
+	activation := make(chan error, 1)
+	go func() {
+		_, err := s.handle(t.Context(), profile.Methods.Activate, jsontext.Value("{}"))
+		activation <- err
+	}()
+	<-started
+	if _, err := s.handle(t.Context(), profile.Methods.Call, jsontext.Value("{}")); err == nil {
+		t.Fatal("call admitted during activation")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := s.handle(ctx, profile.Methods.Close, jsontext.Value("{}")); err == nil {
+		t.Fatal("close acknowledged a live activation")
+	}
+	close(unblock)
+	if err := <-activation; err == nil {
+		t.Fatal("failed activation accepted")
 	}
 }

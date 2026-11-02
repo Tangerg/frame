@@ -13,19 +13,37 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Tangerg/frame"
 )
 
-const maxControlBytes = 4 << 20
+const (
+	maxControlBytes           = 4 << 20
+	defaultControlConnections = 128
+	defaultControlTimeout     = 10 * time.Second
+)
+
+type controlMethod string
+
+const (
+	methodIdentity        controlMethod = "identity"
+	methodFence           controlMethod = "fence"
+	methodProveAbsent     controlMethod = "prove_absent"
+	methodAcknowledgeExit controlMethod = "acknowledge_exit"
+	methodLaunch          controlMethod = "launch"
+	methodInspect         controlMethod = "inspect"
+	methodClose           controlMethod = "close"
+	methodAttach          controlMethod = "attach"
+)
 
 type controlRequest struct {
-	Operation string          `json:"operation"`
-	Epoch     uint64          `json:"epoch,omitempty"`
-	AttemptID string          `json:"attemptId,omitempty"`
-	Launch    *LaunchRequest  `json:"launch,omitempty"`
-	Receipt   *ExitReceipt    `json:"receipt,omitempty"`
-	Absence   *AbsenceRequest `json:"absence,omitempty"`
+	Operation controlMethod  `json:"operation"`
+	Epoch     uint64         `json:"epoch,omitempty"`
+	AttemptID string         `json:"attemptId,omitempty"`
+	Launch    *LaunchRequest `json:"launch,omitempty"`
+	Receipt   *ExitReceipt   `json:"receipt,omitempty"`
+	Attempt   *AttemptRef    `json:"attempt,omitempty"`
 }
 
 type controlResponse struct {
@@ -44,6 +62,14 @@ func Listen(socket string) (net.Listener, error) {
 	if err := os.MkdirAll(filepath.Dir(socket), 0700); err != nil {
 		return nil, err
 	}
+	directory, err := filepath.EvalSymlinks(filepath.Dir(socket))
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyAuthorityDirectory(directory); err != nil {
+		return nil, err
+	}
+	socket = filepath.Join(directory, filepath.Base(socket))
 	if _, err := os.Lstat(socket); err == nil {
 		return nil, errors.New("runner: socket already exists")
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -61,13 +87,42 @@ func Listen(socket string) (net.Listener, error) {
 }
 
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
+	socket, ok := listener.(*net.UnixListener)
+	if ctx == nil || !ok || socket == nil {
+		return frame.ErrInvalid
+	}
+	path := socket.Addr().String()
+	if err := validateSocketPath(path); err != nil {
+		return err
+	}
+	directory, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	if directory != s.config.Directory {
+		return errors.New("runner: listener is outside the owned state directory")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSocket == 0 || info.Mode().Perm()&0077 != 0 {
+		return errors.New("runner: listener must be a private Unix socket")
+	}
+
 	ctx, cancel := context.WithCancel(ctx)
 	var workers sync.WaitGroup
+	slots := make(chan struct{}, s.config.MaxControlConnections)
 	stop := context.AfterFunc(ctx, func() { _ = listener.Close() })
 	defer stop()
 	defer workers.Wait()
 	defer cancel()
 	for {
+		select {
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		case slots <- struct{}{}:
+		}
 		connection, err := listener.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
@@ -75,84 +130,105 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 			}
 			return err
 		}
+		release := sync.OnceFunc(func() { <-slots })
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
+			defer release()
 			defer connection.Close()
 			stop := context.AfterFunc(ctx, func() { _ = connection.Close() })
 			defer stop()
-			s.handle(ctx, connection)
+			s.handle(ctx, connection, release)
 		}()
 	}
 }
 
-func (s *Server) handle(ctx context.Context, connection net.Conn) {
+func (s *Server) handle(ctx context.Context, connection net.Conn, release func()) {
+	if err := connection.SetReadDeadline(time.Now().Add(s.config.ControlTimeout)); err != nil {
+		return
+	}
 	reader := bufio.NewReaderSize(connection, 4096)
 	line, err := readLine(reader)
 	if err != nil {
-		_ = writeResponse(connection, nil, err)
+		_ = s.writeResponse(connection, nil, err)
 		return
 	}
 	var request controlRequest
 	if err := jsonv2.Unmarshal(line, &request, jsonv2.RejectUnknownMembers(true)); err != nil {
-		_ = writeResponse(connection, nil, err)
+		_ = s.writeResponse(connection, nil, err)
+		return
+	}
+	if err := connection.SetReadDeadline(time.Time{}); err != nil {
 		return
 	}
 	var observation Observation
 	switch request.Operation {
-	case "identity":
+	case methodIdentity:
 		identity, identityErr := s.Identity(ctx)
 		if identityErr != nil {
-			_ = writeResponse(connection, nil, identityErr)
+			_ = s.writeResponse(connection, nil, identityErr)
 			return
 		}
-		_ = json.NewEncoder(connection).Encode(controlResponse{Identity: &identity})
+		_ = s.writeReply(connection, controlResponse{Identity: &identity})
 		return
-	case "fence":
+	case methodFence:
 		err = s.Fence(ctx, request.Epoch)
-	case "prove_absent":
-		if request.Absence == nil {
-			_ = writeResponse(connection, nil, frame.ErrInvalid)
+	case methodProveAbsent:
+		if request.Attempt == nil {
+			_ = s.writeResponse(connection, nil, frame.ErrInvalid)
 			return
 		}
-		proof, proofErr := s.ProveAbsent(ctx, *request.Absence)
+		proof, proofErr := s.ProveAbsent(ctx, *request.Attempt)
 		if proofErr != nil {
-			_ = writeResponse(connection, nil, proofErr)
+			_ = s.writeResponse(connection, nil, proofErr)
 			return
 		}
-		_ = json.NewEncoder(connection).Encode(controlResponse{Absence: &proof})
+		_ = s.writeReply(connection, controlResponse{Absence: &proof})
 		return
-	case "acknowledge_exit":
+	case methodAcknowledgeExit:
 		if request.Receipt == nil {
 			err = frame.ErrInvalid
 		} else {
 			err = s.AcknowledgeExit(ctx, *request.Receipt)
 		}
-	case "launch":
+	case methodLaunch:
 		if request.Launch == nil {
 			err = frame.ErrInvalid
 		} else {
 			observation, err = s.Launch(ctx, *request.Launch)
 		}
-	case "inspect":
+	case methodInspect:
 		observation, err = s.Inspect(ctx, request.AttemptID)
-	case "close":
-		observation, err = s.CloseAttempt(ctx, request.AttemptID)
-	case "attach":
-		live, attachErr := s.attach(request.AttemptID, connection)
+	case methodClose:
+		if request.Attempt == nil {
+			err = frame.ErrInvalid
+			break
+		}
+		observation, err = s.CloseAttempt(ctx, *request.Attempt)
+	case methodAttach:
+		if request.Attempt == nil {
+			err = frame.ErrInvalid
+			break
+		}
+		live, attachErr := s.attach(*request.Attempt)
 		if attachErr != nil {
-			_ = writeResponse(connection, nil, attachErr)
+			_ = s.writeResponse(connection, nil, attachErr)
 			return
 		}
-		if err := writeResponse(connection, nil, nil); err != nil {
-			_, _ = s.CloseAttempt(context.Background(), request.AttemptID)
+		if err := s.writeResponse(connection, nil, nil); err != nil {
+			_, _ = s.CloseAttempt(context.Background(), *request.Attempt)
 			return
 		}
+		if err := connection.SetDeadline(time.Time{}); err != nil {
+			_, _ = s.CloseAttempt(ctx, *request.Attempt)
+			return
+		}
+		release()
 		inputDone := make(chan struct{})
 		go func() {
 			_, _ = io.Copy(live.stdin, reader)
 			_ = live.stdin.Close()
-			_, _ = s.CloseAttempt(context.Background(), request.AttemptID)
+			_, _ = s.CloseAttempt(context.Background(), *request.Attempt)
 			close(inputDone)
 		}()
 		_, _ = io.Copy(connection, live.stdout)
@@ -167,7 +243,7 @@ func (s *Server) handle(ctx context.Context, connection net.Conn) {
 	if observation.AttemptID != "" {
 		result = &observation
 	}
-	_ = writeResponse(connection, result, err)
+	_ = s.writeResponse(connection, result, err)
 }
 
 func (s *Server) Listen(socket string) (net.Listener, error) {
@@ -194,20 +270,23 @@ func (s *Server) Listen(socket string) (net.Listener, error) {
 	return Listen(socket)
 }
 
-func (s *Server) attach(id string, connection io.Closer) (*process, error) {
+func (s *Server) attach(ref AttemptRef) (*process, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	item, exists, err := s.lookupAttempt(id)
+	item, exists, err := s.lookupAttempt(ref.AttemptID)
 	if err != nil {
 		return nil, err
 	}
 	if !exists {
 		return nil, ErrNotFound
 	}
+	if item.Observation.Reference() != ref {
+		return nil, ErrFenced
+	}
 	if item.Observation.State == Unknown {
 		return nil, ErrUnknown
 	}
-	live := s.processes[id]
+	live := s.processes[ref.AttemptID]
 	if live == nil || live.closing {
 		return nil, frame.ErrClosed
 	}
@@ -215,7 +294,7 @@ func (s *Server) attach(id string, connection io.Closer) (*process, error) {
 		return nil, ErrAttached
 	}
 	live.attached = true
-	live.attachment = connection
+
 	return live, nil
 }
 
@@ -241,11 +320,18 @@ func (c *Client) dial(ctx context.Context) (net.Conn, error) {
 	if err := validateSocketPath(c.socket); err != nil {
 		return nil, err
 	}
-	return (&net.Dialer{}).DialContext(ctx, "unix", c.socket)
+	directory, err := filepath.EvalSymlinks(filepath.Dir(c.socket))
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyAuthorityDirectory(directory); err != nil {
+		return nil, err
+	}
+	return (&net.Dialer{}).DialContext(ctx, "unix", filepath.Join(directory, filepath.Base(c.socket)))
 }
 
 func (c *Client) Identity(ctx context.Context) (Identity, error) {
-	response, err := c.request(ctx, controlRequest{Operation: "identity"})
+	response, err := c.request(ctx, controlRequest{Operation: methodIdentity})
 	if err != nil {
 		return Identity{}, err
 	}
@@ -256,26 +342,26 @@ func (c *Client) Identity(ctx context.Context) (Identity, error) {
 }
 
 func (c *Client) Fence(ctx context.Context, epoch uint64) error {
-	_, err := c.control(ctx, controlRequest{Operation: "fence", Epoch: epoch})
+	_, err := c.control(ctx, controlRequest{Operation: methodFence, Epoch: epoch})
 	return err
 }
 func (c *Client) Launch(ctx context.Context, request LaunchRequest) (Observation, error) {
-	return c.control(ctx, controlRequest{Operation: "launch", Launch: &request})
+	return c.control(ctx, controlRequest{Operation: methodLaunch, Launch: &request})
 }
 func (c *Client) Inspect(ctx context.Context, id string) (Observation, error) {
-	return c.control(ctx, controlRequest{Operation: "inspect", AttemptID: id})
+	return c.control(ctx, controlRequest{Operation: methodInspect, AttemptID: id})
 }
-func (c *Client) CloseAttempt(ctx context.Context, id string) (Observation, error) {
-	return c.control(ctx, controlRequest{Operation: "close", AttemptID: id})
+func (c *Client) CloseAttempt(ctx context.Context, ref AttemptRef) (Observation, error) {
+	return c.control(ctx, controlRequest{Operation: methodClose, Attempt: &ref})
 }
 
 func (c *Client) AcknowledgeExit(ctx context.Context, receipt ExitReceipt) error {
-	_, err := c.control(ctx, controlRequest{Operation: "acknowledge_exit", Receipt: &receipt})
+	_, err := c.control(ctx, controlRequest{Operation: methodAcknowledgeExit, Receipt: &receipt})
 	return err
 }
 
-func (c *Client) ProveAbsent(ctx context.Context, request AbsenceRequest) (AbsenceProof, error) {
-	response, err := c.request(ctx, controlRequest{Operation: "prove_absent", Absence: &request})
+func (c *Client) ProveAbsent(ctx context.Context, request AttemptRef) (AbsenceProof, error) {
+	response, err := c.request(ctx, controlRequest{Operation: methodProveAbsent, Attempt: &request})
 	if err != nil {
 		return AbsenceProof{}, err
 	}
@@ -319,13 +405,13 @@ type attached struct {
 
 func (a *attached) Read(p []byte) (int, error) { return a.reader.Read(p) }
 
-func (c *Client) Attach(ctx context.Context, id string) (io.ReadWriteCloser, error) {
+func (c *Client) Attach(ctx context.Context, ref AttemptRef) (io.ReadWriteCloser, error) {
 	connection, err := c.dial(ctx)
 	if err != nil {
 		return nil, err
 	}
 	stop := context.AfterFunc(ctx, func() { _ = connection.Close() })
-	if err := writeRequest(connection, controlRequest{Operation: "attach", AttemptID: id}); err != nil {
+	if err := writeRequest(connection, controlRequest{Operation: methodAttach, Attempt: &ref}); err != nil {
 		stop()
 		_ = connection.Close()
 		return nil, err
@@ -367,17 +453,27 @@ func writeRequest(writer io.Writer, request controlRequest) error {
 	if err != nil {
 		return err
 	}
-	if len(data) > maxControlBytes {
+	if len(data)+1 > maxControlBytes {
 		return frame.ErrCapacity
 	}
-	_, err = writer.Write(append(data, '\n'))
+	n, err := writer.Write(append(data, '\n'))
+	if err == nil && n != len(data)+1 {
+		return io.ErrShortWrite
+	}
 	return err
 }
 
-func writeResponse(writer io.Writer, observation *Observation, err error) error {
+func (s *Server) writeResponse(writer net.Conn, observation *Observation, err error) error {
 	response := controlResponse{Observation: observation}
 	if err != nil {
 		response.Error = errorCode(err)
+	}
+	return s.writeReply(writer, response)
+}
+
+func (s *Server) writeReply(writer net.Conn, response controlResponse) error {
+	if err := writer.SetWriteDeadline(time.Now().Add(s.config.ControlTimeout)); err != nil {
+		return err
 	}
 	return json.NewEncoder(writer).Encode(response)
 }
@@ -387,45 +483,30 @@ func decodeResponse(data []byte) (controlResponse, error) {
 	if err := jsonv2.Unmarshal(data, &response, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return response, err
 	}
-	switch response.Error {
-	case "":
+	if response.Error == "" {
 		return response, nil
-	case "unknown":
-		return response, ErrUnknown
-	case "conflict":
-		return response, ErrConflict
-	case "fenced":
-		return response, ErrFenced
-	case "attached":
-		return response, ErrAttached
-	case "not_found":
-		return response, ErrNotFound
-	case "closed":
-		return response, frame.ErrClosed
-	case "capacity":
-		return response, frame.ErrCapacity
-	default:
-		return response, errors.New("runner: control request failed")
 	}
+	for _, category := range controlErrors {
+		if category.code == response.Error {
+			return response, category.err
+		}
+	}
+	return response, errors.New("runner: control request failed")
+}
+
+var controlErrors = []struct {
+	code string
+	err  error
+}{
+	{"unknown", ErrUnknown}, {"conflict", ErrConflict}, {"fenced", ErrFenced}, {"attached", ErrAttached},
+	{"not_found", ErrNotFound}, {"closed", frame.ErrClosed}, {"capacity", frame.ErrCapacity}, {"invalid", frame.ErrInvalid},
 }
 
 func errorCode(err error) string {
-	switch {
-	case errors.Is(err, ErrUnknown):
-		return "unknown"
-	case errors.Is(err, ErrConflict):
-		return "conflict"
-	case errors.Is(err, ErrFenced):
-		return "fenced"
-	case errors.Is(err, ErrAttached):
-		return "attached"
-	case errors.Is(err, ErrNotFound):
-		return "not_found"
-	case errors.Is(err, frame.ErrClosed):
-		return "closed"
-	case errors.Is(err, frame.ErrCapacity):
-		return "capacity"
-	default:
-		return "failed"
+	for _, category := range controlErrors {
+		if errors.Is(err, category.err) {
+			return category.code
+		}
 	}
+	return "failed"
 }

@@ -79,11 +79,43 @@ test("document CLI, Host control, actual JS preview and durable exit", async () 
       HTMLElement: window.HTMLElement,
       MutationObserver: window.MutationObserver,
     });
-    globalThis.fetch = (input, init) =>
-      originalFetch(
-        typeof input === "string" ? new URL(input, origin) : input,
-        init,
-      );
+    let rejectTheme = true;
+    let releasedPreviewUses = 0;
+    let loseAcquire = false;
+    let lostRequest, lostGrant;
+    let replayed = false,
+      recovered = false;
+    let prematureSnapshot = false;
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input, origin);
+      if (url.pathname === "/api/theme" && rejectTheme) {
+        rejectTheme = false;
+        return Response.json({ error: "theme failure" }, { status: 500 });
+      }
+      const reply = await originalFetch(url, init);
+      if (url.pathname === "/frame/control" && reply.ok) {
+        const message = JSON.parse(init.body);
+        if (message.method === "acquire" && loseAcquire) {
+          loseAcquire = false;
+          lostRequest = message.input;
+          lostGrant = await reply.json();
+          throw new Error("acquire acknowledgement lost after host commit");
+        }
+        if (lostRequest && !recovered && message.method === "snapshot")
+          prematureSnapshot = true;
+        if (message.method === "acquire" && lostRequest && !replayed) {
+          assert.deepEqual(message.input, lostRequest);
+          assert.equal((await reply.clone().json()).id, lostGrant.id);
+          replayed = true;
+        }
+        if (message.method === "prove" && message.input.scopeKind === "use") {
+          releasedPreviewUses++;
+          if (lostGrant && message.input.useId === lostGrant.id)
+            recovered = true;
+        }
+      }
+      return reply;
+    };
     const assets = await readdir(join(directory, "dist/assets"));
     const main = assets.find((file) => file.endsWith(".js"));
     assert.ok(main);
@@ -99,6 +131,45 @@ test("document CLI, Host control, actual JS preview and durable exit", async () 
     );
     element("task").value = "workflow-original";
     element("convert").click();
+    await until(
+      () =>
+        !element("convert").disabled &&
+        element("error").textContent === "theme failure",
+      () => element("error").textContent + diagnostics,
+    );
+    assert.equal(
+      releasedPreviewUses,
+      1,
+      "failed mount must release its acquired Use",
+    );
+    assert.equal(
+      window.document.querySelector("iframe.document-preview"),
+      null,
+    );
+    loseAcquire = true;
+    element("run").click();
+    await until(
+      () => !element("run").disabled && !!lostRequest,
+      () => diagnostics,
+    );
+    assert.match(element("error").textContent, /control transport/);
+    assert.equal(releasedPreviewUses, 1);
+    element("reconnect").click();
+    await until(
+      () => !element("reconnect").disabled && recovered,
+      () => element("error").textContent + diagnostics,
+    );
+    assert.ok(
+      replayed,
+      "recovery must reuse the original acquire request and grant",
+    );
+    assert.equal(releasedPreviewUses, 2);
+    assert.equal(
+      prematureSnapshot,
+      false,
+      "uncertain grants must be settled before selecting again",
+    );
+    element("run").click();
     await until(
       () => window.document.querySelector("iframe.document-preview"),
       () => element("error").textContent + diagnostics,
@@ -145,7 +216,7 @@ test("document CLI, Host control, actual JS preview and durable exit", async () 
   } finally {
     globalThis.fetch = originalFetch;
     await window?.happyDOM.close();
-    if (server.exitCode === null) server.kill("SIGINT");
+    if (server.exitCode === null) server.kill(completed ? "SIGINT" : "SIGKILL");
     const [code] = await exited;
     await writable(state);
     await rm(state, { recursive: true, force: true });

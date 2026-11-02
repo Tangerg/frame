@@ -15,7 +15,7 @@ those protections; a later call observes the same close. Consumers close their
 execution owners before the Store. Platforms without the supported directory
 lock fail closed rather than claiming exclusive ownership.
 
-A release is a ZIP with a schema-version 1 `manifest.json`, `plugin.lock.json` and
+A release is a single-disk ZIP32 archive with absolute directory offsets and no archive comment. Its physical central directory is bounded before entries are allocated. It contains a schema-version 1 `manifest.json`, `plugin.lock.json` and
 exactly its listed artifacts. `Build` computes artifact sizes and SHA-256 digests
 from the declared source files and emits deterministic archive bytes. It does not
 invoke a compiler or include unlisted source files. The Release digest covers the
@@ -60,7 +60,7 @@ Staging belongs to one installation operation and is removed unless atomically
 published. Validated content is read-only in the content-addressed cache.
 Contents are sealed before rename; the release root is sealed after rename under
 admission, before its first lease. This also supports macOS filesystems that
-refuse renaming a non-writable directory. An incompletely sealed root is refused.
+refuse renaming a non-writable directory. An incompletely sealed root is refused by readers. Reimport of the same trusted release revalidates the original tree before completing its seal.
 Collection changes only the root's mode after excluding every lease and retention
 claim, restores that mode if withdrawal fails, and unseals descendants only after
 the directory has left the public namespace.

@@ -180,7 +180,7 @@ func TestRecoverOriginalExitHandoffAcrossHostRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			attempt := recordAttempt(t, store, identity)
-			req := runner.LaunchRequest{AttemptID: attempt.ID, Epoch: attempt.Epoch, Command: filepath.Join(directory, "missing"), ExecutableDigest: value.Hash([]byte("missing")), Configuration: attempt.Binding.Units[0].Configuration}
+			req := runner.LaunchRequest{AttemptRef: runner.AttemptRef{AttemptID: attempt.ID, Epoch: attempt.Epoch, RunnerID: attempt.Realm}, Command: filepath.Join(directory, "missing"), ExecutableDigest: value.Hash([]byte("missing")), Configuration: attempt.Binding.Units[0].Configuration}
 			exit, err := original.Launch(ctx, req)
 			if err == nil || exit.State != runner.Exited {
 				t.Fatalf("failed start: %+v %v", exit, err)

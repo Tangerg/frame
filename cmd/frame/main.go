@@ -5,6 +5,7 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"flag"
+	"io"
 	"os"
 
 	"github.com/Tangerg/frame/portable/contractgen"
@@ -41,6 +42,7 @@ func run(args []string) error {
 
 func runContract(args []string) error {
 	flags := flag.NewFlagSet("frame contract", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
 	feature := flags.String("feature", "", "published capability descriptor, or - for stdin")
 	out := flags.String("out", ".", "artifact directory; empty writes only requested projections")
 	ts := flags.String("ts", "", "TypeScript projection directory")

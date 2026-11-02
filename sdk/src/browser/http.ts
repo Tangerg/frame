@@ -1,5 +1,12 @@
-import { FrameError, type ErrorCode, type Lifetime } from "../index.js";
+import { FrameError, type Lifetime } from "../index.js";
+import { readResponseBytes } from "./response.js";
 import { parseJSON, stringifyJSON } from "../json.js";
+import {
+  CONTROL_ERROR_CODES,
+  CONTROL_MUTATIONS,
+  type ControlInputs,
+  type ControlOutputs,
+} from "../protocol.generated.js";
 import type {
   AcquireRequest,
   CloseProof,
@@ -26,20 +33,8 @@ export interface HTTPControlOptions {
   readonly fetch?: typeof fetch;
 }
 
-const codes: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
-  "closed",
-  "capacity",
-  "contract_mismatch",
-  "invalid_plan",
-  "unavailable",
-  "stale_binding",
-  "permission_denied",
-  "outcome_unknown",
-  "close_unconfirmed",
-  "resync_required",
-  "reload_required",
-  "reentrant_operation",
-]);
+const codes = new Set<string>(CONTROL_ERROR_CODES);
+const mutations = new Set<string>(CONTROL_MUTATIONS);
 
 export class HTTPControl implements HostControl {
   readonly #endpoint: string;
@@ -75,11 +70,10 @@ export class HTTPControl implements HostControl {
     this.#fetch = (options.fetch ?? globalThis.fetch).bind(globalThis);
   }
 
-  async #request<T>(
-    method: string,
-    input: unknown,
-    mutating = false,
-  ): Promise<T> {
+  async #request<K extends keyof ControlInputs>(
+    method: K,
+    input: ControlInputs[K],
+  ): Promise<ControlOutputs[K]> {
     const body = stringifyJSON({ method, input });
     if (new TextEncoder().encode(body).byteLength > this.#maximumMessageBytes)
       return Promise.reject(
@@ -89,7 +83,7 @@ export class HTTPControl implements HostControl {
         ),
       );
     return this.#lifetime.run((signal) =>
-      this.#send<T>(body, signal, mutating),
+      this.#send<ControlOutputs[K]>(body, signal, mutations.has(method)),
     );
   }
 
@@ -121,7 +115,9 @@ export class HTTPControl implements HostControl {
     let value: unknown;
     try {
       value = parseJSON(
-        await readResponse(response, this.#maximumMessageBytes),
+        new TextDecoder("utf-8", { fatal: true }).decode(
+          await readResponseBytes(response, this.#maximumMessageBytes),
+        ),
       );
     } catch (cause) {
       throw new FrameError(
@@ -131,7 +127,10 @@ export class HTTPControl implements HostControl {
       );
     }
     if (!response.ok) {
-      const problem = value as { code?: ErrorCode; message?: string } | null;
+      const problem = value as {
+        code?: (typeof CONTROL_ERROR_CODES)[number];
+        message?: string;
+      } | null;
       if (
         problem &&
         problem.code &&
@@ -151,10 +150,10 @@ export class HTTPControl implements HostControl {
     return this.#request("validatePlan", plan);
   }
   ready(report: ReadyReport): Promise<PublicationResult> {
-    return this.#request("ready", report, true);
+    return this.#request("ready", report);
   }
   acquire(request: AcquireRequest): Promise<UseGrant> {
-    return this.#request("acquire", request, true);
+    return this.#request("acquire", request);
   }
   validateUse(grant: UseGrant): Promise<void> {
     return this.#request("validateUse", grant);
@@ -166,56 +165,24 @@ export class HTTPControl implements HostControl {
     return this.#request("snapshot", points);
   }
   closeSnapshot(snapshotId: string): Promise<void> {
-    return this.#request("closeSnapshot", snapshotId, true);
+    return this.#request("closeSnapshot", snapshotId);
   }
   publish(request: PublicationRequest): Promise<PublicationResult> {
-    return this.#request("publish", request, true);
+    return this.#request("publish", request);
   }
   publication(operationId: string): Promise<PublicationResult> {
     return this.#request("publication", operationId);
   }
   withdraw(request: Withdrawal): Promise<PublicationResult> {
-    return this.#request("withdraw", request, true);
+    return this.#request("withdraw", request);
   }
   prove(proof: CloseProof): Promise<ProofAcknowledgement> {
-    return this.#request("prove", proof, true);
+    return this.#request("prove", proof);
   }
   reconnect(request: ReconnectRequest): Promise<ReconnectResult> {
-    return this.#request("reconnect", request, true);
+    return this.#request("reconnect", request);
   }
   poll(): Promise<Poll> {
     return this.#request("poll", {});
   }
-}
-
-async function readResponse(
-  response: Response,
-  maximum: number,
-): Promise<string> {
-  if (!response.body) throw new Error("control response body is missing");
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  try {
-    for (;;) {
-      const next = await reader.read();
-      if (next.done) break;
-      length += next.value.byteLength;
-      if (length > maximum)
-        throw new Error("control response capacity exceeded");
-      chunks.push(next.value);
-    }
-  } catch (error) {
-    await reader.cancel(error);
-    throw error;
-  } finally {
-    reader.releaseLock();
-  }
-  const bytes = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }

@@ -535,7 +535,7 @@ func TestBorrowedHandlerCanRequestItsOwnDisableOrReplacementWithoutWaitingOnItse
 				if action == "disable" {
 					return host.SetEnabled(ctx, "self", false)
 				}
-				return host.Replace(ctx, "self", plugin, nil)
+				return host.Replace(ctx, "self", plugin, []byte("reconfigured"))
 			}
 			plugin = installNative(t, host, "self", frame.Unit{
 				Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "change", Contract: contract.Ref()}}},

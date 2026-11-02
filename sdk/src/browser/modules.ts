@@ -17,8 +17,7 @@ export interface ModuleLease {
 }
 
 interface Evaluation {
-  readonly release: string;
-  readonly authority: LocalPlan["authority"];
+  readonly digest: string;
   readonly promise: Promise<Record<string, unknown>>;
   leases: number;
   retired: boolean;
@@ -46,32 +45,32 @@ export class RealmModules {
     plan: LocalPlan,
   ): Promise<Readonly<Record<string, unknown>>> {
     owner.assertOpen();
-    const installation = unit.instance.source.installationId;
+    const { installationId: installation, release } = unit.instance.source;
+    const { path, digest } = unit.module;
+    const authority = Object.freeze({ ...plan.authority });
     const assertEvaluationDomain = () => {
       if (
-        (this.#authority && !sameAuthority(this.#authority, plan.authority)) ||
+        (this.#authority && !sameAuthority(this.#authority, authority)) ||
         (this.#releases.has(installation) &&
-          this.#releases.get(installation) !== unit.instance.source.release)
+          this.#releases.get(installation) !== release)
       )
         throw new FrameError(
           "reload_required",
           "evaluated installation requires a new realm after release or authority replacement",
         );
     };
-    assertEvaluationDomain();
-    const key = `${installation}/${unit.module.path}`;
-    const previous = this.#evaluated.get(key);
-    if (
-      previous &&
-      (previous.retired ||
-        previous.release !== unit.instance.source.release ||
-        !sameAuthority(previous.authority, plan.authority))
-    ) {
-      throw new FrameError(
-        "reload_required",
-        "evaluated module requires a new realm before replacement or reuse",
-      );
-    }
+    const key = JSON.stringify([installation, path]);
+    const currentEvaluation = () => {
+      assertEvaluationDomain();
+      const current = this.#evaluated.get(key);
+      if (current && (current.retired || current.digest !== digest))
+        throw new FrameError(
+          "reload_required",
+          "evaluated module cannot be replaced or revived in this realm",
+        );
+      return current;
+    };
+    currentEvaluation();
     let lease: ModuleLease | undefined;
     let evaluation: Evaluation | undefined;
     const retire = () => {
@@ -94,7 +93,7 @@ export class RealmModules {
         retire();
       }
       return result;
-    }, `module:${unit.module.path}`);
+    }, `module:${path}`);
     await owner.run(async (signal) => {
       lease = await this.#open(unit, signal);
       const captured = lease;
@@ -106,8 +105,7 @@ export class RealmModules {
       }
     });
     owner.assertOpen();
-    assertEvaluationDomain();
-    if (lease!.digest !== unit.module.digest)
+    if (lease!.digest !== digest)
       throw new FrameError(
         "contract_mismatch",
         "leased module does not match the approved artifact digest",
@@ -118,28 +116,17 @@ export class RealmModules {
         "permission_denied",
         "module lease uses an unsupported URL scheme",
       );
-    evaluation = this.#evaluated.get(key);
-    if (
-      evaluation &&
-      (evaluation.retired ||
-        evaluation.release !== unit.instance.source.release ||
-        !sameAuthority(evaluation.authority, plan.authority))
-    )
-      throw new FrameError(
-        "reload_required",
-        "module acquisition completed after its evaluation domain retired",
-      );
+    evaluation = currentEvaluation();
     if (!evaluation) {
       // The browser owns ESM evaluation. An attempted evaluation is never made
       // retryable by deleting a Promise or appending a cache-busting query.
       const promise = import(/* @vite-ignore */ url.href) as Promise<
         Record<string, unknown>
       >;
-      this.#authority = plan.authority;
-      this.#releases.set(installation, unit.instance.source.release);
+      this.#authority ??= authority;
+      this.#releases.set(installation, release);
       evaluation = {
-        release: unit.instance.source.release,
-        authority: plan.authority,
+        digest: digest,
         promise,
         leases: 0,
         retired: false,

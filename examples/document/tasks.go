@@ -80,7 +80,7 @@ func taskSchema() sqlite.OwnerSchema {
 		states[i] = "'" + strings.ReplaceAll(state, "'", "''") + "'"
 	}
 	taskTable := fmt.Sprintf(`CREATE TABLE document_tasks (id TEXT PRIMARY KEY,admission_sequence INTEGER NOT NULL UNIQUE,definition BLOB NOT NULL,state TEXT NOT NULL CHECK(state IN (%s)),run_epoch INTEGER NOT NULL DEFAULT 0,result BLOB,failure TEXT NOT NULL DEFAULT '')`, strings.Join(states, ","))
-	return sqlite.OwnerSchema{ID: taskOwnerID, Statements: []string{taskTable, `CREATE TABLE document_bootstrap (singleton INTEGER PRIMARY KEY CHECK(singleton=1))`}, References: func(ctx context.Context, tx sqlite.Executor, id frame.InstallationID) ([]frame.Dependency, error) {
+	return sqlite.OwnerSchema{ID: taskOwnerID, Statements: []string{taskTable, `CREATE TABLE document_bootstrap (singleton INTEGER PRIMARY KEY CHECK(singleton=1))`}, References: func(ctx context.Context, tx sqlite.Reader, id frame.InstallationID) ([]frame.Dependency, error) {
 		rows, err := tx.QueryContext(ctx, `SELECT definition FROM document_tasks WHERE state IN (?,?)`, Queued, Running)
 		if err != nil {
 			return nil, err
@@ -236,7 +236,7 @@ func (a *App) Queue(ctx context.Context, id, path string) (Task, sqlite.Submissi
 func (a *App) Task(ctx context.Context, id string) (Task, error) {
 	var task Task
 	task.Submission = sqlite.SubmissionID{Store: a.Store.ID(), Owner: taskOwnerID}
-	err := a.Store.Read(ctx, func(tx sqlite.Executor) error {
+	err := a.Store.Read(ctx, func(tx sqlite.Reader) error {
 		var definition, result []byte
 		if err := tx.QueryRowContext(ctx, `SELECT admission_sequence,definition,state,run_epoch,result,failure FROM document_tasks WHERE id=?`, id).Scan(&task.Submission.Sequence, &definition, &task.State, &task.RunEpoch, &result, &task.Failure); err != nil {
 			return err

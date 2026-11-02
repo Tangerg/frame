@@ -20,6 +20,14 @@ An interrupt delivered by that close is an expected stop only after the original
 Wait observes the matching exit. A process that already crashed keeps its original
 exit diagnostic.
 
+Server shutdown seals creation before advancing each original child's close.
+A rejected Kill leaves the close request pending and the directory authority held;
+a subsequent `CloseAttempt` or `Close` advances the same process handle. Sending a
+signal is not exit evidence. Only the original Wait observation permits releasing
+the child and its executable snapshot. Unconfirmed shutdown retains its owner and
+lock even when the caller drops the Server handle. A Wait without an exit
+observation remains Unknown and cannot hand authority to a replacement runner.
+
 The client API is `Dial`, `Identity`, `Fence`, `Launch`, `Attach`, `Inspect`,
 `CloseAttempt`, `AcknowledgeExit` and `ProveAbsent`. `Identity` identifies the actual runner incarnation. Record that
 identity as the execution Realm, and verify the returned running observation before

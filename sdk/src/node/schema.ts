@@ -1,6 +1,12 @@
 import { Decimal } from "decimal.js";
-import { Validator, type CustomProperty, type Schema } from "jsonschema";
-import { fullFormats } from "ajv-formats/dist/formats.js";
+import {
+  Validator,
+  ValidatorResult,
+  type CustomProperty,
+  type Schema,
+} from "jsonschema";
+import { compilePattern } from "./pattern.js";
+import { checkFormat, validateFormat } from "./format.js";
 import {
   parseJSON,
   stringifyJSON,
@@ -12,7 +18,6 @@ import {
 } from "../json.js";
 import {
   checkDescriptor,
-  checkPattern,
   checkValue,
   exceeded,
   PORTABLE_LIMITS,
@@ -218,7 +223,11 @@ function admitChoiceConstraints(key: string, field: unknown): void {
   }
 }
 
-function admitAnnotations(key: string, field: unknown): void {
+function admitAnnotations(
+  key: string,
+  field: unknown,
+  patterns: Map<string, RegExp>,
+): void {
   if (
     [
       "pattern",
@@ -248,13 +257,13 @@ function admitAnnotations(key: string, field: unknown): void {
     throw new Error("plugin: unsupported schema dialect");
   if (key === "$id")
     throw new Error("plugin: nested schema resources are unsupported");
+  if (key === "format") checkFormat(field);
   if (key === "pattern") {
-    checkPattern(field as string);
-    new RegExp(field as string, "u");
+    patterns.set(field as string, compilePattern(field as string));
   }
 }
 
-function admitSchema(value: unknown): void {
+function admitSchema(value: unknown, patterns: Map<string, RegExp>): void {
   if (typeof value === "boolean") return;
   if (!schemaObject(value))
     throw new Error("plugin: schema must be an object or boolean");
@@ -262,12 +271,14 @@ function admitSchema(value: unknown): void {
     if (!supported.has(key))
       throw new Error(`plugin: unsupported schema keyword ${key}`);
     if (key === "patternProperties") {
-      for (const name of Object.keys(field as RecordValue)) checkPattern(name);
+      for (const name of Object.keys(field as RecordValue))
+        patterns.set(name, compilePattern(name));
     }
-    for (const child of subschemas(key, field)) admitSchema(child.value);
+    for (const child of subschemas(key, field))
+      admitSchema(child.value, patterns);
     admitNumericConstraints(value, key, field);
     admitChoiceConstraints(key, field);
-    admitAnnotations(key, field);
+    admitAnnotations(key, field, patterns);
   }
   if (value.$ref !== undefined) {
     const ref = localReference(value.$ref);
@@ -295,34 +306,46 @@ export function compileSchema(source: unknown): (value: unknown) => void {
     typeof value === "object" &&
     !Array.isArray(value) &&
     !numeric(value);
-  for (const [name, format] of Object.entries(fullFormats)) {
-    if (
-      typeof format === "object" &&
-      "type" in format &&
-      format.type === "number"
-    )
-      continue;
-    const rule: unknown =
-      typeof format === "object" && "validate" in format
-        ? format.validate
-        : format;
-    validator.customFormats[name] = (value: unknown) => {
-      if (typeof value !== "string") return true;
-      if (rule instanceof RegExp) return rule.test(value);
-      if (typeof rule === "string") return new RegExp(rule, "u").test(value);
-      if (rule === true) return true;
-      if (typeof rule === "function") {
-        const verdict: unknown = rule(value);
-        if (typeof verdict === "boolean") return verdict;
-      }
-      throw new Error("plugin: format must produce a synchronous verdict");
-    };
-  }
-  validator.attributes.format = ((value: unknown, schema: Schema) => {
-    const check = validator.customFormats[schema.format!];
-    return typeof value !== "string" || !check || check(value)
+  const patterns = new Map<string, RegExp>();
+  validator.attributes.format = ((value: unknown, schema: Schema) =>
+    validateFormat(schema.format!, value)
       ? ""
-      : "format constraint failed";
+      : "format constraint failed") as CustomProperty;
+  validator.attributes.pattern = ((value: unknown, schema: Schema) =>
+    typeof value !== "string" ||
+    patterns.get(schema.pattern as string)!.test(value)
+      ? ""
+      : "pattern constraint failed") as CustomProperty;
+  validator.attributes.patternProperties = ((value, schema, options, ctx) => {
+    if (!schemaObject(value)) return "";
+    const result = new ValidatorResult(value, schema, options, ctx);
+    for (const [name, child] of Object.entries(value)) {
+      let matched = Object.hasOwn(schema.properties ?? {}, name);
+      const validate = (subschema: Schema) => {
+        const childResult = validator.validate(
+          child,
+          subschema,
+          options,
+          ctx.makeChild(subschema, name),
+        );
+        result.errors.push(...childResult.errors);
+      };
+      for (const [pattern, subschema] of Object.entries(
+        schema.patternProperties ?? {},
+      )) {
+        if (patterns.get(pattern)!.test(name)) {
+          matched = true;
+          validate(subschema);
+        }
+      }
+      if (!matched) {
+        if (schema.additionalProperties === false)
+          result.addError("additional property is not allowed");
+        else if (typeof schema.additionalProperties === "object")
+          validate(schema.additionalProperties);
+      }
+    }
+    return result;
   }) as CustomProperty;
   for (const name of annotations) validator.attributes[name] = () => "";
   for (const [keyword, compare] of Object.entries({
@@ -362,7 +385,7 @@ export function compileSchema(source: unknown): (value: unknown) => void {
       : "";
   }) as CustomProperty;
 
-  admitSchema(document);
+  admitSchema(document, patterns);
   const schema = document as Schema;
   function checkReferences(value: unknown): void {
     if (!value || typeof value !== "object") return;

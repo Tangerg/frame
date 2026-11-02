@@ -11,6 +11,23 @@ Requests have `{id,method,params}`; an answer contains exactly one of `result` o
 `{method:"cancel",params:{id}}` referencing the original outbound request. A stopped
 wait never proves a mutation did not execute.
 
+The error category reports protocol evidence, not a business settlement:
+
+| Observation | Category | Outcome evidence |
+| --- | --- | --- |
+| Local cancellation before the request enters the output queue | local cancellation cause | This endpoint did not dispatch the request. |
+| Framework rejection before entering the service handler | `invalid_request`, `capacity`, `contract_mismatch`, or `closed` | That invocation did not enter the service handler. |
+| Cancellation after dispatch, including a handler's cancelled reply | `cancelled` | The cancellation is confirmed; the original effect remains unknown. |
+| Handler failure, panic, invalid result, or lost response after dispatch | `outcome_unknown` | No validated result was obtained; the original effect remains unknown. |
+| Validated success reply | result | The service returned that result; durable business settlement remains with its business owner. |
+
+Go's received `cancelled` problem matches both `context.Canceled` and
+`process.ErrOutcomeUnknown`. A locally cancelled context before dispatch matches
+only its cancellation cause. A handler cannot turn its post-dispatch failure into
+a framework rejection by returning one of the framework error codes. Neither
+cancellation nor unknown outcome authorizes replay; reconciliation uses the
+original business operation identity and owner.
+
 | Direction | Method | Request | Success |
 | --- | --- | --- | --- |
 | Host → child | hello | version, maxFrameBytes | version, unit, maxFrameBytes, imports and exports (name → contract digest) |
@@ -26,6 +43,12 @@ scoped to this execution and its contract. The host rejects service calls before
 or after retirement begins. Each sender waits for a chunk acknowledgement before sending
 the next one. Reader loops must continue processing messages during nested calls. Peers
 refuse excess frames and work rather than buffering without bounds.
+
+Each stream endpoint retains its first delivery failure for the whole call.
+Consumer rejection, invalid chunks, panic, overlapping deliveries or a final result
+that overtakes an accepted delivery prevent success, even if the producer ignores
+the failed acknowledgement. Finishing a call joins accepted delivery callbacks;
+an escaped emitter cannot publish after the final result.
 
 The host verifies the complete sets of imports and exports and their digests. Crash recovery
 uses the original runner's wait or absence evidence, independently of any protocol response.

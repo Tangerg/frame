@@ -3,22 +3,57 @@ import { parseJSON, stringifyJSON } from "../json.js";
 import wire from "./wire.json" with { type: "json" };
 import { exactFields } from "./contract.js";
 
+type FailureOptions = ErrorOptions & { outcome?: "unknown" };
+
 export class ProcessError extends Error {
+  readonly outcomeUnknown: boolean;
+
   constructor(
     readonly code: string,
     message: string,
-    options?: ErrorOptions,
+    options?: FailureOptions,
   ) {
     super(message, options);
+    this.name = "ProcessError";
+    this.outcomeUnknown =
+      code === wire.errors.unknown || options?.outcome === "unknown";
   }
-}
 
-function unknownOutcome(cause: unknown): ProcessError {
-  return new ProcessError(
-    wire.errors.unknown,
-    "dispatched process request has no confirmed outcome",
-    { cause },
-  );
+  static afterDispatch(cause: unknown): ProcessError {
+    if (
+      cause instanceof ProcessError &&
+      cause.outcomeUnknown &&
+      (cause.code === wire.errors.unknown ||
+        cause.code === wire.errors.cancelled)
+    )
+      return cause;
+    if (
+      (cause instanceof ProcessError && cause.code === wire.errors.cancelled) ||
+      (cause instanceof Error && cause.name === "AbortError")
+    )
+      return ProcessError.cancelledAfterDispatch(cause);
+    return new ProcessError(
+      wire.errors.unknown,
+      "dispatched process request has no confirmed outcome",
+      { cause },
+    );
+  }
+
+  static cancelledAfterDispatch(cause: unknown): ProcessError {
+    return new ProcessError(
+      wire.errors.cancelled,
+      "dispatched process request was cancelled without a confirmed outcome",
+      { cause, outcome: "unknown" },
+    );
+  }
+
+  static fromReply(code: string, message: string): ProcessError {
+    if (!Object.values(wire.errors).includes(code))
+      throw new TypeError("invalid process error code");
+    return new ProcessError(code, message, {
+      outcome: code === wire.errors.cancelled ? "unknown" : undefined,
+    });
+  }
 }
 
 type Dispatch = (
@@ -70,7 +105,7 @@ export class Peer {
     this.#ended.abort(reason);
     for (const call of this.#pending.values()) {
       call.dispose();
-      call.reject(unknownOutcome(reason));
+      call.reject(ProcessError.afterDispatch(reason));
     }
     this.#pending.clear();
     for (const controller of this.#incoming.values()) controller.abort(reason);
@@ -82,7 +117,7 @@ export class Peer {
     this.output.destroy();
   }
 
-  async #send(message: unknown): Promise<void> {
+  #encode(message: unknown): Buffer {
     this.signal.throwIfAborted();
     const data = Buffer.from(stringifyJSON(message) + "\n");
     if (data.length > this.#limit)
@@ -92,6 +127,14 @@ export class Peer {
       );
     if (this.#writing.size >= 2 * wire.maxInFlight)
       throw new ProcessError(wire.errors.capacity, "output capacity exceeded");
+    return data;
+  }
+
+  async #send(message: unknown): Promise<void> {
+    await this.#write(this.#encode(message));
+  }
+
+  async #write(data: Buffer): Promise<void> {
     let failed!: (cause: unknown) => void;
     try {
       await new Promise<void>((resolve, reject) => {
@@ -100,7 +143,7 @@ export class Peer {
         this.output.write(data, (err) => (err ? reject(err) : resolve()));
       });
     } catch (cause) {
-      throw unknownOutcome(cause);
+      throw ProcessError.afterDispatch(cause);
     } finally {
       this.#writing.delete(failed);
     }
@@ -127,11 +170,12 @@ export class Peer {
       throw new ProcessError(wire.errors.capacity, "call capacity exceeded");
     const id = (++this.#next).toString();
     sequence(id);
+    const data = this.#encode({ id, method, params });
     return new Promise((resolve, reject) => {
       const abort = () => {
         // Retain the slot until the original reply or EOF. A cancelled waiter
         // cannot reuse capacity while its remote operation is still running.
-        reject(unknownOutcome(signal.reason));
+        reject(ProcessError.cancelledAfterDispatch(signal.reason));
         void this.#send({ method: wire.methods.cancel, params: { id } }).catch(
           (err) => this.stop(err),
         );
@@ -139,7 +183,7 @@ export class Peer {
       const dispose = () => signal.removeEventListener("abort", abort);
       this.#pending.set(id, { resolve, reject, dispose });
       signal.addEventListener("abort", abort, { once: true });
-      this.#send({ id, method, params }).catch((error) => {
+      this.#write(data).catch((error) => {
         this.#pending.delete(id);
         dispose();
         reject(error);
@@ -170,7 +214,7 @@ export class Peer {
           typeof value.error.message !== "string"
         )
           throw new TypeError("invalid failure");
-        failure = new ProcessError(value.error.code, value.error.message);
+        failure = ProcessError.fromReply(value.error.code, value.error.message);
       }
       this.#pending.delete(id);
       call.dispose();
@@ -229,11 +273,12 @@ export class Peer {
     let reply: unknown;
     try {
       const result = await dispatch(method, params, signal);
-      if (signal.aborted) throw unknownOutcome(signal.reason);
       reply = { id, result };
     } catch (error) {
       const reason =
-        error instanceof ProcessError ? error : unknownOutcome(error);
+        error instanceof ProcessError
+          ? error
+          : ProcessError.afterDispatch(error);
       reply = { id, error: { code: reason.code, message: reason.message } };
     } finally {
       // Once the peer observes the reply it can immediately reuse the slot.

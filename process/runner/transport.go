@@ -20,6 +20,7 @@ import (
 
 const (
 	maxControlBytes           = 4 << 20
+	controlReadBufferBytes    = 4096
 	defaultControlConnections = 128
 	defaultControlTimeout     = 10 * time.Second
 )
@@ -147,7 +148,7 @@ func (s *Server) handle(ctx context.Context, connection net.Conn, release func()
 	if err := connection.SetReadDeadline(time.Now().Add(s.config.ControlTimeout)); err != nil {
 		return
 	}
-	reader := bufio.NewReaderSize(connection, 4096)
+	reader := bufio.NewReaderSize(connection, controlReadBufferBytes)
 	line, err := readLine(reader)
 	if err != nil {
 		_ = s.writeResponse(connection, nil, err)
@@ -287,7 +288,7 @@ func (s *Server) attach(ref AttemptRef) (*process, error) {
 		return nil, ErrUnknown
 	}
 	live := s.processes[ref.AttemptID]
-	if live == nil || live.closing {
+	if live == nil || live.closeState != processOpen {
 		return nil, frame.ErrClosed
 	}
 	if live.attached {

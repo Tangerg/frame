@@ -110,7 +110,7 @@ func (s *Store) ConfirmInstallation(ctx context.Context, id frame.InstallationID
 		return err
 	}
 	if err := s.transaction(ctx, func(tx Executor) error {
-		rows, err := tx.QueryContext(ctx, `SELECT sequence FROM frame_submissions WHERE owner_id=? AND state='committed' AND synchronized=0 AND evidence=? ORDER BY sequence`, s.control.id, []byte(id))
+		rows, err := tx.QueryContext(ctx, `SELECT sequence FROM frame_submissions WHERE owner_id=? AND state=? AND synchronized=0 AND evidence=? ORDER BY sequence`, s.control.id, submissionCommitted, []byte(id))
 		if err != nil {
 			return err
 		}
@@ -182,7 +182,7 @@ func (s *Store) RecoverInstallations(ctx context.Context) ([]frame.InstallationR
 func (s *Store) ConfirmRestoredInstallations(ctx context.Context) error {
 	return s.admission.Maintenance(ctx, func() error {
 		if err := s.transaction(ctx, func(tx Executor) error {
-			_, err := tx.ExecContext(ctx, `UPDATE frame_submissions SET synchronized=1 WHERE owner_id=? AND state!='prepared'`, s.control.id)
+			_, err := tx.ExecContext(ctx, `UPDATE frame_submissions SET synchronized=1 WHERE owner_id=? AND state!=?`, s.control.id, submissionPrepared)
 			return err
 		}); err != nil {
 			return err
@@ -221,15 +221,18 @@ func (s *Store) ApproveUse(ctx context.Context, approval frame.UseApproval) erro
 			return err
 		}
 		if approval.ParentID != "" {
-			var state string
+			var state useState
 			if err := tx.QueryRowContext(ctx, `SELECT state FROM frame_use_approvals WHERE id=?`, approval.ParentID).Scan(&state); err != nil {
 				return err
 			}
-			if state != "approved" {
+			if err := state.validate(); err != nil {
+				return err
+			}
+			if state != useApproved {
 				return frame.ErrClosed
 			}
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO frame_use_approvals(id,request,request_digest,state) VALUES(?,?,?,'approved')`, approval.ID, encoded, value.Hash(encoded))
+		_, err = tx.ExecContext(ctx, `INSERT INTO frame_use_approvals(id,request,request_digest,state) VALUES(?,?,?,?)`, approval.ID, encoded, value.Hash(encoded), useApproved)
 		return err
 	})
 	if err != nil && !errors.Is(err, ErrConflict) && !errors.Is(err, frame.ErrClosed) {
@@ -250,7 +253,7 @@ type UseProof struct {
 }
 
 const useRecords = `SELECT request,request_digest,state,proof FROM frame_use_approvals`
-const protectedUses = useRecords + ` WHERE state='approved' ORDER BY id`
+const protectedUses = useRecords + ` WHERE state=? ORDER BY id`
 
 func (s *Store) Uses(ctx context.Context) ([]UseRecord, error) {
 	return readRecords(ctx, s, useRecords+" ORDER BY id", decodeUse)
@@ -264,13 +267,17 @@ func (s *Store) ExecutionUses(ctx context.Context, id string) ([]UseRecord, erro
 
 func decodeUse(row protectedRecord) (UseRecord, error) {
 	var record UseRecord
+	state := useState(row.state)
+	if err := state.validate(); err != nil {
+		return record, err
+	}
 	if err := jsonv2.Unmarshal(row.request, &record.Approval, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return record, err
 	}
 	if err := record.Approval.Binding.Validate(); err != nil {
 		return record, err
 	}
-	record.Released = row.state == "released"
+	record.Released = state == useReleased
 	if len(row.proof) != 0 {
 		if err := jsonv2.Unmarshal(row.proof, &record.Proof, jsonv2.RejectUnknownMembers(true)); err != nil {
 			return record, err
@@ -295,12 +302,15 @@ func (s *Store) ReleaseUse(ctx context.Context, id string, outcome frame.CloseOu
 	}
 	return s.admission.Maintenance(ctx, func() error {
 		err := s.transaction(ctx, func(tx Executor) error {
-			var state string
+			var state useState
 			var previous []byte
 			if err := tx.QueryRowContext(ctx, `SELECT state,proof FROM frame_use_approvals WHERE id=?`, id).Scan(&state, &previous); err != nil {
 				return err
 			}
-			if state == "released" {
+			if err := state.validate(); err != nil {
+				return err
+			}
+			if state == useReleased {
 				if !bytes.Equal(previous, encoded) {
 					return ErrConflict
 				}
@@ -316,7 +326,7 @@ func (s *Store) ReleaseUse(ctx context.Context, id string, outcome frame.CloseOu
 				}
 			}
 			if outcome.Released {
-				state = "released"
+				state = useReleased
 			}
 			_, err := tx.ExecContext(ctx, `UPDATE frame_use_approvals SET state=?,proof=? WHERE id=?`, state, encoded, id)
 			return err

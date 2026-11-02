@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 
 	"github.com/Tangerg/frame"
@@ -65,6 +66,9 @@ func (b *Bridge) Snapshot(ctx context.Context, token string, names []string) (Sn
 			projection.Candidates = append(projection.Candidates, Candidate{PublicationID: candidate.ID(), Source: candidate.Source(), MetadataJSON: string(metadata), Token: token})
 		}
 		wire.Points = append(wire.Points, projection)
+	}
+	if err := b.checkResponse(wire); err != nil {
+		return Snapshot{}, err
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -194,7 +198,7 @@ func (b *Bridge) Acquire(ctx context.Context, token string, request AcquireReque
 	if err != nil {
 		return UseGrant{}, err
 	}
-	return b.deliverUse(ctx, session, entry, use, operation)
+	return b.deliverUse(ctx, session, entry, use, request.OperationID, operation)
 }
 
 func (b *Bridge) useConfig(session *realmSession, entry *browserExecution, parentID string) (frame.UseConfig, error) {
@@ -213,8 +217,8 @@ func (b *Bridge) useConfig(session *realmSession, entry *browserExecution, paren
 	return config, nil
 }
 
-func (b *Bridge) deliverUse(ctx context.Context, session *realmSession, entry *browserExecution, use *frame.Use, operation *controlOperation) (UseGrant, error) {
-	grant := UseGrant{ID: use.ID(), ApprovalToken: b.signer.approval(use.ID()), Authority: b.authority, Realm: session.realm, Execution: entry.plan.Execution, ScopeID: entry.plan.ScopeID, ScopeGeneration: entry.plan.ScopeGeneration, Objects: []ObjectRef{}}
+func (b *Bridge) deliverUse(ctx context.Context, session *realmSession, entry *browserExecution, use *frame.Use, operationID string, operation *controlOperation) (UseGrant, error) {
+	grant := UseGrant{OperationID: operationID, ParentUseID: operation.parentID, ID: use.ID(), ApprovalToken: b.signer.approval(use.ID()), Authority: b.authority, Realm: session.realm, Execution: entry.plan.Execution, ScopeID: entry.plan.ScopeID, ScopeGeneration: entry.plan.ScopeGeneration, Objects: []ObjectRef{}}
 	for _, source := range use.Sources() {
 		err := frame.BorrowExport(ctx, use, source, func(_ context.Context, object Object) error {
 			grant.Objects = append(grant.Objects, object.Reference)
@@ -224,6 +228,20 @@ func (b *Bridge) deliverUse(ctx context.Context, session *realmSession, entry *b
 			use.BeginClose(err)
 			return UseGrant{}, err
 		}
+	}
+	if err := b.checkRequest(validateUseMethod, grant); err != nil {
+		use.BeginClose(err)
+		return UseGrant{}, err
+	}
+	instances := make([]string, 0, len(grant.Objects))
+	for _, object := range grant.Objects {
+		if !slices.Contains(instances, object.Export.InstanceID) {
+			instances = append(instances, object.Export.InstanceID)
+		}
+	}
+	if err := b.checkExitCapacity(entry.plan, UseScope, grant.ID, instances); err != nil {
+		use.BeginClose(err)
+		return UseGrant{}, err
 	}
 	retained := &browserUse{grant: clone(grant), use: use}
 	resource, err := use.Lifetime().Own(frame.Resource{Name: "browser use " + use.ID(), Cancel: func(error) { b.fence(entry) }, Close: func(context.Context) (frame.ReleaseState, error) {
@@ -318,6 +336,9 @@ func (b *Bridge) Route(ctx context.Context, token string, grant UseGrant, source
 		return RouteGrant{}, err
 	}
 	route := RouteGrant{ID: original.ID(), Use: grant, Source: source, Receiver: receiver}
+	if err := b.checkRequest(validateRouteMethod, route); err != nil {
+		return RouteGrant{}, err
+	}
 	b.mu.Lock()
 	if b.uses[grant.ID] != retained || retained.releaseID != "" {
 		b.mu.Unlock()

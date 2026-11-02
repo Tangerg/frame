@@ -16,10 +16,18 @@ const managedVersion = managedNamespace + "portable/1"
 
 var managedExportName = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,63}$`)
 
+type managedComposition string
+
+const (
+	managedCollection managedComposition = "collection"
+	managedSelection  managedComposition = "selection"
+	managedDecoration managedComposition = "decoration"
+)
+
 type managedDescriptor struct {
 	Protocol    string                      `json:"protocol"`
 	Reference   string                      `json:"reference"`
-	Composition string                      `json:"composition"`
+	Composition managedComposition          `json:"composition"`
 	Scope       string                      `json:"scope"`
 	Methods     []portable.MethodDescriptor `json:"methods"`
 }
@@ -43,7 +51,7 @@ func ParseManagedContract(data []byte) (*ManagedContract, error) {
 		return nil, frame.ErrContractMismatch
 	}
 	switch descriptor.Composition {
-	case "collection", "selection", "decoration":
+	case managedCollection, managedSelection, managedDecoration:
 	default:
 		return nil, frame.ErrContractMismatch
 	}

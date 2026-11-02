@@ -26,6 +26,7 @@ import (
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
 	"github.com/Tangerg/frame/examples/document"
+	"github.com/Tangerg/frame/internal/localfile"
 	"github.com/Tangerg/frame/sqlite"
 	"github.com/Tangerg/frame/value"
 )
@@ -279,14 +280,17 @@ func writeContracts(path string, contracts document.Contracts) error {
 }
 
 func readBounded(path string, maximum int64) ([]byte, error) {
-	file, err := os.Open(path)
+	file, err := localfile.OpenRegular(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 	stat, err := file.Stat()
-	if err != nil || !stat.Mode().IsRegular() || stat.Size() > maximum {
-		return nil, errors.Join(err, errors.New("authorhost: input is not a bounded regular file"))
+	if err != nil {
+		return nil, err
+	}
+	if stat.Size() > maximum {
+		return nil, errors.New("authorhost: input exceeds its byte budget")
 	}
 	data, err := io.ReadAll(io.LimitReader(file, maximum+1))
 	if int64(len(data)) > maximum {

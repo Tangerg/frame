@@ -98,6 +98,88 @@ type Handler = (
   context: CallContext<unknown>,
 ) => Awaitable<unknown>;
 
+// Each call owns its accepted deliveries and first failure. A producer's final
+// result cannot revoke a rejection or bypass a consumer still using the chunk.
+class StreamCall {
+  readonly #stop = new AbortController();
+  readonly signal: AbortSignal;
+  #closed = false;
+  #pending?: Promise<void>;
+  #failure?: ProcessError;
+
+  constructor(parent: AbortSignal) {
+    this.signal = AbortSignal.any([parent, this.#stop.signal]);
+  }
+
+  #fail(cause: unknown): ProcessError {
+    this.#failure ??= ProcessError.afterDispatch(cause);
+    this.#stop.abort(this.#failure);
+    return this.#failure;
+  }
+
+  deliver(
+    wait: AbortSignal,
+    consume: (signal: AbortSignal) => Awaitable<void>,
+  ): Promise<void> {
+    let delivery: Promise<void>;
+    if (this.#closed) {
+      delivery = Promise.reject(
+        new ProcessError(wire.errors.closed, "stream is closed"),
+      );
+    } else if (this.#pending) {
+      delivery = Promise.reject(
+        this.#fail(new Error("concurrent chunk delivery")),
+      );
+    } else {
+      const active = AbortSignal.any([this.signal, wait]);
+      delivery = Promise.resolve()
+        .then(async () => {
+          try {
+            active.throwIfAborted();
+            await consume(active);
+            active.throwIfAborted();
+          } catch (cause) {
+            throw this.#fail(cause);
+          }
+        })
+        .finally(() => {
+          this.#pending = undefined;
+        });
+      this.#pending = delivery;
+    }
+    // The call still observes a rejected delivery when its producer forgets to
+    // await emit; an unhandled promise must not become a second failure path.
+    void delivery.catch(() => {});
+    return delivery;
+  }
+
+  async run<T>(invoke: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    let response:
+      { status: "returned"; value: T } | { status: "failed"; cause: unknown };
+    try {
+      response = { status: "returned", value: await invoke(this.signal) };
+    } catch (cause) {
+      response = { status: "failed", cause };
+      this.#stop.abort(cause);
+    }
+    this.#closed = true;
+    const pending = this.#pending;
+    if (pending) {
+      this.#fail(
+        new Error(
+          "stream ended with pending delivery",
+          response.status === "failed" ? { cause: response.cause } : undefined,
+        ),
+      );
+      await pending.catch(() => {});
+    }
+    this.#stop.abort(new ProcessError(wire.errors.closed, "stream is closed"));
+    if (this.#failure) throw this.#failure;
+    if (response.status === "failed") throw response.cause;
+    return response.value;
+  }
+}
+
 function digest(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
@@ -121,7 +203,10 @@ function checkPortableRef(
 
 class Instance<I extends Imports, E extends Exports> {
   readonly lifetime = new Lifetime("process unit");
-  readonly #streams = new Map<string, (chunk: unknown) => Promise<void>>();
+  readonly #streams = new Map<
+    string,
+    (chunk: unknown, wait: AbortSignal) => Promise<void>
+  >();
   #phase: Phase = "new";
   #activate?: (work: Activation) => Awaitable<void>;
   #exports: Readonly<Record<string, Record<string, Handler>>> = Object.freeze(
@@ -153,38 +238,35 @@ class Instance<I extends Imports, E extends Exports> {
               const signal = options.signal
                 ? AbortSignal.any([this.lifetime.signal, options.signal])
                 : this.lifetime.signal;
-              signal.throwIfAborted();
               if (Boolean(method.validateChunk) !== Boolean(options.onChunk))
                 throw new TypeError(
                   "stream receiver differs from the declared method",
                 );
               const stream = options.onChunk ? randomUUID() : undefined;
-              if (stream) {
-                let busy = false;
-                this.#streams.set(stream, async (chunk: unknown) => {
-                  signal.throwIfAborted();
-                  if (busy)
-                    throw new ProcessError(
-                      wire.errors.invalid,
-                      "concurrent stream delivery",
-                    );
-                  busy = true;
-                  try {
+              const call = stream ? new StreamCall(signal) : undefined;
+              if (stream && call) {
+                this.#streams.set(stream, (chunk, wait) =>
+                  call.deliver(wait, async () => {
                     method.validateChunk!(chunk);
                     await options.onChunk!(chunk);
-                  } finally {
-                    busy = false;
-                  }
-                });
+                  }),
+                );
               }
-              try {
+              const invoke = async (active: AbortSignal) => {
                 const result = await this.peer.request(
                   wire.methods.call,
                   { handle, member: descriptor.name, input, stream },
-                  signal,
+                  active,
                 );
-                method.validateOutput(result);
+                try {
+                  method.validateOutput(result);
+                } catch (cause) {
+                  throw ProcessError.afterDispatch(cause);
+                }
                 return result;
+              };
+              try {
+                return await (call ? call.run(invoke) : invoke(signal));
               } finally {
                 if (stream) this.#streams.delete(stream);
               }
@@ -389,7 +471,7 @@ class Instance<I extends Imports, E extends Exports> {
             ? this.#streams.get(params.stream)
             : undefined;
         if (!receive) throw new TypeError("unknown stream handle");
-        await receive(params.value);
+        await receive(params.value, signal);
         return true;
       }
       case wire.methods.call:
@@ -399,65 +481,71 @@ class Instance<I extends Imports, E extends Exports> {
     }
   }
 
-  async #call(params: unknown, signal: AbortSignal): Promise<unknown> {
+  #boundCall(params: unknown) {
     this.#expect("active");
-    exactFields(params, ["handle", "member", "input"], ["stream"]);
-    if (
-      !validToken(params.handle) ||
-      !validToken(params.member) ||
-      !Object.hasOwn(this.#exports, params.handle)
-    )
-      throw new ProcessError(wire.errors.contract, "unknown bound member");
-    const service = this.unit.exports[params.handle]!;
-    const operation = service.method(params.member);
-    const handler = this.#exports[params.handle]![params.member]!;
-    operation.validateInput(params.input);
-    if (
-      operation.validateChunk
-        ? !validToken(params.stream)
-        : params.stream !== undefined
-    )
-      throw new TypeError("stream mode mismatch");
+    try {
+      exactFields(params, ["handle", "member", "input"], ["stream"]);
+      if (
+        !validToken(params.handle) ||
+        !validToken(params.member) ||
+        !Object.hasOwn(this.#exports, params.handle)
+      )
+        throw new TypeError("unknown bound member");
+      const service = this.unit.exports[params.handle]!;
+      const operation = service.method(params.member);
+      const handler = this.#exports[params.handle]![params.member]!;
+      operation.validateInput(params.input);
+      if (
+        operation.validateChunk
+          ? !validToken(params.stream)
+          : params.stream !== undefined
+      )
+        throw new TypeError("stream mode mismatch");
+      return { operation, handler, input: params.input, stream: params.stream };
+    } catch (cause) {
+      throw new ProcessError(
+        wire.errors.contract,
+        "service contract mismatch",
+        { cause },
+      );
+    }
+  }
+
+  async #call(params: unknown, signal: AbortSignal): Promise<unknown> {
+    const { operation, handler, input, stream } = this.#boundCall(params);
     return this.lifetime.run(async (lifetimeSignal) => {
       const active = AbortSignal.any([lifetimeSignal, signal]);
-      let open = true,
-        busy = false;
-      try {
-        active.throwIfAborted();
-        const result = await handler(params.input, {
-          signal: active,
-          emit: async (value) => {
-            if (!open || busy || !operation.validateChunk)
-              throw new TypeError("chunk delivery not available");
-            active.throwIfAborted();
-            busy = true;
-            try {
-              operation.validateChunk(value);
-              if (
-                (await this.peer.request(
-                  wire.methods.chunk,
-                  { stream: params.stream, value },
-                  active,
-                )) !== true
-              )
-                throw new Error("chunk not acknowledged");
-            } finally {
-              busy = false;
-            }
-          },
-        });
-        if (busy) throw new Error("unjoined chunk delivery");
-        operation.validateOutput(result);
-        return result;
-      } catch (error) {
-        if (error instanceof ProcessError) throw error;
-        throw new ProcessError(
-          wire.errors.unknown,
-          "operation outcome unconfirmed",
-        );
-      } finally {
-        open = false;
-      }
+      const call = operation.validateChunk ? new StreamCall(active) : undefined;
+      const invoke = async (running: AbortSignal) => {
+        running.throwIfAborted();
+        try {
+          const result = await handler(input, {
+            signal: running,
+            emit: (chunk) => {
+              if (!call || !operation.validateChunk)
+                return Promise.reject(
+                  new TypeError("method does not support chunk delivery"),
+                );
+              return call.deliver(running, async (delivery) => {
+                operation.validateChunk!(chunk);
+                if (
+                  (await this.peer.request(
+                    wire.methods.chunk,
+                    { stream, value: chunk },
+                    delivery,
+                  )) !== true
+                )
+                  throw new Error("chunk not acknowledged");
+              });
+            },
+          });
+          operation.validateOutput(result);
+          return result;
+        } catch (cause) {
+          throw ProcessError.afterDispatch(cause);
+        }
+      };
+      return call ? call.run(invoke) : invoke(active);
     });
   }
 }

@@ -70,7 +70,7 @@ type schemaReference struct {
 	path   string
 }
 
-var schemaAnnotations = map[string]bool{
+var scalarSchemaKeywords = map[string]bool{
 	"$schema": true, "$comment": true, "title": true, "description": true,
 	"default": true, "examples": true, "readOnly": true, "writeOnly": true,
 	"deprecated": true, "contentEncoding": true, "contentMediaType": true,
@@ -148,6 +148,8 @@ func (g *schemaGraph) visitKeyword(index int, key string, field any, path string
 			return errors.New("portable: schema pattern must be a string")
 		}
 		return checkPattern(pattern)
+	case "format":
+		return checkFormat(field)
 	case "minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties":
 		number, ok := field.(json.Number)
 		if !ok {
@@ -164,7 +166,7 @@ func (g *schemaGraph) visitKeyword(index int, key string, field any, path string
 	case "uniqueItems":
 		g.nodes[index].unique, _ = field.(bool)
 	default:
-		if !schemaAnnotations[key] {
+		if !scalarSchemaKeywords[key] {
 			return fmt.Errorf("portable: unsupported schema keyword %q", key)
 		}
 	}
@@ -371,51 +373,4 @@ func equalityWeight(value any) uint64 {
 
 func pointerToken(value string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(value, "~", "~0"), "/", "~1")
-}
-
-// Fixed-width atoms and fixed repetitions cover identifiers without exposing
-// Node's backtracking engine to author-supplied alternatives or variable repeats.
-func checkPattern(pattern string) error {
-	limits := ProfileLimits()
-	if len(pattern) > limits.MaxPatternBytes {
-		return limit("pattern bytes", limits.MaxPatternBytes)
-	}
-	inClass := false
-	for index := 0; index < len(pattern); index++ {
-		char := pattern[index]
-		if char == '\\' {
-			index++
-			if index == len(pattern) || strings.ContainsRune("0123456789kKpP", rune(pattern[index])) {
-				return errors.New("portable: unsupported pattern escape")
-			}
-			continue
-		}
-		if char == '[' {
-			inClass = true
-			continue
-		}
-		if char == ']' {
-			inClass = false
-			continue
-		}
-		if inClass {
-			continue
-		}
-		if strings.ContainsRune("*+?|()", rune(char)) {
-			return errors.New("portable: patterns require fixed-width atoms and repetitions")
-		}
-		if char == '{' {
-			end := strings.IndexByte(pattern[index+1:], '}')
-			if end == -1 {
-				return errors.New("portable: pattern repetition is incomplete")
-			}
-			raw := pattern[index+1 : index+1+end]
-			count, err := strconv.Atoi(raw)
-			if err != nil || strings.ContainsFunc(raw, func(r rune) bool { return r < '0' || r > '9' }) || count < 0 || count > limits.MaxPatternRepeat {
-				return errors.New("portable: pattern requires a bounded fixed repetition")
-			}
-			index += end + 1
-		}
-	}
-	return nil
 }

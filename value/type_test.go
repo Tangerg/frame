@@ -141,7 +141,6 @@ func TestFieldProjectionsRefusePointerCycles(t *testing.T) {
 		walk func()
 	}{
 		{name: "fields", walk: func() { Fields(typeOf) }},
-		{name: "embeds", walk: func() { Embeds(typeOf) }},
 	} {
 		t.Run(projection.name, func(t *testing.T) {
 			defer func() {

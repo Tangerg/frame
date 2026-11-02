@@ -75,11 +75,14 @@ func (s *ManagedService) ValidateInput(ctx context.Context, member string, input
 	return nil
 }
 
+const maxCommandIDCharacters = 256
+
 func validCommandID(id string) bool {
-	return id != "" && utf8.ValidString(id) && utf8.RuneCountInString(id) <= 256
+	return id != "" && utf8.ValidString(id) && utf8.RuneCountInString(id) <= maxCommandIDCharacters
 }
 
-// Call implements process.Service for queries. Command binds the explicit logical command ID.
+// Queries need no durable command identity. Mutations must use Command so that
+// the original business owner can reconcile a missing response without replay.
 func (s *ManagedService) Call(ctx context.Context, member string, input framevalue.JSON) (framevalue.JSON, error) {
 	return s.invoke(ctx, portable.Query, "", member, input, nil)
 }
@@ -92,6 +95,12 @@ func (s *ManagedService) Command(ctx context.Context, id, member string, input f
 }
 
 func (s *ManagedService) invoke(ctx context.Context, kind portable.MethodKind, id, member string, input framevalue.JSON, emit process.Emit) (output framevalue.JSON, returned error) {
+	if ctx == nil {
+		return framevalue.JSON{}, frame.ErrInvalid
+	}
+	if err := context.Cause(ctx); err != nil {
+		return framevalue.JSON{}, err
+	}
 	method, ok := s.contract.capability.Method(member)
 	if !ok || method.Kind() != kind || (len(method.Descriptor().Stream) != 0) != (emit != nil) || (emit != nil && s.openStream == nil) {
 		return framevalue.JSON{}, fmt.Errorf("%w: managed member %q does not support this invocation", frame.ErrContractMismatch, member)
@@ -120,14 +129,19 @@ func (s *ManagedService) invoke(ctx context.Context, kind portable.MethodKind, i
 		}
 	}
 	var raw jsontext.Value
+	if err := context.Cause(ctx); err != nil {
+		return framevalue.JSON{}, err
+	}
 	if emit != nil {
 		raw, err = s.stream(ctx, method, params, emit)
 	} else {
 		raw, err = managedRaw(ctx, s.session, managedInvoke, params)
-		err = managedDispatchError(method, err)
+		if err != nil {
+			err = managedDispatchError(errors.Join(err, context.Cause(ctx)))
+		}
 	}
 	if err == nil {
-		err = managedDispatchError(method, method.ValidateOutput(raw))
+		err = managedDispatchError(method.ValidateOutput(raw))
 	}
 	if err != nil {
 
@@ -136,8 +150,8 @@ func (s *ManagedService) invoke(ctx context.Context, kind portable.MethodKind, i
 	return framevalue.ParseJSON(raw)
 }
 
-func managedDispatchError(method *portable.Method, err error) error {
-	if err != nil && method.Kind() == portable.Mutation {
+func managedDispatchError(err error) error {
+	if err != nil {
 		if _, refused := errors.AsType[*Refusal](err); !refused {
 			return errors.Join(process.ErrOutcomeUnknown, err)
 		}

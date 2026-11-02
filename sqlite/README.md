@@ -35,9 +35,13 @@ entry from the callback. Plugin effects and network calls run after Commit retur
 For a later transition identified by the original business row, `Owner.Update`
 admits the row's compare-and-set in its own transaction. When its commit cannot
 be proved, recovery reads the original row before any new admission.
-`Store.WithTransaction` joins business adapters to the executor issued by this
-Store. Both the executor and the joined context expire with their respective
-callbacks. Standalone `RunReadSnapshot` enables SQLite query-only mode.
+`Store.Read` exposes only a scoped `Reader`; its queries run with SQLite query-only
+mode, including queries that try to execute DML. Owner callbacks receive a scoped
+`Executor`, and every issued capability and cursor expires when its callback ends.
+The Store never exposes its pool, so pool closure, independent writers and
+connection settings remain with its original lifecycle owner. Application adapters
+compose by passing the issued capability explicitly. The standalone transaction
+helpers apply only to separately owned databases returned by `OpenSchema`.
 
 The mutation returns bounded evidence locating its committed change. This is
 submission evidence, not a plugin's business receipt. Actual business results stay
@@ -47,9 +51,26 @@ preserves Committed and raises the recovery barrier.
 
 Committed and NotCommitted are terminal. Repeating the same identity returns its
 original conclusion; changing its request is a conflict. Context cancellation is
-checked before COMMIT. Transaction rollback or connection disposal is joined
+checked before COMMIT. Cleanup responsibility starts before BEGIN or a connection
+mode change is attempted, since a failed acknowledgement does not prove that the
+change failed. Transaction rollback or connection disposal is joined
 before the owner releases admission. An unresolved connection or storage error
 raises RecoveryRequired instead of authorizing a retry.
+
+Read-mode restoration failures belong to that original connection owner, including
+nested standalone read scopes. Catching a callback panic or ignoring its returned
+error cannot clear this cleanup obligation: the owner refuses COMMIT and discards
+the uncertain connection after rollback. Propagated panics retain both their
+original cause and any mode-restoration diagnostics.
+
+Overlapping `RunReadSnapshot` callbacks share read-mode leases on their original
+connection, including scopes entered with an already read-only context. Only the
+last lease restores the previous mode; a sibling or nested reader cannot regain
+write access because another reader returned first. Callbacks run without holding
+the lease mutex, so nested scopes do not deadlock. Once the transaction callback
+returns, its owner refuses new read leases and joins those already admitted before
+COMMIT or rollback. Accepted callbacks must finish their own work; cancellation
+does not let transaction settlement bypass them.
 
 `Close` seals new Store transactions and joins those already admitted. A failed
 rollback cannot return its original connection to the pool. The Store retains

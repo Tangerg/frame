@@ -198,11 +198,14 @@ func (e *bridgeEnvironment) acquire(plan browser.LocalPlan, operation string) (b
 	if err != nil {
 		e.t.Fatal(err)
 	}
+	if grant.OperationID != request.OperationID || grant.ParentUseID != request.ParentUseID {
+		e.t.Fatalf("grant lost its original operation or parent: %+v", grant)
+	}
 	return request, grant
 }
 
 func executionProof(plan browser.LocalPlan) browser.CloseProof {
-	return browser.CloseProof{CloseID: "close:" + plan.Execution.ID, ProofID: "proof:" + plan.Execution.ID, Authority: plan.Authority, Realm: plan.Realm, Execution: plan.Execution, ScopeID: plan.ScopeID, ScopeGeneration: plan.ScopeGeneration, ScopeKind: browser.ExecutionScope, Instances: []string{plan.Units[0].Instance.ID}, Status: browser.Released, Failures: []string{}}
+	return browser.CloseProof{CloseID: "close:" + plan.Execution.ID, ProofID: "proof:" + plan.Execution.ID, Authority: plan.Authority, Realm: plan.Realm, Execution: plan.Execution, ScopeID: plan.ScopeID, ScopeGeneration: plan.ScopeGeneration, ScopeKind: browser.ExecutionScope, Instances: []string{plan.Units[0].Instance.ID}, Status: browser.Released}
 }
 func useProof(plan browser.LocalPlan, grant browser.UseGrant) browser.CloseProof {
 	proof := executionProof(plan)
@@ -324,7 +327,7 @@ func TestExactBindingChildKeepsOriginalParentExecutionOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if child.Execution != parentPlan.Execution || child.ScopeID != parentPlan.ScopeID || len(child.Objects) != 1 || child.Objects[0].Export.InstanceID != providerPlan.Execution.ID {
+	if child.OperationID != "child" || child.ParentUseID != parent.ID || child.Execution != parentPlan.Execution || child.ScopeID != parentPlan.ScopeID || len(child.Objects) != 1 || child.Objects[0].Export.InstanceID != providerPlan.Execution.ID {
 		t.Fatalf("child ownership was replaced by provider ownership: %+v", child)
 	}
 	if _, err := e.bridge.Prove(e.ctx, e.credentials.Token, useProof(parentPlan, child)); err != nil {
@@ -547,8 +550,11 @@ func TestHostReconstructionAcceptsOriginalProofWithoutRecreation(t *testing.T) {
 		t.Fatalf("original open operation created another Realm: %+v %v", reopened, err)
 	}
 	proof := executionProof(fixture.Plan)
-	result, err := e.bridge.Reconnect(e.ctx, credentials.Token, browser.ReconnectRequest{Authority: fixture.Credentials.Authority, Realm: fixture.Credentials.Realm, PendingProofs: []browser.CloseProof{proof}, Executions: []browser.Execution{}})
-	if err != nil || result.Mode != browser.CleanupOnly || len(result.AcceptedProofs) != 1 {
+	if _, err := e.bridge.Prove(e.ctx, credentials.Token, proof); err != nil {
+		t.Fatal(err)
+	}
+	result, err := e.bridge.Reconnect(e.ctx, credentials.Token, browser.ReconnectRequest{Authority: fixture.Credentials.Authority, Realm: fixture.Credentials.Realm, Executions: []browser.Execution{}})
+	if err != nil || result.Mode != browser.CleanupOnly {
 		t.Fatalf("recovery: %+v %v", result, err)
 	}
 	dependencies, err := e.store.ExecutionDependencies(e.ctx)

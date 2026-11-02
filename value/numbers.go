@@ -17,13 +17,6 @@ import (
 	"errors"
 )
 
-// Number carries an exact integer literal as the JSON-schema bound type without
-// exposing encoding/json at the call site: a caller that must set a
-// jsonschema.Schema bound uses this so that type stays confined to this one owner.
-func Number(literal string) jsonv1.Number {
-	return jsonv1.Number(literal)
-}
-
 // Numbers decodes every JSON number reaching an any as a [jsonv1.Number]
 // holding the original literal. It changes nothing else: the unmarshaler
 // declines other kinds before reading a token, which is how encoding/json/v2 is

@@ -56,8 +56,7 @@ type Config struct {
 	Source        Source
 	CloseTimeout  time.Duration
 	MaxFrameBytes int
-	// Protocol defaults to the neutral Frame stdio protocol.
-	Protocol Protocol
+	Protocol      Protocol
 }
 
 type Driver struct {
@@ -79,7 +78,6 @@ type execution struct {
 	cancel   context.CancelCauseFunc
 }
 
-// New binds one wire protocol to the durable local process authority.
 func New(config Config) (*Driver, error) {
 	if nilDependency(config.Runner) || config.Store == nil || nilDependency(config.Source) || config.CloseTimeout <= 0 || config.MaxFrameBytes <= 0 {
 		return nil, fmt.Errorf("%w: process driver requires runner, store, source and explicit limits", frame.ErrInvalid)

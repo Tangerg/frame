@@ -32,6 +32,7 @@ export interface Converted {
 }
 
 export interface Credentials {
+  readonly maxMessageBytes: number;
   readonly authority: Authority;
   readonly realm: Realm;
   readonly token: string;

@@ -141,7 +141,7 @@ func (a *App) restore(ctx context.Context, directory string, trustPreview func(v
 		return err
 	}
 	var initialized bool
-	if err := a.Store.Read(ctx, func(tx sqlite.Executor) error {
+	if err := a.Store.Read(ctx, func(tx sqlite.Reader) error {
 		return tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM document_bootstrap)`).Scan(&initialized)
 	}); err != nil {
 		return err

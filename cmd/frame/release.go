@@ -85,11 +85,33 @@ type inspection struct {
 	ArchiveDigest  value.Digest          `json:"archiveDigest"`
 	ReleaseDigest  value.Digest          `json:"releaseDigest"`
 	Manifest       distribution.Manifest `json:"manifest"`
-	Integrity      string                `json:"integrity"`
-	HostSupport    string                `json:"hostProfileSupport"`
-	PublisherTrust string                `json:"publisherTrust"`
-	Execution      string                `json:"execution"`
+	Integrity      integrityStatus       `json:"integrity"`
+	HostSupport    hostSupportStatus     `json:"hostProfileSupport"`
+	PublisherTrust publisherTrustStatus  `json:"publisherTrust"`
+	Execution      executionStatus       `json:"execution"`
 }
+
+type integrityStatus string
+type hostSupportStatus string
+type publisherTrustStatus string
+type executionStatus string
+type diagnosticCode string
+
+const (
+	integrityVerified      integrityStatus      = "verified"
+	hostSupportNotAssessed hostSupportStatus    = "not_assessed"
+	publisherNotAssessed   publisherTrustStatus = "not_assessed"
+	publisherPinnedArchive publisherTrustStatus = "pinned_archive"
+	executionNotAuthorized executionStatus      = "not_authorized"
+
+	diagnosticUntrusted        diagnosticCode = "untrusted"
+	diagnosticIntegrity        diagnosticCode = "integrity"
+	diagnosticCapacity         diagnosticCode = "capacity"
+	diagnosticNotFound         diagnosticCode = "not_found"
+	diagnosticAlreadyExists    diagnosticCode = "already_exists"
+	diagnosticContractMismatch diagnosticCode = "contract_mismatch"
+	diagnosticInvalidRequest   diagnosticCode = "invalid_request"
+)
 
 type publisherPolicy struct {
 	Archives []value.Digest `json:"allowedArchiveDigests"`
@@ -149,7 +171,7 @@ func inspectCommand(args []string, output io.Writer, verify bool) error {
 	if err != nil {
 		return err
 	}
-	result := inspection{ArchiveDigest: digest, ReleaseDigest: release.Digest, Manifest: release.Manifest, Integrity: "verified", PublisherTrust: "not_assessed", HostSupport: "not_assessed", Execution: "not_authorized"}
+	result := inspection{ArchiveDigest: digest, ReleaseDigest: release.Digest, Manifest: release.Manifest, Integrity: integrityVerified, PublisherTrust: publisherNotAssessed, HostSupport: hostSupportNotAssessed, Execution: executionNotAuthorized}
 	if policyPath != "" {
 		data, err := boundedFile(policyPath, limits.ManifestBytes)
 		if err != nil {
@@ -162,25 +184,25 @@ func inspectCommand(args []string, output io.Writer, verify bool) error {
 		if !slices.Contains(policy.Archives, digest) {
 			return fmt.Errorf("%w: archive digest is not approved", distribution.ErrUntrusted)
 		}
-		result.PublisherTrust = "pinned_archive"
+		result.PublisherTrust = publisherPinnedArchive
 	}
 	return json.MarshalWrite(output, result)
 }
 
-func diagnosticCode(err error) string {
+func classifyDiagnostic(err error) diagnosticCode {
 	switch {
 	case errors.Is(err, distribution.ErrUntrusted):
-		return "untrusted"
+		return diagnosticUntrusted
 	case errors.Is(err, distribution.ErrIntegrity), errors.Is(err, value.ErrInvalidDigest):
-		return "integrity"
+		return diagnosticIntegrity
 	case errors.Is(err, distribution.ErrCapacity):
-		return "capacity"
+		return diagnosticCapacity
 	case errors.Is(err, os.ErrNotExist):
-		return "not_found"
+		return diagnosticNotFound
 	case errors.Is(err, os.ErrExist):
-		return "already_exists"
+		return diagnosticAlreadyExists
 	case errors.Is(err, frame.ErrContractMismatch):
-		return "contract_mismatch"
+		return diagnosticContractMismatch
 	}
-	return "invalid_request"
+	return diagnosticInvalidRequest
 }

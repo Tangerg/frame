@@ -14,22 +14,11 @@ type txKey struct{ database *sql.DB }
 type transaction struct {
 	tx       Executor
 	readOnly bool
+	scope    *connectionScope
 }
 
-func (t transaction) checkActive() error {
-	if access, ok := t.tx.(*transactionAccess); ok {
-		access.mu.RLock()
-		defer access.mu.RUnlock()
-		if access.owner == nil {
-			return sql.ErrTxDone
-		}
-	}
-	return nil
-}
-
-// Connection returns the transaction carried by [RunInTx] for this exact database,
-// else the shared pool db. A store method MUST route through this (not the bare
-// s.db) for any statement that should join a caller's cross-store transaction.
+// Standalone database adapters use this exact database identity to join their
+// caller's write-set. Frame Store callbacks receive their scoped executor instead.
 func Connection(ctx context.Context, db *sql.DB) Executor {
 	if owned, ok := ctx.Value(txKey{database: db}).(transaction); ok {
 		return owned.tx
@@ -44,9 +33,6 @@ func RunInTx(ctx context.Context, db *sql.DB, fn func(context.Context) error) er
 		return err
 	}
 	if owned, ok := ctx.Value(txKey{database: db}).(transaction); ok {
-		if err := owned.checkActive(); err != nil {
-			return err
-		}
 		if owned.readOnly {
 			return errors.New("sqlite: write transaction cannot enter a read snapshot")
 		}
@@ -66,14 +52,8 @@ func RunReadSnapshot(ctx context.Context, db *sql.DB, read func(context.Context)
 		return err
 	}
 	if owned, ok := ctx.Value(txKey{database: db}).(transaction); ok {
-		if err := owned.checkActive(); err != nil {
-			return err
-		}
-		if owned.readOnly {
-			return errors.Join(read(ctx), cancellationError(ctx))
-		}
 		owned.readOnly = true
-		return withQueryOnly(ctx, owned.tx, func() error {
+		return owned.scope.read(ctx, func() error {
 			return errors.Join(read(context.WithValue(ctx, txKey{database: db}, owned)), cancellationError(ctx))
 		})
 	}
@@ -109,18 +89,18 @@ func runIndependentTx(ctx context.Context, db *sql.DB, options *sql.TxOptions, f
 	if err != nil {
 		return errors.Join(err, discardConnection(connection), cancellationError(ctx))
 	}
+	scope := newConnectionScope(tx)
 	defer func() {
+		recovered := recover()
+		scope.seal()
 		rollbackErr := rollbackTransaction(tx)
-		if rollbackErr != nil || errors.Is(err, errReadModeUnconfirmed) {
+		if rollbackErr != nil || scope.failure() != nil {
 			rollbackErr = errors.Join(rollbackErr, discardConnection(connection))
 		}
-		if recovered := recover(); recovered != nil {
+		rollbackErr = scope.include(rollbackErr)
+		if recovered != nil {
 			if rollbackErr != nil {
-				panicErr, ok := recovered.(error)
-				if !ok {
-					panicErr = fmt.Errorf("sqlite: transaction panicked: %v", recovered)
-				}
-				panic(errors.Join(panicErr, rollbackErr, cancellationError(ctx)))
+				panic(errors.Join(panicError(recovered), rollbackErr, cancellationError(ctx)))
 			}
 			panic(recovered)
 		}
@@ -128,14 +108,15 @@ func runIndependentTx(ctx context.Context, db *sql.DB, options *sql.TxOptions, f
 	}()
 	if err = cancellationError(ctx); err == nil {
 		readOnly := options != nil && options.ReadOnly
-		scoped := context.WithValue(ctx, txKey{database: db}, transaction{tx: tx, readOnly: readOnly})
+		scoped := context.WithValue(ctx, txKey{database: db}, transaction{tx: tx, readOnly: readOnly, scope: scope})
 		if readOnly {
-			err = withQueryOnly(scoped, tx, func() error { return fn(scoped) })
+			err = scope.read(scoped, func() error { return fn(scoped) })
 		} else {
 			err = fn(scoped)
 		}
 	}
-	err = errors.Join(err, cancellationError(ctx))
+	scope.seal()
+	err = scope.include(errors.Join(err, cancellationError(ctx)))
 	if err != nil {
 		return err
 	}
@@ -145,27 +126,11 @@ func runIndependentTx(ctx context.Context, db *sql.DB, options *sql.TxOptions, f
 	return nil
 }
 
-var errReadModeUnconfirmed = errors.New("sqlite: connection read mode could not be restored")
-
-// modernc's ReadOnly option selects a deferred BEGIN. SQLite's query_only
-// setting enforces the read scope even when a trusted adapter issues DML directly.
-func withQueryOnly(ctx context.Context, executor Executor, read func() error) (err error) {
-	var previous int
-	if err := executor.QueryRowContext(ctx, "PRAGMA query_only").Scan(&previous); err != nil {
+func panicError(recovered any) error {
+	if err, ok := recovered.(error); ok {
 		return err
 	}
-	if previous != 0 {
-		return read()
-	}
-	if _, err := executor.ExecContext(ctx, "PRAGMA query_only=ON"); err != nil {
-		return err
-	}
-	defer func() {
-		if _, restoreErr := executor.ExecContext(context.WithoutCancel(ctx), "PRAGMA query_only=OFF"); restoreErr != nil {
-			err = errors.Join(err, errReadModeUnconfirmed, restoreErr)
-		}
-	}()
-	return read()
+	return fmt.Errorf("sqlite: transaction panicked: %v", recovered)
 }
 
 func beginTransaction(ctx context.Context, conn *sql.Conn, options *sql.TxOptions) (*sql.Tx, error) {

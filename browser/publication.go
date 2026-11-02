@@ -14,6 +14,9 @@ import (
 // owner to publish. Repeating a request observes that operation, never another
 // object or another membership.
 func (b *Bridge) Publish(ctx context.Context, token string, request PublicationRequest) (out PublicationResult, returned error) {
+	if err := b.checkRequest(publishOperation, request); err != nil {
+		return PublicationResult{}, err
+	}
 	session, err := b.session(token, true)
 	if err != nil {
 		return PublicationResult{}, err
@@ -54,6 +57,10 @@ func (b *Bridge) Publish(ctx context.Context, token string, request PublicationR
 	}) {
 		b.mu.Unlock()
 		return PublicationResult{}, frame.ErrContractMismatch
+	}
+	if err := b.checkPublicationCapacity(entry.plan, request); err != nil {
+		b.mu.Unlock()
+		return PublicationResult{}, err
 	}
 	operation := &controlOperation{kind: publishOperation, realm: session.realm, digest: digest, execution: request.Execution.ID, done: make(chan struct{})}
 	b.operations[request.OperationID] = operation

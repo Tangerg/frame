@@ -55,7 +55,7 @@ func TestJointSubmissionRequiresTheOriginalLiveAdmission(t *testing.T) {
 		t.Fatal("expired context reentered the original transaction")
 	}
 	var count int
-	if err := store.Read(t.Context(), func(tx Executor) error {
+	if err := store.Read(t.Context(), func(tx Reader) error {
 		return tx.QueryRowContext(t.Context(), `SELECT count(*) FROM documents WHERE id='joint'`).Scan(&count)
 	}); err != nil || count != 1 {
 		t.Fatalf("joint write count = %d, %v", count, err)
@@ -216,62 +216,44 @@ func TestRejectedInstallationReclaimsItsPrivateSubmissionCapacity(t *testing.T) 
 	}
 }
 
-func TestApplicationTransactionBelongsToItsStoreAndCallback(t *testing.T) {
-	s1, owner, _ := testStore(t)
-	s2, _, _ := testStore(t)
-	wrong := func(context.Context) error { t.Fatal("mismatched transaction entered"); return nil }
-	if err := s1.WithTransaction(t.Context(), s2.Database(), wrong); err == nil {
-		t.Fatal("foreign pool accepted as a transaction")
-	}
-	var escaped context.Context
-	if err := s1.Read(t.Context(), func(tx Executor) error {
-		if _, err := tx.ExecContext(t.Context(), `INSERT INTO documents VALUES('denied','p','r',1)`); err == nil {
-			t.Fatal("read projection originated a business write")
+func TestApplicationCapabilitiesExpireWithTheirOwnerCallback(t *testing.T) {
+	store, owner, _ := testStore(t)
+	var issuedRead Reader
+	if err := store.Read(t.Context(), func(reader Reader) error {
+		issuedRead = reader
+		if _, writable := reader.(Executor); writable {
+			t.Fatal("read projection exposes write authority")
 		}
-		return s1.WithTransaction(t.Context(), tx, func(ctx context.Context) error {
-			if err := RunInTx(ctx, s1.Database(), wrong); err == nil {
-				t.Fatal("nested writer entered read admission")
-			}
-			return nil
-		})
+		var id string
+		if err := reader.QueryRowContext(t.Context(), `INSERT INTO documents VALUES('denied','p','r',1) RETURNING id`).Scan(&id); err == nil {
+			t.Fatal("query-only projection originated a business write")
+		}
+		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	var issued Executor
+	if _, err := issuedRead.QueryContext(t.Context(), `SELECT * FROM documents`); !errors.Is(err, sql.ErrTxDone) {
+		t.Fatalf("read capability survived its callback: %v", err)
+	}
+	var issuedWrite Executor
 	rolledBack := errors.New("rollback")
 	err := owner.Update(t.Context(), func(ctx context.Context, tx Executor) error {
-		issued = tx
-		if err := s2.WithTransaction(ctx, tx, wrong); err == nil {
-			t.Fatal("foreign owner accepted")
-		}
-		err := s1.WithTransaction(ctx, tx, func(joined context.Context) error {
-			escaped = joined
-			return RunInTx(joined, s1.Database(), func(ctx context.Context) error {
-				_, err := Connection(ctx, s1.Database()).ExecContext(ctx, `INSERT INTO documents VALUES('original','p','r',1)`)
-				return err
-			})
-		})
-		if err != nil {
+		issuedWrite = tx
+		if _, err := tx.ExecContext(ctx, `INSERT INTO documents VALUES('original','p','r',1)`); err != nil {
 			return err
-		}
-		if _, err := Connection(escaped, s1.Database()).ExecContext(ctx, `DELETE FROM documents`); !errors.Is(err, sql.ErrTxDone) {
-			t.Fatalf("escaped sibling executor retained access: %v", err)
 		}
 		return rolledBack
 	})
 	if !errors.Is(err, rolledBack) {
 		t.Fatal(err)
 	}
-	if err := s1.WithTransaction(t.Context(), issued, wrong); !errors.Is(err, sql.ErrTxDone) {
-		t.Fatalf("expired transaction admitted: %v", err)
+	if _, err := issuedWrite.ExecContext(t.Context(), `DELETE FROM documents`); !errors.Is(err, sql.ErrTxDone) {
+		t.Fatalf("write capability survived its callback: %v", err)
 	}
-	if err := RunInTx(escaped, s1.Database(), wrong); !errors.Is(err, sql.ErrTxDone) {
-		t.Fatalf("expired context admitted: %v", err)
-	}
-	for _, store := range []*Store{s1, s2} {
-		var n int
-		if err := store.Database().QueryRow("SELECT count(*) FROM documents").Scan(&n); err != nil || n != 0 {
-			t.Fatalf("write escaped original transaction: %d %v", n, err)
-		}
+	var count int
+	if err := store.Read(t.Context(), func(reader Reader) error {
+		return reader.QueryRowContext(t.Context(), `SELECT count(*) FROM documents`).Scan(&count)
+	}); err != nil || count != 0 {
+		t.Fatalf("write escaped its original transaction: count=%d error=%v", count, err)
 	}
 }

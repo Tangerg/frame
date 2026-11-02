@@ -14,10 +14,10 @@ import (
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		_ = json.MarshalWrite(os.Stderr, struct {
-			Version int    `json:"version"`
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		}{1, diagnosticCode(err), err.Error()})
+			Version int            `json:"version"`
+			Code    diagnosticCode `json:"code"`
+			Message string         `json:"message"`
+		}{1, classifyDiagnostic(err), err.Error()})
 		os.Exit(1)
 	}
 }

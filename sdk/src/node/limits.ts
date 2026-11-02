@@ -1,5 +1,5 @@
 import { isJSONNumber, stringifyJSON } from "../json.js";
-import profile from "./limits.generated.json" with { type: "json" };
+import profile from "./profile.generated.json" with { type: "json" };
 
 // This is a generated Go profile, not a second configurable SDK policy.
 export const PORTABLE_LIMITS = Object.freeze({ ...profile.limits });
@@ -132,47 +132,4 @@ export function checkDescriptor(value: unknown): void {
 
 export function checkValue(value: unknown): JSONSize {
   return checkJSON(value, false);
-}
-
-// Fixed-width atoms/repetitions exclude author-controlled regex backtracking.
-// Syntax and the actual match remain owned by the schema engine.
-export function checkPattern(pattern: string): void {
-  if (Buffer.byteLength(pattern) > PORTABLE_LIMITS.maxPatternBytes)
-    exceeded("pattern bytes", PORTABLE_LIMITS.maxPatternBytes);
-  let inClass = false;
-  for (let index = 0; index < pattern.length; index++) {
-    const char = pattern[index]!;
-    if (char === "\\") {
-      index++;
-      if (index === pattern.length || /[0-9kKpP]/.test(pattern[index]!))
-        throw new Error("portable: unsupported pattern escape");
-      continue;
-    }
-    if (char === "[") {
-      inClass = true;
-      continue;
-    }
-    if (char === "]") {
-      inClass = false;
-      continue;
-    }
-    if (inClass) continue;
-    if ("*+?|()".includes(char))
-      throw new Error(
-        "portable: patterns require fixed-width atoms and repetitions",
-      );
-    if (char === "{") {
-      const end = pattern.indexOf("}", index + 1);
-      const raw = pattern.slice(index + 1, end);
-      if (
-        end < 0 ||
-        !/^\d+$/.test(raw) ||
-        Number(raw) > PORTABLE_LIMITS.maxPatternRepeat
-      )
-        throw new Error(
-          "portable: pattern requires a bounded fixed repetition",
-        );
-      index = end;
-    }
-  }
 }

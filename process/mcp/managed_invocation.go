@@ -42,7 +42,6 @@ type Refusal struct {
 
 func (r *Refusal) Error() string { return r.Message }
 
-// Is lets a decoded refusal keep the identity of the conflict it reports.
 func (r *Refusal) Is(target error) bool {
 	return target == ErrInvocationConflict && r.Code == InvocationConflictCode
 }

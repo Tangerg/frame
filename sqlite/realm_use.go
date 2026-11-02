@@ -26,7 +26,7 @@ func (s *Store) ReleaseRealmUse(ctx context.Context, id string, realm frame.Real
 	return s.admission.Maintenance(ctx, func() error {
 		return s.transaction(ctx, func(tx Executor) error {
 			var request, prior []byte
-			var state string
+			var state useState
 			if err := tx.QueryRowContext(ctx, `SELECT request,state,proof FROM frame_use_approvals WHERE id=?`, id).Scan(&request, &state, &prior); err != nil {
 				return err
 			}
@@ -37,7 +37,10 @@ func (s *Store) ReleaseRealmUse(ctx context.Context, id string, realm frame.Real
 			if approval.Realm != realm || approval.ExecutionID != executionID || approval.Epoch >= s.epoch {
 				return ErrConflict
 			}
-			if state == "released" {
+			if err := state.validate(); err != nil {
+				return err
+			}
+			if state == useReleased {
 				if !bytes.Equal(prior, encoded) {
 					return ErrConflict
 				}
@@ -46,7 +49,7 @@ func (s *Store) ReleaseRealmUse(ctx context.Context, id string, realm frame.Real
 			if proof.AttemptID != executionID || proof.Realm != string(realm) {
 				return errors.New("sqlite: realm proof does not identify the original execution")
 			}
-			_, err := tx.ExecContext(ctx, `UPDATE frame_use_approvals SET state='released',proof=? WHERE id=?`, encoded, id)
+			_, err := tx.ExecContext(ctx, `UPDATE frame_use_approvals SET state=?,proof=? WHERE id=?`, useReleased, encoded, id)
 			return err
 		})
 	})

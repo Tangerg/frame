@@ -18,7 +18,7 @@ import (
 )
 
 func testConfig(path string, admission *frame.Admission) Config {
-	return Config{Path: path, Admission: admission, Owners: []OwnerSchema{{ID: "documents", Statements: []string{`CREATE TABLE documents (id TEXT PRIMARY KEY,installation TEXT NOT NULL,release TEXT NOT NULL,active INTEGER NOT NULL)`}, References: func(ctx context.Context, tx Executor, id frame.InstallationID) ([]frame.Dependency, error) {
+	return Config{Path: path, Admission: admission, Owners: []OwnerSchema{{ID: "documents", Statements: []string{`CREATE TABLE documents (id TEXT PRIMARY KEY,installation TEXT NOT NULL,release TEXT NOT NULL,active INTEGER NOT NULL)`}, References: func(ctx context.Context, tx Reader, id frame.InstallationID) ([]frame.Dependency, error) {
 		rows, err := tx.QueryContext(ctx, `SELECT DISTINCT installation,release FROM documents WHERE installation=? AND active=1`, id)
 		if err != nil {
 			return nil, err
@@ -106,7 +106,7 @@ func TestSubmissionAtomicBindingAndStableConclusion(t *testing.T) {
 		t.Fatalf("history followed current references: %+v %v", settlement, err)
 	}
 	var count int
-	if err := store.Read(ctx, func(tx Executor) error { return tx.QueryRowContext(ctx, `SELECT count(*) FROM documents`).Scan(&count) }); err != nil || count != 1 {
+	if err := store.Read(ctx, func(tx Reader) error { return tx.QueryRowContext(ctx, `SELECT count(*) FROM documents`).Scan(&count) }); err != nil || count != 1 {
 		t.Fatalf("business count: %d %v", count, err)
 	}
 }
@@ -128,7 +128,7 @@ func TestCanceledMutationSettlesBeforeAdmissionReopens(t *testing.T) {
 		t.Fatalf("canceled settlement: %+v %v", settlement, err)
 	}
 	var count int
-	if err := store.Read(context.Background(), func(tx Executor) error {
+	if err := store.Read(context.Background(), func(tx Reader) error {
 		return tx.QueryRowContext(context.Background(), `SELECT count(*) FROM documents`).Scan(&count)
 	}); err != nil || count != 0 {
 		t.Fatalf("mutation survived rollback: %d %v", count, err)
@@ -260,7 +260,7 @@ func TestCurrentReferencesDoNotUseOldWALSnapshot(t *testing.T) {
 	store, owner, admission := testStore(t)
 	ctx := context.Background()
 	var file string
-	if err := store.Read(ctx, func(tx Executor) error {
+	if err := store.Read(ctx, func(tx Reader) error {
 		var sequence int
 		var name string
 		return tx.QueryRowContext(ctx, `PRAGMA database_list`).Scan(&sequence, &name, &file)
@@ -351,7 +351,7 @@ func TestCrashSettlementUsesOriginalIntent(t *testing.T) {
 				t.Fatalf("settlement %s, want %s", settlement.State, want)
 			}
 			var count int
-			if err := store.Read(context.Background(), func(tx Executor) error {
+			if err := store.Read(context.Background(), func(tx Reader) error {
 				return tx.QueryRowContext(context.Background(), `SELECT count(*) FROM documents`).Scan(&count)
 			}); err != nil {
 				t.Fatal(err)
@@ -502,8 +502,11 @@ func TestProtectionQueriesDoNotReadReleasedHistory(t *testing.T) {
 	if err != nil || len(deps) != 1 || deps[0] != ref.Dependency() {
 		t.Fatalf("active protection=%+v %v", deps, err)
 	}
-	for _, q := range []string{protectedAttempts, protectedUses} {
-		rows, err := store.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+q)
+	for _, projection := range []struct {
+		query string
+		state any
+	}{{protectedAttempts, attemptApproved}, {protectedUses, useApproved}} {
+		rows, err := store.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+projection.query, projection.state)
 		if err != nil {
 			t.Fatal(err)
 		}

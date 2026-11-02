@@ -20,7 +20,7 @@ const transport = new Lifetime("realm-control");
 const control = new HTTPControl({
   endpoint: session.endpoint,
   credential: session.credential,
-  maximumMessageBytes: applicationMessageBudget,
+  maximumMessageBytes: session.maxMessageBytes,
   lifetime: transport,
 });
 const modules = new RealmModules(openVerifiedArtifactLease);
@@ -52,6 +52,13 @@ it again. The module must declare the approved import and export set.
 `accept(grant)` validates a Use obtained from the Host. `acquire(request)` requests
 one using a captured snapshot and consumer selections. Retrying an unknown
 acquisition uses the original `operationId`, input, resource owner, and Host Use.
+The grant carries that original operation ID and its delegated parent. Both
+entrances share one admission, including concurrent calls and an unknown
+acknowledgement. Closing a parent joins its actual delegated subtree before
+emitting the parent proof. A terminal Use remains observable until proof
+acknowledgement; afterward, a historical receipt must pass current Host
+validation before it can materialize any local object. Released Uses cannot be
+restarted by replaying a receipt or switching entrances.
 `select` is a pure consumer metadata policy helper; the Host still admits its
 result. `Use.with` accesses approved native objects locally without per-call RPC.
 
@@ -73,6 +80,8 @@ Ready acknowledges preparation; it never becomes a local Active or Published
 permission flag. A valid Host Use may access the original staged object when a
 Ready or publication acknowledgement was lost. Ready retries preserve the exact
 report and operation identity without running setup again.
+An explicit Ready refusal, including a complete message capacity refusal, closes
+the prepared execution. Only an unknown outcome retains preparation for retry.
 
 `publish` creates a contribution under an existing declared Point contract.
 Unknown acknowledgement retains its original operation and object. `observe`
@@ -88,6 +97,11 @@ reuses the same immutable proof identity and payload after acknowledgement loss.
 The current authenticated transport may carry original-epoch evidence during
 cleanup-only recovery. An execution proof covers its owned objects and pending
 admissions; it never releases another execution's resources.
+Reconnect revalidates the bounded execution projection; the outbox then delivers
+each pending proof separately. Failure diagnostics stay on the local Exit and
+cannot enlarge release evidence. Use the Host's `maxMessageBytes` bootstrap
+projection for the transport budget so accepted messages share one effective
+wire capacity.
 
 Close the Runtime and obtain durable proof acknowledgement before closing the
 transport Lifetime. `reload(callback, signal?)` calls the callback only after all

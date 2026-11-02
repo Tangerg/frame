@@ -42,17 +42,18 @@ type BridgeConfig struct {
 	PublicConfiguration func(context.Context, *frame.Setup) ([]byte, error)
 	MaxRealms           int
 	MaxPending          int
-	MaxRequestBytes     int64
+	MaxMessageBytes     int64
 	Points              []frame.ContractRef
 }
 
 // Credentials authenticate one original Realm. They are returned only to the
 // trusted application's bootstrap channel, never to plugin modules or URLs.
 type Credentials struct {
-	Authority   Authority `json:"authority"`
-	Realm       Realm     `json:"realm"`
-	Token       string    `json:"token"`
-	ResumeToken string    `json:"resumeToken"`
+	MaxMessageBytes int64     `json:"maxMessageBytes"`
+	Authority       Authority `json:"authority"`
+	Realm           Realm     `json:"realm"`
+	Token           string    `json:"token"`
+	ResumeToken     string    `json:"resumeToken"`
 }
 
 // Object is a reference to an actual object owned by the browser Runtime. It is
@@ -90,8 +91,9 @@ type realmOpening struct {
 type realmSession struct {
 	realm Realm
 
-	cleanupOnly bool
-	revision    uint64
+	cleanupOnly     bool
+	revision        uint64
+	projectionBytes int64
 }
 
 type browserExecution struct {
@@ -105,6 +107,7 @@ type browserExecution struct {
 	retiring          bool
 	uncertainApproval bool
 	exposed           bool
+	projectionBytes   int64
 }
 
 type preparedResult struct {
@@ -145,15 +148,15 @@ func NewBridge(config BridgeConfig) (*Bridge, error) {
 		return nil, frame.ErrInvalid
 	}
 	if config.MaxRealms == 0 {
-		config.MaxRealms = 64
+		config.MaxRealms = defaultMaxRealms
 	}
 	if config.MaxPending == 0 {
-		config.MaxPending = 4096
+		config.MaxPending = defaultMaxPending
 	}
-	if config.MaxRequestBytes == 0 {
-		config.MaxRequestBytes = 4 << 20
+	if config.MaxMessageBytes == 0 {
+		config.MaxMessageBytes = defaultMaxMessageBytes
 	}
-	if config.MaxRealms < 1 || config.MaxPending < 1 || config.MaxRequestBytes < 1 {
+	if config.MaxRealms < 1 || config.MaxPending < 1 || config.MaxMessageBytes < 1 {
 		return nil, frame.ErrInvalid
 	}
 	config.Points = slices.Clone(config.Points)
@@ -188,7 +191,7 @@ func (b *Bridge) Credentials(realm Realm) (Credentials, error) {
 	if session == nil || session.realm != realm {
 		return Credentials{}, frame.ErrUnavailable
 	}
-	return Credentials{Authority: b.authority, Realm: realm, Token: b.signer.token(realm)}, nil
+	return Credentials{MaxMessageBytes: b.config.MaxMessageBytes, Authority: b.authority, Realm: realm, Token: b.signer.token(realm)}, nil
 }
 
 // OpenRealm requires caller-generated credentials before dispatch. Repeating
@@ -238,7 +241,7 @@ func (b *Bridge) openRealm(ctx context.Context, operationID, resumeToken string)
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Credentials{}, err
 	}
-	credentials := Credentials{Authority: b.authority, Realm: Realm{ID: newToken(), Epoch: newToken()}, ResumeToken: resumeToken}
+	credentials := Credentials{MaxMessageBytes: b.config.MaxMessageBytes, Authority: b.authority, Realm: Realm{ID: newToken(), Epoch: newToken()}, ResumeToken: resumeToken}
 	b.mu.Lock()
 	if len(b.sessions)+b.openingRealms >= b.config.MaxRealms {
 		b.mu.Unlock()
@@ -261,14 +264,17 @@ func (b *Bridge) openRealm(ctx context.Context, operationID, resumeToken string)
 
 func (b *Bridge) ResumeRealm(ctx context.Context, realm Realm, resumeToken string) (Credentials, error) {
 	credential, err := b.config.Store.RealmCredential(ctx, realm.ID, realm.Epoch)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Credentials{}, errors.Join(frame.ErrFenced, err)
+	}
 	if err != nil {
-		return Credentials{}, frame.ErrFenced
+		return Credentials{}, fmt.Errorf("browser realm credential: %w", err)
 	}
 	actual := framevalue.Hash([]byte(resumeToken))
 	if subtle.ConstantTimeCompare([]byte(actual.String()), []byte(credential.ResumeVerifier.String())) != 1 {
 		return Credentials{}, frame.ErrFenced
 	}
-	return Credentials{Authority: b.authority, Realm: realm, Token: b.signer.token(realm), ResumeToken: resumeToken}, nil
+	return Credentials{MaxMessageBytes: b.config.MaxMessageBytes, Authority: b.authority, Realm: realm, Token: b.signer.token(realm), ResumeToken: resumeToken}, nil
 }
 
 func (b *Bridge) session(token string, normal bool) (*realmSession, error) {
@@ -372,7 +378,25 @@ func (b *Bridge) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 	}
 	plan := LocalPlan{Protocol: Protocol, ApprovalToken: newToken(), Authority: b.authority, Realm: realm, Execution: Execution{ID: setup.InstanceID(), Generation: strconv.FormatUint(setup.Generation(), 10)}, ScopeID: string(setup.ScopeGrant().WireID()), ScopeGeneration: strconv.FormatUint(setup.ScopeGeneration(), 10), Units: []PlannedUnit{planned}}
 	attempt := sqlite.Attempt{ID: setup.InstanceID(), Epoch: setup.Epoch(), Source: setup.Binding().Source, Binding: setup.Snapshot(), Realm: string(RealmID(realm)), Profile: frame.BrowserJS, Scope: setup.ScopeGrant().WireID(), ScopeGeneration: setup.ScopeGeneration(), Generation: setup.Generation()}
-	entry := &browserExecution{plan: plan, attempt: attempt, setup: setup, ready: make(chan preparedResult, 1)}
+	if err := b.checkPlanCapacity(plan); err != nil {
+		return nil, err
+	}
+	b.mu.Lock()
+	projectionBytes, err := b.reserveProjectionLocked(session, plan)
+	b.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	projectionHeld := true
+	defer func() {
+		if projectionHeld {
+			b.mu.Lock()
+			session.projectionBytes -= projectionBytes
+			b.reapRealmLocked(session.realm)
+			b.mu.Unlock()
+		}
+	}()
+	entry := &browserExecution{plan: plan, attempt: attempt, setup: setup, ready: make(chan preparedResult, 1), projectionBytes: projectionBytes}
 	registered := make(chan struct{})
 	resource, err := setup.Own(frame.Resource{Name: "browser execution " + attempt.ID, Cancel: func(error) { b.fence(entry) }, Close: func(wait context.Context) (frame.ReleaseState, error) {
 		select {
@@ -394,6 +418,7 @@ func (b *Bridge) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 	b.preparing--
 	reserved = false
 	b.executions[plan.Execution.ID] = entry
+	projectionHeld = false
 	revoked := approvalErr != nil || session.cleanupOnly || entry.retiring || ctx.Err() != nil
 	if revoked {
 		entry.retiring = true
@@ -458,7 +483,7 @@ func (b *Bridge) closeExecution(ctx context.Context, entry *browserExecution) (f
 		return frame.ResourceUnconfirmed, err
 	}
 	b.mu.Lock()
-	delete(b.executions, entry.attempt.ID)
+	b.removeExecutionLocked(entry)
 	b.reapRealmLocked(entry.plan.Realm)
 	b.mu.Unlock()
 	return frame.ResourceReleased, nil
@@ -467,7 +492,7 @@ func (b *Bridge) closeExecution(ctx context.Context, entry *browserExecution) (f
 func (b *Bridge) reapRealmLocked(realm Realm) {
 	id := string(RealmID(realm))
 	s := b.sessions[id]
-	if s == nil || !s.cleanupOnly {
+	if s == nil || !s.cleanupOnly || s.projectionBytes != 0 {
 		return
 	}
 	for _, e := range b.executions {
@@ -511,7 +536,6 @@ func (b *Bridge) Poll(ctx context.Context, token string) (Poll, error) {
 			continue
 		}
 		if entry.plan.Realm == session.realm && !entry.retiring && entry.readyOperation == "" && !session.cleanupOnly {
-			entry.exposed = true
 			result.Plans = append(result.Plans, clone(entry.plan))
 		}
 	}
@@ -522,6 +546,12 @@ func (b *Bridge) Poll(ctx context.Context, token string) (Poll, error) {
 	slices.SortFunc(result.Fences, func(a, b Fence) int {
 		return cmp.Or(cmp.Compare(a.ScopeID, b.ScopeID), cmp.Compare(a.ScopeGeneration, b.ScopeGeneration))
 	})
+	if err := b.checkResponse(result); err != nil {
+		return Poll{}, err
+	}
+	for _, plan := range result.Plans {
+		b.executions[plan.Execution.ID].exposed = true
+	}
 	return result, nil
 }
 
@@ -541,6 +571,9 @@ func (b *Bridge) ValidatePlan(ctx context.Context, token string, plan LocalPlan)
 }
 
 func (b *Bridge) Ready(ctx context.Context, token string, report ReadyReport) (PublicationResult, error) {
+	if err := b.checkRequest(readyMethod, report); err != nil {
+		return PublicationResult{}, err
+	}
 	session, err := b.session(token, true)
 	if err != nil {
 		return PublicationResult{}, err

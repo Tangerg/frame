@@ -15,6 +15,10 @@ export class ProofOutbox {
     this.#capacity = capacity;
   }
 
+  reserved(identity: string): boolean {
+    return this.#reserved.has(identity);
+  }
+
   reserve(identity: string): void {
     if (this.#reserved.has(identity))
       throw new FrameError(
@@ -116,6 +120,5 @@ function freezeProof(proof: CloseProof): CloseProof {
     realm: Object.freeze({ ...proof.realm }),
     execution: Object.freeze({ ...proof.execution }),
     instances: Object.freeze([...proof.instances]),
-    failures: Object.freeze([...proof.failures]),
   });
 }

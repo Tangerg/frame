@@ -50,6 +50,7 @@ export interface ConverterMetadata {
 }
 
 export interface Credentials {
+  readonly maxMessageBytes: number;
   readonly authority: Authority;
   readonly realm: Realm;
   readonly token: string;

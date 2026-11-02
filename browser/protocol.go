@@ -118,6 +118,8 @@ type PreparedContribution struct {
 }
 
 type UseGrant struct {
+	OperationID     string      `json:"operationId"`
+	ParentUseID     string      `json:"parentUseId,omitempty"`
 	ID              string      `json:"id"`
 	ApprovalToken   string      `json:"approvalToken"`
 	Authority       Authority   `json:"authority"`
@@ -224,7 +226,6 @@ type CloseProof struct {
 	PublicationID   string         `json:"publicationId,omitempty"`
 	Instances       []string       `json:"instances"`
 	Status          ReleaseStatus  `json:"status"`
-	Failures        []string       `json:"failures"`
 }
 
 type ProofAcknowledgement struct {
@@ -235,10 +236,9 @@ type ProofAcknowledgement struct {
 }
 
 type ReconnectRequest struct {
-	Authority     Authority    `json:"authority"`
-	Realm         Realm        `json:"realm"`
-	Executions    []Execution  `json:"executions"`
-	PendingProofs []CloseProof `json:"pendingProofs"`
+	Authority  Authority   `json:"authority"`
+	Realm      Realm       `json:"realm"`
+	Executions []Execution `json:"executions"`
 }
 
 type ReconnectMode string
@@ -249,11 +249,10 @@ const (
 )
 
 type ReconnectResult struct {
-	Authority      Authority              `json:"authority"`
-	Realm          Realm                  `json:"realm"`
-	Mode           ReconnectMode          `json:"mode"`
-	AcceptedProofs []string               `json:"acceptedProofs"`
-	Executions     []RevalidatedExecution `json:"executions"`
+	Authority  Authority              `json:"authority"`
+	Realm      Realm                  `json:"realm"`
+	Mode       ReconnectMode          `json:"mode"`
+	Executions []RevalidatedExecution `json:"executions"`
 }
 
 type RevalidatedExecution struct {

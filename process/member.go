@@ -10,7 +10,8 @@ import (
 	framevalue "github.com/Tangerg/frame/value"
 )
 
-// Member retains the Go types from which its published unary method was derived.
+// Keeping the Go types with their descriptor prevents a handler from being
+// registered under a schema derived from different input or output types.
 type Member[Input, Output any] struct{ method *portable.Method }
 
 func NewMember[Input, Output any](config portable.MethodConfig) (Member[Input, Output], error) {
@@ -63,7 +64,7 @@ func (m Member[Input, Output]) Call(ctx context.Context, service Service, input 
 	return output, err
 }
 
-// Implement binds a whole published capability before making any member callable.
+// Partial implementations cannot publish a usable handle for the full contract.
 func Implement(contract *portable.Capability, members ...Implementation) (Service, error) {
 	if contract == nil || len(members) != len(contract.Descriptor().Methods) {
 		return nil, frame.ErrContractMismatch

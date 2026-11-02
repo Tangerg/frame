@@ -183,7 +183,7 @@ func TestCompactionCrashKeepsWatermarkAndEvidenceAtomic(t *testing.T) {
 				t.Fatalf("compaction did not retain its original issued range: %+v", cut)
 			}
 			var watermark uint64
-			if err := store.Read(t.Context(), func(tx Executor) error {
+			if err := store.Read(t.Context(), func(tx Reader) error {
 				return tx.QueryRowContext(t.Context(), `SELECT compacted_through FROM frame_owners WHERE id='documents'`).Scan(&watermark)
 			}); err != nil {
 				t.Fatal(err)

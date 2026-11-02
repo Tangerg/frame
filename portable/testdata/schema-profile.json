@@ -1,0 +1,1119 @@
+[
+  {
+    "admitted": true,
+    "digest": "fd1611382c53e65a25cf41140786a14d4dfbd5d6a35f0a97c0e97dbbed5b6e42",
+    "name": "ascii whitespace",
+    "schema": {
+      "type": "string",
+      "pattern": "^\\s$"
+    },
+    "values": [
+      {
+        "value": " ",
+        "valid": true
+      },
+      {
+        "value": "\t",
+        "valid": true
+      },
+      {
+        "value": "\n",
+        "valid": true
+      },
+      {
+        "value": "\f",
+        "valid": true
+      },
+      {
+        "value": "\r",
+        "valid": true
+      },
+      {
+        "value": "\u000b",
+        "valid": false
+      },
+      {
+        "value": " ",
+        "valid": false
+      },
+      {
+        "value": "\u2028",
+        "valid": false
+      },
+      {
+        "value": "x",
+        "valid": false
+      },
+      {
+        "value": "",
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "ed5f7151804804c5d664b2e11f98ba27b93e117d1e8e367b64396aaf224e0bcb",
+    "name": "non whitespace",
+    "schema": {
+      "type": "string",
+      "pattern": "^\\S$"
+    },
+    "values": [
+      {
+        "value": "x",
+        "valid": true
+      },
+      {
+        "value": "\u000b",
+        "valid": true
+      },
+      {
+        "value": " ",
+        "valid": true
+      },
+      {
+        "value": "\u2028",
+        "valid": true
+      },
+      {
+        "value": "😀",
+        "valid": true
+      },
+      {
+        "value": " ",
+        "valid": false
+      },
+      {
+        "value": "\t",
+        "valid": false
+      },
+      {
+        "value": "\r",
+        "valid": false
+      },
+      {
+        "value": "\n",
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "f4b3c5d6452b2d7ede3b8e41dc240881039ae7f5aa766936f7e5777742c4e67f",
+    "name": "dot is one rune except LF",
+    "schema": {
+      "type": "string",
+      "pattern": "^.$"
+    },
+    "values": [
+      {
+        "value": "x",
+        "valid": true
+      },
+      {
+        "value": "\r",
+        "valid": true
+      },
+      {
+        "value": "\u2028",
+        "valid": true
+      },
+      {
+        "value": "\u2029",
+        "valid": true
+      },
+      {
+        "value": "😀",
+        "valid": true
+      },
+      {
+        "value": "\n",
+        "valid": false
+      },
+      {
+        "value": "xx",
+        "valid": false
+      },
+      {
+        "value": "",
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "f1f9124b9dc87a0bd7b65431959ac6781e2903665dd41fd659243041f5c11364",
+    "name": "strict end of text",
+    "schema": {
+      "type": "string",
+      "pattern": "^a$"
+    },
+    "values": [
+      {
+        "value": "a",
+        "valid": true
+      },
+      {
+        "value": "a\n",
+        "valid": false
+      },
+      {
+        "value": "a\r",
+        "valid": false
+      },
+      {
+        "value": "a\u2028",
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "e8d1d59a25db8fadc506fba730cbbbb1684fd1558cb03c5e95e746c0619e237a",
+    "name": "explicit class and repeat",
+    "schema": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{4}$"
+    },
+    "values": [
+      {
+        "value": "01af",
+        "valid": true
+      },
+      {
+        "value": "ffff",
+        "valid": true
+      },
+      {
+        "value": "01a",
+        "valid": false
+      },
+      {
+        "value": "01ag",
+        "valid": false
+      },
+      {
+        "value": "01af\n",
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "caefc5b9e6885c43ab98567b50273ccbe87c2cfb168d46d1584acf11b9f8249d",
+    "name": "class escape union",
+    "schema": {
+      "type": "string",
+      "pattern": "^[\\s\\S]$"
+    },
+    "values": [
+      {
+        "value": " ",
+        "valid": true
+      },
+      {
+        "value": " ",
+        "valid": true
+      },
+      {
+        "value": "\n",
+        "valid": true
+      },
+      {
+        "value": "😀",
+        "valid": true
+      },
+      {
+        "value": "",
+        "valid": false
+      },
+      {
+        "value": "xx",
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "8def1f205077afde73ec24afa9f953bb495e303f245f8552ffe382af3fdc383f",
+    "name": "negated class escape",
+    "schema": {
+      "type": "string",
+      "pattern": "^[^\\s]$"
+    },
+    "values": [
+      {
+        "value": "\u000b",
+        "valid": true
+      },
+      {
+        "value": " ",
+        "valid": true
+      },
+      {
+        "value": "😀",
+        "valid": true
+      },
+      {
+        "value": "\n",
+        "valid": false
+      },
+      {
+        "value": " ",
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "d4f7ae696e1268851ea1da2b5972af54cfa00c374705458f4d20f447b044a71c",
+    "name": "negated caret",
+    "schema": {
+      "type": "string",
+      "pattern": "^[^^]$"
+    },
+    "values": [
+      {
+        "value": "x",
+        "valid": true
+      },
+      {
+        "value": "\n",
+        "valid": true
+      },
+      {
+        "value": "^",
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "52a1e0b2e5d74246b8801e4c2764cce1515717ad147c71e7b214d7e6a0e58863",
+    "name": "word boundaries",
+    "schema": {
+      "type": "string",
+      "pattern": "\\bword\\b"
+    },
+    "values": [
+      {
+        "value": "word",
+        "valid": true
+      },
+      {
+        "value": "word!",
+        "valid": true
+      },
+      {
+        "value": "éwordé",
+        "valid": true
+      },
+      {
+        "value": "wording",
+        "valid": false
+      },
+      {
+        "value": "sword",
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "93c2fd8f27472d38742e00818a9965475b946bf8809c46db7af1d9541087fd72",
+    "name": "hex literal",
+    "schema": {
+      "type": "string",
+      "pattern": "^\\x41$"
+    },
+    "values": [
+      {
+        "value": "A",
+        "valid": true
+      },
+      {
+        "value": "x41",
+        "valid": false
+      },
+      {
+        "value": "a",
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "bc53a70895f1d78291b12d79aa96765658e6793265ff3357c40cd01d43db2276",
+    "name": "fixed zero repeat",
+    "schema": {
+      "type": "string",
+      "pattern": "^a{0}$"
+    },
+    "values": [
+      {
+        "value": "",
+        "valid": true
+      },
+      {
+        "value": "a",
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "c4543264574cd3ad23ef1c49d2d77c6858d68255d0e094f7c849924ebd838cd6",
+    "name": "pattern property predicate",
+    "schema": {
+      "type": "object",
+      "patternProperties": {
+        "^\\s$": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "values": [
+      {
+        "value": {
+          " ": 1
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "\n": 2
+        },
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": true
+      },
+      {
+        "value": {
+          " ": 1
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          " ": "bad"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "x": 1
+        },
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "3fc32b52038db81d1846872e8d72fcc7305e703447fd46becc57b65209e29cc5",
+    "name": "pattern properties retain reference targets",
+    "schema": {
+      "$defs": {
+        "fields": {
+          "patternProperties": {
+            "^\\s$": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      "$ref": "#/$defs/fields/patternProperties/%5E%5Cs%24"
+    },
+    "values": [
+      {
+        "value": 1,
+        "valid": true
+      },
+      {
+        "value": "x",
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": false,
+    "digest": "7d931eb2c55c20891013412cae9826733232d588f691969c89a7847a687818ef",
+    "name": "reject engine-specific \\u0041",
+    "schema": {
+      "type": "string",
+      "pattern": "\\u0041"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "cc27dcbbe3394f3f6f60e973effe8702a2a0b9f92fd4d5104012ea624a379e26",
+    "name": "reject engine-specific \\a",
+    "schema": {
+      "type": "string",
+      "pattern": "\\a"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "032cf926219012255972932177cba06d87bb8b12d777069e8c5bb64b490a322b",
+    "name": "reject engine-specific \\x{41}",
+    "schema": {
+      "type": "string",
+      "pattern": "\\x{41}"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "e1fd6873d3b051f56396919b12d66d1fdf73535e4ecb1b8ba4993054d365bcd3",
+    "name": "reject engine-specific [[:alpha:]]",
+    "schema": {
+      "type": "string",
+      "pattern": "[[:alpha:]]"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "09519e4b5a90ac672c5625a7c6351b7b25750762dfabc41d5b440de8c5892556",
+    "name": "reject engine-specific []",
+    "schema": {
+      "type": "string",
+      "pattern": "[]"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "4f685e05ccb1d35c02e27522b0119f5b4e9a7ce25ac99f7beca7237f4639d343",
+    "name": "reject engine-specific [^]",
+    "schema": {
+      "type": "string",
+      "pattern": "[^]"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "86c8a0b0c151a3962a2f9a13b33fd2ebf1ac11d825eae0330b85d6c6d6d424cd",
+    "name": "reject engine-specific [\\b]",
+    "schema": {
+      "type": "string",
+      "pattern": "[\\b]"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "9fa6282b9b5fc58c038bf54bf39edfd2b29810fb9d8957c4daca5013368a0418",
+    "name": "reject engine-specific [\\d-a]",
+    "schema": {
+      "type": "string",
+      "pattern": "[\\d-a]"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "a8ab646b74e4842cf75755a682faa20ebe1e53029d40dc709f80ac3c22e7640d",
+    "name": "reject engine-specific [a-\\d]",
+    "schema": {
+      "type": "string",
+      "pattern": "[a-\\d]"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "1600c1a87782b0b2de464080ade933266a9256abe1e26e576e88ee7994f4ba40",
+    "name": "reject engine-specific a{01}",
+    "schema": {
+      "type": "string",
+      "pattern": "a{01}"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "caa09cb38a6285a0ad803c1fc8f43f98ccb7efd9313d36e782cd3009d800d7ec",
+    "name": "reject engine-specific (a+)+$",
+    "schema": {
+      "type": "string",
+      "pattern": "(a+)+$"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "5c844f30dde529f14a0ff0cb34f414cd9f01ea155a2f8efc6d9da76ec8410584",
+    "name": "reject engine-specific a|aa",
+    "schema": {
+      "type": "string",
+      "pattern": "a|aa"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "f6001403cb40ce2fb6c02861a9a4a54e0f11f5dc8e13625767de128ea590c25f",
+    "name": "reject engine-specific a*",
+    "schema": {
+      "type": "string",
+      "pattern": "a*"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "976516b827213909b1c1d453b8296968abc462edbea8213b4e7cf75188ccf5c8",
+    "name": "reject engine-specific a{1,10}",
+    "schema": {
+      "type": "string",
+      "pattern": "a{1,10}"
+    },
+    "values": []
+  },
+  {
+    "admitted": true,
+    "digest": "c844c1623b21ae0d7eeda775787f690990bab3ba0dd0d4decff209935dee0468",
+    "name": "calendar date",
+    "schema": {
+      "type": "string",
+      "format": "date"
+    },
+    "values": [
+      {
+        "value": "2024-02-29",
+        "valid": true
+      },
+      {
+        "value": "2000-02-29",
+        "valid": true
+      },
+      {
+        "value": "0000-02-29",
+        "valid": true
+      },
+      {
+        "value": "2026-11-02",
+        "valid": true
+      },
+      {
+        "value": "2025-02-29",
+        "valid": false
+      },
+      {
+        "value": "1900-02-29",
+        "valid": false
+      },
+      {
+        "value": "2026-00-01",
+        "valid": false
+      },
+      {
+        "value": "2026-13-01",
+        "valid": false
+      },
+      {
+        "value": "2026-11-31",
+        "valid": false
+      },
+      {
+        "value": "2026-11-00",
+        "valid": false
+      },
+      {
+        "value": "2026-1-01",
+        "valid": false
+      },
+      {
+        "value": "2026-11-02\n",
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "90412e5318a42e0d79769100cba305caf456dcaf0fc7ebca186e9a192a4811fa",
+    "name": "time including UTC leap second",
+    "schema": {
+      "type": "string",
+      "format": "time"
+    },
+    "values": [
+      {
+        "value": "00:00:00Z",
+        "valid": true
+      },
+      {
+        "value": "23:59:60Z",
+        "valid": true
+      },
+      {
+        "value": "00:59:60+01:00",
+        "valid": true
+      },
+      {
+        "value": "23:59:60.123456789012z",
+        "valid": true
+      },
+      {
+        "value": "+1:00:00Z",
+        "valid": true
+      },
+      {
+        "value": "-0:00:00Z",
+        "valid": true
+      },
+      {
+        "value": "24:00:00Z",
+        "valid": false
+      },
+      {
+        "value": "00:60:00Z",
+        "valid": false
+      },
+      {
+        "value": "00:00:61Z",
+        "valid": false
+      },
+      {
+        "value": "12:00:60Z",
+        "valid": false
+      },
+      {
+        "value": "00:00:00",
+        "valid": false
+      },
+      {
+        "value": "00:00:00+0100",
+        "valid": false
+      },
+      {
+        "value": "00:00:00+24:00",
+        "valid": false
+      },
+      {
+        "value": "00:00:00+00:60",
+        "valid": false
+      },
+      {
+        "value": "00:00:00.Z",
+        "valid": false
+      },
+      {
+        "value": "00:00:00Z\n",
+        "valid": false
+      },
+      {
+        "value": "00:00:1\nZ",
+        "valid": false
+      },
+      {
+        "value": "00:00:00+00:1\n",
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "4f410cd74c87d8ddd21f20e835e06ed7445481c3aeae3c12085e82c54ea2fb7d",
+    "name": "date time predicate",
+    "schema": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "values": [
+      {
+        "value": "2026-11-02T12:34:56Z",
+        "valid": true
+      },
+      {
+        "value": "2024-02-29t23:59:60.00000000001z",
+        "valid": true
+      },
+      {
+        "value": "2026-11-02T+1:00:00Z",
+        "valid": true
+      },
+      {
+        "value": "2025-02-29T12:34:56Z",
+        "valid": false
+      },
+      {
+        "value": "2026-11-02 12:34:56Z",
+        "valid": false
+      },
+      {
+        "value": "2026-11-02T12:34:56",
+        "valid": false
+      },
+      {
+        "value": "2026-11-02T12:34:56+0100",
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "44b2ecffc8606ad9705131859fa57980c41eaf5d5e35ecd101822dc2c2eb6523",
+    "name": "uuid has exact groups",
+    "schema": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "values": [
+      {
+        "value": "12345678-1234-1234-1234-123456789abc",
+        "valid": true
+      },
+      {
+        "value": "12345678-1234-1234-1234-123456789ABC",
+        "valid": true
+      },
+      {
+        "value": "urn:uuid:12345678-1234-1234-1234-123456789abc",
+        "valid": false
+      },
+      {
+        "value": "12345678-1234-1234-1234-123456789abc\n",
+        "valid": false
+      },
+      {
+        "value": "12345678-1234-1234-1234-123456789ab",
+        "valid": false
+      },
+      {
+        "value": "12345678-1234-1234-1234-123456789abg",
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "39c6080497e5a15a32d61abb58fc2c7de8f9366058abb85f1f549917e219058a",
+    "name": "json pointer",
+    "schema": {
+      "type": "string",
+      "format": "json-pointer"
+    },
+    "values": [
+      {
+        "value": "",
+        "valid": true
+      },
+      {
+        "value": "/",
+        "valid": true
+      },
+      {
+        "value": "/a~0b/~1",
+        "valid": true
+      },
+      {
+        "value": "/😀",
+        "valid": true
+      },
+      {
+        "value": "/line\n",
+        "valid": true
+      },
+      {
+        "value": "a",
+        "valid": false
+      },
+      {
+        "value": "/~",
+        "valid": false
+      },
+      {
+        "value": "/~2",
+        "valid": false
+      },
+      {
+        "value": "#/a",
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "41702937baadac4aff13575235997ac004f423c7c6fd6d33d63c007f84716912",
+    "name": "relative json pointer",
+    "schema": {
+      "type": "string",
+      "format": "relative-json-pointer"
+    },
+    "values": [
+      {
+        "value": "0",
+        "valid": true
+      },
+      {
+        "value": "0#",
+        "valid": true
+      },
+      {
+        "value": "1/a",
+        "valid": true
+      },
+      {
+        "value": "12/a~1b",
+        "valid": true
+      },
+      {
+        "value": "999999999999999999999999999#",
+        "valid": true
+      },
+      {
+        "value": "01#",
+        "valid": false
+      },
+      {
+        "value": "-1#",
+        "valid": false
+      },
+      {
+        "value": "1x",
+        "valid": false
+      },
+      {
+        "value": "1/~2",
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": false,
+    "digest": "67407412d7ed73388a2d18e260ba87679d88156fbec5889c22dec6666fc82444",
+    "name": "reject unshared format 'iri'",
+    "schema": {
+      "type": "string",
+      "format": "iri"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "f9757109fae32f55a22a6fe81eec0503fb3976db0fb4c7fc85a3d794d8014521",
+    "name": "reject unshared format 'uri'",
+    "schema": {
+      "type": "string",
+      "format": "uri"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "010b1dec865519f00e024db52d4deeb3dc5d7dc08390f0e455f5338dbde231c7",
+    "name": "reject unshared format 'email'",
+    "schema": {
+      "type": "string",
+      "format": "email"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "c0fc84d9e8f6cec2dada24a7fc63705018915d8bf2006cd5d908eac4614ef0e5",
+    "name": "reject unshared format 'idn-email'",
+    "schema": {
+      "type": "string",
+      "format": "idn-email"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "42927e9425524f6cbc77d8498b7210c692df4980dc8a5ac573436bc376da8ebf",
+    "name": "reject unshared format 'unknown'",
+    "schema": {
+      "type": "string",
+      "format": "unknown"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "a0a6e068c2764d1978e1985cc09c589b65ff20caa5e72a2dcb56c7b572d7840b",
+    "name": "reject unshared format ''",
+    "schema": {
+      "type": "string",
+      "format": ""
+    },
+    "values": []
+  },
+  {
+    "admitted": true,
+    "digest": "05737a583b2e48c25adec7ce3473e2c9c0d5e8a195148087c62c09bc4f8aed4d",
+    "name": "exact numeric boundaries",
+    "schema": {
+      "type": "integer",
+      "minimum": 9007199254740993,
+      "maximum": 9007199254740995
+    },
+    "values": [
+      {
+        "value": 9007199254740992,
+        "valid": false
+      },
+      {
+        "value": 9007199254740993,
+        "valid": true
+      },
+      {
+        "value": 9007199254740995,
+        "valid": true
+      },
+      {
+        "value": 9007199254740996,
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "2818cf2cf7635cef088f4cea82e3bfbfa9f6fffe45a2d31a2cd01ddff5f1449e",
+    "name": "recursive value predicates",
+    "schema": {
+      "$defs": {
+        "node": {
+          "type": "object",
+          "properties": {
+            "count": {
+              "type": "integer"
+            },
+            "next": {
+              "$ref": "#/$defs/node"
+            }
+          },
+          "required": [
+            "count"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$ref": "#/$defs/node"
+    },
+    "values": [
+      {
+        "value": {
+          "count": 1,
+          "next": {
+            "count": 2
+          }
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "count": 1,
+          "next": {
+            "count": "2"
+          }
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "next": {
+            "count": 2
+          }
+        },
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": false,
+    "digest": "b7bc5d781eb9ecb74970e1668e0742fde93eaf64d7e2d220e725149f60b7f0e5",
+    "name": "reject repeated assertion ^{0}",
+    "schema": {
+      "type": "string",
+      "pattern": "^{0}"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "66bc3710339bee7b5c1585048e43443aa8527ef43c49680cf1e759b55a6a34f6",
+    "name": "reject repeated assertion ^{1}",
+    "schema": {
+      "type": "string",
+      "pattern": "^{1}"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "2b7da6386d9254bbc94fe6170cab042f16f1c7984b8b8a4305f70b28e0dee605",
+    "name": "reject repeated assertion ${2}",
+    "schema": {
+      "type": "string",
+      "pattern": "${2}"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "b8cd190fdadefdb6412ef0ddbe7cff009d06fbbb32ed259b6c704ed9461d312f",
+    "name": "reject repeated assertion \\b{2}",
+    "schema": {
+      "type": "string",
+      "pattern": "\\b{2}"
+    },
+    "values": []
+  },
+  {
+    "admitted": false,
+    "digest": "5b7cb463db970a200e9229c72a45ac9686ae498a64daf63ba773c97be120c782",
+    "name": "reject repeated assertion \\B{0}",
+    "schema": {
+      "type": "string",
+      "pattern": "\\B{0}"
+    },
+    "values": []
+  },
+  {
+    "admitted": true,
+    "digest": "af4e24b90229ca53a3d877cadbc53fb7f28f6934a8fdc4b7eac17630b71feb25",
+    "name": "escaped anchors are consuming atoms",
+    "schema": {
+      "type": "string",
+      "pattern": "^\\^{2}$"
+    },
+    "values": [
+      {
+        "value": "^^",
+        "valid": true
+      },
+      {
+        "value": "^",
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "a4522c3e5a25be394fc919c3eb52e8fc4cbb65888cba288dccb473e882269ccf",
+    "name": "zero repetitions before an assertion",
+    "schema": {
+      "type": "string",
+      "pattern": "a{0}^"
+    },
+    "values": [
+      {
+        "value": "",
+        "valid": true
+      },
+      {
+        "value": "x",
+        "valid": true
+      }
+    ]
+  }
+]

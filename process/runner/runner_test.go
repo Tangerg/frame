@@ -356,6 +356,11 @@ func TestRunnerProcessHelper(t *testing.T) {
 		return
 	}
 	switch os.Getenv("FRAME_RUNNER_HELPER") {
+	case "wait-for-kill":
+		fmt.Println("ready")
+		for {
+			time.Sleep(time.Hour)
+		}
 	case "echo":
 		file, err := os.OpenFile(os.Getenv("FRAME_RUNNER_COUNT"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 		if err != nil {

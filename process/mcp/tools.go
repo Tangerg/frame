@@ -14,7 +14,6 @@ import (
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
 
-// ToolsProfile adapts the standard MCP tools/list and tools/call methods.
 const ToolsProfile frame.Profile = "mcp-tools"
 
 // Tools matches each declared unary member to an MCP tool of the same name.

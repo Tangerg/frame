@@ -8,9 +8,15 @@ import (
 )
 
 const (
-	acquireOperation  = "acquire"
-	publishOperation  = "publish"
-	withdrawOperation = "withdraw"
+	validatePlanMethod  = "validatePlan"
+	readyMethod         = "ready"
+	validateUseMethod   = "validateUse"
+	validateRouteMethod = "validateRoute"
+	proveMethod         = "prove"
+	reconnectMethod     = "reconnect"
+	acquireOperation    = "acquire"
+	publishOperation    = "publish"
+	withdrawOperation   = "withdraw"
 )
 
 type controlMethod struct {
@@ -38,18 +44,18 @@ func acknowledgement[I any](name string, mutates bool, call func(*Bridge, contex
 }
 
 var controlMethods = []controlMethod{
-	acknowledgement("validatePlan", false, (*Bridge).ValidatePlan),
-	requestMethod("ready", true, (*Bridge).Ready),
+	acknowledgement(validatePlanMethod, false, (*Bridge).ValidatePlan),
+	requestMethod(readyMethod, true, (*Bridge).Ready),
 	requestMethod(acquireOperation, true, (*Bridge).Acquire),
-	acknowledgement("validateUse", false, (*Bridge).ValidateUse),
-	acknowledgement("validateRoute", false, (*Bridge).ValidateRoute),
+	acknowledgement(validateUseMethod, false, (*Bridge).ValidateUse),
+	acknowledgement(validateRouteMethod, false, (*Bridge).ValidateRoute),
 	requestMethod("snapshot", false, (*Bridge).Snapshot),
 	acknowledgement("closeSnapshot", true, (*Bridge).CloseSnapshot),
 	requestMethod(publishOperation, true, (*Bridge).Publish),
 	requestMethod("publication", false, (*Bridge).Publication),
 	requestMethod(withdrawOperation, true, (*Bridge).Withdraw),
-	requestMethod("prove", true, (*Bridge).Prove),
-	requestMethod("reconnect", true, (*Bridge).Reconnect),
+	requestMethod(proveMethod, true, (*Bridge).Prove),
+	requestMethod(reconnectMethod, true, (*Bridge).Reconnect),
 	requestMethod("poll", false, func(b *Bridge, ctx context.Context, token string, _ struct{}) (Poll, error) {
 		return b.Poll(ctx, token)
 	}),

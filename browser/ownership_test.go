@@ -336,7 +336,7 @@ func TestReceiptLookupsShareAndRespectPendingCapacity(t *testing.T) {
 	defer unblock()
 	readDone := make(chan error, 1)
 	go func() {
-		readDone <- e.store.Read(e.ctx, func(sqlite.Executor) error { close(locked); <-release; return nil })
+		readDone <- e.store.Read(e.ctx, func(sqlite.Reader) error { close(locked); <-release; return nil })
 	}()
 	<-locked
 	start := func(id string) (<-chan error, <-chan struct{}) {

@@ -1,0 +1,102 @@
+{
+  "protocol": "io.github.tangerg.frame/portable/1",
+  "limits": {
+    "maxDescriptorBytes": 1048576,
+    "maxJSONDepth": 64,
+    "maxDescriptorNodes": 16384,
+    "maxValueNodes": 33554432,
+    "maxMethods": 256,
+    "maxTokenBytes": 256,
+    "maxReferences": 1024,
+    "maxReferenceDepth": 64,
+    "maxReferenceWork": 16384,
+    "maxValidationWork": 268435456,
+    "maxEqualityWork": 1048576,
+    "maxNumberBytes": 1024,
+    "maxAbsExponent": 4096,
+    "maxPatternBytes": 512,
+    "maxPatternRepeat": 256,
+    "maxSizeConstraint": 9007199254740991
+  },
+  "pattern": {
+    "literalEscapes": "\\^$.*+?()[]{}|/",
+    "hexWidth": 2,
+    "escapes": [
+      {
+        "name": "d",
+        "expression": "[\\u{30}-\\u{39}]",
+        "class": true
+      },
+      {
+        "name": "D",
+        "expression": "[\\u{0}-\\u{2f}\\u{3a}-\\u{10ffff}]",
+        "class": true
+      },
+      {
+        "name": "s",
+        "expression": "[\\u{9}-\\u{a}\\u{c}-\\u{d}\\u{20}]",
+        "class": true
+      },
+      {
+        "name": "S",
+        "expression": "[\\u{0}-\\u{8}\\u{b}\\u{e}-\\u{1f}\\u{21}-\\u{10ffff}]",
+        "class": true
+      },
+      {
+        "name": "w",
+        "expression": "[\\u{30}-\\u{39}\\u{41}-\\u{5a}\\u{5f}\\u{61}-\\u{7a}]",
+        "class": true
+      },
+      {
+        "name": "W",
+        "expression": "[\\u{0}-\\u{2f}\\u{3a}-\\u{40}\\u{5b}-\\u{5e}\\u{60}\\u{7b}-\\u{10ffff}]",
+        "class": true
+      },
+      {
+        "name": "b",
+        "expression": "\\b",
+        "class": false
+      },
+      {
+        "name": "B",
+        "expression": "\\B",
+        "class": false
+      },
+      {
+        "name": "f",
+        "expression": "[\\u{c}]",
+        "class": true
+      },
+      {
+        "name": "n",
+        "expression": "[\\u{a}]",
+        "class": true
+      },
+      {
+        "name": "r",
+        "expression": "[\\u{d}]",
+        "class": true
+      },
+      {
+        "name": "t",
+        "expression": "[\\u{9}]",
+        "class": true
+      },
+      {
+        "name": "v",
+        "expression": "[\\u{b}]",
+        "class": true
+      }
+    ],
+    "dot": "[^\\n]",
+    "end": "(?![\\s\\S])"
+  },
+  "formats": {
+    "date": "date",
+    "time": "time",
+    "dateTime": "date-time",
+    "uuid": "uuid",
+    "jsonPointer": "json-pointer",
+    "relativeJSONPointer": "relative-json-pointer"
+  }
+}

@@ -44,12 +44,14 @@ export function connect(bootstrap: Bootstrap) {
   const control = new HTTPControl({
     endpoint: new URL("/frame/control", bootstrap.origin).href,
     credential: bootstrap.credentials.token,
-    maximumMessageBytes: 8 << 20,
+    maximumMessageBytes: bootstrap.credentials.maxMessageBytes,
     lifetime: transport,
   });
   const modules = new RealmModules(async (unit, signal) => {
     const response = await fetch(new URL(unit.module.path, bootstrap.origin), {
-      signal, redirect: "error", credentials: "omit",
+      signal,
+      redirect: "error",
+      credentials: "omit",
     });
     if (!response.ok) throw new Error("approved module is unavailable");
     const bytes = await readResponseBytes(response, 16 << 20);

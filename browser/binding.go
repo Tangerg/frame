@@ -125,5 +125,5 @@ func (b *Bridge) AcquirePlan(ctx context.Context, token, operationID string, pla
 	if err != nil {
 		return grant, err
 	}
-	return b.deliverUse(ctx, session, entry, use, operation)
+	return b.deliverUse(ctx, session, entry, use, operationID, operation)
 }

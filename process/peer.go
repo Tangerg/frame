@@ -14,8 +14,9 @@ import (
 	framevalue "github.com/Tangerg/frame/value"
 )
 
-// ErrOutcomeUnknown means the peer stopped answering after dispatch. Only the
-// application that owns the effect can establish whether the operation finished.
+// A dispatched request without a validated result remains unknown, even when
+// its handler confirms cancellation. Cancellation cannot settle an effect; only
+// the business owner can establish its original outcome or authorize a retry.
 var ErrOutcomeUnknown = errors.New("process: outcome unknown")
 
 type Problem struct {
@@ -25,7 +26,20 @@ type Problem struct {
 
 func (p *Problem) Error() string { return p.Code + ": " + p.Message }
 func (p *Problem) Is(target error) bool {
+	if p.Code == profile.Errors.Cancelled {
+		return target == context.Canceled || target == ErrOutcomeUnknown
+	}
 	return p.Code == profile.Errors.Unknown && target == ErrOutcomeUnknown
+}
+
+func (p *Problem) valid() bool {
+	switch p.Code {
+	case profile.Errors.Invalid, profile.Errors.Capacity, profile.Errors.Contract,
+		profile.Errors.Unknown, profile.Errors.Closed, profile.Errors.Cancelled:
+		return true
+	default:
+		return false
+	}
 }
 
 type envelope struct {
@@ -253,7 +267,7 @@ func (p *peer) receive(msg envelope) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if msg.Method == "" {
-		if msg.Params != nil || (msg.Result == nil) == (msg.Error == nil) || n > p.next || msg.Error != nil && msg.Error.Code == "" {
+		if msg.Params != nil || (msg.Result == nil) == (msg.Error == nil) || n > p.next || msg.Error != nil && !msg.Error.valid() {
 			return errors.New("process: invalid response")
 		}
 		reply := p.pending[msg.ID]
@@ -285,10 +299,12 @@ func (p *peer) respond(ctx context.Context, cancel context.CancelFunc, msg envel
 	reply := envelope{ID: msg.ID, Result: result}
 	if err != nil {
 		reply.Result = nil
-		if established, ok := errors.AsType[*Problem](err); ok {
-			reply.Error = established
-		} else if errors.Is(err, context.Canceled) {
+		if errors.Is(err, context.Canceled) {
 			reply.Error = &Problem{profile.Errors.Cancelled, "request cancelled"}
+		} else if errors.Is(err, ErrOutcomeUnknown) {
+			reply.Error = &Problem{profile.Errors.Unknown, "operation did not return a confirmed result"}
+		} else if established, ok := errors.AsType[*Problem](err); ok {
+			reply.Error = established
 		} else {
 			reply.Error = &Problem{profile.Errors.Unknown, "operation did not return a confirmed result"}
 		}

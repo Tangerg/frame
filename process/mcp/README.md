@@ -60,6 +60,11 @@ protocol := mcp.Tools{
 
 The host freezes this choice before the child starts. A server cannot change it by adding or removing its output schema. An MCP `isError` response produces a `*mcp.ToolError`. Its `Result` retains the response content for the caller. A missing or invalid successful reply, or a canceled call after dispatch, carries `process.ErrOutcomeUnknown`. No call is replayed. Only the original runner's exit evidence releases a durable process attempt.
 
+An already cancelled local context is rejected before SDK handoff and retains
+only its cancellation cause. Once the SDK owns the request, a cancelled wait
+cannot establish whether the peer received it. An explicit ToolError preserves
+the tool's reported failure; it does not prove rollback or non-execution.
+
 Canceling a request queued for stdio leaves the active sender and other readers alone. After a request is written, the SDK can notify the peer that the call was canceled. Cancellation while bytes are being written closes the shared stream because the peer may already have received part of a frame. Other in-flight calls on that stream can then lose their replies. The process still requires its original exit proof.
 
 The standard tools profile supports unary calls. Frame streaming methods and reverse imports require another protocol. MCP prompts, resource browsing, multi-round elicitation and network transports are outside this profile. List-change notifications do not grant methods or change an approved Frame binding. See the [MCP tools specification](https://modelcontextprotocol.io/specification/2025-11-25/server/tools) and the [executable integration test](tools_test.go).

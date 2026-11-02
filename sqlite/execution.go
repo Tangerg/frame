@@ -96,15 +96,18 @@ func (s *Store) RecordAttempt(ctx context.Context, attempt Attempt) error {
 				return err
 			}
 			if attempt.Parent != "" {
-				var state string
+				var state attemptState
 				if err := tx.QueryRowContext(ctx, `SELECT state FROM frame_attempts WHERE id=?`, attempt.Parent).Scan(&state); err != nil {
 					return err
 				}
-				if state != "approved" {
+				if err := state.validate(); err != nil {
+					return err
+				}
+				if state != attemptApproved {
 					return frame.ErrClosed
 				}
 			}
-			_, err = tx.ExecContext(ctx, `INSERT INTO frame_attempts(id,epoch,request,request_digest,state) VALUES(?,?,?,?,'approved')`, attempt.ID, attempt.Epoch, encoded, value.Hash(encoded))
+			_, err = tx.ExecContext(ctx, `INSERT INTO frame_attempts(id,epoch,request,request_digest,state) VALUES(?,?,?,?,?)`, attempt.ID, attempt.Epoch, encoded, value.Hash(encoded), attemptApproved)
 			return err
 		})
 		if err != nil && !errors.Is(err, ErrConflict) && !errors.Is(err, frame.ErrClosed) {
@@ -115,13 +118,13 @@ func (s *Store) RecordAttempt(ctx context.Context, attempt Attempt) error {
 }
 
 const attemptRecords = `SELECT request,request_digest,state,proof FROM frame_attempts`
-const protectedAttempts = attemptRecords + ` WHERE state='approved' ORDER BY id`
+const protectedAttempts = attemptRecords + ` WHERE state=? ORDER BY id`
 
 func (s *Store) Attempts(ctx context.Context) ([]AttemptRecord, error) {
 	return readRecords(ctx, s, attemptRecords+" ORDER BY id", decodeAttempt)
 }
 func (s *Store) PendingAttempts(ctx context.Context) ([]AttemptRecord, error) {
-	return readRecords(ctx, s, attemptRecords+" WHERE state IN ('approved','handoff') ORDER BY id", decodeAttempt)
+	return readRecords(ctx, s, attemptRecords+" WHERE state IN (?,?) ORDER BY id", decodeAttempt, attemptApproved, attemptHandoff)
 }
 func (s *Store) Attempt(ctx context.Context, id string) (AttemptRecord, error) {
 	return readRecord(ctx, s, attemptRecords+" WHERE id=?", decodeAttempt, id)
@@ -134,14 +137,18 @@ type protectedRecord struct {
 
 func decodeAttempt(row protectedRecord) (AttemptRecord, error) {
 	var record AttemptRecord
+	state := attemptState(row.state)
+	if err := state.validate(); err != nil {
+		return record, err
+	}
 	if err := jsonv2.Unmarshal(row.request, &record.Attempt, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return record, err
 	}
 	if err := record.Attempt.Validate(); err != nil {
 		return record, err
 	}
-	record.PendingHandoff = row.state == "handoff"
-	record.Released = record.PendingHandoff || row.state == "released"
+	record.PendingHandoff = state == attemptHandoff
+	record.Released = record.PendingHandoff || state == attemptReleased
 	if record.Released {
 		if err := jsonv2.Unmarshal(row.proof, &record.Proof, jsonv2.RejectUnknownMembers(true)); err != nil {
 			return record, err
@@ -167,7 +174,7 @@ func readRecord[T any](ctx context.Context, store *Store, query string, decode f
 
 func readRecords[T any](ctx context.Context, store *Store, query string, decode func(protectedRecord) (T, error), args ...any) ([]T, error) {
 	var records []T
-	err := store.Read(ctx, func(tx Executor) error {
+	err := store.Read(ctx, func(tx Reader) error {
 		var err error
 		records, err = scanRecords(ctx, tx, query, decode, args...)
 		return err
@@ -178,7 +185,7 @@ func readRecords[T any](ctx context.Context, store *Store, query string, decode 
 	return records, nil
 }
 
-func scanRecords[T any](ctx context.Context, tx Executor, query string, decode func(protectedRecord) (T, error), args ...any) ([]T, error) {
+func scanRecords[T any](ctx context.Context, tx Reader, query string, decode func(protectedRecord) (T, error), args ...any) ([]T, error) {
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -208,15 +215,15 @@ func scanRecords[T any](ctx context.Context, tx Executor, query string, decode f
 // actual exit is confirmed, including attempts with an unknown creation result.
 func (s *Store) ExecutionDependencies(ctx context.Context) ([]frame.Dependency, error) {
 	var dependencies []frame.Dependency
-	err := s.Read(ctx, func(tx Executor) error {
-		attempts, err := scanRecords(ctx, tx, protectedAttempts, decodeAttempt)
+	err := s.Read(ctx, func(tx Reader) error {
+		attempts, err := scanRecords(ctx, tx, protectedAttempts, decodeAttempt, attemptApproved)
 		if err != nil {
 			return err
 		}
 		for _, record := range attempts {
 			dependencies = append(dependencies, record.Attempt.Binding.Dependencies()...)
 		}
-		uses, err := scanRecords(ctx, tx, protectedUses, decodeUse)
+		uses, err := scanRecords(ctx, tx, protectedUses, decodeUse, useApproved)
 		if err != nil {
 			return err
 		}
@@ -232,16 +239,16 @@ func (s *Store) ExecutionDependencies(ctx context.Context) ([]frame.Dependency, 
 }
 
 func (s *Store) ReleaseAttempt(ctx context.Context, id string, proof ExitProof) error {
-	return s.recordRelease(ctx, id, proof, "released")
+	return s.recordRelease(ctx, id, proof, attemptReleased)
 }
 
 // AcceptExit commits the original proof before its runner may reclaim capacity.
 // Recovery retains the outstanding acknowledgement across either process crashing.
 func (s *Store) AcceptExit(ctx context.Context, id string, proof ExitProof) error {
-	return s.recordRelease(ctx, id, proof, "handoff")
+	return s.recordRelease(ctx, id, proof, attemptHandoff)
 }
 
-func (s *Store) recordRelease(ctx context.Context, id string, proof ExitProof, target string) error {
+func (s *Store) recordRelease(ctx context.Context, id string, proof ExitProof, target attemptState) error {
 	if !validID(id) || proof.AttemptID != id || !validID(proof.Realm) || !validID(proof.ExitID) || !validID(proof.Kind) || len(proof.Evidence) == 0 || len(proof.Evidence) > s.maxRequestBytes {
 		return errors.New("sqlite: exact exit evidence is required")
 	}
@@ -252,7 +259,7 @@ func (s *Store) recordRelease(ctx context.Context, id string, proof ExitProof, t
 	return s.admission.Maintenance(ctx, func() error {
 		err := s.transaction(ctx, func(tx Executor) error {
 			var request, previous []byte
-			var state string
+			var state attemptState
 			if err := tx.QueryRowContext(ctx, `SELECT request,state,proof FROM frame_attempts WHERE id=?`, id).Scan(&request, &state, &previous); err != nil {
 				return err
 			}
@@ -263,17 +270,17 @@ func (s *Store) recordRelease(ctx context.Context, id string, proof ExitProof, t
 			if attempt.Realm != proof.Realm {
 				return ErrConflict
 			}
-			if state == "released" || state == "handoff" {
-				if !bytes.Equal(previous, encoded) {
-					return ErrConflict
-				}
-				if state == "handoff" && target == "released" {
-					_, err := tx.ExecContext(ctx, `UPDATE frame_attempts SET state='released' WHERE id=?`, id)
-					return err
-				}
+			next, err := state.afterProof(target)
+			if err != nil {
+				return err
+			}
+			if state != attemptApproved && !bytes.Equal(previous, encoded) {
+				return ErrConflict
+			}
+			if next == state {
 				return nil
 			}
-			_, err := tx.ExecContext(ctx, `UPDATE frame_attempts SET state=?,proof=? WHERE id=? AND state='approved'`, target, encoded, id)
+			_, err = tx.ExecContext(ctx, `UPDATE frame_attempts SET state=?,proof=? WHERE id=? AND state=?`, next, encoded, id, state)
 			return err
 		})
 		if err != nil && !errors.Is(err, ErrConflict) && !errors.Is(err, sql.ErrNoRows) {
@@ -283,11 +290,11 @@ func (s *Store) recordRelease(ctx context.Context, id string, proof ExitProof, t
 	})
 }
 
-// Read invokes a trusted query in a fresh current transaction. It is useful for
-// recovery and diagnostics; mutations must use an Owner's submission protocol.
-func (s *Store) Read(ctx context.Context, query func(Executor) error) error {
+// Recovery and diagnostics may read without reopening admission. Mutations
+// require an Owner so they cannot bypass the recovery barrier.
+func (s *Store) Read(ctx context.Context, query func(Reader) error) error {
 	if query == nil {
 		return errors.New("sqlite: query is required")
 	}
-	return s.transact(ctx, readTransaction, query)
+	return s.transact(ctx, readTransaction, func(tx Executor) error { return query(readAccess{access: tx}) })
 }

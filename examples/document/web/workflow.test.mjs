@@ -314,7 +314,7 @@ test("dynamic native publication exits through its original execution and resend
     const control = new HTTPControl({
       endpoint: origin + "/frame/control",
       credential: credentials.token,
-      maximumMessageBytes: 8 * 1024 * 1024,
+      maximumMessageBytes: credentials.maxMessageBytes,
       lifetime: transport,
       async fetch(input, init) {
         const request = JSON.parse(init.body);
@@ -439,6 +439,103 @@ test("dynamic native publication exits through its original execution and resend
     await writable(state);
     await rm(state, { recursive: true, force: true });
     if (completed) assert.equal(code, 0, diagnostics);
+  }
+});
+
+test("document actions retain their original task when the selection changes", async () => {
+  const window = new Window({
+    url: "http://127.0.0.1:8088",
+    settings: {
+      disableCSSFileLoading: true,
+      disableJavaScriptFileLoading: true,
+      disableIframePageLoading: true,
+    },
+  });
+  const original = {
+    window: globalThis.window,
+    document: globalThis.document,
+    HTMLElement: globalThis.HTMLElement,
+    MutationObserver: globalThis.MutationObserver,
+    fetch: globalThis.fetch,
+  };
+  const queue = Promise.withResolvers();
+  const cancel = Promise.withResolvers();
+  const calls = [];
+  try {
+    window.document.write(
+      await readFile(join(directory, "dist/index.html"), "utf8"),
+    );
+    Object.assign(globalThis, {
+      window,
+      document: window.document,
+      HTMLElement: window.HTMLElement,
+      MutationObserver: window.MutationObserver,
+      fetch: async (path, init) => {
+        const id = init.body
+          ? JSON.parse(init.body).id
+          : decodeURIComponent(path.split("/").at(-1));
+        calls.push({ path, id });
+        if (path === "/api/queue") await queue.promise;
+        if (path === "/api/cancel") await cancel.promise;
+        return Response.json({
+          id,
+          state: "completed",
+          binding: { units: [] },
+        });
+      },
+    });
+    const main = (await readdir(join(directory, "dist/assets"))).find((file) =>
+      file.endsWith(".js"),
+    );
+    assert.ok(main);
+    await import(
+      pathToFileURL(join(directory, "dist/assets", main)).href +
+        "?original-task-actions"
+    );
+    const element = (id) => window.document.getElementById(id);
+    element("token").value = "action-test-credential";
+    element("task").value = "convert-original";
+    element("convert").click();
+    await until(
+      () => calls.length === 1,
+      () => JSON.stringify(calls),
+    );
+    element("task").value = "convert-new-selection";
+    element("status").textContent = "new selection";
+    queue.resolve();
+    await until(
+      () => !element("convert").disabled,
+      () => element("error").textContent,
+    );
+    assert.deepEqual(calls, [
+      { path: "/api/queue", id: "convert-original" },
+      { path: "/api/run", id: "convert-original" },
+    ]);
+    assert.equal(element("status").textContent, "new selection");
+
+    element("task").value = "cancel-original";
+    element("cancel").click();
+    await until(
+      () => calls.length === 3,
+      () => JSON.stringify(calls),
+    );
+    element("task").value = "cancel-new-selection";
+    cancel.resolve();
+    await until(
+      () => !element("cancel").disabled,
+      () => element("error").textContent,
+    );
+    assert.deepEqual(calls.slice(2), [
+      { path: "/api/cancel", id: "cancel-original" },
+      { path: "/api/tasks/cancel-original", id: "cancel-original" },
+    ]);
+    assert.equal(element("status").textContent, "new selection");
+    assert.equal(element("error").textContent, "");
+  } finally {
+    queue.resolve();
+    cancel.resolve();
+    Object.assign(globalThis, original);
+    await window.happyDOM.close();
   }
 });
 

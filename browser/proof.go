@@ -21,15 +21,15 @@ func (b *Bridge) Prove(ctx context.Context, token string, proof CloseProof) (Pro
 	if err != nil {
 		return ProofAcknowledgement{}, err
 	}
-	if proof.Realm != session.realm || proof.Authority.ID != b.authority.ID || proof.CloseID == "" || proof.ProofID == "" || proof.Status != Released {
+	if proof.Realm != session.realm || proof.Authority.ID != b.authority.ID || !frame.ValidName(proof.CloseID) || !frame.ValidName(proof.ProofID) || proof.Status != Released {
 		return ProofAcknowledgement{}, frame.ErrInvalid
 	}
 	encoded, err := json.Marshal(proof)
 	if err != nil {
 		return ProofAcknowledgement{}, err
 	}
-	if int64(len(encoded)) > b.config.MaxRequestBytes {
-		return ProofAcknowledgement{}, frame.ErrCapacity
+	if err := b.checkRequest(proveMethod, proof); err != nil {
+		return ProofAcknowledgement{}, err
 	}
 	attempt, err := b.provenAttempt(ctx, session, proof)
 	if err != nil {
@@ -349,8 +349,8 @@ func (b *Bridge) releaseExecution(ctx context.Context, attempt sqlite.Attempt, p
 			delete(b.publications, id)
 		}
 	}
-	delete(b.executions, attempt.ID)
 	if entry != nil {
+		b.removeExecutionLocked(entry)
 		b.reapRealmLocked(entry.plan.Realm)
 	}
 	if session := b.sessions[attempt.Realm]; session != nil {
@@ -361,23 +361,17 @@ func (b *Bridge) releaseExecution(ctx context.Context, attempt sqlite.Attempt, p
 }
 
 func (b *Bridge) Reconnect(ctx context.Context, token string, request ReconnectRequest) (ReconnectResult, error) {
+	if err := b.checkRequest(reconnectMethod, request); err != nil {
+		return ReconnectResult{}, err
+	}
 	session, err := b.session(token, false)
 	if err != nil {
 		return ReconnectResult{}, err
 	}
-	if request.Realm != session.realm || request.Authority.ID != b.authority.ID || len(request.Executions) > b.config.MaxPending || len(request.PendingProofs) > b.config.MaxPending {
+	if request.Realm != session.realm || request.Authority.ID != b.authority.ID || len(request.Executions) > b.config.MaxPending {
 		return ReconnectResult{}, frame.ErrInvalid
 	}
-	result := ReconnectResult{Authority: b.authority, Realm: session.realm, Mode: Revalidated, AcceptedProofs: []string{}, Executions: []RevalidatedExecution{}}
-	for _, proof := range request.PendingProofs {
-		ack, err := b.Prove(ctx, token, proof)
-		if err != nil {
-			return ReconnectResult{}, err
-		}
-		if ack.Recorded {
-			result.AcceptedProofs = append(result.AcceptedProofs, ack.ProofID)
-		}
-	}
+	result := ReconnectResult{Authority: b.authority, Realm: session.realm, Mode: Revalidated, Executions: []RevalidatedExecution{}}
 	b.mu.Lock()
 	cleanupOnly := session.cleanupOnly || request.Authority != b.authority
 	entries := make([]*browserExecution, 0, len(request.Executions))
@@ -407,6 +401,9 @@ func (b *Bridge) Reconnect(ctx context.Context, token string, request ReconnectR
 	}
 	for _, entry := range entries {
 		result.Executions = append(result.Executions, RevalidatedExecution{Execution: entry.plan.Execution, ScopeID: entry.plan.ScopeID, ScopeGeneration: entry.plan.ScopeGeneration})
+	}
+	if err := b.checkResponse(result); err != nil {
+		return ReconnectResult{}, err
 	}
 	return result, nil
 }

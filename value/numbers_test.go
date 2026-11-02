@@ -43,7 +43,6 @@ func TestNumbersKeepEveryLiteralItDecoded(t *testing.T) {
 		t.Errorf("nested element = %#v, want json.Number(-0)", list[2])
 	}
 
-	// Other kinds must reach their ordinary Go representations.
 	if object["text"] != "x" || object["flag"] != true || object["absent"] != nil {
 		t.Errorf("non-numeric members changed: %#v", object)
 	}
@@ -78,7 +77,7 @@ func TestNumbersLeaveTypedDestinationsAlone(t *testing.T) {
 }
 
 // TestDefaultDecodingStillLosesTheseNumbers records why the option is not
-// optional. If this ever stops holding, exactjson has no reason to exist.
+// optional. If this ever stops holding, value.Numbers has no reason to exist.
 func TestDefaultDecodingStillLosesTheseNumbers(t *testing.T) {
 	t.Parallel()
 	var rounded any
@@ -88,5 +87,5 @@ func TestDefaultDecodingStillLosesTheseNumbers(t *testing.T) {
 	if rounded == any(float64(9007199254740993)) && rounded != any(9007199254740993) {
 		return
 	}
-	t.Errorf("encoding/json/v2 decoded an exact integer into %#v; exactjson may be obsolete", rounded)
+	t.Errorf("encoding/json/v2 decoded an exact integer into %#v; value.Numbers may be obsolete", rounded)
 }

@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
-	"net/url"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -103,8 +101,7 @@ func installTransactionFault(t *testing.T, store *Store, fault transactionFault)
 	if err := store.db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	dsn := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String() + "?_pragma=foreign_keys(1)&_pragma=synchronous(FULL)&_pragma=read_uncommitted(0)&_pragma=busy_timeout(5000)"
-	store.db = sql.OpenDB(&faultConnector{driver: &modernc.Driver{}, dsn: dsn, fault: fault})
+	store.db = sql.OpenDB(&faultConnector{driver: &modernc.Driver{}, dsn: storeDataSource(path), fault: fault})
 	store.db.SetMaxOpenConns(1)
 	store.db.SetMaxIdleConns(1)
 	if err := store.db.PingContext(t.Context()); err != nil {
@@ -121,7 +118,7 @@ func insertFaultDocument(ctx context.Context, tx Executor, id string) ([]byte, e
 func assertFaultDocumentCount(t *testing.T, store *Store, want int) {
 	t.Helper()
 	var count int
-	if err := store.Read(t.Context(), func(tx Executor) error {
+	if err := store.Read(t.Context(), func(tx Reader) error {
 		return tx.QueryRowContext(t.Context(), `SELECT count(*) FROM documents`).Scan(&count)
 	}); err != nil || count != want {
 		t.Fatalf("business rows=%d, want %d; error=%v", count, want, err)

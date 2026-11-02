@@ -75,7 +75,7 @@ function hostControl(session: Credentials): HTTPControl {
   return new HTTPControl({
     endpoint: new URL("/frame/control", window.location.href).href,
     credential: session.token,
-    maximumMessageBytes: 8 * 1024 * 1024,
+    maximumMessageBytes: projectNumber(session.maxMessageBytes),
     lifetime: transport,
   });
 }
@@ -209,7 +209,15 @@ async function recoverPreview(
 }
 
 async function mountPreview(task: TaskView): Promise<void> {
-  if (!task.result || !runtime || !control || !point || !execution) return;
+  if (
+    task.id !== taskInput.value ||
+    !task.result ||
+    !runtime ||
+    !control ||
+    !point ||
+    !execution
+  )
+    return;
   const owner = runtime,
     channel = control;
   await recoverPreview(owner, channel);
@@ -259,14 +267,16 @@ async function mountPreview(task: TaskView): Promise<void> {
     );
     if (!object)
       throw new Error("the original Use does not own the selected preview");
-    await use.with(object, point, (preview) =>
-      preview.mount(
-        element("preview"),
-        task.result!.converted,
-        theme.css,
-        use.lifetime,
-      ),
-    );
+    await use.with(object, point, (preview) => {
+      if (task.id === taskInput.value)
+        preview.mount(
+          element("preview"),
+          task.result!.converted,
+          theme.css,
+          use.lifetime,
+        );
+    });
+    if (task.id !== taskInput.value) await closeMounted(owner);
   } catch (error) {
     try {
       await closeMounted(owner);
@@ -281,6 +291,7 @@ async function mountPreview(task: TaskView): Promise<void> {
 }
 
 function show(task: TaskView): void {
+  if (task.id !== taskInput.value) return;
   element("status").textContent =
     `${task.id}: ${task.state}${task.failure ? ` — ${task.failure}` : ""}`;
   element("binding").textContent = task.binding.units
@@ -325,22 +336,25 @@ action("queue", async () => {
   );
 });
 action("run", async () => {
-  const task = await api<TaskView>("/api/run", { id: taskId() });
+  const command = { id: taskId() };
+  const task = await api<TaskView>("/api/run", command);
   show(task);
-  await preview(task);
+  if (task.id === taskInput.value) await preview(task);
 });
 action("convert", async () => {
-  await api("/api/queue", { id: taskId(), path: pathInput.value });
-  const task = await api<TaskView>("/api/run", { id: taskId() });
+  const command = { id: taskId(), path: pathInput.value };
+  await api("/api/queue", command);
+  const task = await api<TaskView>("/api/run", { id: command.id });
   show(task);
-  await preview(task);
+  if (task.id === taskInput.value) await preview(task);
 });
 action("observe", async () => {
   show(await api<TaskView>(`/api/tasks/${encodeURIComponent(taskId())}`));
 });
 action("cancel", async () => {
-  await api("/api/cancel", { id: taskId() });
-  show(await api<TaskView>(`/api/tasks/${encodeURIComponent(taskId())}`));
+  const command = { id: taskId() };
+  await api("/api/cancel", command);
+  show(await api<TaskView>(`/api/tasks/${encodeURIComponent(command.id)}`));
 });
 action("reconnect", async () => {
   if (!credentials || !runtime) throw new Error("no original Realm exists");

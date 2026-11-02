@@ -3,7 +3,7 @@ import type { JSONNumber } from "../json.js";
 import { createHash } from "node:crypto";
 import { cloneJSON, stringifyJSON } from "../json.js";
 import { compileSchema } from "./schema.js";
-import profile from "./limits.generated.json" with { type: "json" };
+import profile from "./profile.generated.json" with { type: "json" };
 import { checkDescriptor, exceeded, PORTABLE_LIMITS } from "./limits.js";
 
 export const PROTOCOL = profile.protocol;

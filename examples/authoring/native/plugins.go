@@ -16,6 +16,7 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/examples/document"
+	"github.com/Tangerg/frame/internal/localfile"
 	framevalue "github.com/Tangerg/frame/value"
 )
 
@@ -152,7 +153,7 @@ func readSource(ctx context.Context, root *os.Root, ref document.DocumentRef) (_
 	if err := context.Cause(ctx); err != nil {
 		return document.Document{}, err
 	}
-	file, err := root.Open(ref.Path)
+	file, err := localfile.OpenRegularIn(root, ref.Path)
 	if err != nil {
 		return document.Document{}, err
 	}
@@ -161,8 +162,8 @@ func readSource(ctx context.Context, root *os.Root, ref document.DocumentRef) (_
 	if err != nil {
 		return document.Document{}, err
 	}
-	if !info.Mode().IsRegular() || info.Size() > maxSourceBytes {
-		return document.Document{}, errors.New("authoring: source must be a bounded regular file")
+	if info.Size() > maxSourceBytes {
+		return document.Document{}, errors.New("authoring: source byte budget exceeded")
 	}
 	data, err := io.ReadAll(io.LimitReader(file, maxSourceBytes+1))
 	if err != nil {

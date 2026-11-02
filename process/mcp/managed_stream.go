@@ -28,47 +28,75 @@ type managedDelivery struct {
 	emit     process.Emit
 	maxBytes int64
 	received uint64
+	pending  chan struct{}
+	closed   bool
+	failure  error
 }
 
 // The lease is deliberately per call. Neither overlapping chunks nor chunks
 // escaping their original call may advance the acknowledged sequence.
+func (d *managedDelivery) failLocked(cause error) error {
+	if d.failure == nil {
+		d.failure = cause
+		d.abort(cause)
+	}
+	return d.failure
+}
+
 func (d *managedDelivery) receive(wait context.Context, sequence uint64, chunk value.JSON) (err error) {
+	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return errors.New("mcp: managed stream is closed")
+	}
+	if d.pending != nil {
+		d.failLocked(errors.New("mcp: concurrent managed stream delivery"))
+	}
+	if d.failure != nil {
+		err = d.failure
+		d.mu.Unlock()
+		return err
+	}
+	d.pending = make(chan struct{})
+	maxBytes, previous := d.maxBytes, d.received
+	d.mu.Unlock()
 	defer func() {
 		if recover() != nil {
 			err = errors.New("mcp: managed stream consumer panicked")
 		}
+		d.mu.Lock()
+		defer d.mu.Unlock()
 		if err != nil {
-			d.abort(err)
+			err = d.failLocked(err)
+		} else {
+			d.received = sequence
 		}
+		close(d.pending)
+		d.pending = nil
 	}()
-	if !d.mu.TryLock() {
-		return errors.New("mcp: concurrent managed stream delivery")
+	if err := context.Cause(d.call); err != nil {
+		return err
 	}
-	defer d.mu.Unlock()
-	if err := d.call.Err(); err != nil {
-		return context.Cause(d.call)
+	if wait == nil {
+		return frame.ErrInvalid
 	}
-	if err := wait.Err(); err != nil {
-		return context.Cause(wait)
+	if err := context.Cause(wait); err != nil {
+		return err
 	}
-	if d.maxBytes == 0 || sequence == 0 || sequence != d.received+1 {
+	if maxBytes == 0 || sequence == 0 || sequence != previous+1 {
 		return errors.New("mcp: invalid managed stream sequence")
 	}
-	if err := d.checkBytes(len(chunk.String())); err != nil {
-		return err
+	if int64(len(chunk.String())) > maxBytes {
+		return frame.ErrCapacity
 	}
 	if err := d.method.ValidateChunk(chunk.Bytes()); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithCancel(d.call)
-	stop := context.AfterFunc(wait, cancel)
+	ctx, cancel := context.WithCancelCause(d.call)
+	stop := context.AfterFunc(wait, func() { cancel(context.Cause(wait)) })
 	defer stop()
-	defer cancel()
-	if err := d.emit(ctx, chunk); err != nil {
-		return err
-	}
-	d.received = sequence
-	return nil
+	defer cancel(nil)
+	return errors.Join(d.emit(ctx, chunk), context.Cause(ctx))
 }
 
 func (d *managedDelivery) checkBytes(size int) error {
@@ -100,20 +128,35 @@ func (s *ManagedService) stream(ctx context.Context, method *portable.Method, pa
 	delivery.mu.Lock()
 	delivery.maxBytes = grant.MaxResponseBytes
 	delivery.mu.Unlock()
+	if err := context.Cause(call); err != nil {
+		return nil, err
+	}
 	raw, err = managedRaw(call, s.session, managedInvoke, params)
-	err = errors.Join(err, context.Cause(call))
-	cancel(nil)
-	// A final result raced an unacknowledged chunk. It cannot establish a
-	// successful outcome, even when the peer claims completion.
-	if !delivery.mu.TryLock() {
-		delivery.mu.Lock()
-		err = errors.Join(err, errors.New("mcp: managed stream ended with pending delivery"))
+	if err != nil {
+		err = errors.Join(err, context.Cause(call))
 	}
+	return raw, managedDispatchError(delivery.finish(raw, err))
+}
+
+func (d *managedDelivery) finish(raw jsontext.Value, err error) error {
+	d.mu.Lock()
+	d.closed = true
+	pending := d.pending
+	if pending != nil {
+		d.failLocked(errors.New("mcp: managed stream ended with pending delivery"))
+	}
+	d.mu.Unlock()
+	if pending != nil {
+		<-pending
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	err = errors.Join(err, d.failure)
+	d.abort(errors.New("mcp: managed stream closed"))
 	if err == nil {
-		err = delivery.checkBytes(len(raw))
+		err = d.checkBytes(len(raw))
 	}
-	delivery.mu.Unlock()
-	return raw, managedDispatchError(method, err)
+	return err
 }
 
 func (s *ManagedService) Stream(ctx context.Context, member string, input value.JSON, emit process.Emit) (value.JSON, error) {

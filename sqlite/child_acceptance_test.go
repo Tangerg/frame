@@ -39,7 +39,7 @@ func childAcceptanceConfig(path string, admission *frame.Admission) Config {
 			`CREATE TABLE parent_jobs (id TEXT PRIMARY KEY, active INTEGER NOT NULL, binding BLOB NOT NULL)`,
 			`CREATE TABLE child_jobs (id TEXT PRIMARY KEY, operation TEXT UNIQUE NOT NULL, parent TEXT NOT NULL REFERENCES parent_jobs(id), active INTEGER NOT NULL, binding BLOB NOT NULL)`,
 		},
-		References: func(ctx context.Context, tx Executor, installation frame.InstallationID) ([]frame.Dependency, error) {
+		References: func(ctx context.Context, tx Reader, installation frame.InstallationID) ([]frame.Dependency, error) {
 			rows, err := tx.QueryContext(ctx, `SELECT binding FROM parent_jobs WHERE active=1 UNION ALL SELECT binding FROM child_jobs WHERE active=1`)
 			if err != nil {
 				return nil, err
@@ -111,7 +111,7 @@ func openChildAcceptance(t *testing.T, path string, initialize bool) *childAccep
 	}
 	f.host, err = frame.NewHost(t.Context(), frame.HostConfig{Admission: f.admission, ReadAcceptedBinding: func(ctx context.Context, id string, _ frame.ScopeGrant) (frame.BindingSnapshot, error) {
 		var data []byte
-		if err := f.store.Read(ctx, func(tx Executor) error {
+		if err := f.store.Read(ctx, func(tx Reader) error {
 			return tx.QueryRowContext(ctx, "SELECT binding FROM child_jobs WHERE operation=? AND active=1", id).Scan(&data)
 		}); err != nil {
 			return frame.BindingSnapshot{}, err
@@ -228,7 +228,7 @@ func (f *childAcceptanceFixture) childBinding(t *testing.T) (string, frame.Bindi
 	t.Helper()
 	var operation string
 	var encoded []byte
-	if err := f.store.Read(t.Context(), func(tx Executor) error {
+	if err := f.store.Read(t.Context(), func(tx Reader) error {
 		return tx.QueryRowContext(t.Context(), `SELECT operation,binding FROM child_jobs WHERE id='child'`).Scan(&operation, &encoded)
 	}); err != nil {
 		t.Fatal(err)
@@ -310,7 +310,7 @@ func TestDurableChildAcceptanceAndParentFinalizationShareOneAdmission(t *testing
 					t.Fatalf("child bypassed final parent precondition: %+v", childResult)
 				}
 				var children int
-				if err := f.store.Read(t.Context(), func(tx Executor) error {
+				if err := f.store.Read(t.Context(), func(tx Reader) error {
 					return tx.QueryRowContext(t.Context(), `SELECT count(*) FROM child_jobs`).Scan(&children)
 				}); err != nil || children != 0 {
 					t.Fatalf("rejected child survived: %d, %v", children, err)
@@ -438,7 +438,7 @@ func TestDurableChildCrashRecoveryUsesOriginalAcceptanceAndOperation(t *testing.
 					t.Fatalf("uncommitted child became accepted: %+v", settlement)
 				}
 				var children int
-				if err := f.store.Read(t.Context(), func(tx Executor) error {
+				if err := f.store.Read(t.Context(), func(tx Reader) error {
 					return tx.QueryRowContext(t.Context(), `SELECT count(*) FROM child_jobs`).Scan(&children)
 				}); err != nil || children != 0 {
 					t.Fatalf("unfinished child survived recovery: %d, %v", children, err)

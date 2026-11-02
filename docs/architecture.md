@@ -36,6 +36,24 @@ Configure subprocess environments explicitly. An empty environment is the defaul
 
 The portable schema profile uses the published Scope JSON Schema library as a compiler. No host product or agent transport is required by the framework or its Node SDK.
 
+The profile admits only `date`, `time`, `date-time`, `uuid`, `json-pointer` and
+`relative-json-pointer` formats. Unsupported format names are rejected when a
+descriptor is admitted. Go exports this inventory, its resource budgets and
+its regular-expression atom meanings into `portable/profile.generated.json`;
+the Node adapter consumes that projection. In particular, whitespace uses Go's
+ASCII character set, a dot excludes LF, and the end anchor requires the end of
+the entire string. Fixed repetitions remain bounded by the profile. Both
+runtimes execute `portable/testdata/schema-profile.json`, including Unicode,
+pattern properties, references, and positive and negative format cases.
+
+Contract generation consumes one typed projection graph for both languages.
+Generated Go numbers retain their JSON lexemes through `value.Number`, and
+open objects retain every admitted member. Shapes that cannot be represented
+faithfully as static fields retain a lossless JSON value; the original canonical
+schema still validates them. Date and time strings keep their original text.
+See [contract generation](../portable/contractgen/README.md) for its public
+surface and projection guarantees.
+
 ## Restoring accepted work
 
 The live execution path admits the original plan. A durable host can configure ReadAcceptedBinding once at composition. Its loader receives the record identity and the request's scope grant, authorizes that record, then reads the binding accepted by the original business transaction. Host.AcquireRecord consumes that evidence. A diagnostic BindingSnapshot on its own cannot be presented to the Host as a newly authorized operation. The document queue is a working example in examples/document/tasks.go.

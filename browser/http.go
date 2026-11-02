@@ -34,7 +34,7 @@ func (b *Bridge) Handler() http.Handler {
 			writeProblem(writer, http.StatusUnauthorized, deniedProblem.code, "Realm authentication failed")
 			return
 		}
-		body, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, b.config.MaxRequestBytes))
+		body, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, b.config.MaxMessageBytes))
 		if err != nil {
 			writeProblem(writer, http.StatusRequestEntityTooLarge, capacityProblem.code, "control request exceeds its byte limit")
 			return
@@ -53,6 +53,10 @@ func (b *Bridge) Handler() http.Handler {
 		encoded, err := json.Marshal(result)
 		if err != nil {
 			writeProblem(writer, http.StatusInternalServerError, uncertainProblem.code, "control response could not be encoded")
+			return
+		}
+		if int64(len(encoded)) > b.config.MaxMessageBytes {
+			writeProblem(writer, http.StatusServiceUnavailable, uncertainProblem.code, "control response exceeds its byte limit")
 			return
 		}
 		_, _ = writer.Write(encoded)

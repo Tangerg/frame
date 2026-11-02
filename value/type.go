@@ -47,7 +47,7 @@ func validateType(target reflect.Type, visited map[reflect.Type]bool) error {
 		}
 		return validateType(target.Elem(), visited)
 	case reflect.Struct:
-		fields, _, err := declaredFields(target, make(map[reflect.Type]bool))
+		fields, err := declaredFields(target, make(map[reflect.Type]bool))
 		if err != nil {
 			return err
 		}
@@ -102,21 +102,20 @@ func customEncoder(target reflect.Type) bool {
 	return false
 }
 
-func declaredFields(owner reflect.Type, visiting map[reflect.Type]bool) ([]Field, []reflect.Type, error) {
+func declaredFields(owner reflect.Type, visiting map[reflect.Type]bool) ([]Field, error) {
 	if owner == nil || owner.Kind() != reflect.Struct {
-		return nil, nil, nil
+		return nil, nil
 	}
 	if visiting[owner] {
-		return nil, nil, fmt.Errorf("json: recursive embedding of %s", owner)
+		return nil, fmt.Errorf("json: recursive embedding of %s", owner)
 	}
 	visiting[owner] = true
 	defer delete(visiting, owner)
 	var fields []Field
-	var embeds []reflect.Type
 	for field := range owner.Fields() {
 		name, options, err := parseFieldTag(field)
 		if err != nil {
-			return nil, nil, fmt.Errorf("json field %s.%s: %w", owner, field.Name, err)
+			return nil, fmt.Errorf("json field %s.%s: %w", owner, field.Name, err)
 		}
 		if options.embedded {
 			embedded := field.Type
@@ -124,15 +123,13 @@ func declaredFields(owner reflect.Type, visiting map[reflect.Type]bool) ([]Field
 				embedded = embedded.Elem()
 			}
 			if embedded.Kind() != reflect.Struct || customEncoder(embedded) || customDecoder(embedded) {
-				return nil, nil, fmt.Errorf("json field %s.%s: embedding requires a plain struct", owner, field.Name)
+				return nil, fmt.Errorf("json field %s.%s: embedding requires a plain struct", owner, field.Name)
 			}
-			children, nested, err := declaredFields(embedded, visiting)
+			children, err := declaredFields(embedded, visiting)
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 			fields = append(fields, children...)
-			embeds = append(embeds, embedded)
-			embeds = append(embeds, nested...)
 			continue
 		}
 		if name != "" {
@@ -143,9 +140,9 @@ func declaredFields(owner reflect.Type, visiting map[reflect.Type]bool) ([]Field
 	selectors := make(map[string]bool, len(fields))
 	for _, field := range fields {
 		if names[field.Name] || selectors[field.GoName] {
-			return nil, nil, fmt.Errorf("json: ambiguous field %s.%s", owner, field.Name)
+			return nil, fmt.Errorf("json: ambiguous field %s.%s", owner, field.Name)
 		}
 		names[field.Name], selectors[field.GoName] = true, true
 	}
-	return fields, embeds, nil
+	return fields, nil
 }

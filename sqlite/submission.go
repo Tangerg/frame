@@ -70,7 +70,7 @@ func (o *Owner) prepare(ctx context.Context, request []byte) (id SubmissionID, e
 			if err := tx.QueryRowContext(ctx, `UPDATE frame_owners SET next_sequence=next_sequence+1 WHERE id=? RETURNING next_sequence`, o.id).Scan(&sequence); err != nil {
 				return err
 			}
-			_, err := tx.ExecContext(ctx, `INSERT INTO frame_submissions(owner_id,sequence,digest,request,state) VALUES(?,?,?,?,'prepared')`, o.id, sequence, value.Hash(request), request)
+			_, err := tx.ExecContext(ctx, `INSERT INTO frame_submissions(owner_id,sequence,digest,request,state) VALUES(?,?,?,?,?)`, o.id, sequence, value.Hash(request), request, submissionPrepared)
 			return err
 		})
 		if err != nil {
@@ -164,7 +164,7 @@ func (m *submissionMutation) execute(ctx context.Context, mutate func(context.Co
 		if len(evidence) > m.owner.store.maxRequestBytes {
 			return errors.New("sqlite: settlement evidence exceeds its byte limit")
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE frame_submissions SET state='committed',evidence=? WHERE owner_id=? AND sequence=? AND digest=? AND state='prepared'`, evidence, m.owner.id, m.id.Sequence, original.Digest)
+		_, err = tx.ExecContext(ctx, `UPDATE frame_submissions SET state=?,evidence=? WHERE owner_id=? AND sequence=? AND digest=? AND state=?`, submissionCommitted, evidence, m.owner.id, m.id.Sequence, original.Digest, submissionPrepared)
 		if err == nil {
 			m.settlement.State = Committed
 			m.settlement.Evidence = bytes.Clone(evidence)
@@ -251,7 +251,7 @@ func (o *Owner) readSettlement(ctx context.Context, tx Executor, id SubmissionID
 	if err := o.requireIssued(ctx, tx, id); err != nil {
 		return Settlement{}, err
 	}
-	var state string
+	var state submissionState
 	var stored []byte
 	result := Settlement{ID: id}
 	err := tx.QueryRowContext(ctx, `SELECT digest,request,state,evidence,synchronized FROM frame_submissions WHERE owner_id=? AND sequence=?`, o.id, id.Sequence).Scan(&result.Digest, &stored, &state, &result.Evidence, &result.Synchronized)
@@ -267,8 +267,8 @@ func (o *Owner) readSettlement(ctx context.Context, tx Executor, id SubmissionID
 	if result.Digest != value.Hash(stored) {
 		return Settlement{}, ErrIndeterminate
 	}
-	result.State = stateFor(state)
-	return result, nil
+	result.State, err = state.settlement()
+	return result, err
 }
 
 func (o *Owner) Settlement(ctx context.Context, id SubmissionID, request []byte) (Settlement, error) {
@@ -293,7 +293,7 @@ func (o *Owner) Settlement(ctx context.Context, id SubmissionID, request []byte)
 func (o *Owner) RecoverPrepared(ctx context.Context) error {
 	return o.store.admission.Maintenance(ctx, func() error {
 		return o.store.transaction(ctx, func(tx Executor) error {
-			_, err := tx.ExecContext(ctx, `UPDATE frame_submissions SET state='not_committed' WHERE owner_id=? AND state='prepared'`, o.id)
+			_, err := tx.ExecContext(ctx, `UPDATE frame_submissions SET state=? WHERE owner_id=? AND state=?`, submissionNotCommitted, o.id, submissionPrepared)
 			return err
 		})
 	})
@@ -301,18 +301,21 @@ func (o *Owner) RecoverPrepared(ctx context.Context) error {
 
 func (o *Owner) Pending(ctx context.Context) (settlements []Settlement, err error) {
 	err = o.store.transaction(ctx, func(tx Executor) error {
-		rows, err := tx.QueryContext(ctx, `SELECT sequence,digest,state,evidence,synchronized FROM frame_submissions WHERE owner_id=? AND (state='prepared' OR synchronized=0) ORDER BY sequence`, o.id)
+		rows, err := tx.QueryContext(ctx, `SELECT sequence,digest,state,evidence,synchronized FROM frame_submissions WHERE owner_id=? AND (state=? OR synchronized=0) ORDER BY sequence`, o.id, submissionPrepared)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			item := Settlement{ID: SubmissionID{Store: o.store.id, Owner: o.id}}
-			var state string
+			var state submissionState
 			if err := rows.Scan(&item.ID.Sequence, &item.Digest, &state, &item.Evidence, &item.Synchronized); err != nil {
 				return err
 			}
-			item.State = stateFor(state)
+			item.State, err = state.settlement()
+			if err != nil {
+				return err
+			}
 			settlements = append(settlements, item)
 		}
 		return rows.Err()
@@ -332,7 +335,7 @@ func (o *Owner) confirm(ctx context.Context, id SubmissionID) error {
 		if err := o.requireIssued(ctx, tx, id); err != nil {
 			return err
 		}
-		result, err := tx.ExecContext(ctx, `UPDATE frame_submissions SET synchronized=1 WHERE owner_id=? AND sequence=? AND state!='prepared'`, o.id, id.Sequence)
+		result, err := tx.ExecContext(ctx, `UPDATE frame_submissions SET synchronized=1 WHERE owner_id=? AND sequence=? AND state!=?`, o.id, id.Sequence, submissionPrepared)
 		if err != nil {
 			return err
 		}
@@ -394,7 +397,7 @@ func (o *Owner) compact(ctx context.Context, through uint64) error {
 			return nil
 		}
 		var count uint64
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM frame_submissions s WHERE owner_id=? AND sequence>? AND sequence<=? AND state!='prepared' AND synchronized=1 AND NOT EXISTS(SELECT 1 FROM frame_evidence_references r WHERE r.owner_id=s.owner_id AND r.sequence=s.sequence)`, o.id, compacted, through).Scan(&count); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM frame_submissions s WHERE owner_id=? AND sequence>? AND sequence<=? AND state!=? AND synchronized=1 AND NOT EXISTS(SELECT 1 FROM frame_evidence_references r WHERE r.owner_id=s.owner_id AND r.sequence=s.sequence)`, o.id, compacted, through, submissionPrepared).Scan(&count); err != nil {
 			return err
 		}
 		if count != through-compacted {
@@ -424,7 +427,7 @@ func (o *Owner) CompactSettledUnder(ctx context.Context) error {
 func (o *Owner) compactSettled(ctx context.Context) error {
 	var through uint64
 	err := o.store.transaction(ctx, func(tx Executor) error {
-		return tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT MIN(sequence)-1 FROM frame_submissions s WHERE owner_id=? AND (state='prepared' OR synchronized=0 OR EXISTS(SELECT 1 FROM frame_evidence_references r WHERE r.owner_id=s.owner_id AND r.sequence=s.sequence))),next_sequence) FROM frame_owners WHERE id=?`, o.id, o.id).Scan(&through)
+		return tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT MIN(sequence)-1 FROM frame_submissions s WHERE owner_id=? AND (state=? OR synchronized=0 OR EXISTS(SELECT 1 FROM frame_evidence_references r WHERE r.owner_id=s.owner_id AND r.sequence=s.sequence))),next_sequence) FROM frame_owners WHERE id=?`, o.id, submissionPrepared, o.id).Scan(&through)
 	})
 	if err != nil {
 		return err
@@ -461,7 +464,7 @@ func (o *Owner) settlePrepared(ctx context.Context, id SubmissionID, request []b
 		if err != nil || result.State != Indeterminate {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE frame_submissions SET state='not_committed' WHERE owner_id=? AND sequence=? AND digest=? AND state='prepared'`, o.id, id.Sequence, result.Digest)
+		_, err = tx.ExecContext(ctx, `UPDATE frame_submissions SET state=? WHERE owner_id=? AND sequence=? AND digest=? AND state=?`, submissionNotCommitted, o.id, id.Sequence, result.Digest, submissionPrepared)
 		if err == nil {
 			result.State = NotCommitted
 		}
@@ -471,15 +474,4 @@ func (o *Owner) settlePrepared(ctx context.Context, id SubmissionID, request []b
 		return Settlement{}, err
 	}
 	return result, nil
-}
-
-func stateFor(state string) SettlementState {
-	switch state {
-	case "committed":
-		return Committed
-	case "not_committed":
-		return NotCommitted
-	default:
-		return Indeterminate
-	}
 }

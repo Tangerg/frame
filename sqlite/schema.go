@@ -15,7 +15,11 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
-const busyTimeout = 5 * time.Second
+const (
+	busyTimeout       = 5 * time.Second
+	busyRetryInterval = time.Millisecond
+	primaryResultMask = 0xff
+)
 
 // OpenSchema admits an exact owner-supplied schema in its private database.
 func OpenSchema(ctx context.Context, path string, statements []string) (*sql.DB, error) {
@@ -81,10 +85,10 @@ func waitForSQLite(ctx context.Context, limit time.Duration, attempt func() erro
 		err := attempt()
 		var busy *sqlitedriver.Error
 		// Extended busy result codes share the primary code in the low byte.
-		if !errors.As(err, &busy) || busy.Code()&0xff != sqlite3.SQLITE_BUSY || limit == 0 {
+		if !errors.As(err, &busy) || busy.Code()&primaryResultMask != sqlite3.SQLITE_BUSY || limit == 0 {
 			return err
 		}
-		timer := time.NewTimer(time.Millisecond)
+		timer := time.NewTimer(busyRetryInterval)
 		select {
 		case <-ctx.Done():
 			timer.Stop()

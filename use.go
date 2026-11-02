@@ -227,6 +227,21 @@ func (h *Host) attachPlanMembers(ctx context.Context, use *Use, plan *BindingPla
 		}
 	}
 	for _, instance := range use.instances {
+		// Activation may finish before its instance is retired and rebuilt.
+		// Capture ordering belongs to the Use; the full setup graph must still
+		// have the identity originally admitted for this particular instance.
+		binding, err := subsetBindingRoots(plan.binding, instance.snapshot.Roots, instance.snapshot.UnitRoots)
+		if err != nil {
+			return errors.Join(ErrStaleBinding, err)
+		}
+		binding.Rule = instance.snapshot.Rule
+		identity, err := binding.Identity()
+		if err != nil {
+			return errors.Join(ErrStaleBinding, err)
+		}
+		if identity != instance.identity {
+			return fmt.Errorf("%w: unit acquired another setup binding", ErrStaleBinding)
+		}
 		if instance.startGrant.owner != nil && instance.startGrant != use.scope {
 			return ErrFenced
 		}
@@ -553,11 +568,16 @@ func (h *Host) acquireReadyBinding(ctx context.Context, binding BindingSnapshot,
 	h.mu.Lock()
 	plan := &BindingPlan{owner: h.identity, realm: config.Realm, binding: binding.Clone(), durable: true, members: []snapshotMember{}}
 	for _, source := range binding.Roots {
+		instance, err := h.readyInstanceLocked(source.Unit(), config.Realm)
+		if err != nil {
+			h.mu.Unlock()
+			return nil, err
+		}
 		store := h.catalog[source.Contract]
 		var selected *publication
 		if store != nil {
 			for _, candidate := range store.members {
-				if candidate.source == source && (candidate.instance.realm == config.Realm || source.Contract.Mode == PortableMode) {
+				if candidate.source == source && candidate.instance == instance {
 					if selected != nil {
 						h.mu.Unlock()
 						return nil, ErrAmbiguous
@@ -573,25 +593,31 @@ func (h *Host) acquireReadyBinding(ctx context.Context, binding BindingSnapshot,
 		plan.members = append(plan.members, snapshotMember{id: selected.id, source: selected.source, instanceID: selected.instance.id, binding: selected.instance.snapshot.Clone(), durable: true})
 	}
 	for _, source := range binding.UnitRoots {
-		unit, _, err := h.unitLocked(source)
+		instance, err := h.readyInstanceLocked(source, config.Realm)
 		if err != nil {
 			h.mu.Unlock()
 			return nil, err
-		}
-		realm, err := h.realmLocked(unit.Declaration, config.Realm)
-		if err != nil {
-			h.mu.Unlock()
-			return nil, err
-		}
-		instance := h.instances[instanceKey{source: source, realm: realm}]
-		if instance == nil || instance.retiring || !instance.readyDone || instance.readyErr != nil {
-			h.mu.Unlock()
-			return nil, ErrUnavailable
 		}
 		plan.unitMembers = append(plan.unitMembers, unitMember{source: source, instanceID: instance.id})
 	}
 	h.mu.Unlock()
 	return h.acquirePrepared(ctx, plan, config, recordID)
+}
+
+func (h *Host) readyInstanceLocked(source UnitRef, requestedRealm RealmID) (*Instance, error) {
+	unit, _, err := h.unitLocked(source)
+	if err != nil {
+		return nil, err
+	}
+	realm, err := h.realmLocked(unit.Declaration, requestedRealm)
+	if err != nil {
+		return nil, err
+	}
+	instance := h.instances[instanceKey{source: source, realm: realm}]
+	if instance == nil || instance.retiring || !instance.readyDone || instance.readyErr != nil {
+		return nil, ErrUnavailable
+	}
+	return instance, nil
 }
 
 func (h *Host) AcquireUnit(ctx context.Context, root UnitRef, config UseConfig) (*Use, error) {

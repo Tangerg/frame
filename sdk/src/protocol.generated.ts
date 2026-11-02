@@ -96,7 +96,6 @@ export interface CloseProof {
   readonly publicationId?: string;
   readonly instances: readonly string[];
   readonly status: ReleaseStatus;
-  readonly failures: readonly string[];
 }
 
 export type CloseScopeKind = "execution" | "use" | "publication";
@@ -260,14 +259,12 @@ export interface ReconnectRequest {
   readonly authority: Authority;
   readonly realm: Realm;
   readonly executions: readonly Execution[];
-  readonly pendingProofs: readonly CloseProof[];
 }
 
 export interface ReconnectResult {
   readonly authority: Authority;
   readonly realm: Realm;
   readonly mode: ReconnectMode;
-  readonly acceptedProofs: readonly string[];
   readonly executions: readonly RevalidatedExecution[];
 }
 
@@ -312,6 +309,8 @@ export interface UnitRef {
 }
 
 export interface UseGrant {
+  readonly operationId: string;
+  readonly parentUseId?: string;
   readonly id: string;
   readonly approvalToken: string;
   readonly authority: Authority;

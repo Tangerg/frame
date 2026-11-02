@@ -39,6 +39,15 @@ After MCP initialization the adapter calls `operations.describe`. It compares th
 
 Borrow the registered `process.Service` through Frame. Its `Call` method executes a managed query. Inside the borrow, use the concrete `*mcp.ManagedService` for protocol-specific operations.
 
+Cancellation before handing an invocation to the SDK returns its local cause.
+After that handoff, cancellation, transport failure and invalid results retain
+`process.ErrOutcomeUnknown` together with their cause for both queries and
+commands. The SDK owns the sending queue, so this adapter does not infer
+non-dispatch from a cancelled SDK wait. A validated `*mcp.Refusal` is the backend's
+explicit business reply and remains distinct from missing outcome evidence; it
+does not assert that the command was never dispatched or authorize a new command.
+Only the original command's business owner and receipt can settle its effects.
+
 | Operation | Calling contract |
 | --- | --- |
 | `ValidateInput(ctx, member, input)` | Asks the exact backend to admit its typed input after local schema checks. No command identity or business dispatch. |

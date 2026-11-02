@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Tangerg/frame"
 	framevalue "github.com/Tangerg/frame/value"
@@ -31,10 +32,28 @@ var (
 	ErrUnknownSubmission = errors.New("sqlite: submission was not issued by this owner")
 )
 
-type Executor interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
+const (
+	defaultMaxRequestBytes = 1 << 20
+	defaultMaxSubmissions  = 4096
+	maxIdentifierBytes     = 256
+	synchronousFull        = 2
+	pragmaEnabled          = 1
+	pragmaDisabled         = 0
+)
+
+type pragmaRequirement struct {
+	query string
+	want  int
+}
+
+type Reader interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+type Executor interface {
+	Reader
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
 // OwnerSchema is a trusted application integration, never a plugin callback.
@@ -43,7 +62,7 @@ type Executor interface {
 type OwnerSchema struct {
 	ID         string
 	Statements []string
-	References func(context.Context, Executor, frame.InstallationID) ([]frame.Dependency, error)
+	References func(context.Context, Reader, frame.InstallationID) ([]frame.Dependency, error)
 }
 
 type Config struct {
@@ -84,18 +103,18 @@ type Store struct {
 type Owner struct {
 	store      *Store
 	id         string
-	references func(context.Context, Executor, frame.InstallationID) ([]frame.Dependency, error)
+	references func(context.Context, Reader, frame.InstallationID) ([]frame.Dependency, error)
 }
 
 const schema = `
 CREATE TABLE frame_meta (singleton INTEGER PRIMARY KEY CHECK(singleton=1),store_id TEXT NOT NULL,schema_digest TEXT NOT NULL,epoch INTEGER NOT NULL CHECK(epoch>0));
 CREATE TABLE frame_owners (id TEXT PRIMARY KEY,next_sequence INTEGER NOT NULL DEFAULT 0,compacted_through INTEGER NOT NULL DEFAULT 0 CHECK(compacted_through<=next_sequence));
-CREATE TABLE frame_submissions (owner_id TEXT NOT NULL REFERENCES frame_owners(id),sequence INTEGER NOT NULL,digest TEXT NOT NULL,request BLOB NOT NULL,state TEXT NOT NULL CHECK(state IN ('prepared','committed','not_committed')),evidence BLOB,synchronized INTEGER NOT NULL DEFAULT 0 CHECK(synchronized IN (0,1)),PRIMARY KEY(owner_id,sequence));
+CREATE TABLE frame_submissions (owner_id TEXT NOT NULL REFERENCES frame_owners(id),sequence INTEGER NOT NULL,digest TEXT NOT NULL,request BLOB NOT NULL,state TEXT NOT NULL CHECK(state IN ('` + string(submissionPrepared) + `','` + string(submissionCommitted) + `','` + string(submissionNotCommitted) + `')),evidence BLOB,synchronized INTEGER NOT NULL DEFAULT 0 CHECK(synchronized IN (0,1)),PRIMARY KEY(owner_id,sequence));
 CREATE TABLE frame_evidence_references (owner_id TEXT NOT NULL,sequence INTEGER NOT NULL,holder TEXT NOT NULL,PRIMARY KEY(owner_id,sequence,holder),FOREIGN KEY(owner_id,sequence) REFERENCES frame_submissions(owner_id,sequence));
-CREATE TABLE frame_attempts (id TEXT PRIMARY KEY,epoch INTEGER NOT NULL,request BLOB NOT NULL,request_digest TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('approved','handoff','released')),proof BLOB);
+CREATE TABLE frame_attempts (id TEXT PRIMARY KEY,epoch INTEGER NOT NULL,request BLOB NOT NULL,request_digest TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('` + string(attemptApproved) + `','` + string(attemptHandoff) + `','` + string(attemptReleased) + `')),proof BLOB);
 CREATE INDEX frame_attempts_by_state ON frame_attempts(state,id);
 CREATE TABLE frame_installations (id TEXT PRIMARY KEY,record BLOB NOT NULL);
-CREATE TABLE frame_use_approvals (id TEXT PRIMARY KEY,request BLOB NOT NULL,execution_id TEXT GENERATED ALWAYS AS (json_extract(CAST(request AS TEXT),'$.ExecutionID')) VIRTUAL,request_digest TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('approved','released')),proof BLOB);
+CREATE TABLE frame_use_approvals (id TEXT PRIMARY KEY,request BLOB NOT NULL,execution_id TEXT GENERATED ALWAYS AS (json_extract(CAST(request AS TEXT),'$.ExecutionID')) VIRTUAL,request_digest TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('` + string(useApproved) + `','` + string(useReleased) + `')),proof BLOB);
 CREATE INDEX frame_use_approvals_by_state ON frame_use_approvals(state,id);
 CREATE INDEX frame_uses_by_execution ON frame_use_approvals(execution_id,id);
 CREATE TABLE frame_realms (id TEXT NOT NULL,epoch TEXT NOT NULL,operation_id TEXT NOT NULL UNIQUE,resume_verifier TEXT NOT NULL,PRIMARY KEY(id,epoch));
@@ -143,13 +162,13 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 		}
 	}()
 	if store.maxRequestBytes == 0 {
-		store.maxRequestBytes = 1 << 20
+		store.maxRequestBytes = defaultMaxRequestBytes
 	}
 	if store.maxRequestBytes < 1 {
 		return nil, errors.New("sqlite: request byte limit must be positive")
 	}
 	if store.maxSubmissions == 0 {
-		store.maxSubmissions = 4096
+		store.maxSubmissions = defaultMaxSubmissions
 	}
 	if store.maxSubmissions < 1 {
 		return nil, errors.New("sqlite: submission capacity must be positive")
@@ -174,8 +193,7 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: owner schema: %w", err)
 	}
-	dsn := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String() + "?_pragma=foreign_keys(1)&_pragma=synchronous(FULL)&_pragma=read_uncommitted(0)&_pragma=busy_timeout(5000)"
-	store.db, err = sql.Open("sqlite", dsn)
+	store.db, err = sql.Open("sqlite", storeDataSource(path))
 	if err != nil {
 		return nil, err
 	}
@@ -193,13 +211,17 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 	if journal != "wal" {
 		return nil, errors.New("sqlite: wal was not enabled")
 	}
-	for name, want := range map[string]int{"synchronous": 2, "read_uncommitted": 0, "foreign_keys": 1} {
+	for _, requirement := range []pragmaRequirement{
+		{query: "PRAGMA synchronous", want: synchronousFull},
+		{query: "PRAGMA read_uncommitted", want: pragmaDisabled},
+		{query: "PRAGMA foreign_keys", want: pragmaEnabled},
+	} {
 		var got int
-		if err := store.db.QueryRowContext(ctx, "PRAGMA "+name).Scan(&got); err != nil {
+		if err := store.db.QueryRowContext(ctx, requirement.query).Scan(&got); err != nil {
 			return nil, err
 		}
-		if got != want {
-			return nil, fmt.Errorf("sqlite: %s was not applied", name)
+		if got != requirement.want {
+			return nil, fmt.Errorf("sqlite: %s was not applied", requirement.query)
 		}
 	}
 	err = store.transaction(ctx, func(tx Executor) error {
@@ -256,7 +278,7 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 		return nil, err
 	}
 	var unresolved int
-	if err := store.db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM frame_submissions WHERE state='prepared' OR synchronized=0)+(SELECT count(*) FROM frame_attempts WHERE state IN ('approved','handoff'))+(SELECT count(*) FROM frame_use_approvals WHERE state='approved')`).Scan(&unresolved); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM frame_submissions WHERE state=? OR synchronized=0)+(SELECT count(*) FROM frame_attempts WHERE state IN (?,?))+(SELECT count(*) FROM frame_use_approvals WHERE state=?)`, submissionPrepared, attemptApproved, attemptHandoff, useApproved).Scan(&unresolved); err != nil {
 		return nil, err
 	}
 	if unresolved != 0 {
@@ -280,7 +302,14 @@ func schemaShape(ctx context.Context, statements []string) (framevalue.Digest, e
 	return readSchemaShape(ctx, database)
 }
 
-func readSchemaShape(ctx context.Context, executor Executor) (framevalue.Digest, error) {
+func storeDataSource(path string) string {
+	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String() + fmt.Sprintf(
+		"?_pragma=foreign_keys(%d)&_pragma=synchronous(%d)&_pragma=read_uncommitted(%d)&_pragma=busy_timeout(%d)",
+		pragmaEnabled, synchronousFull, pragmaDisabled, busyTimeout/time.Millisecond,
+	)
+}
+
+func readSchemaShape(ctx context.Context, executor Reader) (framevalue.Digest, error) {
 	rows, err := executor.QueryContext(ctx, `SELECT type,name,tbl_name,sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*' ORDER BY type,name`)
 	if err != nil {
 		return framevalue.Digest{}, err
@@ -323,7 +352,7 @@ func (o *Owner) ID() string { return o.id }
 // mutation callback; that callback already has the current transaction.
 func (o *Owner) Held(ctx context.Context, installation frame.InstallationID) ([]frame.Dependency, error) {
 	var dependencies []frame.Dependency
-	err := o.store.Read(ctx, func(tx Executor) error {
+	err := o.store.Read(ctx, func(tx Reader) error {
 		var err error
 		dependencies, err = o.references(ctx, tx, installation)
 		return err
@@ -332,7 +361,7 @@ func (o *Owner) Held(ctx context.Context, installation frame.InstallationID) ([]
 }
 
 func validID(value string) bool {
-	if value == "" || len(value) > 256 {
+	if value == "" || len(value) > maxIdentifierBytes {
 		return false
 	}
 	for _, r := range value {
@@ -380,21 +409,20 @@ func (s *Store) transact(ctx context.Context, mode transactionMode, apply func(E
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	begin := "BEGIN IMMEDIATE"
-	if mode == readTransaction {
-		begin = "BEGIN"
-	}
-	if _, err := connection.ExecContext(ctx, begin); err != nil {
-		return err
-	}
 	settled := false
 	commitIssued := false
+	scope := newConnectionScope(connection)
 	defer func() {
+		recovered := recover()
+		scope.seal()
 		if settled {
+			if recovered != nil {
+				panic(recovered)
+			}
 			return
 		}
 		_, rollbackErr := connection.ExecContext(context.Background(), `ROLLBACK`)
-		if rollbackErr != nil || errors.Is(err, errReadModeUnconfirmed) {
+		if rollbackErr != nil || scope.failure() != nil {
 			if rollbackErr != nil && commitIssued {
 				err = errors.Join(err, errCommitUnresolved)
 			}
@@ -406,17 +434,35 @@ func (s *Store) transact(ctx context.Context, mode transactionMode, apply func(E
 			}
 			err = errors.Join(err, rollbackErr)
 		}
+		err = scope.include(err)
+		if recovered != nil {
+			if err != nil {
+				panic(errors.Join(panicError(recovered), err))
+			}
+			panic(recovered)
+		}
 	}()
-	access := newTransactionAccess(s, connection, mode)
+	// A failed acknowledgement can follow a successful BEGIN. This owner must
+	// settle or close that same connection before it can return to the pool.
+	begin := "BEGIN IMMEDIATE"
+	if mode == readTransaction {
+		begin = "BEGIN"
+	}
+	if _, err := connection.ExecContext(ctx, begin); err != nil {
+		return err
+	}
+	access := newTransactionAccess(s, connection)
 	body := func() error {
 		defer access.seal()
 		return apply(access)
 	}
 	if mode == readTransaction {
-		err = withQueryOnly(ctx, connection, body)
+		err = scope.read(ctx, body)
 	} else {
 		err = body()
 	}
+	scope.seal()
+	err = scope.include(err)
 	if err != nil {
 		return err
 	}

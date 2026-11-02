@@ -31,6 +31,7 @@ import type {
 import { PROTOCOL } from "../protocol.generated.js";
 import { type HostControl, sameAuthority } from "./control.js";
 import { ProofOutbox } from "./outbox.js";
+import { UseAdmission } from "./admission.js";
 
 export interface RuntimeOptions {
   readonly authority: Authority;
@@ -134,6 +135,7 @@ function useView(
       contract: Contract<T>,
       work: (value: T, signal: AbortSignal) => Awaitable<R>,
     ) => {
+      owner.assertOpen();
       const object = objects.get(objectKey(reference));
       if (
         !object ||
@@ -195,16 +197,6 @@ interface ExecutionEntry {
   readonly view: ExecutionHandle;
   prepared?: Promise<ExecutionHandle>;
   ready?: ReadyReport;
-}
-
-interface AdmissionEntry {
-  readonly request: AcquireRequest;
-  readonly execution: ExecutionEntry;
-  readonly lifetime: Lifetime;
-  readonly reservation: string;
-  pending?: Promise<Use>;
-  use?: Use;
-  granted?: boolean;
 }
 
 // Only authenticated protocol refusals settle a request that may have been sent.
@@ -341,8 +333,8 @@ export class Runtime {
   #executions = new Map<string, ExecutionEntry>();
   #instances = new Map<string, UnitEntry>();
   #objects = new Map<string, ObjectEntry>();
-  #uses = new Map<string, { readonly grant: UseGrant; readonly use: Use }>();
-  #admissions = new Map<string, AdmissionEntry>();
+  #uses = new Map<string, UseAdmission>();
+  #admissions = new Map<string, UseAdmission>();
 
   constructor(options: RuntimeOptions) {
     this.#realm = immutable(options.realm);
@@ -667,6 +659,10 @@ export class Runtime {
         this.#control.ready(entry.ready!),
       );
     } catch (cause) {
+      if (confirmedRefusal(cause)) {
+        await entry.lifetime.close();
+        throw cause;
+      }
       // Publication may have committed. Prepared values remain owned and may be
       // referenced by an exact Host Use even though this acknowledgement is lost.
       throw new FrameError(
@@ -734,158 +730,129 @@ export class Runtime {
 
   hasPendingAcquisition(operationId: string): boolean {
     const admission = this.#admissions.get(operationId);
-    return !!admission && !admission.granted && !admission.lifetime.closing;
+    return !!admission && !admission.use && !admission.lifetime.closing;
   }
 
   async acquire(received: AcquireRequest): Promise<Use> {
     this.#assertConnected();
     const request = immutable(received);
-    const entry = this.#executions.get(request.execution.id);
-    if (!entry || !sameExecution(entry.plan.execution, request.execution))
-      throw new FrameError(
-        "stale_binding",
-        "acquisition requires an owned execution",
-      );
-    let admission = this.#admissions.get(request.operationId);
-    if (admission) {
-      if (
-        stringifyJSON(admission.request, true) !== stringifyJSON(request, true)
-      )
-        throw new FrameError(
-          "invalid_plan",
-          "admission operation cannot be relabeled",
-        );
-      if (admission.use) return admission.use;
-      if (admission.pending) return admission.pending;
-      admission.lifetime.assertOpen();
-    } else {
-      const reservation = `admission:${request.operationId}`;
-      this.#outbox.reserve(reservation);
-      let owner: Lifetime;
-      try {
-        owner = entry.lifetime.branch(reservation);
-      } catch (error) {
-        this.#outbox.cancelReservation(reservation);
-        throw error;
-      }
-      admission = { request, execution: entry, lifetime: owner, reservation };
-      this.#admissions.set(request.operationId, admission);
-      const captured = admission;
-      owner.observeExit((outcome) => {
-        if (outcome.status !== "released") return;
-        this.#admissions.delete(request.operationId);
-        // No object was dispatched when an acknowledgement never arrived. The
-        // execution proof settles any Host Use retained under this operation.
-        if (!captured.granted) this.#outbox.cancelReservation(reservation);
-      });
-    }
-    const captured = admission;
+    const entry = this.#useExecution(request.execution);
+    const previous = this.#admissions.get(request.operationId);
+    const admission = this.#admission(request, entry);
     const revision = this.#connectionRevision;
-    let refused = false;
-    admission.pending = admission.lifetime
-      .run(async () => {
-        let grant: UseGrant;
-        try {
-          grant = await this.#control.acquire(captured.request);
-        } catch (error) {
-          refused = confirmedRefusal(error);
-          throw error;
-        }
-        const closing =
-          revision !== this.#connectionRevision || captured.lifetime.closing;
-        const use = this.#attachGrant(
-          grant,
-          captured.execution,
-          captured.lifetime,
-          captured.reservation,
-          closing,
-          () => {
-            captured.granted = true;
-          },
-        );
-        captured.use = use;
-        if (closing) {
-          use.lifetime.beginClose();
-          throw new FrameError(
-            "unavailable",
-            "admission arrived after its owner stopped accepting work",
-          );
-        }
-        return use;
-      })
-      .finally(async () => {
-        if (refused) await captured.lifetime.close();
-        captured.pending = undefined;
-      });
-    return admission.pending;
+    if (previous && !previous.hasRequest) {
+      const grant = await admission.lifetime.run(() =>
+        this.#control.acquire(request),
+      );
+      admission.verifyGrant(grant);
+      admission.bindRequest(request);
+      const use = await this.#resolveAdmission(admission, () =>
+        this.#materializeGrant(grant, entry, admission, revision),
+      );
+      admission.verifyGrant(grant);
+      return use;
+    }
+    admission.bindRequest(request);
+    return this.#resolveAdmission(admission, async () => {
+      const grant = await this.#control.acquire(request);
+      return this.#materializeGrant(grant, entry, admission, revision);
+    });
   }
 
   async accept(received: UseGrant): Promise<Use> {
     this.#assertConnected();
     const grant = immutable(received);
-    const existing = this.#uses.get(grant.id);
-    if (existing) {
-      if (stringifyJSON(existing.grant, true) !== stringifyJSON(grant, true))
-        throw new FrameError(
-          "permission_denied",
-          "use identity cannot be relabeled",
-        );
-      return existing.use;
+    const original = this.#admissions.get(grant.operationId);
+    original?.verifyGrant(grant);
+    if (original?.use) return original.use;
+    const entry = this.#useExecution(grant.execution);
+    const admission = this.#admission(grant, entry);
+    admission.verifyGrant(grant);
+    const revision = this.#connectionRevision;
+    const use = await this.#resolveAdmission(admission, () =>
+      this.#materializeGrant(grant, entry, admission, revision),
+    );
+    admission.verifyGrant(grant);
+    return use;
+  }
+
+  #resolveAdmission(
+    admission: UseAdmission,
+    work: () => Promise<Use>,
+  ): Promise<Use> {
+    return admission.resolve(async () => {
+      try {
+        return await work();
+      } catch (error) {
+        if (confirmedRefusal(error)) admission.lifetime.beginClose();
+        throw error;
+      }
+    });
+  }
+
+  #useExecution(execution: Execution): ExecutionEntry {
+    const entry = this.#executions.get(execution.id);
+    if (!entry || !sameExecution(entry.plan.execution, execution))
+      throw new FrameError("stale_binding", "use requires an owned execution");
+    return entry;
+  }
+
+  #admission(
+    identity: Pick<AcquireRequest, "operationId" | "parentUseId" | "execution">,
+    entry: ExecutionEntry,
+  ): UseAdmission {
+    if (!identity.operationId)
+      throw new FrameError(
+        "invalid_plan",
+        "use operation identity is required",
+      );
+    const original = this.#admissions.get(identity.operationId);
+    if (original) {
+      original.verifyIdentity(identity);
+      return original;
     }
-    const entry = this.#executions.get(grant.execution.id);
-    if (!entry)
-      throw new FrameError("stale_binding", "use execution is unavailable");
-    const reservation = `use:${grant.id}`;
+    let parent = entry.lifetime;
+    if (identity.parentUseId) {
+      const delegated = this.#uses.get(identity.parentUseId);
+      if (
+        !delegated?.grant ||
+        !sameExecution(delegated.grant.execution, identity.execution)
+      )
+        throw new FrameError(
+          "stale_binding",
+          "delegated use requires its original local parent",
+        );
+      parent = delegated.lifetime;
+    }
+    const reservation = `admission:${identity.operationId}`;
     this.#outbox.reserve(reservation);
-    let owner: Lifetime;
+    let lifetime: Lifetime;
     try {
-      owner = entry.lifetime.branch(reservation);
+      lifetime = parent.branch(reservation);
     } catch (error) {
       this.#outbox.cancelReservation(reservation);
       throw error;
     }
-    const revision = this.#connectionRevision;
-    let admitted = false;
-    try {
-      const use = await owner.run(async () => {
-        await this.#control.validateUse(grant);
-        const closing = revision !== this.#connectionRevision || owner.closing;
-        const use = this.#attachGrant(
-          grant,
-          entry,
-          owner,
-          reservation,
-          closing,
-          () => {
-            admitted = true;
-          },
-        );
-        if (closing) {
-          owner.beginClose();
-          throw new FrameError(
-            "unavailable",
-            "use validation arrived after its owner closed",
-          );
-        }
-        return use;
-      });
-      return use;
-    } catch (error) {
-      await owner.close();
-      if (!admitted) this.#outbox.cancelReservation(reservation);
-      throw error;
-    }
+    const admission = new UseAdmission(identity, lifetime, reservation);
+    this.#admissions.set(identity.operationId, admission);
+    lifetime.observeExit((outcome) => {
+      if (outcome.status !== "released" || admission.grant) return;
+      // No callable object was materialized. Its original parent or execution
+      // proof covers any Host acceptance whose acknowledgement remained unknown.
+      this.#outbox.cancelReservation(reservation);
+      this.#admissions.delete(identity.operationId);
+    });
+    return admission;
   }
 
-  #attachGrant(
+  async #materializeGrant(
     received: UseGrant,
     entry: ExecutionEntry,
-    owner: Lifetime,
-    reservation: string,
-    closing: boolean,
-    markOwned: () => void,
-  ): Use {
+    admission: UseAdmission,
+    revision: number,
+  ): Promise<Use> {
     const grant = immutable(received);
+    admission.verifyGrant(grant);
     if (
       !sameExecution(entry.plan.execution, grant.execution) ||
       !sameAuthority(entry.plan.authority, grant.authority) ||
@@ -897,17 +864,25 @@ export class Runtime {
         "permission_denied",
         "use grant does not match this approved execution",
       );
+    // A durable acceptance receipt survives release. Only current authority may
+    // admit a new local materialization after its terminal record was discarded.
+    await this.#control.validateUse(grant);
     const existing = this.#uses.get(grant.id);
-    if (existing)
+    if (existing && existing !== admission)
       throw new FrameError(
         "invalid_plan",
         "a different admission already owns this use",
       );
+    const owner = admission.lifetime;
+    const closing = revision !== this.#connectionRevision || owner.closing;
     const objects = new Map<string, ObjectEntry>();
+    const use = useView(grant, owner, objects);
+    admission.materialize(grant, use);
+    this.#uses.set(grant.id, admission);
     this.#observeExit(
       entry,
       owner,
-      reservation,
+      admission.reservation,
       "use",
       grant.id,
       [
@@ -916,32 +891,30 @@ export class Runtime {
         ),
       ].sort(),
     );
-    markOwned();
+    owner.observeExit((outcome) => {
+      if (outcome.status === "released") objects.clear();
+    });
     try {
-      if (!closing) {
-        for (const reference of grant.objects) {
-          const value = this.#objects.get(objectKey(reference));
-          if (!value || !sameObject(value.reference, reference))
-            throw new FrameError(
-              "stale_binding",
-              "use grant does not name an exact prepared object",
-            );
-          value.lifetime.assertOpen();
-          owner.dependsOn(value.lifetime);
-          objects.set(objectKey(reference), value);
-        }
+      if (closing)
+        throw new FrameError(
+          "unavailable",
+          "use admission arrived after its owner stopped accepting work",
+        );
+      for (const reference of grant.objects) {
+        const value = this.#objects.get(objectKey(reference));
+        if (!value || !sameObject(value.reference, reference))
+          throw new FrameError(
+            "stale_binding",
+            "use grant does not name an exact prepared object",
+          );
+        value.lifetime.assertOpen();
+        owner.dependsOn(value.lifetime);
+        objects.set(objectKey(reference), value);
       }
     } catch (error) {
       owner.beginClose();
       throw error;
     }
-    const use = useView(grant, owner, objects);
-    this.#uses.set(grant.id, { grant, use });
-    owner.observeExit((outcome) => {
-      if (outcome.status !== "released") return;
-      objects.clear();
-      this.#uses.delete(grant.id);
-    });
     return use;
   }
 
@@ -1070,9 +1043,6 @@ export class Runtime {
             publicationId: accepted.id,
             instances: [object.reference.export.instanceId],
             status: "released",
-            failures: outcome.failures.map(
-              (item) => `${item.phase}:${item.category}`,
-            ),
           }),
         );
       } else {
@@ -1169,9 +1139,6 @@ export class Runtime {
         ...(targetKind === "use" ? { useId: targetId } : {}),
         instances,
         status: "released",
-        failures: outcome.failures.map(
-          (item) => `${item.phase}:${item.category}`,
-        ),
       });
       this.#outbox.record(reservation, proof);
       if (targetKind === "execution") {
@@ -1207,7 +1174,6 @@ export class Runtime {
       executions: [...this.#executions.values()].map(
         (entry) => entry.plan.execution,
       ),
-      pendingProofs: this.#outbox.pending,
     });
     if (revision !== this.#connectionRevision)
       throw new FrameError("unavailable", "reconnection was superseded");
@@ -1219,8 +1185,6 @@ export class Runtime {
     const sameEpoch = sameAuthority(result.authority, this.#authority);
     this.#authority = immutable(result.authority);
     this.#control = control;
-    for (const closeId of result.acceptedProofs)
-      this.#outbox.acknowledge(closeId);
     if (sameEpoch && result.mode === "revalidated") {
       for (const entry of this.#executions.values()) {
         if (
@@ -1252,8 +1216,20 @@ export class Runtime {
     }
   }
 
-  flushProofs(): Promise<void> {
-    return this.#outbox.flush(this.#control, this.#authority);
+  async flushProofs(): Promise<void> {
+    try {
+      await this.#outbox.flush(this.#control, this.#authority);
+    } finally {
+      for (const [operationId, admission] of this.#admissions) {
+        if (
+          admission.lifetime.exit?.outcome.status !== "released" ||
+          this.#outbox.reserved(admission.reservation)
+        )
+          continue;
+        this.#admissions.delete(operationId);
+        if (admission.grant) this.#uses.delete(admission.grant.id);
+      }
+    }
   }
 
   async close(signal?: AbortSignal): Promise<readonly CloseOutcome[]> {

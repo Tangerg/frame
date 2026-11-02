@@ -86,7 +86,6 @@ type assembly struct {
 	values   []frame.ExportValue
 }
 
-// Freeze and validate every representable import before creating any process.
 func (localProtocol) Prepare(setup *frame.Setup, metadata ExportMetadata, maximum int) (Connection, error) {
 	s := &hostSession{}
 	s.peer = newPeer(nil, maximum, s.dispatch)

@@ -18,6 +18,14 @@ import (
 	"github.com/Tangerg/scope/core/jsonschema"
 )
 
+func featureNode(raw jsontext.Value) (*projectionNode, error) {
+	p, err := newProjection(map[string]jsontext.Value{"Value": raw, "Revision": jsontext.Value(`{"type":"integer"}`)})
+	if err != nil {
+		return nil, err
+	}
+	return p.definitions["Value"], nil
+}
+
 func TestStreamingFeatureProjectsChunkAndFinalContracts(t *testing.T) {
 	method, err := portable.NewStreamingMethod[struct{}, string, bool](portable.MethodConfig{Name: "model.stream", Kind: portable.Mutation, Target: "call", Description: "Stream a model call."})
 	if err != nil {
@@ -183,7 +191,7 @@ func TestFeatureTypesUseTheExistingEmitterForScalarAndNullableFrames(t *testing.
 		if err != nil {
 			t.Fatal(err)
 		}
-		emitter := NewTypeScript(Definitions{"Value": node})
+		emitter := (&typeScript{})
 		projection := emitter.Definition("Value", node)
 		if strings.Contains(projection, "interface") {
 			t.Fatalf("scalar/nullable frame was emitted as an object: %s", projection)
@@ -193,20 +201,24 @@ func TestFeatureTypesUseTheExistingEmitterForScalarAndNullableFrames(t *testing.
 
 func TestFeatureTypeProjectionPreservesIntersectionsAndSiblingConstraints(t *testing.T) {
 	for _, sample := range []struct{ Schema, want string }{
-		{`{"type":"string","allOf":[{"enum":["open","resolved"]}]}`, `string & ("open" | "resolved")`},
-		{`{"enum":["open","resolved"],"allOf":[{"const":"resolved"}]}`, `("open" | "resolved") & "resolved"`},
-		{`{"type":"object","properties":{"id":{"type":"string"}},"required":["id"],"allOf":[{"$ref":"#/$defs/Revision"}]}`, `{ id: string } & Revision`},
+		{`{"type":"string","allOf":[{"enum":["open","resolved"]}]}`, `(string) & ("open" | "resolved")`},
+		{`{"enum":["open","resolved"],"allOf":[{"const":"resolved"}]}`, `("open" | "resolved") & ("resolved")`},
+		{`{"type":"object","properties":{"id":{"type":"string"}},"required":["id"],"allOf":[{"$ref":"#/$defs/Revision"}]}`, `({ id: string } & Record<string, unknown>) & (Revision)`},
 		{`{"type":"string","allOf":[false]}`, `never`},
 		{`{"type":"integer","allOf":[{"minimum":1}]}`, `JSONNumber`},
 		{`{"type":"string","allOf":[{"anyOf":[true,{"type":"null"}]}]}`, `string`},
 	} {
 		t.Run(sample.Schema, func(t *testing.T) {
-			node, err := featureNode([]byte(sample.Schema))
+			_, err := featureNode([]byte(sample.Schema))
 			if err != nil {
 				t.Fatal(err)
 			}
-			emitter := NewTypeScript(nil)
-			projection := emitter.Definition("Value", node)
+			graph, err := newProjection(map[string]jsontext.Value{"Value": []byte(sample.Schema), "Revision": []byte(`{"type":"integer"}`)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			emitter := &typeScript{graph: graph}
+			projection := emitter.Definition("Value", graph.definitions["Value"])
 			if got := projection; got != "export type Value = "+sample.want+";\n\n" {
 				t.Fatalf("type projection = %s, want %s", got, sample.want)
 			}
@@ -219,7 +231,7 @@ func TestFeatureNullableObjectPreservesRequiredProperties(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	emitter := NewTypeScript(nil)
+	emitter := (&typeScript{})
 	value := emitter.TypeOf(node)
 	if !strings.Contains(value, "revision: JSONNumber") || !strings.Contains(value, "null") {
 		t.Fatalf("nullable object lost its shape: %s", value)
@@ -240,7 +252,7 @@ func TestFeatureNumericTypesKeepExactJSONRepresentationAcrossSchemaForms(t *test
 				if err != nil {
 					t.Fatal(err)
 				}
-				if got := NewTypeScript(nil).TypeOf(node); got != sample.want {
+				if got := (&typeScript{}).TypeOf(node); got != sample.want {
 					t.Fatalf("numeric projection: %s, want %s", got, sample.want)
 				}
 				descriptor, err := featureDescriptor(portable.MethodDescriptor{Name: "exact.read", Kind: portable.Query, Target: "installation", Description: "Read an exact number.", Input: []byte(`{"type":"object"}`), Output: []byte(sample.schema)})
@@ -292,7 +304,7 @@ func TestFeatureGoProjectionPreservesTypedFramesAndIntegerBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := string(generated)
-	for _, required := range []string{"Revision uint64", "At", "time.Time", "map[string]string", "*bool", "*int64", "ExampleReadV1Method", "18446744073709551615"} {
+	for _, required := range []string{"Revision framevalue.Number", "At", "string", "map[string]string", "*bool", "framevalue.Number", "ExampleReadV1Method", "18446744073709551615"} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("Go projection lost %s", required)
 		}
@@ -403,8 +415,7 @@ func TestConsumer(t *testing.T){
 	if err := os.WriteFile(filepath.Join(directory, "consumer_test.go"), []byte(test), 0600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.CommandContext(t.Context(), "go", "test", "types.go", "consumer_test.go")
-	cmd.Dir = directory
+	cmd := exec.CommandContext(t.Context(), "go", "test", filepath.Join(directory, "types.go"), filepath.Join(directory, "consumer_test.go"))
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("actual generated consumer: %s %v", output, err)
 	}

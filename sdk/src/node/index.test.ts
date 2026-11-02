@@ -1,8 +1,16 @@
 import { PassThrough, Writable } from "node:stream";
 import { createInterface } from "node:readline";
-import { describe, it, expect } from "vitest";
-import { Capability, defineProcessUnit, serve } from "./index.js";
-import { PROTOCOL } from "./contract.js";
+import { describe, it, expect, onTestFinished } from "vitest";
+import {
+  Capability,
+  defineProcessUnit,
+  serve,
+  ProcessError,
+  type Client,
+  type ProcessUnit,
+} from "./index.js";
+import { PROTOCOL, exactFields, type ServiceContract } from "./contract.js";
+import { Peer } from "./peer.js";
 import wire from "./wire.json" with { type: "json" };
 
 const numbers = new Capability({
@@ -123,20 +131,26 @@ describe("process outcome evidence", () => {
       peer = new Peer(input, output);
     const reason = new Error("stopped");
     expect(() => peer.request("call", {}, AbortSignal.abort(reason))).toThrow(
-      expect.objectContaining({ code: wire.errors.cancelled, cause: reason }),
+      expect.objectContaining({
+        code: wire.errors.cancelled,
+        cause: reason,
+        outcomeUnknown: false,
+      }),
     );
     const controller = new AbortController();
     const original = peer.request("call", {}, controller.signal);
     controller.abort(reason);
     await expect(original).rejects.toMatchObject({
-      code: wire.errors.unknown,
+      code: wire.errors.cancelled,
       cause: reason,
+      outcomeUnknown: true,
     });
     const second = peer.request("call", {}, new AbortController().signal);
     peer.stop(reason);
     await expect(second).rejects.toMatchObject({
       code: wire.errors.unknown,
       cause: reason,
+      outcomeUnknown: true,
     });
   });
 
@@ -174,6 +188,404 @@ describe("process outcome evidence", () => {
       }) + "\n",
     );
     expect(JSON.parse((await lines.next()).value!).result).toBe(true);
+    input.end();
+    await run;
+  });
+});
+
+async function connectUnit<
+  I extends Record<string, ServiceContract>,
+  E extends Record<string, ServiceContract>,
+>(
+  unit: ProcessUnit<I, E>,
+  imports: unknown = {},
+  dispatch: (
+    peer: Peer,
+    method: string,
+    params: unknown,
+    signal: AbortSignal,
+  ) => Promise<unknown> = async () => true,
+): Promise<Peer> {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const serving = serve(unit, { input, output });
+  const host = new Peer(output, input);
+  const running = host.run((method, params, signal) =>
+    dispatch(host, method, params, signal),
+  );
+  onTestFinished(async () => {
+    host.stop(new Error("test completed"));
+    // Both peers own their streams; explicitly stopping one interrupts the
+    // other's async iterator after the assertions have completed.
+    for (const result of await Promise.allSettled([serving, running])) {
+      if (result.status === "rejected")
+        expect(result.reason).toMatchObject({
+          code: "ERR_STREAM_PREMATURE_CLOSE",
+        });
+    }
+  });
+  await host.request(
+    wire.methods.hello,
+    {
+      version: wire.version,
+      maxFrameBytes: wire.maxFrameBytes,
+    },
+    new AbortController().signal,
+  );
+  await host.request(
+    wire.methods.prepare,
+    { imports },
+    new AbortController().signal,
+  );
+  await host.request(wire.methods.activate, {}, new AbortController().signal);
+  return host;
+}
+
+function numberBinding() {
+  return {
+    numbers: [
+      {
+        handle: "host-numbers",
+        source: {
+          installationId: "host",
+          release: "a".repeat(64),
+          unitId: "host-unit",
+          export: "numbers",
+          contract: {
+            name: numbers.descriptor.reference,
+            version: "1",
+            digest: numbers.identity,
+            mode: "portable",
+            kind: "service",
+          },
+        },
+      },
+    ],
+  };
+}
+
+describe("stream delivery ownership", () => {
+  it("retains consumer rejection when the remote producer ignores the failed acknowledgement", async () => {
+    let client!: Client<typeof numbers>;
+    const failure = new Error("original consumer rejected the chunk");
+    await connectUnit(
+      defineProcessUnit({
+        id: "consumer",
+        imports: { numbers },
+        exports: {},
+        setup({ imports }) {
+          client = imports.numbers;
+          return {};
+        },
+      }),
+      numberBinding(),
+      async (peer, method, params, signal) => {
+        expect(method).toBe(wire.methods.call);
+        exactFields(params, ["handle", "member", "input", "stream"]);
+        await peer
+          .request(
+            wire.methods.chunk,
+            {
+              stream: params.stream,
+              value: params.input,
+            },
+            signal,
+          )
+          .catch(() => {});
+        return params.input;
+      },
+    );
+    await expect(
+      client.count(7, {
+        onChunk() {
+          throw failure;
+        },
+      }),
+    ).rejects.toMatchObject({
+      outcomeUnknown: true,
+      cause: failure,
+    });
+  });
+
+  it("joins an accepted consumer when a remote final result overtakes its acknowledgement", async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const final = Promise.withResolvers<void>();
+    let client!: Client<typeof numbers>;
+    let consumed = false;
+    await connectUnit(
+      defineProcessUnit({
+        id: "consumer",
+        imports: { numbers },
+        exports: {},
+        setup({ imports }) {
+          client = imports.numbers;
+          return {};
+        },
+      }),
+      numberBinding(),
+      async (peer, _method, params, signal) => {
+        exactFields(params, ["handle", "member", "input", "stream"]);
+        void peer
+          .request(
+            wire.methods.chunk,
+            { stream: params.stream, value: params.input },
+            signal,
+          )
+          .catch(() => {});
+        await entered.promise;
+        final.resolve();
+        return params.input;
+      },
+    );
+    let settled = false;
+    const result = client
+      .count(7, {
+        async onChunk() {
+          entered.resolve();
+          await release.promise;
+          consumed = true;
+        },
+      })
+      .then(
+        () => {
+          settled = true;
+          throw new Error("unacknowledged stream succeeded");
+        },
+        (error: unknown) => {
+          settled = true;
+          expect(consumed).toBe(true);
+          return error;
+        },
+      );
+    await final.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    release.resolve();
+    expect(await result).toMatchObject({ outcomeUnknown: true });
+  });
+
+  it("retains a failed emit when the local producer catches it and returns success", async () => {
+    const host = await connectUnit(
+      defineProcessUnit({
+        id: "producer",
+        imports: {},
+        exports: { numbers },
+        setup() {
+          return {
+            numbers: numbers.implement({
+              async count(value, ctx) {
+                await ctx.emit(value).catch(() => {});
+                return value;
+              },
+            }),
+          };
+        },
+      }),
+      {},
+      async () => {
+        throw new ProcessError(
+          wire.errors.contract,
+          "consumer rejected the chunk",
+        );
+      },
+    );
+    await expect(
+      host.request(
+        wire.methods.call,
+        {
+          handle: "numbers",
+          member: "count",
+          input: 7,
+          stream: "original-stream",
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      code: wire.errors.unknown,
+      outcomeUnknown: true,
+    });
+  });
+
+  it("joins an unawaited producer delivery and denies escaped emitters", async () => {
+    const entered = Promise.withResolvers<void>();
+    let emitLater!: () => Promise<void>;
+    let chunks = 0;
+    const host = await connectUnit(
+      defineProcessUnit({
+        id: "producer",
+        imports: {},
+        exports: { numbers },
+        setup() {
+          return {
+            numbers: numbers.implement({
+              async count(value, ctx) {
+                emitLater = () => ctx.emit(value);
+                if (value === 1) {
+                  void ctx.emit(value);
+                  await entered.promise;
+                }
+                return value;
+              },
+            }),
+          };
+        },
+      }),
+      {},
+      async (_peer, _method, _params, signal) => {
+        chunks++;
+        entered.resolve();
+        if (!signal.aborted)
+          await new Promise<void>((resolve) =>
+            signal.addEventListener("abort", () => resolve(), { once: true }),
+          );
+        return true;
+      },
+    );
+    const request = (input: number) =>
+      host.request(
+        wire.methods.call,
+        {
+          handle: "numbers",
+          member: "count",
+          input,
+          stream: "original-stream",
+        },
+        new AbortController().signal,
+      );
+    await expect(request(1)).rejects.toMatchObject({ outcomeUnknown: true });
+    expect(await request(2)).toBe(2);
+    await expect(emitLater()).rejects.toMatchObject({
+      code: wire.errors.closed,
+      outcomeUnknown: false,
+    });
+    expect(chunks).toBe(1);
+  });
+});
+
+describe("post-dispatch failure evidence", () => {
+  const commands = new Capability({
+    protocol: PROTOCOL,
+    reference: "commands",
+    methods: [
+      {
+        name: "change",
+        kind: "command",
+        description: "",
+        input: { type: "integer" },
+        output: { type: "integer" },
+      },
+    ],
+  });
+
+  it.each([
+    { code: wire.errors.cancelled, outcome: undefined },
+    { code: wire.errors.contract, outcome: undefined },
+    { code: wire.errors.contract, outcome: "unknown" as const },
+  ])(
+    "does not classify handler error $code with outcome $outcome as non-dispatch after an effect",
+    async ({ code, outcome }) => {
+      let effects = 0;
+      const host = await connectUnit(
+        defineProcessUnit({
+          id: "mutation",
+          imports: {},
+          exports: { commands },
+          setup() {
+            return {
+              commands: commands.implement({
+                change() {
+                  effects++;
+                  throw new ProcessError(
+                    code,
+                    "handler failed after its effect",
+                    { outcome },
+                  );
+                },
+              }),
+            };
+          },
+        }),
+      );
+      await expect(
+        host.request(
+          wire.methods.call,
+          {
+            handle: "commands",
+            member: "change",
+            input: 1,
+          },
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({
+        code: code === wire.errors.cancelled ? code : wire.errors.unknown,
+        outcomeUnknown: true,
+      });
+      expect(effects).toBe(1);
+      await expect(
+        host.request(
+          wire.methods.call,
+          {
+            handle: "commands",
+            member: "change",
+            input: "invalid",
+          },
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({
+        code: wire.errors.contract,
+        outcomeUnknown: false,
+      });
+      expect(effects).toBe(1);
+    },
+  );
+
+  it("classifies frame rejection before writing as non-dispatch even when cancellation immediately follows", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const peer = new Peer(input, output);
+    peer.limit(64);
+    const controller = new AbortController();
+    expect(() =>
+      peer.request(
+        wire.methods.call,
+        { input: "a".repeat(128) },
+        controller.signal,
+      ),
+    ).toThrow(
+      expect.objectContaining({
+        code: wire.errors.capacity,
+        outcomeUnknown: false,
+      }),
+    );
+    controller.abort(new Error("too late"));
+    expect(output.readableLength).toBe(0);
+    peer.stop(new Error("finished"));
+  });
+
+  it("preserves a confirmed result returned after cancellation instead of replacing it with an unknown reply", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const peer = new Peer(input, output);
+    const lines = createInterface({ input: output })[Symbol.asyncIterator]();
+    const run = peer.run(async (_method, _params, signal) => {
+      if (!signal.aborted)
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+      return "confirmed";
+    });
+    input.write(
+      JSON.stringify({ id: "1", method: wire.methods.call, params: {} }) + "\n",
+    );
+    input.write(
+      JSON.stringify({ method: wire.methods.cancel, params: { id: "1" } }) +
+        "\n",
+    );
+    expect(JSON.parse((await lines.next()).value!)).toEqual({
+      id: "1",
+      result: "confirmed",
+    });
     input.end();
     await run;
   });

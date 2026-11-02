@@ -6,4 +6,4 @@ coverage/
 .DS_Store
 .idea/
 /sdk/src/node/wire.json
-/sdk/src/node/limits.generated.json
+/sdk/src/node/profile.generated.json

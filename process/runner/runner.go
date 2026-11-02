@@ -103,7 +103,12 @@ type storedAttempt struct {
 	RequestDigest framevalue.Digest `json:"requestDigest"`
 }
 
-const journalVersion = 2
+const (
+	journalVersion            = 2
+	defaultMaxAttempts        = 4096
+	defaultMaxExecutableBytes = 512 << 20
+	maxIdentityBytes          = 256
+)
 
 type journal struct {
 	Version  int                      `json:"version"`
@@ -113,26 +118,29 @@ type journal struct {
 
 type process struct {
 	command  *exec.Cmd
+	kill     func() error
 	stdin    io.WriteCloser
 	stdout   io.ReadCloser
 	attached bool
 
-	closing     bool
+	closeState  processCloseState
 	environment []string
 	done        chan struct{}
 }
 
 type Server struct {
-	config    Config
-	id        string
-	lock      *os.File
-	mu        sync.Mutex
-	journal   journal
-	processes map[string]*process
-	fenced    bool
-	closed    bool
-	closeOnce sync.Once
-	closeErr  error
+	config        Config
+	id            string
+	lock          *os.File
+	mu            sync.Mutex
+	journal       journal
+	processes     map[string]*process
+	fenced        bool
+	closed        bool
+	closeOnce     sync.Once
+	closeRequests chan chan error
+	closeDone     chan struct{}
+	closeErr      error
 }
 
 func Open(config Config) (_ *Server, err error) {
@@ -140,10 +148,10 @@ func Open(config Config) (_ *Server, err error) {
 		return nil, errors.New("runner: state directory is required")
 	}
 	if config.MaxAttempts == 0 {
-		config.MaxAttempts = 4096
+		config.MaxAttempts = defaultMaxAttempts
 	}
 	if config.MaxExecutableBytes == 0 {
-		config.MaxExecutableBytes = 512 << 20
+		config.MaxExecutableBytes = defaultMaxExecutableBytes
 	}
 	if config.MaxControlConnections == 0 {
 		config.MaxControlConnections = defaultControlConnections
@@ -299,7 +307,7 @@ func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ Observati
 	}
 	started = true
 	_ = stdoutWriter.Close()
-	live := &process{command: command, stdin: stdin, stdout: stdout, environment: slices.Clone(request.Env), done: make(chan struct{})}
+	live := &process{command: command, kill: command.Process.Kill, stdin: stdin, stdout: stdout, environment: slices.Clone(request.Env), done: make(chan struct{})}
 	s.processes[request.AttemptID] = live
 	observation.State = Running
 	observation.PID = command.Process.Pid
@@ -309,8 +317,7 @@ func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ Observati
 	persistErr := s.persist()
 	if persistErr != nil {
 		s.fenced = true
-		live.closing = true
-		_ = command.Process.Kill()
+		persistErr = errors.Join(persistErr, live.requestClose())
 	}
 	go s.wait(request.AttemptID, live, path)
 	if persistErr != nil {
@@ -374,13 +381,9 @@ func (s *Server) CloseAttempt(ctx context.Context, ref AttemptRef) (Observation,
 		s.mu.Unlock()
 		return item.Observation.clone(), ErrUnknown
 	}
-	if !live.closing {
-		live.closing = true
-		_ = live.stdin.Close()
-		if err := live.command.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			s.mu.Unlock()
-			return item.Observation.clone(), err
-		}
+	if err := live.requestClose(); err != nil {
+		s.mu.Unlock()
+		return item.Observation.clone(), err
 	}
 	done := live.done
 	s.mu.Unlock()
@@ -395,35 +398,38 @@ func (s *Server) CloseAttempt(ctx context.Context, ref AttemptRef) (Observation,
 func (s *Server) wait(id string, live *process, path string) {
 	err := live.command.Wait()
 	_ = live.stdin.Close()
-	cleanupDiagnostic := ""
-	if cleanupErr := releaseExecutable(path); cleanupErr != nil {
-		cleanupDiagnostic = "; " + cleanupErr.Error()
+	exited := live.command.ProcessState != nil
+	var cleanupErr error
+	if exited {
+		cleanupErr = releaseExecutable(path)
 	}
 	s.mu.Lock()
 	item := s.journal.Attempts[id]
-	code := -1
-	if live.command.ProcessState != nil {
-		code = live.command.ProcessState.ExitCode()
-	}
-	item.Observation.State = Exited
-	item.Observation.ExitCode = &code
-	item.Observation.ProofID = randomID()
-	item.Observation.Reason = "direct child wait completed"
-	if err != nil {
-		var exit *exec.ExitError
-		if !errors.As(err, &exit) {
-			item.Observation.State = Unknown
-			item.Observation.ProofID = ""
-			item.Observation.Reason = "child wait failed without an exit observation"
+	if exited {
+		item.Observation.State = Exited
+		item.Observation.ExitCode = new(live.command.ProcessState.ExitCode())
+		item.Observation.ProofID = randomID()
+		item.Observation.Reason = "direct child wait completed"
+		if cleanupErr != nil {
+			item.Observation.Reason += "; " + cleanupErr.Error()
+		}
+		delete(s.processes, id)
+	} else {
+		live.closeState = processWaitUnconfirmed
+		s.fenced = true
+		item.Observation.State = Unknown
+		item.Observation.ExitCode = nil
+		item.Observation.ProofID = ""
+		item.Observation.Reason = "child wait failed without an exit observation"
+		if err != nil {
+			item.Observation.Reason += ": " + err.Error()
 		}
 	}
-	item.Observation.Reason += cleanupDiagnostic
 	_, _ = s.publishTerminal(id, item)
 	attached := live.attached
-	delete(s.processes, id)
 	close(live.done)
 	s.mu.Unlock()
-	if !attached {
+	if exited && !attached {
 		_ = live.stdout.Close()
 	}
 }
@@ -535,25 +541,6 @@ func syncDirectory(path string) error {
 	return errors.Join(directory.Sync(), directory.Close())
 }
 
-func (s *Server) Close() error {
-	s.closeOnce.Do(func() {
-		s.mu.Lock()
-		s.closed = true
-		s.fenced = true
-		ids := make([]AttemptRef, 0, len(s.processes))
-		for id := range s.processes {
-			ids = append(ids, s.journal.Attempts[id].Observation.Reference())
-		}
-		s.mu.Unlock()
-		for _, id := range ids {
-			_, err := s.CloseAttempt(context.Background(), id)
-			s.closeErr = errors.Join(s.closeErr, err)
-		}
-		s.closeErr = errors.Join(s.closeErr, unlockDirectory(s.lock))
-	})
-	return s.closeErr
-}
-
 func validateLaunch(request LaunchRequest) error {
 	if !request.AttemptRef.valid() || !filepath.IsAbs(request.Command) || request.ExecutableDigest.Validate() != nil || request.Configuration.Validate() != nil {
 		return errors.New("runner: exact launch identity is required")
@@ -588,7 +575,7 @@ func requestIdentity(request LaunchRequest) (framevalue.Digest, error) {
 }
 
 func validID(value string) bool {
-	return value != "" && len(value) <= 256 && !strings.ContainsAny(value, "\x00\r\n\t ")
+	return value != "" && len(value) <= maxIdentityBytes && !strings.ContainsAny(value, "\x00\r\n\t ")
 }
 func randomID() string {
 	var value [24]byte

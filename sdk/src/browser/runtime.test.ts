@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   contribution,
   FrameError,
+  Lifetime,
   optional,
   defineUnit,
   Event,
@@ -23,6 +24,7 @@ import {
 } from "../protocol.generated.js";
 import { Runtime } from "./runtime";
 import type { HostControl } from "./control";
+import { HTTPControl } from "./http";
 
 const digest = "a".repeat(64);
 const authority = { id: "host", epoch: "host-1" };
@@ -92,7 +94,7 @@ function fixture(definitions: Record<string, Unit>) {
     }),
     validateUse: vi.fn<HostControl["validateUse"]>(async (grant) => {
       if (JSON.stringify(grants.get(grant.id)) !== JSON.stringify(grant))
-        throw new Error("invalid use approval");
+        throw new FrameError("stale_binding", "invalid use approval");
     }),
     validateRoute: vi.fn<HostControl["validateRoute"]>(async () => {}),
     snapshot: vi.fn<HostControl["snapshot"]>(async () => ({
@@ -125,6 +127,7 @@ function fixture(definitions: Record<string, Unit>) {
       if (previous && JSON.stringify(previous) !== JSON.stringify(proof))
         throw new Error("proof changed");
       proofs.set(proof.proofId, proof);
+      if (proof.useId) grants.delete(proof.useId);
       return {
         closeId: proof.closeId,
         proofId: proof.proofId,
@@ -143,7 +146,6 @@ function fixture(definitions: Record<string, Unit>) {
       authority,
       realm,
       mode: "revalidated",
-      acceptedProofs: [],
       executions: request.executions.map((execution) => ({
         execution,
         scopeId: execution.id,
@@ -161,9 +163,16 @@ function fixture(definitions: Record<string, Unit>) {
       throw new Error("unexpected remote import");
     },
   });
-  function grant(id: string, objects = ready.get(id)!.objects): UseGrant {
+  function grant(
+    id: string,
+    objects = ready.get(id)!.objects,
+    operationId = `operation:${nextGrant + 1}`,
+    parentUseId?: string,
+  ): UseGrant {
     const value: UseGrant = {
       id: `use:${++nextGrant}`,
+      operationId,
+      ...(parentUseId ? { parentUseId } : {}),
       approvalToken: `grant:${nextGrant}`,
       authority,
       realm,
@@ -415,7 +424,7 @@ describe("approved browser execution", () => {
         unit("source", "reader", [{ name: "files", contract: files.ref }]),
       ]),
     );
-    const grant = f.grant("a", live.objects);
+    const grant = f.grant("a", live.objects, "late");
     let resolve!: (value: UseGrant) => void;
     vi.mocked(f.control.acquire).mockImplementation(
       () =>
@@ -452,7 +461,7 @@ describe("approved browser execution", () => {
         unit("source", "reader", [{ name: "files", contract: files.ref }]),
       ]),
     );
-    const grant = f.grant("a", live.objects);
+    const grant = f.grant("a", live.objects, "one-admission");
     vi.mocked(f.control.acquire)
       .mockRejectedValueOnce(new Error("lost reply"))
       .mockResolvedValue(grant);
@@ -478,6 +487,273 @@ describe("approved browser execution", () => {
     expect(
       [...f.proofs.values()].filter((proof) => proof.useId === grant.id),
     ).toHaveLength(1);
+  });
+
+  it.each(["acquire", "accept"] as const)(
+    "joins delegated child work before the parent proof through %s",
+    async (entrance) => {
+      const f = fixture({ reader });
+      const live = await f.runtime.prepare(
+        plan("a", [
+          unit("source", "reader", [{ name: "files", contract: files.ref }]),
+        ]),
+      );
+      const parentGrant = f.grant("a", live.objects, "parent");
+      const parent = await f.runtime.accept(parentGrant);
+      const childGrant = f.grant("a", live.objects, "child", parent.id);
+      vi.mocked(f.control.acquire).mockResolvedValue(childGrant);
+      const child = await (entrance === "accept"
+        ? f.runtime.accept(childGrant)
+        : f.runtime.acquire({
+            operationId: childGrant.operationId,
+            parentUseId: parent.id,
+            execution: live.identity,
+            snapshotId: "snapshot",
+            selections: [],
+          }));
+      let release!: () => void;
+      const work = child.with(live.objects[0]!, files, async (value) => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return value.read();
+      });
+      const closed = parent.close();
+      const settled = vi.fn();
+      void closed.then(settled);
+      await Promise.resolve();
+      expect(settled).not.toHaveBeenCalled();
+      expect(child.lifetime.closing).toBe(true);
+      expect(
+        f.runtime.pendingProofs.some((proof) => proof.useId === parent.id),
+      ).toBe(false);
+      release();
+      await work;
+      expect((await closed).status).toBe("released");
+      expect(() =>
+        child.with(live.objects[0]!, files, (value) => value.read()),
+      ).toThrow();
+      await f.runtime.flushProofs();
+      expect(
+        [...f.proofs.values()].filter((proof) => proof.useId === parent.id),
+      ).toHaveLength(1);
+      expect(
+        [...f.proofs.values()].filter((proof) => proof.useId === child.id),
+      ).toHaveLength(1);
+      await f.runtime.close();
+    },
+  );
+
+  it("keeps an uncertain child reservation under its original parent", async () => {
+    const f = fixture({ reader });
+    const live = await f.runtime.prepare(
+      plan("a", [
+        unit("source", "reader", [{ name: "files", contract: files.ref }]),
+      ]),
+    );
+    const parent = await f.runtime.accept(f.grant("a", live.objects, "parent"));
+    const request = {
+      operationId: "unknown-child",
+      parentUseId: parent.id,
+      execution: live.identity,
+      snapshotId: "snapshot",
+      selections: [],
+    };
+    vi.mocked(f.control.acquire).mockRejectedValue(
+      new FrameError("outcome_unknown", "lost acknowledgement"),
+    );
+    await expect(f.runtime.acquire(request)).rejects.toMatchObject({
+      code: "outcome_unknown",
+    });
+    expect(f.runtime.hasPendingAcquisition(request.operationId)).toBe(true);
+    expect((await parent.close()).status).toBe("released");
+    expect(f.runtime.hasPendingAcquisition(request.operationId)).toBe(false);
+    await expect(f.runtime.acquire(request)).rejects.toMatchObject({
+      code: "closed",
+    });
+    expect(f.control.acquire).toHaveBeenCalledOnce();
+    await f.runtime.close();
+  });
+
+  it("shares an in-flight owner across acquire and accept", async () => {
+    const f = fixture({ reader });
+    const live = await f.runtime.prepare(
+      plan("a", [
+        unit("source", "reader", [{ name: "files", contract: files.ref }]),
+      ]),
+    );
+    const grant = f.grant("a", live.objects, "original");
+    let receive!: (value: UseGrant) => void;
+    vi.mocked(f.control.acquire).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          receive = resolve;
+        }),
+    );
+    const acquired = f.runtime.acquire({
+      operationId: grant.operationId,
+      execution: live.identity,
+      snapshotId: "snapshot",
+      selections: [],
+    });
+    const accepted = f.runtime.accept(grant);
+    const relabeled = expect(
+      f.runtime.accept({ ...grant, id: "foreign-use" }),
+    ).rejects.toMatchObject({ code: "permission_denied" });
+    receive(grant);
+    const [first, second] = await Promise.all([acquired, accepted]);
+    await relabeled;
+    expect(first).toBe(second);
+    expect(f.control.validateUse).toHaveBeenCalledOnce();
+    await first.close();
+    await f.runtime.close();
+    expect(
+      [...f.proofs.values()].filter((proof) => proof.useId === grant.id),
+    ).toHaveLength(1);
+  });
+
+  it("observes one terminal Use before proof ACK and rejects its historical grant afterward", async () => {
+    const f = fixture({ reader });
+    const live = await f.runtime.prepare(
+      plan("a", [
+        unit("source", "reader", [{ name: "files", contract: files.ref }]),
+      ]),
+    );
+    const grant = f.grant("a", live.objects, "original");
+    const request = {
+      operationId: grant.operationId,
+      execution: live.identity,
+      snapshotId: "snapshot",
+      selections: [],
+    };
+    vi.mocked(f.control.acquire).mockResolvedValue(grant);
+    const original = await f.runtime.acquire(request);
+    await original.close();
+    vi.mocked(f.control.prove).mockRejectedValueOnce(
+      new Error("lost proof acknowledgement"),
+    );
+    await expect(f.runtime.flushProofs()).rejects.toThrow(
+      "lost proof acknowledgement",
+    );
+    expect(await f.runtime.acquire(request)).toBe(original);
+    expect(await f.runtime.accept(grant)).toBe(original);
+    expect(original.lifetime.closing).toBe(true);
+    await f.runtime.flushProofs();
+    await expect(f.runtime.acquire(request)).rejects.toMatchObject({
+      code: "stale_binding",
+    });
+    await expect(f.runtime.accept(grant)).rejects.toMatchObject({
+      code: "stale_binding",
+    });
+    expect(
+      [...f.proofs.values()].filter((proof) => proof.useId === grant.id),
+    ).toHaveLength(1);
+    await f.runtime.close();
+  });
+
+  it("validates an acquisition receipt before attaching a request to a directly accepted Use", async () => {
+    const f = fixture({ reader });
+    const live = await f.runtime.prepare(
+      plan("a", [
+        unit("source", "reader", [{ name: "files", contract: files.ref }]),
+      ]),
+    );
+    const grant = f.grant("a", live.objects, "original");
+    const original = await f.runtime.accept(grant);
+    const request = {
+      operationId: grant.operationId,
+      execution: live.identity,
+      snapshotId: "snapshot",
+      selections: [],
+    };
+    vi.mocked(f.control.acquire)
+      .mockRejectedValueOnce(
+        new FrameError(
+          "invalid_plan",
+          "operation has a different original input",
+        ),
+      )
+      .mockResolvedValue(grant);
+    await expect(
+      f.runtime.acquire({ ...request, snapshotId: "foreign" }),
+    ).rejects.toMatchObject({ code: "invalid_plan" });
+    expect(original.lifetime.closing).toBe(false);
+    expect(await f.runtime.acquire(request)).toBe(original);
+    await expect(
+      f.runtime.acquire({ ...request, snapshotId: "foreign" }),
+    ).rejects.toMatchObject({ code: "invalid_plan" });
+    expect(f.control.acquire).toHaveBeenCalledTimes(2);
+    await f.runtime.close();
+  });
+
+  it("releases prepared resources after a Ready envelope is definitively refused", async () => {
+    const f = fixture({ reader });
+    vi.mocked(f.control.ready).mockRejectedValue(
+      new FrameError("capacity", "ready envelope exceeds capacity"),
+    );
+    await expect(
+      f.runtime.prepare(
+        plan("a", [
+          unit("source", "reader", [{ name: "files", contract: files.ref }]),
+        ]),
+      ),
+    ).rejects.toMatchObject({ code: "capacity" });
+    expect(f.runtime.pendingProofs).toMatchObject([
+      { scopeKind: "execution", execution: { id: "a" }, status: "released" },
+    ]);
+    await f.runtime.close();
+  });
+
+  it("recovers a proof backlog larger than one transport message without aggregating evidence", async () => {
+    const f = fixture({ reader });
+    const live = await f.runtime.prepare(
+      plan("a", [
+        unit("source", "reader", [{ name: "files", contract: files.ref }]),
+      ]),
+    );
+    for (let index = 0; index < 12; index++) {
+      const use = await f.runtime.accept(f.grant("a", live.objects));
+      await use.close();
+    }
+    const maximumMessageBytes = 1024;
+    expect(
+      new TextEncoder().encode(JSON.stringify(f.runtime.pendingProofs))
+        .byteLength,
+    ).toBeGreaterThan(maximumMessageBytes);
+    const lifetime = new Lifetime("recovery-control");
+    const delivered: CloseProof[] = [];
+    const control = new HTTPControl({
+      endpoint: "https://host.example/control",
+      credential: "original-realm",
+      maximumMessageBytes,
+      lifetime,
+      fetch: async (_url, options) => {
+        const envelope = JSON.parse(String(options!.body));
+        if (envelope.method === "reconnect")
+          return Response.json({
+            authority,
+            realm,
+            mode: "revalidated",
+            executions: [
+              { execution: live.identity, scopeId: "a", scopeGeneration: "1" },
+            ],
+          });
+        expect(envelope.method).toBe("prove");
+        const proof = envelope.input as CloseProof;
+        delivered.push(proof);
+        return Response.json({
+          authority,
+          closeId: proof.closeId,
+          proofId: proof.proofId,
+          recorded: true,
+        });
+      },
+    });
+    await f.runtime.reconnect(control);
+    expect(delivered).toHaveLength(12);
+    expect(f.runtime.pendingProofs).toHaveLength(0);
+    await f.runtime.close();
+    await lifetime.close();
   });
 
   it("routes native event payloads locally under one approved use", async () => {
@@ -921,6 +1197,7 @@ async function closedHandles() {
     dynamic,
   );
   const grant: UseGrant = {
+    operationId: "retention-use",
     id: "retention-use",
     approvalToken: "approved-retention-use",
     authority,

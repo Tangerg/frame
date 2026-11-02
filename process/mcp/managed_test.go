@@ -250,6 +250,11 @@ func TestManagedCallGrantDistinguishesAliasesOfOnePhysicalExport(t *testing.T) {
 		if service.physical != "reader" {
 			t.Fatal("different physical backend")
 		}
+		cancelled, cancel := context.WithCancel(t.Context())
+		cancel()
+		if _, err := service.Command(cancelled, id, member.Name(), input); !errors.Is(err, context.Canceled) || errors.Is(err, process.ErrOutcomeUnknown) {
+			t.Fatalf("cancelled invocation reached the broker or SDK: %v", err)
+		}
 		_, err := service.Command(t.Context(), id, member.Name(), input)
 		if !errors.Is(err, []error{denied, recognized}[i]) {
 			t.Fatalf("grant for %s: %v", exported.Name, err)

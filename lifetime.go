@@ -44,6 +44,8 @@ type CloseOutcome struct {
 type resourceEntry struct {
 	resource     Resource
 	dependencies []*resourceEntry
+	consumers    int
+	index        int
 	attempted    bool
 	running      bool
 	released     bool
@@ -89,9 +91,16 @@ type Close struct {
 	id          uint64
 	settled     chan struct{}
 	settledOnce sync.Once
+	ready       []*resourceEntry
+	running     int
 }
 
 var closeSequence atomic.Uint64
+
+const (
+	defaultLifetimeWork      = 4096
+	defaultLifetimeResources = 4096
+)
 
 func NewLifetime(parent context.Context) *Lifetime {
 	lifetime, err := NewLifetimeWithLimits(parent, LifetimeLimits{})
@@ -101,17 +110,17 @@ func NewLifetime(parent context.Context) *Lifetime {
 	return lifetime
 }
 
-// NewLifetimeWithLimits bounds admitted work and resources whose original
-// release is not yet proved. Zero fields use the default limit of 4096.
+// Limits count resources until their original release is proved, including
+// resources whose cleanup returned without a release conclusion.
 func NewLifetimeWithLimits(parent context.Context, limits LifetimeLimits) (*Lifetime, error) {
 	if parent == nil {
 		return nil, ErrInvalid
 	}
 	if limits.MaxWork == 0 {
-		limits.MaxWork = 4096
+		limits.MaxWork = defaultLifetimeWork
 	}
 	if limits.MaxResources == 0 {
-		limits.MaxResources = 4096
+		limits.MaxResources = defaultLifetimeResources
 	}
 	if limits.MaxWork < 1 || limits.MaxResources < 1 {
 		return nil, ErrInvalid
@@ -227,7 +236,7 @@ func (l *Lifetime) ownLocked(resource Resource, dependencies []*ResourceHandle) 
 	if len(l.resources) >= l.limits.MaxResources {
 		return nil, fmt.Errorf("%w: lifetime resources", ErrCapacity)
 	}
-	entry := &resourceEntry{resource: resource}
+	entry := &resourceEntry{resource: resource, index: len(l.resources)}
 	seen := make(map[*resourceEntry]bool)
 	for _, dependency := range dependencies {
 		if dependency == nil || dependency.lifetime != l || dependency.entry.released {
@@ -238,6 +247,9 @@ func (l *Lifetime) ownLocked(resource Resource, dependencies []*ResourceHandle) 
 		}
 		seen[dependency.entry] = true
 		entry.dependencies = append(entry.dependencies, dependency.entry)
+	}
+	for _, dependency := range entry.dependencies {
+		dependency.consumers++
 	}
 	l.resources = append(l.resources, entry)
 	l.signalLocked()
@@ -329,44 +341,26 @@ func (l *Lifetime) retire(operation *Close, cancellations []func(error), cause e
 		l.mu.Unlock()
 		<-changed
 	}
+	l.mu.Lock()
+	operation.ready = make([]*resourceEntry, 0, len(l.resources))
+	for _, entry := range l.resources {
+		l.enqueueResourceLocked(entry)
+	}
+	l.mu.Unlock()
 	for {
 		l.mu.Lock()
-		var ready []*resourceEntry
-		remaining, running := 0, 0
-		for _, entry := range l.resources {
-			if entry.released && !entry.running {
-				continue
-			}
-			remaining++
-			if entry.running {
-				running++
-				continue
-			}
-			if entry.attempted {
-				continue
-			}
-			blocked := false
-			for _, consumer := range l.resources {
-				if consumer.released && !consumer.running {
-					continue
-				}
-				if slices.Contains(consumer.dependencies, entry) {
-					blocked = true
-					break
-				}
-			}
-			if !blocked {
+		ready := operation.ready
+		operation.ready = []*resourceEntry{}
+		for _, entry := range ready {
+			if !entry.released {
 				entry.attempted = true
 				entry.running = true
-				ready = append(ready, entry)
+				operation.running++
 			}
 		}
-		if remaining == 0 {
+		if len(l.resources) == 0 {
 			l.released = true
-			for _, entry := range l.resources {
-				entry.resource = Resource{Name: entry.resource.Name}
-				entry.dependencies = nil
-			}
+			operation.ready = nil
 			l.resources = nil
 			l.work = nil
 			stop := l.stopParent
@@ -384,18 +378,43 @@ func (l *Lifetime) retire(operation *Close, cancellations []func(error), cause e
 			return
 		}
 		changed := l.changed
+		running := operation.running
 		l.mu.Unlock()
-		if len(ready) == 0 && running == 0 {
+		if running == 0 {
 			operation.settledOnce.Do(func() { close(operation.settled) })
 		}
 		for _, entry := range ready {
 			l.mu.Lock()
 			closeResource := entry.resource.Close
 			l.mu.Unlock()
-			go l.closeResource(entry, closeResource)
+			if closeResource != nil {
+				go l.closeResource(entry, closeResource)
+			}
 		}
 		<-changed
 	}
+}
+
+func (l *Lifetime) enqueueResourceLocked(entry *resourceEntry) {
+	if l.closing != nil && l.closing.ready != nil && entry.consumers == 0 && !entry.attempted && !entry.released {
+		l.closing.ready = append(l.closing.ready, entry)
+	}
+}
+
+// Only the original release transition updates both the graph and its ready
+// index. A running cleanup keeps its dependency holds even after late proof.
+func (l *Lifetime) forgetResourceLocked(entry *resourceEntry) {
+	for _, dependency := range entry.dependencies {
+		dependency.consumers--
+		l.enqueueResourceLocked(dependency)
+	}
+	entry.resource = Resource{Name: entry.resource.Name}
+	entry.dependencies = nil
+	last := len(l.resources) - 1
+	l.resources[entry.index] = l.resources[last]
+	l.resources[entry.index].index = entry.index
+	l.resources[last] = nil
+	l.resources = l.resources[:last]
 }
 
 func invokeCancel(cancel func(error), cause error) (err error) {
@@ -428,6 +447,7 @@ func (l *Lifetime) closeResource(entry *resourceEntry, closeResource func(contex
 	detail := closeFailureDetail(err)
 	l.mu.Lock()
 	entry.running = false
+	l.closing.running--
 	if state == ResourceReleased {
 		entry.released = true
 	}
@@ -435,10 +455,7 @@ func (l *Lifetime) closeResource(entry *resourceEntry, closeResource func(contex
 		l.recordFailureLocked(entry.resource.Name, detail)
 	}
 	if entry.released {
-		entry.resource.Cancel = nil
-		entry.resource.Close = nil
-		entry.dependencies = nil
-		l.resources = slices.DeleteFunc(l.resources, func(candidate *resourceEntry) bool { return candidate == entry })
+		l.forgetResourceLocked(entry)
 	}
 	l.signalLocked()
 	l.mu.Unlock()
@@ -490,10 +507,7 @@ func (h *ResourceHandle) ConfirmReleased(diagnostic error) error {
 		l.recordFailureLocked(h.entry.resource.Name, detail)
 	}
 	if !h.entry.running {
-		h.entry.resource.Cancel = nil
-		h.entry.resource.Close = nil
-		h.entry.dependencies = nil
-		l.resources = slices.DeleteFunc(l.resources, func(entry *resourceEntry) bool { return entry == h.entry })
+		l.forgetResourceLocked(h.entry)
 	}
 	l.signalLocked()
 	return nil

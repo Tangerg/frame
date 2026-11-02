@@ -26,7 +26,6 @@ type Connection interface {
 	Close(context.Context) error
 }
 
-// DeclaredCapability resolves the exact portable service through its approved declaration.
 func DeclaredCapability(setup *frame.Setup, ref frame.ContractRef) (*portable.Capability, error) {
 	if setup == nil {
 		return nil, frame.ErrInvalid
@@ -52,10 +51,8 @@ func DeclaredCapability(setup *frame.Setup, ref frame.ContractRef) (*portable.Ca
 	return contract, nil
 }
 
-// ExportMetadata projects per-export metadata from the approved distribution.
 type ExportMetadata map[string]value.JSON
 
-// Export projects one approved declaration and its distribution metadata.
 func (m ExportMetadata) Export(decl frame.ExportDeclaration, service Service) frame.ExportValue {
 	v := frame.ExportValue{Name: decl.Name, Contract: decl.Contract, Value: service, Durable: true}
 	if metadata, exists := m[decl.Name]; exists {

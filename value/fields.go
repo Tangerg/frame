@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -79,6 +80,10 @@ func parseFieldTag(field reflect.StructField) (string, wireTagOptions, error) {
 
 // Schema tags may narrow a field, but cannot publish an encoding the field's
 // codec cannot consume.
+// nullableSchemaOption lets a schema admit null, which only an opaque JSON
+// field can decode faithfully.
+const nullableSchemaOption = "nullable"
+
 func checkSchemaFieldShape(field reflect.StructField) error {
 	raw := field.Tag.Get("jsonschema")
 	if first, _, _ := strings.Cut(raw, ","); first == "-" {
@@ -86,7 +91,7 @@ func checkSchemaFieldShape(field reflect.StructField) error {
 	}
 	continued := false
 	for tag := range strings.SplitSeq(raw, ",") {
-		if tag == "nullable" {
+		if tag == nullableSchemaOption {
 			target := field.Type
 			pointers := make(map[reflect.Type]bool)
 			for target.Kind() == reflect.Pointer && !pointers[target] {
@@ -128,4 +133,38 @@ func parseOmissionOptions(raw string) (bool, error) {
 		}
 	}
 	return seenOmitEmpty || seenOmitZero, nil
+}
+
+// Shape is the member set of a JSON object type, the projection another
+// runtime uses to admit exactly the members its Go owner declares.
+type Shape struct {
+	Required []string `json:"required"`
+	Optional []string `json:"optional"`
+}
+
+func ShapeOf(owner reflect.Type) Shape {
+	shape := Shape{Required: []string{}, Optional: []string{}}
+	for _, field := range Fields(owner) {
+		if field.Optional {
+			shape.Optional = append(shape.Optional, field.Name)
+		} else {
+			shape.Required = append(shape.Required, field.Name)
+		}
+	}
+	return shape
+}
+
+// Admits reports whether present names exactly the shape's required members
+// plus any of its optional ones.
+func (s Shape) Admits(present []string) bool {
+	required := 0
+	for _, name := range present {
+		switch {
+		case slices.Contains(s.Required, name):
+			required++
+		case !slices.Contains(s.Optional, name):
+			return false
+		}
+	}
+	return required == len(s.Required)
 }

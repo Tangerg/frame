@@ -87,6 +87,7 @@ type declaration struct {
 // received over a wire still require their original admitted declaration.
 type Declaration interface {
 	Ref() ContractRef
+	Descriptor() []byte
 	definition() *declaration
 }
 
@@ -94,23 +95,16 @@ type Contract[T any] struct{ value *declaration }
 type Point[M, V any] struct{ value *declaration }
 type Event[T any] struct{ value *declaration }
 
-func (c Contract[T]) Ref() ContractRef {
-	if c.value == nil {
+func (c Contract[T]) Ref() ContractRef { return c.value.reference() }
+func (p Point[M, V]) Ref() ContractRef { return p.value.reference() }
+func (e Event[T]) Ref() ContractRef    { return e.value.reference() }
+
+// reference makes the zero value of a typed declaration name no contract.
+func (d *declaration) reference() ContractRef {
+	if d == nil {
 		return ContractRef{}
 	}
-	return c.value.ref
-}
-func (p Point[M, V]) Ref() ContractRef {
-	if p.value == nil {
-		return ContractRef{}
-	}
-	return p.value.ref
-}
-func (e Event[T]) Ref() ContractRef {
-	if e.value == nil {
-		return ContractRef{}
-	}
-	return e.value.ref
+	return d.ref
 }
 func (c Contract[T]) definition() *declaration { return c.value }
 func (p Point[M, V]) definition() *declaration { return p.value }
@@ -118,9 +112,16 @@ func (e Event[T]) definition() *declaration    { return e.value }
 
 // Descriptor returns the original immutable identity document. Local Go types
 // and driver proxy types are never included in its wire identity.
-func (c Contract[T]) Descriptor() []byte { return bytes.Clone(c.value.descriptor) }
-func (p Point[M, V]) Descriptor() []byte { return bytes.Clone(p.value.descriptor) }
-func (e Event[T]) Descriptor() []byte    { return bytes.Clone(e.value.descriptor) }
+func (c Contract[T]) Descriptor() []byte { return c.value.descriptorCopy() }
+func (p Point[M, V]) Descriptor() []byte { return p.value.descriptorCopy() }
+func (e Event[T]) Descriptor() []byte    { return e.value.descriptorCopy() }
+
+func (d *declaration) descriptorCopy() []byte {
+	if d == nil {
+		return nil
+	}
+	return bytes.Clone(d.descriptor)
+}
 
 // ValueContract identifies a portable Point's callable or data-value contract.
 // A native Point binds V directly in its owning language and returns a zero ref.
@@ -195,13 +196,17 @@ func NewPortablePoint[M, V any](name, version string, metadataSchema []byte, val
 	return BindPoint[M, V](ref, identity.Bytes())
 }
 
+// nativeDescriptor is the identity document of a native contract. Language
+// types are deliberately absent: they never change a contract's identity.
+type nativeDescriptor struct {
+	Name    string       `json:"name"`
+	Version string       `json:"version"`
+	Kind    ContractKind `json:"kind"`
+	Mode    ContractMode `json:"mode"`
+}
+
 func nativeDeclaration(name, version string, kind ContractKind, valueType, metadataType reflect.Type) (*declaration, error) {
-	descriptor, err := json.Marshal(struct {
-		Name    string       `json:"name"`
-		Version string       `json:"version"`
-		Kind    ContractKind `json:"kind"`
-		Mode    ContractMode `json:"mode"`
-	}{name, version, kind, NativeMode})
+	descriptor, err := json.Marshal(nativeDescriptor{Name: name, Version: version, Kind: kind, Mode: NativeMode})
 	if err != nil {
 		return nil, err
 	}
@@ -258,16 +263,6 @@ func BindPoint[M, V any](ref ContractRef, descriptor []byte) (Point[M, V], error
 	value.valueType = reflect.TypeFor[V]()
 	value.metadataType = reflect.TypeFor[M]()
 	return Point[M, V]{value: value}, nil
-}
-
-func BindEvent[T any](ref ContractRef, descriptor []byte) (Event[T], error) {
-	if err := ref.Validate(); err != nil {
-		return Event[T]{}, err
-	}
-	if ref.Kind != EventKind || ref.Mode != PortableMode || framevalue.Hash(descriptor) != ref.Digest {
-		return Event[T]{}, ErrContractMismatch
-	}
-	return Event[T]{value: &declaration{ref: ref, descriptor: bytes.Clone(descriptor), valueType: reflect.TypeFor[T]()}}, nil
 }
 
 func sameDeclaration(a, b *declaration) bool {

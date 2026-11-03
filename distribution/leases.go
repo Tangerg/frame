@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -47,32 +48,10 @@ func (l *Lease) Directory() (string, error) {
 	return l.store.Path(l.release.Digest)
 }
 
-// ReadLimit applies a consumer's smaller resource budget before allocating the
-// admitted artifact. Content validation remains owned by the Store.
-func (l *Lease) ReadLimit(ctx context.Context, name string, maximum int64) ([]byte, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.closed {
-		return nil, frame.ErrClosed
-	}
-	if maximum < 0 {
-		return nil, ErrInvalid
-	}
-	for _, artifact := range l.release.Manifest.Artifacts {
-		if artifact.Path == name {
-			if artifact.Size > maximum {
-				return nil, ErrCapacity
-			}
-			return l.store.readArtifact(ctx, l.release, name)
-		}
-	}
-	return nil, ErrInvalid
-}
-
 // Path projects an immutable release location for diagnostics and declarations.
 // It performs no admission: actual reads and execution require an acquired Lease.
 func (s *Store) Path(digest value.Digest) (string, error) {
-	done, err := s.beginOperation(true)
+	done, err := s.beginOperation(leaseOperation)
 	if err != nil {
 		return "", err
 	}
@@ -86,7 +65,7 @@ func (s *Store) Path(digest value.Digest) (string, error) {
 // Digests observes the content namespace. Each later Remove still checks the
 // original retention facts and live claims under the shared admission gate.
 func (s *Store) Digests(ctx context.Context) (_ []value.Digest, err error) {
-	done, err := s.beginOperation(false)
+	done, err := s.beginOperation(newOperation)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +77,7 @@ func (s *Store) Digests(ctx context.Context) (_ []value.Digest, err error) {
 	defer func() { err = errors.Join(err, directory.Close()) }()
 	var result []value.Digest
 	for {
-		if err := ctx.Err(); err != nil {
+		if err := cancellation.Err(ctx); err != nil {
 			return nil, err
 		}
 		entries, readErr := directory.ReadDir(directoryReadBatch)

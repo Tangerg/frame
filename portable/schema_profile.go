@@ -17,6 +17,19 @@ const (
 	SchemaDescend SchemaEdge = "descend"
 )
 
+// SchemaType is a JSON Schema instance type admitted by the portable dialect.
+type SchemaType string
+
+const (
+	TypeNull    SchemaType = "null"
+	TypeBoolean SchemaType = "boolean"
+	TypeObject  SchemaType = "object"
+	TypeArray   SchemaType = "array"
+	TypeNumber  SchemaType = "number"
+	TypeInteger SchemaType = "integer"
+	TypeString  SchemaType = "string"
+)
+
 type SchemaValueShape string
 
 const (
@@ -31,6 +44,56 @@ const (
 	SchemaValues         SchemaValueShape = "array"
 )
 
+// Schema keywords of the portable dialect. Every package that reads or rewrites
+// a schema uses these names; ProfileSchema declares their meaning.
+const (
+	KeywordSchema               = "$schema"
+	KeywordComment              = "$comment"
+	KeywordDefs                 = "$defs"
+	KeywordDefinitions          = "definitions"
+	KeywordTitle                = "title"
+	KeywordDescription          = "description"
+	KeywordDefault              = "default"
+	KeywordExamples             = "examples"
+	KeywordReadOnly             = "readOnly"
+	KeywordWriteOnly            = "writeOnly"
+	KeywordDeprecated           = "deprecated"
+	KeywordContentEncoding      = "contentEncoding"
+	KeywordContentMediaType     = "contentMediaType"
+	KeywordProperties           = "properties"
+	KeywordPatternProperties    = "patternProperties"
+	KeywordAdditionalProperties = "additionalProperties"
+	KeywordItems                = "items"
+	KeywordContains             = "contains"
+	KeywordPropertyNames        = "propertyNames"
+	KeywordNot                  = "not"
+	KeywordIf                   = "if"
+	KeywordThen                 = "then"
+	KeywordElse                 = "else"
+	KeywordAllOf                = "allOf"
+	KeywordAnyOf                = "anyOf"
+	KeywordOneOf                = "oneOf"
+	KeywordRef                  = "$ref"
+	KeywordType                 = "type"
+	KeywordEnum                 = "enum"
+	KeywordConst                = "const"
+	KeywordRequired             = "required"
+	KeywordMinimum              = "minimum"
+	KeywordMaximum              = "maximum"
+	KeywordExclusiveMinimum     = "exclusiveMinimum"
+	KeywordExclusiveMaximum     = "exclusiveMaximum"
+	KeywordMultipleOf           = "multipleOf"
+	KeywordMinLength            = "minLength"
+	KeywordMaxLength            = "maxLength"
+	KeywordPattern              = "pattern"
+	KeywordFormat               = "format"
+	KeywordMinItems             = "minItems"
+	KeywordMaxItems             = "maxItems"
+	KeywordUniqueItems          = "uniqueItems"
+	KeywordMinProperties        = "minProperties"
+	KeywordMaxProperties        = "maxProperties"
+)
+
 // SchemaKeyword separates schema children from application data: a const or
 // annotation containing "$ref" must never become a traversal edge.
 type SchemaKeyword struct {
@@ -42,7 +105,7 @@ type SchemaKeyword struct {
 
 type SchemaProfile struct {
 	Dialect  string                   `json:"dialect"`
-	Types    []string                 `json:"types"`
+	Types    []SchemaType             `json:"types"`
 	Keywords map[string]SchemaKeyword `json:"keywords"`
 }
 
@@ -51,53 +114,53 @@ type SchemaProfile struct {
 func ProfileSchema() SchemaProfile {
 	return SchemaProfile{
 		Dialect: SchemaDialect,
-		Types:   []string{"null", "boolean", "object", "array", "number", "integer", "string"},
+		Types:   []SchemaType{TypeNull, TypeBoolean, TypeObject, TypeArray, TypeNumber, TypeInteger, TypeString},
 		Keywords: map[string]SchemaKeyword{
-			"$schema":              {Value: SchemaString, Annotation: true},
-			"$comment":             {Value: SchemaString, Annotation: true},
-			"$defs":                {Children: SchemaMap, Annotation: true},
-			"definitions":          {Children: SchemaMap, Annotation: true},
-			"title":                {Value: SchemaString, Annotation: true},
-			"description":          {Value: SchemaString, Annotation: true},
-			"default":              {Annotation: true},
-			"examples":             {Value: SchemaValues, Annotation: true},
-			"readOnly":             {Value: SchemaBoolean, Annotation: true},
-			"writeOnly":            {Value: SchemaBoolean, Annotation: true},
-			"deprecated":           {Value: SchemaBoolean, Annotation: true},
-			"contentEncoding":      {Value: SchemaString, Annotation: true},
-			"contentMediaType":     {Value: SchemaString, Annotation: true},
-			"properties":           {Children: SchemaMap, Edge: SchemaDescend},
-			"patternProperties":    {Children: SchemaMap, Edge: SchemaDescend},
-			"additionalProperties": {Children: SchemaChild, Edge: SchemaDescend},
-			"items":                {Children: SchemaChild, Edge: SchemaDescend},
-			"contains":             {Children: SchemaChild, Edge: SchemaDescend},
-			"propertyNames":        {Children: SchemaChild, Edge: SchemaDescend},
-			"not":                  {Children: SchemaChild, Edge: SchemaSame},
-			"if":                   {Children: SchemaChild, Edge: SchemaSame},
-			"then":                 {Children: SchemaChild, Edge: SchemaSame},
-			"else":                 {Children: SchemaChild, Edge: SchemaSame},
-			"allOf":                {Children: SchemaArray, Edge: SchemaSame},
-			"anyOf":                {Children: SchemaArray, Edge: SchemaSame},
-			"oneOf":                {Children: SchemaArray, Edge: SchemaSame},
-			"$ref":                 {Value: SchemaString},
-			"type":                 {Value: SchemaTypes},
-			"enum":                 {Value: SchemaEnum},
-			"const":                {},
-			"required":             {Value: SchemaRequired},
-			"minimum":              {Value: SchemaNumber},
-			"maximum":              {Value: SchemaNumber},
-			"exclusiveMinimum":     {Value: SchemaNumber},
-			"exclusiveMaximum":     {Value: SchemaNumber},
-			"multipleOf":           {Value: SchemaPositiveNumber},
-			"minLength":            {Value: SchemaSize},
-			"maxLength":            {Value: SchemaSize},
-			"pattern":              {Value: SchemaString},
-			"format":               {Value: SchemaString},
-			"minItems":             {Value: SchemaSize},
-			"maxItems":             {Value: SchemaSize},
-			"uniqueItems":          {Value: SchemaBoolean},
-			"minProperties":        {Value: SchemaSize},
-			"maxProperties":        {Value: SchemaSize},
+			KeywordSchema:               {Value: SchemaString, Annotation: true},
+			KeywordComment:              {Value: SchemaString, Annotation: true},
+			KeywordDefs:                 {Children: SchemaMap, Annotation: true},
+			KeywordDefinitions:          {Children: SchemaMap, Annotation: true},
+			KeywordTitle:                {Value: SchemaString, Annotation: true},
+			KeywordDescription:          {Value: SchemaString, Annotation: true},
+			KeywordDefault:              {Annotation: true},
+			KeywordExamples:             {Value: SchemaValues, Annotation: true},
+			KeywordReadOnly:             {Value: SchemaBoolean, Annotation: true},
+			KeywordWriteOnly:            {Value: SchemaBoolean, Annotation: true},
+			KeywordDeprecated:           {Value: SchemaBoolean, Annotation: true},
+			KeywordContentEncoding:      {Value: SchemaString, Annotation: true},
+			KeywordContentMediaType:     {Value: SchemaString, Annotation: true},
+			KeywordProperties:           {Children: SchemaMap, Edge: SchemaDescend},
+			KeywordPatternProperties:    {Children: SchemaMap, Edge: SchemaDescend},
+			KeywordAdditionalProperties: {Children: SchemaChild, Edge: SchemaDescend},
+			KeywordItems:                {Children: SchemaChild, Edge: SchemaDescend},
+			KeywordContains:             {Children: SchemaChild, Edge: SchemaDescend},
+			KeywordPropertyNames:        {Children: SchemaChild, Edge: SchemaDescend},
+			KeywordNot:                  {Children: SchemaChild, Edge: SchemaSame},
+			KeywordIf:                   {Children: SchemaChild, Edge: SchemaSame},
+			KeywordThen:                 {Children: SchemaChild, Edge: SchemaSame},
+			KeywordElse:                 {Children: SchemaChild, Edge: SchemaSame},
+			KeywordAllOf:                {Children: SchemaArray, Edge: SchemaSame},
+			KeywordAnyOf:                {Children: SchemaArray, Edge: SchemaSame},
+			KeywordOneOf:                {Children: SchemaArray, Edge: SchemaSame},
+			KeywordRef:                  {Value: SchemaString},
+			KeywordType:                 {Value: SchemaTypes},
+			KeywordEnum:                 {Value: SchemaEnum},
+			KeywordConst:                {},
+			KeywordRequired:             {Value: SchemaRequired},
+			KeywordMinimum:              {Value: SchemaNumber},
+			KeywordMaximum:              {Value: SchemaNumber},
+			KeywordExclusiveMinimum:     {Value: SchemaNumber},
+			KeywordExclusiveMaximum:     {Value: SchemaNumber},
+			KeywordMultipleOf:           {Value: SchemaPositiveNumber},
+			KeywordMinLength:            {Value: SchemaSize},
+			KeywordMaxLength:            {Value: SchemaSize},
+			KeywordPattern:              {Value: SchemaString},
+			KeywordFormat:               {Value: SchemaString},
+			KeywordMinItems:             {Value: SchemaSize},
+			KeywordMaxItems:             {Value: SchemaSize},
+			KeywordUniqueItems:          {Value: SchemaBoolean},
+			KeywordMinProperties:        {Value: SchemaSize},
+			KeywordMaxProperties:        {Value: SchemaSize},
 		},
 	}
 }

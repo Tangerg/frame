@@ -10,7 +10,7 @@ import {
   type Setup,
   type Unit,
 } from "../index.js";
-import { cloneJSON, parseJSON, stringifyJSON } from "../json.js";
+import { canonicalJSON, cloneJSON, parseJSON } from "../json.js";
 import type {
   AcquireRequest,
   Authority,
@@ -21,6 +21,7 @@ import type {
   ObjectRef,
   PlanAdmissionDecision,
   PlannedUnit,
+  Poll,
   PreparedContribution,
   PublicationRequest,
   PublicationResult,
@@ -28,7 +29,7 @@ import type {
   RouteGrant,
   UseGrant,
 } from "../protocol.generated.js";
-import { PROTOCOL } from "../protocol.generated.js";
+import { DecisionValues, PROTOCOL } from "../protocol.generated.js";
 import {
   isControlRefusal,
   type HostControl,
@@ -105,51 +106,60 @@ class PublicationReceipt {
       : undefined;
   }
 
+  /**
+   * Records a reply. Only an unknown outcome may be refined; a confirmed
+   * decision and the publication it names never change.
+   */
   receive(result: PublicationResult): PublicationResult {
-    if (
-      !result ||
-      !["unknown", "accepted", "rejected"].includes(result.decision)
-    )
+    this.#checkShape(result);
+    this.#checkIdentity(result);
+    if (result.decision !== "unknown" || this.#outcome.decision === "unknown")
+      this.#outcome = immutable(result);
+    return this.#outcome;
+  }
+
+  #checkShape(result: PublicationResult): void {
+    if (!result || !DecisionValues.includes(result.decision))
       throw new FrameError("invalid_plan", "invalid publication decision");
-    if (
-      result.publication &&
-      (!sameObject(result.publication.object, this.object) ||
-        result.publication.operationId !== this.operationId)
-    )
-      throw new FrameError(
-        "permission_denied",
-        "publication response changed the original object or operation",
-      );
     if (result.decision === "accepted" && !result.publication)
       throw new FrameError(
         "invalid_plan",
         "accepted publication has no exact publication identity",
       );
-    const currentDecision = this.#outcome.decision;
+  }
+
+  #checkIdentity(result: PublicationResult): void {
+    const publication = result.publication;
     if (
-      currentDecision !== "unknown" &&
+      publication &&
+      (!sameObject(publication.object, this.object) ||
+        publication.operationId !== this.operationId)
+    )
+      throw new FrameError(
+        "permission_denied",
+        "publication response changed the original object or operation",
+      );
+    const current = this.#outcome.decision;
+    if (
+      current !== "unknown" &&
       result.decision !== "unknown" &&
-      result.decision !== currentDecision
+      result.decision !== current
     )
       throw new FrameError(
         "invalid_plan",
         "a confirmed publication decision cannot change",
       );
     const accepted = this.acceptedPublication;
-    if (accepted) {
-      if (
-        result.publication &&
-        (result.publication.id !== accepted.id ||
-          result.publication.revision !== accepted.revision)
-      )
-        throw new FrameError(
-          "permission_denied",
-          "publication response changed the original publication identity",
-        );
-    }
-    if (result.decision !== "unknown" || currentDecision === "unknown")
-      this.#outcome = immutable(result);
-    return this.#outcome;
+    if (
+      accepted &&
+      publication &&
+      (publication.id !== accepted.id ||
+        publication.revision !== accepted.revision)
+    )
+      throw new FrameError(
+        "permission_denied",
+        "publication response changed the original publication identity",
+      );
   }
 
   uncertain(cause: unknown): void {
@@ -325,6 +335,69 @@ function sameObject(left: ObjectRef, right: ObjectRef): boolean {
   );
 }
 
+/**
+ * Checks one approved import and returns the planned unit providing a local
+ * import, which may belong to this plan or to an earlier execution.
+ */
+function checkImport(
+  binding: Import,
+  planned: ReadonlyMap<string, PlannedUnit>,
+  external: ReadonlyMap<string, UnitEntry>,
+): PlannedUnit | undefined {
+  switch (binding.kind) {
+    case "local":
+      return localProvider(binding, planned, external);
+    case "remote":
+      if (
+        !binding.remote ||
+        binding.local ||
+        binding.contract.mode !== "portable" ||
+        !sameContract(binding.remote.source.contract, binding.contract)
+      )
+        throw new FrameError(
+          "contract_mismatch",
+          "remote import requires an exact portable binding",
+        );
+      return undefined;
+    case "absent":
+      if (binding.local || binding.remote)
+        throw new FrameError("invalid_plan", "invalid import kind");
+      return undefined;
+    default:
+      throw new FrameError("invalid_plan", "invalid import kind");
+  }
+}
+
+function localProvider(
+  binding: Import,
+  planned: ReadonlyMap<string, PlannedUnit>,
+  external: ReadonlyMap<string, UnitEntry>,
+): PlannedUnit {
+  const local = binding.local;
+  if (
+    !local ||
+    binding.remote ||
+    !sameContract(binding.contract, local.contract)
+  )
+    throw new FrameError(
+      "contract_mismatch",
+      "local import differs from its approved contract",
+    );
+  const provider =
+    planned.get(local.instanceId) ?? external.get(local.instanceId)?.unit;
+  const exported = provider?.exports.some(
+    (entry) =>
+      entry.name === local.name &&
+      sameContract(entry.contract, binding.contract),
+  );
+  if (!provider || !exported)
+    throw new FrameError(
+      "invalid_plan",
+      "local import does not identify an exact planned export",
+    );
+  return provider;
+}
+
 function orderUnits(
   plan: LocalPlan,
   external: ReadonlyMap<string, UnitEntry>,
@@ -352,46 +425,8 @@ function orderUnits(
       if (slots.has(binding.slot))
         throw new FrameError("invalid_plan", "import slot was approved twice");
       slots.add(binding.slot);
-      if (binding.kind === "local") {
-        if (
-          !binding.local ||
-          binding.remote ||
-          !sameContract(binding.contract, binding.local.contract)
-        )
-          throw new FrameError(
-            "contract_mismatch",
-            "local import differs from its approved contract",
-          );
-        const provider =
-          byId.get(binding.local.instanceId) ??
-          external.get(binding.local.instanceId)?.unit;
-        if (
-          !provider ||
-          !provider.exports.some(
-            (entry) =>
-              entry.name === binding.local!.name &&
-              sameContract(entry.contract, binding.contract),
-          )
-        )
-          throw new FrameError(
-            "invalid_plan",
-            "local import does not identify an exact planned export",
-          );
-        if (byId.has(provider.instance.id)) visit(provider);
-      } else if (binding.kind === "remote") {
-        if (
-          !binding.remote ||
-          binding.local ||
-          binding.contract.mode !== "portable" ||
-          !sameContract(binding.remote.source.contract, binding.contract)
-        )
-          throw new FrameError(
-            "contract_mismatch",
-            "remote import requires an exact portable binding",
-          );
-      } else if (binding.kind !== "absent" || binding.local || binding.remote) {
-        throw new FrameError("invalid_plan", "invalid import kind");
-      }
+      const provider = checkImport(binding, byId, external);
+      if (provider && byId.has(provider.instance.id)) visit(provider);
     }
     visiting.delete(id);
     visited.add(id);
@@ -399,6 +434,41 @@ function orderUnits(
   };
   for (const unit of plan.units) visit(unit);
   return ordered;
+}
+
+function checkDeclaredExports(unit: PlannedUnit, definition: Unit): void {
+  if (Object.keys(definition.exports).length !== unit.exports.length)
+    throw new FrameError(
+      "contract_mismatch",
+      "module exports differ from the approved declaration",
+    );
+  for (const declared of unit.exports) {
+    const exported = definition.exports[declared.name];
+    if (
+      !Object.hasOwn(definition.exports, declared.name) ||
+      !exported ||
+      !sameContract(exported.ref, declared.contract)
+    )
+      throw new FrameError(
+        "contract_mismatch",
+        "module exports an unapproved contract",
+      );
+  }
+}
+
+/** A prepared Point member pairs its metadata with its value. */
+function pointExport(exported: unknown): { metadata: unknown; value: unknown } {
+  if (
+    typeof exported !== "object" ||
+    exported === null ||
+    !Object.hasOwn(exported, "metadata") ||
+    !Object.hasOwn(exported, "value")
+  )
+    throw new FrameError(
+      "contract_mismatch",
+      "point export requires metadata and a value",
+    );
+  return exported as { metadata: unknown; value: unknown };
 }
 
 /** Executes approved plans. Installation, discovery, and selection stay in Go. */
@@ -459,7 +529,7 @@ export class Runtime {
 
   async prepare(received: LocalPlan): Promise<ExecutionHandle> {
     const plan = immutable(received);
-    const fingerprint = stringifyJSON(plan, true);
+    const fingerprint = canonicalJSON(plan);
     const existing = this.#executions.get(plan.execution.id);
     if (existing) {
       if (existing.fingerprint !== fingerprint)
@@ -590,177 +660,10 @@ export class Runtime {
     try {
       this.#assertRevision(revision);
       entry.lifetime.assertOpen();
-      for (const unit of ordered) {
-        const owned = {
-          unit,
-          lifetime: entry.lifetime.branch(`instance:${unit.instance.id}`),
-        };
-        entry.units.set(unit.instance.id, owned);
-        this.#instances.set(unit.instance.id, owned);
-      }
-      for (const ownedUnit of entry.units.values()) {
-        for (const binding of ownedUnit.unit.imports) {
-          if (binding.kind === "local")
-            ownedUnit.lifetime.dependsOn(
-              this.#instances.get(binding.local!.instanceId)!.lifetime,
-            );
-        }
-      }
+      this.#ownUnits(entry, ordered);
       await entry.lifetime.run(async () => {
-        for (const unit of ordered) {
-          const owner = entry.units.get(unit.instance.id)!.lifetime;
-          owner.assertOpen();
-          this.#assertRevision(revision);
-          const definition = await owner.run(() =>
-            this.#load(unit, owner, entry.plan),
-          );
-          this.#assertRevision(revision);
-          owner.assertOpen();
-          if (definition.id !== unit.instance.source.unitId)
-            throw new FrameError(
-              "contract_mismatch",
-              "module does not declare the approved unit",
-            );
-          const imports: Record<string, unknown> = Object.create(null);
-          if (Object.keys(definition.imports).length !== unit.imports.length)
-            throw new FrameError(
-              "contract_mismatch",
-              "module imports differ from the approved slots",
-            );
-          for (const binding of unit.imports) {
-            const declared = definition.imports[binding.slot];
-            if (!Object.hasOwn(definition.imports, binding.slot) || !declared)
-              throw new FrameError(
-                "contract_mismatch",
-                "module is missing an approved import slot",
-              );
-            const token = "contract" in declared ? declared.contract : declared;
-            if (!sameContract(token.ref, binding.contract))
-              throw new FrameError(
-                "contract_mismatch",
-                "import slot contract differs from the approved binding",
-              );
-            if (binding.kind === "absent") {
-              if (!("optional" in declared && declared.optional))
-                throw new FrameError(
-                  "contract_mismatch",
-                  "required import was approved as absent",
-                );
-              imports[binding.slot] = undefined;
-            } else if (binding.kind === "local") {
-              const local = [...this.#objects.values()].find(
-                (object) =>
-                  object.reference.export.instanceId ===
-                    binding.local!.instanceId &&
-                  object.reference.export.name === binding.local!.name,
-              );
-              if (!local)
-                throw new FrameError(
-                  "unavailable",
-                  "approved local provider has not prepared its export",
-                );
-              imports[binding.slot] = local.value;
-            } else {
-              imports[binding.slot] = await owner.run(() =>
-                this.#remote(binding, owner),
-              );
-              this.#assertRevision(revision);
-              owner.assertOpen();
-            }
-          }
-          if (Object.keys(definition.exports).length !== unit.exports.length)
-            throw new FrameError(
-              "contract_mismatch",
-              "module exports differ from the approved declaration",
-            );
-          for (const declared of unit.exports) {
-            if (
-              !Object.hasOwn(definition.exports, declared.name) ||
-              !definition.exports[declared.name] ||
-              !sameContract(
-                definition.exports[declared.name]!.ref,
-                declared.contract,
-              )
-            )
-              throw new FrameError(
-                "contract_mismatch",
-                "module exports an unapproved contract",
-              );
-          }
-          const context: Setup<typeof definition.imports> = Object.freeze({
-            imports: Object.freeze(imports),
-            configuration: parseJSON(unit.configurationJson),
-            lifetime: owner,
-          });
-          this.#assertRevision(revision);
-          const exports = await owner.run(() => definition.setup(context));
-          this.#assertRevision(revision);
-          owner.assertOpen();
-          if (!exports || Object.keys(exports).length !== unit.exports.length)
-            throw new FrameError(
-              "contract_mismatch",
-              "actual export set differs from its declaration",
-            );
-          for (const declared of unit.exports) {
-            if (!Object.hasOwn(exports, declared.name))
-              throw new FrameError(
-                "contract_mismatch",
-                "declared export was not prepared",
-              );
-            const exported = exports[declared.name];
-            if (declared.contract.kind === "point") {
-              if (
-                typeof exported !== "object" ||
-                exported === null ||
-                !Object.hasOwn(exported, "metadata") ||
-                !Object.hasOwn(exported, "value")
-              )
-                throw new FrameError(
-                  "contract_mismatch",
-                  "point export requires metadata and a value",
-                );
-              const { metadata, value } = exported as {
-                metadata: unknown;
-                value: unknown;
-              };
-              const object = this.#stage(
-                entry,
-                unit.instance.id,
-                definition.exports[declared.name] as Point<unknown, unknown>,
-                declared.name,
-                value,
-                owner,
-              );
-              entry.preparations.push(
-                immutable({
-                  object: object.reference,
-                  metadataJson: stringifyJSON(metadata, true),
-                }),
-              );
-              continue;
-            }
-            if (declared.contract.kind === "service" && exported == null)
-              throw new FrameError(
-                "contract_mismatch",
-                "service implementation is missing",
-              );
-            const reference: ObjectRef = immutable({
-              export: {
-                instanceId: unit.instance.id,
-                name: declared.name,
-                contract: declared.contract,
-              },
-              objectId: crypto.randomUUID(),
-            });
-            const object: ObjectEntry = {
-              reference,
-              value: exports[declared.name],
-              lifetime: owner,
-            };
-            entry.objects.set(objectKey(reference), object);
-            this.#objects.set(objectKey(reference), object);
-          }
-        }
+        for (const unit of ordered)
+          await this.#prepareUnit(entry, unit, revision);
       });
       this.#assertRevision(revision);
     } catch (error) {
@@ -780,6 +683,178 @@ export class Runtime {
       entry.lifetime,
     );
     return this.#submitReady(entry, revision);
+  }
+
+  /**
+   * Gives each unit its own Lifetime, after the providers in this execution
+   * that it imports, so a provider cannot close beneath its consumer.
+   */
+  #ownUnits(entry: ExecutionEntry, ordered: readonly PlannedUnit[]): void {
+    for (const unit of ordered) {
+      const owned = {
+        unit,
+        lifetime: entry.lifetime.branch(`instance:${unit.instance.id}`),
+      };
+      entry.units.set(unit.instance.id, owned);
+      this.#instances.set(unit.instance.id, owned);
+    }
+    for (const owned of entry.units.values()) {
+      for (const binding of owned.unit.imports) {
+        if (binding.kind === "local")
+          owned.lifetime.dependsOn(
+            this.#instances.get(binding.local!.instanceId)!.lifetime,
+          );
+      }
+    }
+  }
+
+  async #prepareUnit(
+    entry: ExecutionEntry,
+    unit: PlannedUnit,
+    revision: number,
+  ): Promise<void> {
+    const owner = entry.units.get(unit.instance.id)!.lifetime;
+    const live = () => {
+      this.#assertRevision(revision);
+      owner.assertOpen();
+    };
+    live();
+    const definition = await owner.run(() =>
+      this.#load(unit, owner, entry.plan),
+    );
+    live();
+    if (definition.id !== unit.instance.source.unitId)
+      throw new FrameError(
+        "contract_mismatch",
+        "module does not declare the approved unit",
+      );
+    const imports = await this.#bindImports(unit, definition, owner, live);
+    checkDeclaredExports(unit, definition);
+    const context: Setup<typeof definition.imports> = Object.freeze({
+      imports: Object.freeze(imports),
+      configuration: parseJSON(unit.configurationJson),
+      lifetime: owner,
+    });
+    this.#assertRevision(revision);
+    const exports = await owner.run(() => definition.setup(context));
+    live();
+    if (!exports || Object.keys(exports).length !== unit.exports.length)
+      throw new FrameError(
+        "contract_mismatch",
+        "actual export set differs from its declaration",
+      );
+    for (const declared of unit.exports)
+      this.#stageExport(entry, unit, definition, declared, exports, owner);
+  }
+
+  /** Resolves every approved import of unit against the module's slots. */
+  async #bindImports(
+    unit: PlannedUnit,
+    definition: Unit,
+    owner: Lifetime,
+    live: () => void,
+  ): Promise<Record<string, unknown>> {
+    const imports: Record<string, unknown> = Object.create(null);
+    if (Object.keys(definition.imports).length !== unit.imports.length)
+      throw new FrameError(
+        "contract_mismatch",
+        "module imports differ from the approved slots",
+      );
+    for (const binding of unit.imports) {
+      const declared = definition.imports[binding.slot];
+      if (!Object.hasOwn(definition.imports, binding.slot) || !declared)
+        throw new FrameError(
+          "contract_mismatch",
+          "module is missing an approved import slot",
+        );
+      const token = "contract" in declared ? declared.contract : declared;
+      if (!sameContract(token.ref, binding.contract))
+        throw new FrameError(
+          "contract_mismatch",
+          "import slot contract differs from the approved binding",
+        );
+      if (binding.kind === "absent") {
+        if (!("optional" in declared && declared.optional))
+          throw new FrameError(
+            "contract_mismatch",
+            "required import was approved as absent",
+          );
+        imports[binding.slot] = undefined;
+      } else if (binding.kind === "local") {
+        imports[binding.slot] = this.#localImport(binding.local!);
+      } else {
+        imports[binding.slot] = await owner.run(() =>
+          this.#remote(binding, owner),
+        );
+        live();
+      }
+    }
+    return imports;
+  }
+
+  #localImport(local: NonNullable<Import["local"]>): unknown {
+    const object = [...this.#objects.values()].find(
+      (candidate) =>
+        candidate.reference.export.instanceId === local.instanceId &&
+        candidate.reference.export.name === local.name,
+    );
+    if (!object)
+      throw new FrameError(
+        "unavailable",
+        "approved local provider has not prepared its export",
+      );
+    return object.value;
+  }
+
+  /** Stages one prepared export: a Point member with metadata, or an object. */
+  #stageExport(
+    entry: ExecutionEntry,
+    unit: PlannedUnit,
+    definition: Unit,
+    declared: PlannedUnit["exports"][number],
+    exports: Record<string, unknown>,
+    owner: Lifetime,
+  ): void {
+    if (!Object.hasOwn(exports, declared.name))
+      throw new FrameError(
+        "contract_mismatch",
+        "declared export was not prepared",
+      );
+    const exported = exports[declared.name];
+    if (declared.contract.kind === "point") {
+      const { metadata, value } = pointExport(exported);
+      const object = this.#stage(
+        entry,
+        unit.instance.id,
+        definition.exports[declared.name] as Point<unknown, unknown>,
+        declared.name,
+        value,
+        owner,
+      );
+      entry.preparations.push(
+        immutable({
+          object: object.reference,
+          metadataJson: canonicalJSON(metadata),
+        }),
+      );
+      return;
+    }
+    if (declared.contract.kind === "service" && exported == null)
+      throw new FrameError(
+        "contract_mismatch",
+        "service implementation is missing",
+      );
+    const reference: ObjectRef = immutable({
+      export: {
+        instanceId: unit.instance.id,
+        name: declared.name,
+        contract: declared.contract,
+      },
+      objectId: crypto.randomUUID(),
+    });
+    const object: ObjectEntry = { reference, value: exported, lifetime: owner };
+    entry.objects.set(objectKey(reference), object);
+    this.#objects.set(objectKey(reference), object);
   }
 
   async #submitReady(
@@ -1038,7 +1113,7 @@ export class Runtime {
       );
     const operationId = crypto.randomUUID();
     const reservation = `publication:${operationId}`;
-    const metadataJson = stringifyJSON(metadata, true);
+    const metadataJson = canonicalJSON(metadata);
     this.#outbox.reserve(reservation);
     let owner: Lifetime | undefined;
     let object: ObjectEntry;
@@ -1295,48 +1370,62 @@ export class Runtime {
       // A replacement channel owns current admission. A late observation from
       // the retired channel cannot fence it or turn it back into a paused one.
       if (revision !== this.#connectionRevision) return;
-      if (!sameRealm(pending.realm, this.#realm))
-        throw new FrameError(
-          "permission_denied",
-          "pending plans belong to another realm",
-        );
-      if (!sameAuthority(pending.authority, this.#authority))
-        throw new FrameError(
-          "unavailable",
-          "pending plans require authority revalidation",
-        );
+      this.#checkPollOwner(pending);
       for (const fence of pending.fences) {
         if (revision !== this.#connectionRevision) return;
         this.fence(fence.scopeId, fence.scopeGeneration);
       }
       if (revision !== this.#connectionRevision) return;
-      plans =
-        this.#connection === "connected" &&
-        executionProjectionRevision === this.#executionProjectionRevision
-          ? pending.plans.filter((plan) => {
-              const entry = this.#executions.get(plan.execution.id);
-              return (
-                (!entry ||
-                  entry.admission.pending ||
-                  !entry.lifetime.closing) &&
-                !pending.fences.some(
-                  (fence) =>
-                    fence.scopeId === plan.scopeId &&
-                    fence.scopeGeneration === plan.scopeGeneration,
-                )
-              );
-            })
-          : [];
-      const observed = new Set(plans.map((plan) => plan.execution.id));
-      for (const entry of this.#executions.values())
-        if (entry.admission.pending && !observed.has(entry.plan.execution.id))
-          plans.push(entry.plan);
+      plans = this.#schedulablePlans(pending, executionProjectionRevision);
     } catch (error) {
       if (revision !== this.#connectionRevision) return;
       this.disconnect();
       throw error;
     }
     schedule(plans);
+  }
+
+  #checkPollOwner(pending: Poll): void {
+    if (!sameRealm(pending.realm, this.#realm))
+      throw new FrameError(
+        "permission_denied",
+        "pending plans belong to another realm",
+      );
+    if (!sameAuthority(pending.authority, this.#authority))
+      throw new FrameError(
+        "unavailable",
+        "pending plans require authority revalidation",
+      );
+  }
+
+  /**
+   * Selects new and still-pending plans. A stale projection schedules only the
+   * admissions this Runtime already reserved, which must not be lost.
+   */
+  #schedulablePlans(pending: Poll, projectionRevision: number): LocalPlan[] {
+    const plans =
+      this.#connection === "connected" &&
+      projectionRevision === this.#executionProjectionRevision
+        ? pending.plans.filter(
+            (plan) =>
+              this.#admissible(plan) &&
+              !pending.fences.some(
+                (fence) =>
+                  fence.scopeId === plan.scopeId &&
+                  fence.scopeGeneration === plan.scopeGeneration,
+              ),
+          )
+        : [];
+    const observed = new Set(plans.map((plan) => plan.execution.id));
+    for (const entry of this.#executions.values())
+      if (entry.admission.pending && !observed.has(entry.plan.execution.id))
+        plans.push(entry.plan);
+    return plans;
+  }
+
+  #admissible(plan: LocalPlan): boolean {
+    const entry = this.#executions.get(plan.execution.id);
+    return !entry || entry.admission.pending || !entry.lifetime.closing;
   }
 
   fence(scopeId: string, scopeGeneration: string): void {

@@ -51,15 +51,11 @@ func TestTypeScriptProjectionPreservesEscapedFieldAndEnumValues(t *testing.T) {
 			}
 			fields = append(fields, decoded)
 		}
-		if declaration, ok := strings.CutPrefix(line, "export type escapedWireValue = "); ok {
-			for literal := range strings.SplitSeq(strings.TrimSuffix(declaration, ";"), " | ") {
-				var decoded string
-				if err := json.Unmarshal([]byte(literal), &decoded); err != nil {
-					t.Fatalf("generated enum member is not a JSON string: %s: %v", literal, err)
-				}
-				values = append(values, decoded)
-			}
-		}
+	}
+	_, list, _ := strings.Cut(out.String(), "export const escapedWireValueValues = ")
+	list, _, _ = strings.Cut(list, " as const;")
+	if err := json.Unmarshal([]byte(list), &values); err != nil {
+		t.Fatalf("generated enum values are not JSON strings: %s: %v", list, err)
 	}
 	want := []string{"\a", "\U000e0001"}
 	if !slices.Equal(fields, want) || !slices.Equal(values, want) {

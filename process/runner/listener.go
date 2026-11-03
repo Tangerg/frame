@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/localfile"
 )
 
 // Publication and removal share the Server's directory authority. The socket
@@ -104,7 +105,7 @@ func (s *Server) Listen(socket string) (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(socket, 0600); err != nil {
+	if err := os.Chmod(socket, localfile.PrivateFileMode); err != nil {
 		_ = listener.Close()
 		return nil, err
 	}

@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"errors"
-	"github.com/Tangerg/frame"
 	"net"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/portable"
 	framevalue "github.com/Tangerg/frame/value"
 )
@@ -27,8 +27,8 @@ func TestDuplexStreamingAllowsNestedCallsWithAcknowledgedChunks(t *testing.T) {
 	}
 	a, b := net.Pipe()
 	delivery := &deliveries{}
-	left := newPeer(a, profile.MaxFrameBytes, func(ctx context.Context, method string, data jsontext.Value) (jsontext.Value, error) {
-		if method == profile.Methods.Chunk {
+	left := newPeer(a, wire.MaxFrameBytes, func(ctx context.Context, method string, data jsontext.Value) (jsontext.Value, error) {
+		if method == wire.Methods.Chunk {
 			return delivery.receive(ctx, data)
 		}
 		return nil, mismatch()
@@ -44,7 +44,7 @@ func TestDuplexStreamingAllowsNestedCallsWithAcknowledgedChunks(t *testing.T) {
 		return chunk, nil
 	}}
 	var right *peer
-	right = newPeer(b, profile.MaxFrameBytes, func(ctx context.Context, _ string, raw jsontext.Value) (jsontext.Value, error) {
+	right = newPeer(b, wire.MaxFrameBytes, func(ctx context.Context, _ string, raw jsontext.Value) (jsontext.Value, error) {
 		return dispatchCall(ctx, right, map[string]binding{"one": {contract, implementation}}, raw)
 	})
 	left.start()
@@ -80,8 +80,8 @@ func TestCancellationTargetsOriginalCall(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	started, finished := make(chan struct{}), make(chan struct{})
 	a, b := net.Pipe()
-	left := newPeer(a, profile.MaxFrameBytes, nil)
-	right := newPeer(b, profile.MaxFrameBytes, func(ctx context.Context, _ string, _ jsontext.Value) (jsontext.Value, error) {
+	left := newPeer(a, wire.MaxFrameBytes, nil)
+	right := newPeer(b, wire.MaxFrameBytes, func(ctx context.Context, _ string, _ jsontext.Value) (jsontext.Value, error) {
 		close(started)
 		<-ctx.Done()
 		close(finished)
@@ -105,7 +105,7 @@ func TestCancellationTargetsOriginalCall(t *testing.T) {
 
 func TestNegotiatedLimitAppliesBeforeTerminator(t *testing.T) {
 	a, b := net.Pipe()
-	p := newPeer(a, profile.MaxFrameBytes, nil)
+	p := newPeer(a, wire.MaxFrameBytes, nil)
 	p.start()
 	defer b.Close()
 	defer p.end(context.Canceled)
@@ -151,16 +151,16 @@ func TestCloseCannotAcknowledgeAnActiveActivationHook(t *testing.T) {
 	}}
 	activation := make(chan error, 1)
 	go func() {
-		_, err := s.handle(t.Context(), profile.Methods.Activate, jsontext.Value("{}"))
+		_, err := s.handle(t.Context(), wire.Methods.Activate, jsontext.Value("{}"))
 		activation <- err
 	}()
 	<-started
-	if _, err := s.handle(t.Context(), profile.Methods.Call, jsontext.Value("{}")); err == nil {
+	if _, err := s.handle(t.Context(), wire.Methods.Call, jsontext.Value("{}")); err == nil {
 		t.Fatal("call admitted during activation")
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := s.handle(ctx, profile.Methods.Close, jsontext.Value("{}")); err == nil {
+	if _, err := s.handle(ctx, wire.Methods.Close, jsontext.Value("{}")); err == nil {
 		t.Fatal("close acknowledged a live activation")
 	}
 	close(unblock)

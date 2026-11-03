@@ -5,17 +5,99 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/sqlite"
 	"github.com/Tangerg/frame/value"
 )
 
+// operationKind names a mutating control operation. Receipts retain it, so
+// its values are part of the persisted operation identity.
+type operationKind string
+
+const (
+	acquireOperation       operationKind = "acquire"
+	acquirePlanOperation   operationKind = "acquirePlan"
+	snapshotOperation      operationKind = "snapshot"
+	closeSnapshotOperation operationKind = "closeSnapshot"
+	publishOperation       operationKind = "publish"
+)
+
+// controlRequestIdentity is what a repeated operation ID must match: the same
+// kind of request, from the same Realm, with the same canonical content.
 type controlRequestIdentity struct {
-	Kind   string
+	Kind   operationKind
 	Realm  Realm
 	Digest value.Digest
+}
+
+// controlOperation is one accepted control request. It stays live until its
+// receipt is archived; its result fields are final once done is closed.
+type controlOperation struct {
+	controlRequestIdentity
+	execution          string
+	parentID           string
+	publication        PublicationResult
+	grant              *UseGrant
+	done               chan struct{}
+	failure            error
+	receiptReservation *sqlite.ReceiptReservation
+}
+
+// errRealmSealed refuses new work in a Realm that has begun cleanup.
+var errRealmSealed = fmt.Errorf("%w: realm sealed", frame.ErrFenced)
+
+// begin returns the operation that owns id. A repeated request observes its
+// original operation without admission; a new one is admitted by admitLocked,
+// which runs with b.mu held, and must be concluded through finish.
+func (b *Bridge) begin(ctx context.Context, id string, request controlRequestIdentity, admitLocked func(*controlOperation) error) (operation *controlOperation, replay bool, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	original, err := b.operationLocked(ctx, id)
+	if err != nil || original != nil {
+		return original, original != nil, err
+	}
+	if len(b.operations) >= b.config.MaxPending {
+		return nil, false, fmt.Errorf("%w: control operations", frame.ErrCapacity)
+	}
+	operation = &controlOperation{controlRequestIdentity: request, done: make(chan struct{})}
+	if err := admitLocked(operation); err != nil {
+		return nil, false, err
+	}
+	b.operations[id] = operation
+	return operation, false, nil
+}
+
+// repeats accepts a replay only of the exact original request.
+func (o *controlOperation) repeats(request controlRequestIdentity) error {
+	if o.controlRequestIdentity != request {
+		return sqlite.ErrConflict
+	}
+	return nil
+}
+
+// finish concludes a new operation with failure and archives its receipt.
+func (b *Bridge) finish(ctx context.Context, id string, operation *controlOperation, failure error) error {
+	b.mu.Lock()
+	operation.failure = failure
+	b.mu.Unlock()
+	return errors.Join(failure, b.complete(ctx, id, operation))
+}
+
+// grantResult projects an acquisition. An operation that concluded without a
+// grant never reads as a successful acquisition.
+func (o *controlOperation) grantResult() (UseGrant, error) {
+	switch {
+	case o.grant != nil:
+		return copyWire(*o.grant), nil
+	case o.failure != nil:
+		return UseGrant{}, o.failure
+	default:
+		return UseGrant{}, frame.ErrUnavailable
+	}
 }
 
 type controlReceipt struct {
@@ -30,10 +112,20 @@ const unknownReceiptFailure = "unknown"
 func (o *controlOperation) wait(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
-		return context.Cause(ctx)
+		return cancellation.Err(ctx)
 	case <-o.done:
 		return nil
 	}
+}
+
+// awaitGrant waits for a replayed acquisition and returns its original result.
+func (b *Bridge) awaitGrant(ctx context.Context, operation *controlOperation) (UseGrant, error) {
+	if err := operation.wait(ctx); err != nil {
+		return UseGrant{}, err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return operation.grantResult()
 }
 
 // Arbitrary application diagnostics may contain secrets. Replay restores stable
@@ -51,7 +143,7 @@ var receiptFailures = []struct {
 }
 
 func (o *controlOperation) receipt() controlReceipt {
-	r := controlReceipt{controlRequestIdentity: controlRequestIdentity{Kind: o.kind, Realm: o.realm, Digest: o.digest}, Publication: o.publication, Grant: o.grant}
+	r := controlReceipt{controlRequestIdentity: o.controlRequestIdentity, Publication: o.publication, Grant: o.grant}
 	if o.grant != nil {
 		grant := *o.grant
 		grant.ApprovalToken = ""
@@ -71,7 +163,7 @@ func (o *controlOperation) receipt() controlReceipt {
 }
 
 func (r controlReceipt) operation(key *realmSigner) (*controlOperation, error) {
-	o := &controlOperation{kind: r.Kind, realm: r.Realm, digest: r.Digest, publication: r.Publication, grant: r.Grant, done: make(chan struct{})}
+	o := &controlOperation{controlRequestIdentity: r.controlRequestIdentity, publication: r.Publication, grant: r.Grant, done: make(chan struct{})}
 	if o.grant != nil {
 		o.grant.ApprovalToken = key.approval(o.grant.ID)
 	}
@@ -105,12 +197,12 @@ func (b *Bridge) operationLocked(ctx context.Context, id string) (*controlOperat
 		return nil, frame.ErrInvalid
 	}
 	for {
-		if pending := b.receiptReaders[id]; pending != nil {
+		if pending := b.receiptReads[id]; pending != nil {
 			b.mu.Unlock()
 			select {
 			case <-ctx.Done():
 				b.mu.Lock()
-				return nil, context.Cause(ctx)
+				return nil, cancellation.Err(ctx)
 			case <-pending.done:
 			}
 			b.mu.Lock()
@@ -126,11 +218,11 @@ func (b *Bridge) operationLocked(ctx context.Context, id string) (*controlOperat
 			default:
 				return original, nil
 			}
-		} else if len(b.receiptReaders)+len(b.operations) >= b.config.MaxPending {
+		} else if len(b.receiptReads)+len(b.operations) >= b.config.MaxPending {
 			return nil, frame.ErrCapacity
 		}
 		pending := &receiptRead{done: make(chan struct{})}
-		b.receiptReaders[id] = pending
+		b.receiptReads[id] = pending
 		b.mu.Unlock()
 		if original != nil {
 			if err := b.archive(ctx, id, original); err != nil {
@@ -142,7 +234,7 @@ func (b *Bridge) operationLocked(ctx context.Context, id string) (*controlOperat
 			pending.operation, pending.err = b.readReceipt(ctx, id)
 		}
 		b.mu.Lock()
-		delete(b.receiptReaders, id)
+		delete(b.receiptReads, id)
 		close(pending.done)
 		return pending.operation, pending.err
 	}
@@ -208,7 +300,7 @@ func (b *Bridge) reserveReceipt(ctx context.Context, id string, operation *contr
 	if err != nil {
 		return err
 	}
-	switch operation.kind {
+	switch operation.Kind {
 	case publishOperation, acquireOperation, acquirePlanOperation:
 		if maximum > math.MaxInt64-b.config.MaxMessageBytes {
 			return frame.ErrCapacity

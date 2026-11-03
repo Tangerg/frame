@@ -85,12 +85,14 @@ func managedRaw(ctx context.Context, session *sdk.ClientSession, name string, pa
 	return result.unpack()
 }
 
+const jsonNull = "null"
+
 func managedCall(ctx context.Context, session *sdk.ClientSession, name string, params *managedParams, out any) error {
 	raw, err := managedRaw(ctx, session, name, params)
 	if err != nil {
 		return err
 	}
-	if string(raw) == "null" {
+	if string(raw) == jsonNull {
 		return fmt.Errorf("mcp: %s returned a null protocol result", name)
 	}
 	return framevalue.DecodeValue(raw, out, name)

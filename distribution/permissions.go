@@ -1,11 +1,15 @@
 package distribution
 
-import "io/fs"
+import (
+	"io/fs"
+
+	"github.com/Tangerg/frame/internal/localfile"
+)
 
 const (
-	privateDirectoryMode = fs.FileMode(0o700)
+	privateDirectoryMode = localfile.PrivateDirectoryMode
 	sealedDirectoryMode  = fs.FileMode(0o500)
-	privateFileMode      = fs.FileMode(0o600)
+	privateFileMode      = localfile.PrivateFileMode
 	sealedFileMode       = fs.FileMode(0o400)
 	ownerExecuteBit      = fs.FileMode(0o100)
 	fileExecuteMask      = fs.FileMode(0o111)

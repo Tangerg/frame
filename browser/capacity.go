@@ -20,15 +20,15 @@ func encodedSize(value any) (int64, error) {
 	return int64(len(encoded)), err
 }
 
-func requestSize(method string, input any) (int64, error) {
+func requestSize(method methodName, input any) (int64, error) {
 	encoded, err := json.Marshal(input)
 	if err != nil {
 		return 0, err
 	}
-	return encodedSize(HTTPEnvelope{Method: method, Input: encoded})
+	return encodedSize(HTTPEnvelope{Method: string(method), Input: encoded})
 }
 
-func (b *Bridge) checkRequest(method string, input any) error {
+func (b *Bridge) checkRequest(method methodName, input any) error {
 	size, err := requestSize(method, input)
 	if err != nil {
 		return err
@@ -60,7 +60,7 @@ func (b *Bridge) checkPlanCapacity(plan LocalPlan) error {
 			object := ObjectRef{ObjectID: plan.ApprovalToken, Export: LocalExport{InstanceID: unit.Instance.ID, Name: export.Name, Contract: export.Contract}}
 			ready.Objects = append(ready.Objects, object)
 			if export.Contract.Kind == frame.PointKind {
-				ready.Contributions = append(ready.Contributions, PreparedContribution{Object: object, MetadataJSON: "null"})
+				ready.Contributions = append(ready.Contributions, PreparedContribution{Object: object, MetadataJSON: jsonNull})
 			}
 		}
 	}
@@ -83,7 +83,7 @@ func (b *Bridge) checkPublicationCapacity(plan LocalPlan, request PublicationReq
 // admitted execution changes from a plan to a fence before the next poll.
 // Reservations also cover the complete reconnect request and its response.
 func (b *Bridge) reserveProjectionLocked(session *realmSession, plan LocalPlan) (int64, error) {
-	if session.cleanupOnly || b.sessions[string(RealmID(session.realm))] != session {
+	if session.cleanupOnly || b.sessions.get(RealmID(session.realm)) != session {
 		return 0, frame.ErrFenced
 	}
 	base := Poll{Authority: b.authority, Realm: session.realm, Revision: strconv.FormatUint(math.MaxUint64, 10), Plans: []LocalPlan{}, Fences: []Fence{}}
@@ -118,11 +118,11 @@ func (b *Bridge) reserveProjectionLocked(session *realmSession, plan LocalPlan) 
 }
 
 func (b *Bridge) removeExecutionLocked(entry *browserExecution) {
-	if b.executions[entry.plan.Execution.ID] != entry {
+	if b.executions.get(entry.plan.Execution.ID) != entry {
 		return
 	}
-	delete(b.executions, entry.plan.Execution.ID)
-	if session := b.sessions[entry.attempt.Realm]; session != nil {
+	b.executions.remove(entry.plan.Execution.ID)
+	if session := b.sessions.get(RealmID(entry.plan.Realm)); session != nil {
 		session.projectionBytes -= entry.projectionBytes
 	}
 }
@@ -131,7 +131,7 @@ func (b *Bridge) removeExecutionLocked(entry *browserExecution) {
 // original scope, so application failures cannot make cleanup untransportable.
 func (b *Bridge) checkExitCapacity(plan LocalPlan, kind CloseScopeKind, id string, instances []string) error {
 	identity := maximumEncodedName()
-	proof := CloseProof{CloseID: identity, ProofID: identity, Authority: plan.Authority, Realm: plan.Realm, Execution: plan.Execution, ScopeID: plan.ScopeID, ScopeGeneration: plan.ScopeGeneration, ScopeKind: kind, Instances: instances, Status: Released}
+	proof := CloseProof{CloseID: identity, ProofID: identity, Authority: plan.Authority, Realm: plan.Realm, Execution: plan.Execution, ScopeID: plan.ScopeID, ScopeGeneration: plan.ScopeGeneration, ScopeKind: kind, Instances: instances, Status: frame.ResourceReleased}
 	switch kind {
 	case UseScope:
 		proof.UseID = id

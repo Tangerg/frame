@@ -65,11 +65,20 @@ type moduleSource struct {
 }
 
 func (s moduleSource) Module(_ context.Context, binding frame.UnitBinding) (browser.Artifact, error) {
-	if binding.Source.InstallationID != "author" || binding.Source.Release != s.release {
+	if binding.Source.InstallationID != installationID || binding.Source.Release != s.release {
 		return browser.Artifact{}, frame.ErrStaleBinding
 	}
 	return browser.Artifact{Path: "/plugin.mjs", Digest: s.digest}, nil
 }
+
+const (
+	installationID     = frame.InstallationID("author")
+	maxDeclarationSize = 1 << 20
+	maxModuleSize      = 16 << 20
+	maxActivationBody  = 4096
+	closeTimeout       = 10 * time.Second
+	readHeaderTimeout  = 5 * time.Second
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -78,7 +87,7 @@ func main() {
 	}
 }
 
-func run() (returned error) {
+func run() error {
 	generate := flag.String("generate", "", "write the document contract projection without starting a Host")
 	state := flag.String("state", "", "empty, private state directory")
 	packagePath := flag.String("package", "", "generated author package declaration")
@@ -94,43 +103,63 @@ func run() (returned error) {
 	if *state == "" || *packagePath == "" || *modulePath == "" {
 		return errors.New("authorhost: state, package and module are required")
 	}
-	declaration, err := readBounded(*packagePath, 1<<20)
+	author, err := readAuthor(*packagePath, *modulePath)
 	if err != nil {
 		return err
 	}
-	module, err := readBounded(*modulePath, 16<<20)
+	return serve(*state, contracts, author)
+}
+
+// author is the immutable package under test: its declaration and module bytes
+// together are the release identity.
+type author struct {
+	plugin *frame.Plugin
+	module []byte
+}
+
+func readAuthor(packagePath, modulePath string) (author, error) {
+	declaration, err := readBounded(packagePath, maxDeclarationSize)
 	if err != nil {
-		return err
+		return author{}, err
+	}
+	module, err := readBounded(modulePath, maxModuleSize)
+	if err != nil {
+		return author{}, err
 	}
 	var manifest AuthorPackage
 	decoder := json.NewDecoder(bytes.NewReader(declaration))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&manifest); err != nil {
-		return err
+		return author{}, err
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
-		return errors.New("authorhost: declaration has trailing data")
-	}
-	units := make([]frame.Unit, len(manifest.Units))
-	for index, unit := range manifest.Units {
-		imports := make([]frame.ImportDeclaration, len(unit.Imports))
-		for index, declared := range unit.Imports {
-			imports[index] = frame.ImportDeclaration{Slot: declared.Slot, Contract: declared.Contract, Optional: declared.Optional}
-		}
-		units[index] = frame.Unit{Declaration: frame.UnitDeclaration{ID: unit.ID, Profile: frame.BrowserJS, Imports: imports, Exports: unit.Exports}}
+		return author{}, errors.New("authorhost: declaration has trailing data")
 	}
 	// This trusted fixture reads immutable bytes before starting execution. It
 	// does not claim remote package trust or define another distribution format.
-	plugin, err := frame.Define(frame.Definition{Revision: value.Hash(append(append(bytes.Clone(declaration), 0), module...)), Units: units})
-	if err != nil {
-		return err
+	plugin, err := frame.Define(frame.Definition{Revision: value.Hash(append(append(bytes.Clone(declaration), 0), module...)), Units: manifest.units()})
+	return author{plugin: plugin, module: module}, err
+}
+
+func (p AuthorPackage) units() []frame.Unit {
+	units := make([]frame.Unit, len(p.Units))
+	for index, unit := range p.Units {
+		imports := make([]frame.ImportDeclaration, len(unit.Imports))
+		for slot, declared := range unit.Imports {
+			imports[slot] = frame.ImportDeclaration{Slot: declared.Slot, Contract: declared.Contract, Optional: declared.Optional}
+		}
+		units[index] = frame.Unit{Declaration: frame.UnitDeclaration{ID: unit.ID, Profile: frame.BrowserJS, Imports: imports, Exports: unit.Exports}}
 	}
-	if err := os.MkdirAll(*state, 0700); err != nil {
+	return units
+}
+
+func serve(state string, contracts document.Contracts, author author) (returned error) {
+	if err := os.MkdirAll(state, localfile.PrivateDirectoryMode); err != nil {
 		return err
 	}
 	admission := frame.NewAdmission()
-	store, err := sqlite.Open(context.Background(), sqlite.Config{Path: filepath.Join(*state, "author.db"), Admission: admission})
+	store, err := sqlite.Open(context.Background(), sqlite.Config{Path: filepath.Join(state, "author.db"), Admission: admission})
 	if err != nil {
 		return err
 	}
@@ -139,21 +168,10 @@ func run() (returned error) {
 	if err != nil {
 		return err
 	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		outcome, err := host.Close(ctx)
-		if !outcome.Released {
-			err = errors.Join(err, frame.ErrUnconfirmedRelease)
-		}
-		returned = errors.Join(returned, err)
-	}()
-	for _, contract := range []interface {
-		Ref() frame.ContractRef
-		Descriptor() []byte
-	}{contracts.Files, contracts.Converters, contracts.Validators} {
-		// The descriptor is the document contract owner. JavaScript objects stay
-		// in their native Realm; they are not assigned a Go function type.
+	defer func() { returned = errors.Join(returned, closeHost(host)) }()
+	// The descriptor is the document contract owner. JavaScript objects stay
+	// in their native Realm; they are not assigned a Go function type.
+	for _, contract := range []frame.Declaration{contracts.Files, contracts.Converters, contracts.Validators} {
 		if err := host.RegisterDescriptor(contract.Ref(), contract.Descriptor()); err != nil {
 			return err
 		}
@@ -164,7 +182,7 @@ func run() (returned error) {
 	}
 	defer listener.Close()
 	origin := "http://" + listener.Addr().String()
-	bridge, err := browser.NewBridge(browser.BridgeConfig{Host: host, Store: store, Source: moduleSource{release: plugin.Revision(), digest: value.Hash(module)}, Points: []frame.ContractRef{contracts.Converters.Ref(), contracts.Validators.Ref()}, PublicConfiguration: func(context.Context, *frame.Setup) ([]byte, error) {
+	bridge, err := browser.NewBridge(browser.BridgeConfig{Host: host, Store: store, Source: moduleSource{release: author.plugin.Revision(), digest: value.Hash(author.module)}, Points: []frame.ContractRef{contracts.Converters.Ref(), contracts.Validators.Ref()}, PublicConfiguration: func(context.Context, *frame.Setup) ([]byte, error) {
 		return json.Marshal(SourceConfiguration{DocumentBase: origin + "/documents/"})
 	}})
 	if err != nil {
@@ -173,69 +191,14 @@ func run() (returned error) {
 	if err := host.RegisterDriver(bridge); err != nil {
 		return err
 	}
-	if _, err := host.Install(context.Background(), frame.InstallationConfig{ID: "author", Plugin: plugin, Enabled: true}); err != nil {
+	if _, err := host.Install(context.Background(), frame.InstallationConfig{ID: installationID, Plugin: author.plugin, Enabled: true}); err != nil {
 		return err
 	}
-	credentials, err := bridge.OpenRealm(context.Background(), randomToken(), randomToken())
+	credentials, err := bridge.OpenRealm(context.Background(), rand.Text(), resumeToken())
 	if err != nil {
 		return err
 	}
-	var started, cancelled atomic.Int64
-	mux := http.NewServeMux()
-	mux.Handle("POST /frame/control", bridge.Handler())
-	mux.HandleFunc("GET /plugin.mjs", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/javascript")
-		_, _ = w.Write(module)
-	})
-	mux.HandleFunc("GET /documents/hello.md", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, "# Public author\nOriginal source.\n")
-	})
-	mux.HandleFunc("GET /documents/untitled.md", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, "A document without a title.\n")
-	})
-	mux.HandleFunc("GET /documents/wait.md", func(w http.ResponseWriter, r *http.Request) {
-		started.Add(1)
-		w.Header().Set("Content-Type", "text/plain")
-		w.WriteHeader(http.StatusOK)
-		w.(http.Flusher).Flush()
-		<-r.Context().Done()
-		cancelled.Add(1)
-	})
-	// Application operations require the original private Realm credential.
-	// The adapter retains no independent execution or selection directory.
-	application := func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			if r.Header.Get("Authorization") != "Bearer "+credentials.Token {
-				http.Error(w, "application credential required", http.StatusForbidden)
-				return
-			}
-			next(w, r)
-		}
-	}
-	mux.HandleFunc("POST /activate", application(func(w http.ResponseWriter, r *http.Request) {
-		var input struct {
-			Unit frame.UnitID `json:"unit"`
-		}
-		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&input); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		_, err := host.ActivateUnit(r.Context(), browser.RealmID(credentials.Realm), frame.UnitRef{InstallationID: "author", Release: plugin.Revision(), UnitID: input.Unit})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusConflict)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	mux.HandleFunc("GET /activity", application(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(struct {
-			Started   int64 `json:"started"`
-			Cancelled int64 `json:"cancelled"`
-		}{started.Load(), cancelled.Load()})
-	}))
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{Handler: routes(host, bridge, author, credentials), ReadHeaderTimeout: readHeaderTimeout}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	if err := json.NewEncoder(os.Stdout).Encode(Bootstrap{Origin: origin, Credentials: credentials}); err != nil {
@@ -248,13 +211,90 @@ func run() (returned error) {
 		return err
 	case <-ctx.Done():
 	}
-	closing, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	closing, cancel := context.WithTimeout(context.Background(), closeTimeout)
 	defer cancel()
-	outcome, closeErr := host.Close(closing)
+	return server.Shutdown(closing)
+}
+
+func closeHost(host *frame.Host) error {
+	ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+	defer cancel()
+	outcome, err := host.Close(ctx)
 	if !outcome.Released {
-		return errors.Join(closeErr, frame.ErrUnconfirmedRelease)
+		err = errors.Join(err, frame.ErrUnconfirmedRelease)
 	}
-	return errors.Join(closeErr, server.Shutdown(closing))
+	return err
+}
+
+// routes serves the author module, its documents and the application calls
+// that require the original private Realm credential.
+func routes(host *frame.Host, bridge *browser.Bridge, author author, credentials browser.Credentials) http.Handler {
+	var activity activity
+	mux := http.NewServeMux()
+	mux.Handle("POST /frame/control", bridge.Handler())
+	mux.HandleFunc("GET /plugin.mjs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript")
+		_, _ = w.Write(author.module)
+	})
+	mux.HandleFunc("GET /documents/hello.md", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "# Public author\nOriginal source.\n")
+	})
+	mux.HandleFunc("GET /documents/untitled.md", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "A document without a title.\n")
+	})
+	mux.HandleFunc("GET /documents/wait.md", activity.wait)
+	application := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Bearer "+credentials.Token {
+				http.Error(w, "application credential required", http.StatusForbidden)
+				return
+			}
+			next(w, r)
+		}
+	}
+	mux.HandleFunc("POST /activate", application(func(w http.ResponseWriter, r *http.Request) {
+		activate(w, r, host, browser.RealmID(credentials.Realm), author.plugin.Revision())
+	}))
+	mux.HandleFunc("GET /activity", application(activity.report))
+	return mux
+}
+
+// activity counts document reads that a test cancels mid-response.
+type activity struct {
+	started, cancelled atomic.Int64
+}
+
+func (a *activity) wait(w http.ResponseWriter, r *http.Request) {
+	a.started.Add(1)
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(http.StatusOK)
+	w.(http.Flusher).Flush()
+	<-r.Context().Done()
+	a.cancelled.Add(1)
+}
+
+func (a *activity) report(w http.ResponseWriter, _ *http.Request) {
+	_ = json.NewEncoder(w).Encode(struct {
+		Started   int64 `json:"started"`
+		Cancelled int64 `json:"cancelled"`
+	}{a.started.Load(), a.cancelled.Load()})
+}
+
+func activate(w http.ResponseWriter, r *http.Request, host *frame.Host, realm frame.RealmID, release value.Digest) {
+	var input struct {
+		Unit frame.UnitID `json:"unit"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxActivationBody))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if _, err := host.ActivateUnit(r.Context(), realm, frame.UnitRef{InstallationID: installationID, Release: release, UnitID: input.Unit}); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func writeContracts(path string, contracts document.Contracts) error {
@@ -276,7 +316,7 @@ func writeContracts(path string, contracts document.Contracts) error {
 		return err
 	}
 	fmt.Fprintf(&output, "\nexport const documentContracts = %s as const;\n", refs)
-	return os.WriteFile(path, output.Bytes(), 0644)
+	return os.WriteFile(path, output.Bytes(), localfile.PublicFileMode)
 }
 
 func readBounded(path string, maximum int64) ([]byte, error) {
@@ -299,10 +339,9 @@ func readBounded(path string, maximum int64) ([]byte, error) {
 	return data, err
 }
 
-func randomToken() string {
-	var bytes [32]byte
-	if _, err := rand.Read(bytes[:]); err != nil {
-		panic(err)
-	}
-	return hex.EncodeToString(bytes[:])
+// resumeToken returns a 256-bit secret, the entropy OpenRealm expects.
+func resumeToken() string {
+	var secret [32]byte
+	_, _ = rand.Read(secret[:])
+	return hex.EncodeToString(secret[:])
 }

@@ -16,7 +16,7 @@ type wireSpecification struct {
 	Errors        struct{ Invalid, Capacity, Contract, Unknown, Closed, Cancelled string }
 }
 
-var profile = func() wireSpecification {
+var wire = func() wireSpecification {
 	var spec wireSpecification
 	if err := json.Unmarshal(document, &spec); err != nil {
 		panic(err)

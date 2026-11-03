@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Tangerg/frame/internal/cancellation"
+
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/value"
@@ -121,49 +123,27 @@ func (route callbackRoute) admits(p *managedParams) bool {
 		(route.kind == portable.Command && portable.ValidCommandID(p.CommandID) || route.kind == portable.Query && p.CommandID == "")
 }
 
+// A callback request presents both the session credential and the call
+// identity of the original grant.
+const (
+	// A callback listens only on loopback: the receiver trusts the local user
+	// that runs the plugin, never the network.
+	loopbackHost   = "127.0.0.1"
+	callbackScheme = "http"
+
+	credentialHeader = "Authorization"
+	callHeader       = "Qimu-Call"
+)
+
 func (route callbackRoute) serve(w http.ResponseWriter, req *http.Request, ref ManagedCallback, limits CallbackReceiverLimits) {
-	if req.Method != http.MethodPost || req.RequestURI != "/" ||
-		!credentialMatches(req.Header, "Authorization", ref.Credential) || !credentialMatches(req.Header, "Qimu-Call", ref.Call) {
-		w.WriteHeader(http.StatusForbidden)
+	params, input, status := route.read(w, req, ref, limits)
+	if status != http.StatusOK {
+		w.WriteHeader(status)
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, limits.MaxRequestBytes))
-	if err != nil {
-		w.WriteHeader(http.StatusRequestEntityTooLarge)
-		return
-	}
-	var p managedParams
-	if err = json.Unmarshal(body, &p, json.RejectUnknownMembers(true)); err != nil || !route.admits(&p) {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	input, err := value.ParseJSON(p.Input)
-	if err != nil || req.Context().Err() != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	output, err := route.handle(req.Context(), p.CommandID, input)
-	reply := managedResult{}
-	if err == nil {
-		if int64(len(output.String())) > limits.MaxResponseBytes {
-			w.WriteHeader(http.StatusUnprocessableEntity)
-			return
-		}
-		reply.Value = output.Bytes()
-	} else {
-		refusal, known := errors.AsType[*Refusal](err)
-		if !known || refusal == nil || refusal.Code == "" || int64(len(refusal.Code))+int64(len(refusal.Message)) > limits.MaxResponseBytes {
-			w.WriteHeader(http.StatusUnprocessableEntity)
-			return
-		}
-		reply.Failure, err = json.Marshal(refusal)
-		if err != nil {
-			w.WriteHeader(http.StatusUnprocessableEntity)
-			return
-		}
-	}
-	data, err := json.Marshal(&reply)
-	if err != nil || int64(len(data)) > limits.MaxResponseBytes || req.Context().Err() != nil {
+	output, err := route.handle(req.Context(), params.CommandID, input)
+	data, ok := encodeCallbackReply(output, err, limits)
+	if !ok || req.Context().Err() != nil {
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		return
 	}
@@ -174,6 +154,55 @@ func (route callbackRoute) serve(w http.ResponseWriter, req *http.Request, ref M
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(data)
+}
+
+// read authenticates and decodes one callback, returning the HTTP status that
+// refuses it, or StatusOK.
+func (route callbackRoute) read(w http.ResponseWriter, req *http.Request, ref ManagedCallback, limits CallbackReceiverLimits) (managedParams, value.JSON, int) {
+	if req.Method != http.MethodPost || req.RequestURI != "/" ||
+		!credentialMatches(req.Header, credentialHeader, ref.Credential) || !credentialMatches(req.Header, callHeader, ref.Call) {
+		return managedParams{}, value.JSON{}, http.StatusForbidden
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, limits.MaxRequestBytes))
+	if err != nil {
+		return managedParams{}, value.JSON{}, http.StatusRequestEntityTooLarge
+	}
+	var params managedParams
+	if err = json.Unmarshal(body, &params, json.RejectUnknownMembers(true)); err != nil || !route.admits(&params) {
+		return managedParams{}, value.JSON{}, http.StatusBadRequest
+	}
+	input, err := value.ParseJSON(params.Input)
+	if err != nil || req.Context().Err() != nil {
+		return managedParams{}, value.JSON{}, http.StatusBadRequest
+	}
+	return params, input, http.StatusOK
+}
+
+// encodeCallbackReply admits a result or a typed Refusal within the response
+// budget; any other failure cannot be reported to the plugin.
+func encodeCallbackReply(output value.JSON, failure error, limits CallbackReceiverLimits) ([]byte, bool) {
+	var reply managedResult
+	if failure == nil {
+		if int64(len(output.String())) > limits.MaxResponseBytes {
+			return nil, false
+		}
+		reply.Value = output.Bytes()
+	} else {
+		refusal, known := errors.AsType[*Refusal](failure)
+		if !known || refusal == nil || refusal.Code == "" || int64(len(refusal.Code))+int64(len(refusal.Message)) > limits.MaxResponseBytes {
+			return nil, false
+		}
+		encoded, err := json.Marshal(refusal)
+		if err != nil {
+			return nil, false
+		}
+		reply.Failure = encoded
+	}
+	data, err := json.Marshal(&reply)
+	if err != nil || int64(len(data)) > limits.MaxResponseBytes {
+		return nil, false
+	}
+	return data, true
 }
 
 // Limit admitted sockets before net/http can allocate connection goroutines.
@@ -200,7 +229,7 @@ func (r *CallbackReceiver) open(ctx context.Context, route callbackRoute) (Manag
 	if r == nil || r.calls == nil || ctx == nil {
 		return ManagedCallback{}, frame.ErrInvalid
 	}
-	if err := context.Cause(ctx); err != nil {
+	if err := cancellation.Err(ctx); err != nil {
 		return ManagedCallback{}, err
 	}
 	select {
@@ -208,7 +237,7 @@ func (r *CallbackReceiver) open(ctx context.Context, route callbackRoute) (Manag
 	default:
 		return ManagedCallback{}, frame.ErrCapacity
 	}
-	conn, err := new(net.ListenConfig).Listen(ctx, "tcp4", "127.0.0.1:0")
+	conn, err := new(net.ListenConfig).Listen(ctx, "tcp4", net.JoinHostPort(loopbackHost, "0"))
 	if err != nil {
 		<-r.calls
 		return ManagedCallback{}, err
@@ -216,7 +245,7 @@ func (r *CallbackReceiver) open(ctx context.Context, route callbackRoute) (Manag
 	var tokens [2 * managedCallbackTokenBytes]byte
 	rand.Read(tokens[:])
 	ref := ManagedCallback{
-		Endpoint: "http://" + conn.Addr().String() + "/",
+		Endpoint: callbackScheme + "://" + conn.Addr().String() + "/",
 		Call:     hex.EncodeToString(tokens[:managedCallbackTokenBytes]), Credential: hex.EncodeToString(tokens[managedCallbackTokenBytes:]),
 		MaxResponseBytes: r.limits.MaxResponseBytes,
 	}

@@ -248,7 +248,7 @@ func TestApprovedProcessUsesPublicContractAndReleasesOriginalAttempt(t *testing.
 		t.Fatal(err)
 	}
 	attempts, err := e.store.Attempts(e.ctx)
-	if err != nil || len(attempts) != 1 || !attempts[0].Released || attempts[0].Proof == nil {
+	if err != nil || len(attempts) != 1 || !attempts[0].ExitProven() || attempts[0].Proof == nil {
 		t.Fatalf("original attempt release: %+v %v", attempts, err)
 	}
 	observed, err := e.runner.Inspect(e.ctx, attempts[0].Attempt.ID)
@@ -302,7 +302,7 @@ func TestDisableDuringRealProcessSetupCannotPublishOrActivate(t *testing.T) {
 		t.Fatalf("withdrawn setup activated: %v", err)
 	}
 	attempts, err := e.store.Attempts(e.ctx)
-	if err != nil || len(attempts) != 1 || !attempts[0].Released {
+	if err != nil || len(attempts) != 1 || !attempts[0].ExitProven() {
 		t.Fatalf("late preparation lost protection: %+v %v", attempts, err)
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/cancellation"
 )
 
 const (
@@ -70,7 +71,7 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return context.Cause(ctx)
+			return cancellation.Err(ctx)
 		case slots <- struct{}{}:
 		}
 		connection, err := listener.Accept()
@@ -98,78 +99,87 @@ func (s *Server) handle(ctx context.Context, connection net.Conn, release func()
 		return
 	}
 	reader := bufio.NewReaderSize(connection, controlReadBufferBytes)
-	line, err := readLine(reader)
+	request, err := readRequest(reader)
 	if err != nil {
-		_ = s.writeResponse(connection, nil, err)
-		return
-	}
-	var request controlRequest
-	if err := jsonv2.Unmarshal(line, &request, jsonv2.RejectUnknownMembers(true)); err != nil {
 		_ = s.writeResponse(connection, nil, err)
 		return
 	}
 	if err := connection.SetReadDeadline(time.Time{}); err != nil {
 		return
 	}
-	var observation Observation
-	switch request.Operation {
-	case methodIdentity:
-		identity, identityErr := s.Identity(ctx)
-		if identityErr != nil {
-			_ = s.writeResponse(connection, nil, identityErr)
-			return
-		}
-		_ = s.writeReply(connection, controlResponse{Identity: &identity})
-		return
-	case methodFence:
-		err = s.Fence(ctx, request.Epoch)
-	case methodProveAbsent:
+	if request.Operation == methodAttach {
 		if request.Attempt == nil {
 			_ = s.writeResponse(connection, nil, frame.ErrInvalid)
 			return
 		}
-		proof, proofErr := s.ProveAbsent(ctx, *request.Attempt)
-		if proofErr != nil {
-			_ = s.writeResponse(connection, nil, proofErr)
-			return
-		}
-		_ = s.writeReply(connection, controlResponse{Absence: &proof})
-		return
-	case methodAcknowledgeExit:
-		if request.Receipt == nil {
-			err = frame.ErrInvalid
-		} else {
-			err = s.AcknowledgeExit(ctx, *request.Receipt)
-		}
-	case methodLaunch:
-		if request.Launch == nil {
-			err = frame.ErrInvalid
-		} else {
-			observation, err = s.Launch(ctx, *request.Launch)
-		}
-	case methodInspect:
-		observation, err = s.Inspect(ctx, request.AttemptID)
-	case methodClose:
-		if request.Attempt == nil {
-			err = frame.ErrInvalid
-			break
-		}
-		observation, err = s.CloseAttempt(ctx, *request.Attempt)
-	case methodAttach:
-		if request.Attempt == nil {
-			err = frame.ErrInvalid
-			break
-		}
 		s.serveAttachment(ctx, connection, reader, *request.Attempt, release)
 		return
+	}
+	response, err := s.respond(ctx, request)
+	if err != nil {
+		response.Error = errorCode(err)
+	}
+	_ = s.writeReply(connection, response)
+}
+
+func readRequest(reader *bufio.Reader) (controlRequest, error) {
+	line, err := readLine(reader)
+	if err != nil {
+		return controlRequest{}, err
+	}
+	var request controlRequest
+	return request, jsonv2.Unmarshal(line, &request, jsonv2.RejectUnknownMembers(true))
+}
+
+// respond performs one request-response operation.
+func (s *Server) respond(ctx context.Context, request controlRequest) (controlResponse, error) {
+	switch request.Operation {
+	case methodIdentity:
+		identity, err := s.Identity(ctx)
+		if err != nil {
+			return controlResponse{}, err
+		}
+		return controlResponse{Identity: &identity}, nil
+	case methodFence:
+		return controlResponse{}, s.Fence(ctx, request.Epoch)
+	case methodProveAbsent:
+		if request.Attempt == nil {
+			return controlResponse{}, frame.ErrInvalid
+		}
+		proof, err := s.ProveAbsent(ctx, *request.Attempt)
+		if err != nil {
+			return controlResponse{}, err
+		}
+		return controlResponse{Absence: &proof}, nil
+	case methodAcknowledgeExit:
+		if request.Receipt == nil {
+			return controlResponse{}, frame.ErrInvalid
+		}
+		return controlResponse{}, s.AcknowledgeExit(ctx, *request.Receipt)
+	case methodLaunch:
+		if request.Launch == nil {
+			return controlResponse{}, frame.ErrInvalid
+		}
+		return observed(s.Launch(ctx, *request.Launch))
+	case methodInspect:
+		return observed(s.Inspect(ctx, request.AttemptID))
+	case methodClose:
+		if request.Attempt == nil {
+			return controlResponse{}, frame.ErrInvalid
+		}
+		return observed(s.CloseAttempt(ctx, *request.Attempt))
 	default:
-		err = frame.ErrInvalid
+		return controlResponse{}, frame.ErrInvalid
 	}
-	var result *Observation
-	if observation.AttemptID != "" {
-		result = &observation
+}
+
+// observed reports an observation even beside an error, so a failed close
+// still tells the caller the attempt's current state.
+func observed(observation Observation, err error) (controlResponse, error) {
+	if observation.AttemptID == "" {
+		return controlResponse{}, err
 	}
-	_ = s.writeResponse(connection, result, err)
+	return controlResponse{Observation: &observation}, err
 }
 
 func (s *Server) attach(ref AttemptRef) (*attachment, error) {
@@ -240,7 +250,7 @@ func (c *Client) Identity(ctx context.Context) (Identity, error) {
 	if err != nil {
 		return Identity{}, err
 	}
-	if response.Identity == nil || !validID(response.Identity.ID) {
+	if response.Identity == nil || !frame.ValidName(response.Identity.ID) {
 		return Identity{}, errors.New("runner: invalid identity response")
 	}
 	return *response.Identity, nil
@@ -399,6 +409,8 @@ func decodeResponse(data []byte) (controlResponse, error) {
 	return response, errors.New("runner: control request failed")
 }
 
+const unclassifiedControlError = "failed"
+
 var controlErrors = []struct {
 	code string
 	err  error
@@ -413,5 +425,5 @@ func errorCode(err error) string {
 			return category.code
 		}
 	}
-	return "failed"
+	return unclassifiedControlError
 }

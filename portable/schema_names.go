@@ -32,7 +32,7 @@ func ReadableDefinitions(raw []byte) ([]byte, error) {
 	if err := decoder.Decode(&document); err != nil {
 		return nil, fmt.Errorf("portable: schema: %w", err)
 	}
-	definitions, ok := document["$defs"].(map[string]any)
+	definitions, ok := document[KeywordDefs].(map[string]any)
 	if !ok {
 		return bytes.Clone(raw), nil
 	}
@@ -42,7 +42,7 @@ func ReadableDefinitions(raw []byte) ([]byte, error) {
 	for name, body := range definitions {
 		canonical[renamed[name]] = body
 	}
-	document["$defs"] = canonical
+	document[KeywordDefs] = canonical
 	return jsonv2.Marshal(document, jsonv2.Deterministic(true))
 }
 
@@ -54,7 +54,7 @@ func rewriteSchemaReferences(value any, names map[string]string, profile SchemaP
 	}
 	for key, child := range object {
 		switch key {
-		case "$ref":
+		case KeywordRef:
 			ref, ok := child.(string)
 			if ok {
 				object[key] = readableReference(ref, names)

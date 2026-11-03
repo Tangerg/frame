@@ -2,26 +2,26 @@ package frame
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
+	"fmt"
 )
 
 // EventRoute is an opaque authorization to communicate between two exact
 // objects in already admitted Uses. It contains no handler or native payload.
 type EventRoute struct {
-	id            string
-	owner         *authorityIdentity
-	source        ExportRef
-	receiver      ExportRef
-	sourceUseID   string
-	receiverUseID string
+	id        string
+	authority *authorityIdentity
+	source    ExportRef
+	receiver  ExportRef
 }
 
-func (r *EventRoute) ID() string            { return r.id }
-func (r *EventRoute) Source() ExportRef     { return r.source }
-func (r *EventRoute) Receiver() ExportRef   { return r.receiver }
-func (r *EventRoute) SourceUseID() string   { return r.sourceUseID }
-func (r *EventRoute) ReceiverUseID() string { return r.receiverUseID }
+func (r *EventRoute) ID() string          { return r.id }
+func (r *EventRoute) Source() ExportRef   { return r.source }
+func (r *EventRoute) Receiver() ExportRef { return r.receiver }
 
+// eventRoute is live while the Host indexes it. It is a resource of both Uses,
+// so closing either one ends the route.
 type eventRoute struct {
 	token            *EventRoute
 	source           *Use
@@ -30,8 +30,10 @@ type eventRoute struct {
 	receiverResource *ResourceHandle
 }
 
-func ownsExport(use *Use, source ExportRef) bool {
-	for _, member := range use.members {
+const eventRoutePrefix = "event route:"
+
+func (u *Use) exports(source ExportRef) bool {
+	for _, member := range u.members {
 		if member.source == source {
 			return true
 		}
@@ -40,92 +42,97 @@ func ownsExport(use *Use, source ExportRef) bool {
 }
 
 func (h *Host) NewEventRoute(ctx context.Context, sourceUse, receiverUse *Use, source, receiver ExportRef) (*EventRoute, error) {
-	if sourceUse == nil || receiverUse == nil || sourceUse.owner != h.identity || receiverUse.owner != h.identity {
+	if sourceUse == nil || receiverUse == nil || sourceUse.authority != h.identity || receiverUse.authority != h.identity {
 		return nil, ErrInvalid
 	}
 	if source.Contract.Kind != EventKind || source.Contract != receiver.Contract {
 		return nil, ErrContractMismatch
 	}
-	id, err := randomID()
-	if err != nil {
-		return nil, err
-	}
-	token := &EventRoute{id: id, owner: h.identity, source: source, receiver: receiver, sourceUseID: sourceUse.id, receiverUseID: receiverUse.id}
-	record := &eventRoute{token: token, source: sourceUse, receiver: receiverUse}
-	err = h.admission.Admit(ctx, func(context.Context) error {
+	route := &eventRoute{token: &EventRoute{id: rand.Text(), authority: h.identity, source: source, receiver: receiver}, source: sourceUse, receiver: receiverUse}
+	err := h.admission.Admit(ctx, func(context.Context) error {
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		if h.lifetime.isClosing() || h.uses[sourceUse.id] != sourceUse || h.uses[receiverUse.id] != receiverUse {
-			return ErrClosed
-		}
-		if err := h.admission.ValidateScope(sourceUse.scope); err != nil {
+		if err := h.admitRouteLocked(route); err != nil {
 			return err
 		}
-		if err := h.admission.ValidateScope(receiverUse.scope); err != nil {
-			return err
-		}
-		if !ownsExport(sourceUse, source) || !ownsExport(receiverUse, receiver) {
-			return ErrContractMismatch
-		}
-		if sourceUse.realm != receiverUse.realm && source.Contract.Mode == NativeMode {
-			return ErrContractMismatch
-		}
-		if len(h.routes) >= h.maxEventRoutes {
-			return ErrCapacity
-		}
-		resource := Resource{Name: "event route:" + id, Close: func(context.Context) (ReleaseState, error) { h.releaseEventRoute(record); return ResourceReleased, nil }}
-		sourceResource, err := sourceUse.lifetime.Own(resource)
-		if err != nil {
-			return err
-		}
-		record.sourceResource = sourceResource
-		if sourceUse != receiverUse {
-			receiverResource, err := receiverUse.lifetime.Own(resource)
-			if err != nil {
-				_ = sourceResource.ConfirmReleased(nil)
-				return err
-			}
-			record.receiverResource = receiverResource
-		}
-		h.routes[id] = record
-		return nil
+		return h.ownRouteLocked(route)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return token, nil
+	return route.token, nil
 }
 
-func (h *Host) releaseEventRoute(record *eventRoute) {
+func (h *Host) admitRouteLocked(route *eventRoute) error {
+	if err := h.validateRouteUsesLocked(route); err != nil {
+		return err
+	}
+	if !route.source.exports(route.token.source) || !route.receiver.exports(route.token.receiver) {
+		return ErrContractMismatch
+	}
+	if route.source.realm != route.receiver.realm && route.token.source.Contract.Mode == NativeMode {
+		return ErrContractMismatch
+	}
+	if len(h.routes) >= h.limits.MaxEventRoutes {
+		return fmt.Errorf("%w: event routes", ErrCapacity)
+	}
+	return nil
+}
+
+func (h *Host) ownRouteLocked(route *eventRoute) error {
+	resource := Resource{Name: eventRoutePrefix + route.token.id, Close: func(context.Context) (ReleaseState, error) {
+		h.releaseEventRoute(route)
+		return ResourceReleased, nil
+	}}
+	sourceResource, err := route.source.lifetime.Own(resource)
+	if err != nil {
+		return err
+	}
+	route.sourceResource = sourceResource
+	if route.receiver != route.source {
+		receiverResource, err := route.receiver.lifetime.Own(resource)
+		if err != nil {
+			_ = sourceResource.ConfirmReleased(nil)
+			return err
+		}
+		route.receiverResource = receiverResource
+	}
+	h.routes[route.token.id] = route
+	return nil
+}
+
+func (h *Host) releaseEventRoute(route *eventRoute) {
 	h.mu.Lock()
-	if h.routes[record.token.id] == record {
-		delete(h.routes, record.token.id)
+	if h.routes[route.token.id] == route {
+		delete(h.routes, route.token.id)
 	}
-	source := record.sourceResource
-	receiver := record.receiverResource
-	record.source = nil
-	record.receiver = nil
 	h.mu.Unlock()
-	if source != nil {
-		_ = source.ConfirmReleased(nil)
-	}
-	if receiver != nil {
-		_ = receiver.ConfirmReleased(nil)
+	for _, resource := range []*ResourceHandle{route.sourceResource, route.receiverResource} {
+		if resource != nil {
+			_ = resource.ConfirmReleased(nil)
+		}
 	}
 }
 
-func (h *Host) eventRouteLocked(route *EventRoute) (*eventRoute, error) {
-	if route == nil || route.owner != h.identity {
+func (h *Host) validateRouteUsesLocked(route *eventRoute) error {
+	if h.lifetime.isClosing() || h.uses[route.source.id] != route.source || h.uses[route.receiver.id] != route.receiver {
+		return ErrClosed
+	}
+	if err := h.admission.ValidateScope(route.source.scope); err != nil {
+		return err
+	}
+	return h.admission.ValidateScope(route.receiver.scope)
+}
+
+func (h *Host) liveRouteLocked(token *EventRoute) (*eventRoute, error) {
+	if token == nil || token.authority != h.identity {
 		return nil, ErrInvalid
 	}
-	record := h.routes[route.id]
-	if record == nil || record.token != route || record.source == nil || record.receiver == nil {
+	route := h.routes[token.id]
+	if route == nil || route.token != token {
 		return nil, ErrClosed
 	}
-	if h.lifetime.isClosing() || h.uses[route.sourceUseID] != record.source || h.uses[route.receiverUseID] != record.receiver {
-		return nil, ErrClosed
-	}
-	return record, nil
+	return route, h.validateRouteUsesLocked(route)
 }
 
 func (h *Host) ValidateEventRoute(ctx context.Context, route *EventRoute) error {
@@ -134,14 +141,8 @@ func (h *Host) ValidateEventRoute(ctx context.Context, route *EventRoute) error 
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	record, err := h.eventRouteLocked(route)
-	if err != nil {
-		return err
-	}
-	if err := h.admission.ValidateScope(record.source.scope); err != nil {
-		return err
-	}
-	return h.admission.ValidateScope(record.receiver.scope)
+	_, err := h.liveRouteLocked(route)
+	return err
 }
 
 // DeliverEvent registers delivery in both owners before calling application
@@ -150,43 +151,40 @@ func DeliverEvent[T any](ctx context.Context, host *Host, route *EventRoute, eve
 	if host == nil || route == nil || event.value == nil || receive == nil || route.source.Contract != event.Ref() {
 		return ErrContractMismatch
 	}
-	host.mu.Lock()
-	if !sameDeclaration(host.contracts[event.Ref()], event.value) {
-		host.mu.Unlock()
-		return ErrContractMismatch
-	}
-	record, err := host.eventRouteLocked(route)
+	sourceWork, receiverWork, err := host.enterRoute(ctx, route, event.value)
 	if err != nil {
-		host.mu.Unlock()
-		return err
-	}
-	if err := host.admission.ValidateScope(record.source.scope); err != nil {
-		host.mu.Unlock()
-		return err
-	}
-	if err := host.admission.ValidateScope(record.receiver.scope); err != nil {
-		host.mu.Unlock()
-		return err
-	}
-	sourceWork, err := record.source.lifetime.Enter(ctx)
-	if err != nil {
-		host.mu.Unlock()
-		return err
-	}
-	receiverWork, err := record.receiver.lifetime.Enter(ctx)
-	host.mu.Unlock()
-	if err != nil {
-		sourceWork.Finish()
 		return err
 	}
 	defer sourceWork.Finish()
 	defer receiverWork.Finish()
-	deliveryCtx, cancel := context.WithCancelCause(sourceWork.Context())
+	delivery, cancel := context.WithCancelCause(sourceWork.Context())
+	defer cancel(ErrClosed)
 	stop := context.AfterFunc(receiverWork.Context(), func() { cancel(context.Cause(receiverWork.Context())) })
 	defer stop()
-	defer cancel(ErrClosed)
-	if err := contextError(deliveryCtx); err != nil {
+	if err := contextError(delivery); err != nil {
 		return err
 	}
-	return errors.Join(receive(deliveryCtx, payload), contextError(deliveryCtx))
+	return errors.Join(receive(delivery, payload), contextError(delivery))
+}
+
+func (h *Host) enterRoute(ctx context.Context, token *EventRoute, event *declaration) (*Work, *Work, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !sameDeclaration(h.contracts.lookup(event.ref), event) {
+		return nil, nil, ErrContractMismatch
+	}
+	route, err := h.liveRouteLocked(token)
+	if err != nil {
+		return nil, nil, err
+	}
+	sourceWork, err := route.source.lifetime.Enter(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	receiverWork, err := route.receiver.lifetime.Enter(ctx)
+	if err != nil {
+		sourceWork.Finish()
+		return nil, nil, err
+	}
+	return sourceWork, receiverWork, nil
 }

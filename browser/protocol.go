@@ -228,26 +228,19 @@ type RouteGrant struct {
 	Receiver LocalExport `json:"receiver"`
 }
 
-type ReleaseStatus string
-
-const (
-	Released    ReleaseStatus = "released"
-	Unconfirmed ReleaseStatus = "unconfirmed"
-)
-
 type CloseProof struct {
-	CloseID         string         `json:"closeId"`
-	ProofID         string         `json:"proofId"`
-	Authority       Authority      `json:"authority"`
-	Realm           Realm          `json:"realm"`
-	Execution       Execution      `json:"execution"`
-	ScopeID         string         `json:"scopeId"`
-	ScopeGeneration string         `json:"scopeGeneration"`
-	ScopeKind       CloseScopeKind `json:"scopeKind"`
-	UseID           string         `json:"useId,omitempty"`
-	PublicationID   string         `json:"publicationId,omitempty"`
-	Instances       []string       `json:"instances"`
-	Status          ReleaseStatus  `json:"status"`
+	CloseID         string             `json:"closeId"`
+	ProofID         string             `json:"proofId"`
+	Authority       Authority          `json:"authority"`
+	Realm           Realm              `json:"realm"`
+	Execution       Execution          `json:"execution"`
+	ScopeID         string             `json:"scopeId"`
+	ScopeGeneration string             `json:"scopeGeneration"`
+	ScopeKind       CloseScopeKind     `json:"scopeKind"`
+	UseID           string             `json:"useId,omitempty"`
+	PublicationID   string             `json:"publicationId,omitempty"`
+	Instances       []string           `json:"instances"`
+	Status          frame.ReleaseState `json:"status"`
 }
 
 type ProofAcknowledgement struct {
@@ -300,7 +293,6 @@ func (Decision) Values() []string {
 func (PlanAdmissionDecision) Values() []string {
 	return []string{string(PlanAdmitted), string(PlanCleanupRequired), string(PlanNotAdmitted), string(PlanSettled)}
 }
-func (ReleaseStatus) Values() []string { return []string{string(Released), string(Unconfirmed)} }
 func (ReconnectMode) Values() []string { return []string{string(Revalidated), string(CleanupOnly)} }
 func (CloseScopeKind) Values() []string {
 	return []string{string(ExecutionScope), string(UseScope), string(PublicationScope)}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -44,11 +45,16 @@ func view(task Task) TaskView {
 	return TaskView{ID: task.Definition.ID, Source: task.Definition.Source, Binding: task.Definition.Binding, State: task.State, RunEpoch: strconv.FormatUint(task.RunEpoch, 10), Submission: SubmissionView{Store: task.Submission.Store, Owner: task.Submission.Owner, Sequence: strconv.FormatUint(task.Submission.Sequence, 10)}, Result: task.Result, Failure: task.Failure}
 }
 
+const (
+	minApplicationTokenBytes = 32
+	maxRequestBytes          = 64 << 10
+)
+
 // Handler mounts the application policy and original business owner beside the
 // framework control handler. It never introduces another provider registry.
 func (a *App) Handler(config HTTPConfig) (http.Handler, error) {
-	if len(config.ApplicationToken) < 32 {
-		return nil, errors.New("document: an application token of at least 32 bytes is required")
+	if len(config.ApplicationToken) < minApplicationTokenBytes {
+		return nil, fmt.Errorf("document: an application token of at least %d bytes is required", minApplicationTokenBytes)
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/frame/control", a.Bridge.Handler())
@@ -176,7 +182,7 @@ func (a *App) Handler(config HTTPConfig) (http.Handler, error) {
 }
 
 func decodeRequest(writer http.ResponseWriter, request *http.Request, target any) bool {
-	data, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, 64<<10))
+	data, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, maxRequestBytes))
 	if err != nil {
 		var limit *http.MaxBytesError
 		if errors.As(err, &limit) {

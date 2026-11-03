@@ -11,15 +11,19 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/Tangerg/frame/portable"
 )
 
 type featureGoOptions struct{ Package, Prefix string }
 
 const goValueImport = "framevalue"
 
+// goStringEnum is a string enum. Declared at its definition position, the
+// definition itself is the enum type; inline, it needs a type of its own.
 type goStringEnum struct {
-	values []string
-	named  bool
+	values   []string
+	position typePosition
 }
 
 type featureGo struct {
@@ -46,7 +50,7 @@ func (f *featureArtifacts) goProjection(output featureGoOptions) ([]byte, error)
 		if aliases[name] != "" {
 			continue
 		}
-		value, err := emitter.typ(f.projection.definitions[name], emitter.names[name], true)
+		value, err := emitter.typ(f.projection.definitions[name], emitter.names[name], definitionPosition)
 		if err != nil {
 			return nil, fmt.Errorf("feature Go %s: %w", name, err)
 		}
@@ -68,7 +72,7 @@ func (f *featureArtifacts) goProjection(output featureGoOptions) ([]byte, error)
 	}
 	for _, name := range slices.Sorted(maps.Keys(emitter.enums)) {
 		enum := emitter.enums[name]
-		if !enum.named {
+		if enum.position == inlinePosition {
 			fmt.Fprintf(&result, "type %s string\n\n", name)
 		}
 		result.WriteString("const (\n")
@@ -106,81 +110,107 @@ func goFeatureIdentifier(value string) string {
 	return name
 }
 
-func (e *featureGo) typ(node *projectionNode, path string, named bool) (string, error) {
+// typePosition tells whether a type is the body of a named definition. A named
+// definition must be a struct so it can carry the generated methods.
+type typePosition uint8
+
+const (
+	inlinePosition typePosition = iota
+	definitionPosition
+)
+
+func (e *featureGo) typ(node *projectionNode, path string, position typePosition) (string, error) {
 	if node == nil || len(node.kinds) > 0 {
-		return e.opaque(named), nil
+		return e.opaque(position), nil
 	}
 	if node.pureReference() {
-		name := e.names[node.referencePath]
-		if name == "" {
-			return "", fmt.Errorf("unsupported reference %s", node.referencePath)
-		}
-		target := node.reference
-		for target.pureReference() {
-			target = target.reference
-		}
-		// A reference to an object may close a structural recursion. Pointers
-		// preserve that schema without creating an illegal recursive Go value.
-		if goStruct(target) {
-			name = "*" + name
-		}
-		return name, nil
+		return e.reference(node)
 	}
 	switch node.kind {
-	case typeBoolean:
+	case portable.TypeBoolean:
 		return "bool", nil
-	case typeInteger, typeNumber:
-		return e.number(named), nil
-	case typeString:
-		values := node.stringEnum()
-		if len(values) > 0 {
-			if !named {
-				path = e.symbols.claim(path)
-			}
-			e.enums[path] = goStringEnum{values: values, named: named}
-			if named {
-				return "string", nil
-			}
-			return path, nil
-		}
-		return "string", nil
-	case typeArray:
-		value, err := e.typ(node.items, path+"Item", false)
+	case portable.TypeInteger, portable.TypeNumber:
+		return e.number(position), nil
+	case portable.TypeString:
+		return e.stringType(node, path, position), nil
+	case portable.TypeArray:
+		value, err := e.typ(node.items, path+"Item", inlinePosition)
 		return "[]" + value, err
-	case typeObject:
-		object := node.object
-		if !goStruct(node) {
-			if len(object.properties) == 0 && object.openness == objectTyped && !object.patterns {
-				value, err := e.typ(object.additional, path+"Value", false)
-				return "map[string]" + value, err
-			}
-			e.usesValue = true
-			return "map[string]" + goValueImport + ".JSON", nil
-		}
-		var out strings.Builder
-		out.WriteString("struct {\n")
-		for _, name := range slices.Sorted(maps.Keys(object.properties)) {
-			field := goFeatureIdentifier(name)
-			value, err := e.typ(object.properties[name], path+field, false)
-			if err != nil {
-				return "", err
-			}
-			tag := name
-			if !node.required(name) {
-				value = optionalGoField(object.properties[name], value)
-				tag += ",omitzero"
-			}
-			fmt.Fprintf(&out, "%s %s `json:%s`\n", field, value, strconv.Quote(tag))
-		}
-		out.WriteString("}")
-		return out.String(), nil
+	case portable.TypeObject:
+		return e.objectType(node, path)
 	default:
-		return e.opaque(named), nil
+		return e.opaque(position), nil
 	}
 }
 
+// reference names the definition a pure reference resolves to. A reference to
+// an object may close a structural recursion; a pointer preserves that schema
+// without creating an illegal recursive Go value.
+func (e *featureGo) reference(node *projectionNode) (string, error) {
+	name := e.names[node.referencePath]
+	if name == "" {
+		return "", fmt.Errorf("unsupported reference %s", node.referencePath)
+	}
+	target := node.reference
+	for target.pureReference() {
+		target = target.reference
+	}
+	if goStruct(target) {
+		name = "*" + name
+	}
+	return name, nil
+}
+
+// stringType declares a string enum: a definition is the enum type itself,
+// an inline enum receives a type named after its path.
+func (e *featureGo) stringType(node *projectionNode, path string, position typePosition) string {
+	values := node.stringEnum()
+	if len(values) == 0 {
+		return "string"
+	}
+	if position == inlinePosition {
+		path = e.symbols.claim(path)
+	}
+	e.enums[path] = goStringEnum{values: values, position: position}
+	if position == definitionPosition {
+		return "string"
+	}
+	return path
+}
+
+// objectType is a struct for a closed object with representable members,
+// otherwise a map that keeps every admitted member.
+func (e *featureGo) objectType(node *projectionNode, path string) (string, error) {
+	object := node.object
+	if !goStruct(node) {
+		if len(object.properties) == 0 && object.openness == objectTyped && !object.patterns {
+			value, err := e.typ(object.additional, path+"Value", inlinePosition)
+			return "map[string]" + value, err
+		}
+		e.usesValue = true
+		return "map[string]" + goValueImport + ".JSON", nil
+	}
+	var out strings.Builder
+	out.WriteString("struct {\n")
+	for _, name := range slices.Sorted(maps.Keys(object.properties)) {
+		field := goFeatureIdentifier(name)
+		value, err := e.typ(object.properties[name], path+field, inlinePosition)
+		if err != nil {
+			return "", err
+		}
+		tag := name
+		if !node.required(name) {
+			value = optionalGoField(object.properties[name], value)
+			tag += ",omitzero"
+		}
+		fmt.Fprintf(&out, "%s %s `json:%s`\n", field, value, strconv.Quote(tag))
+	}
+	out.WriteString("}")
+	return out.String(), nil
+}
+
 func goStruct(node *projectionNode) bool {
-	return node.kind == typeObject && len(node.kinds) == 0 && node.object.openness == objectClosed && !node.object.patterns && canEncodeGoFields(node.object.properties)
+	return node.kind == portable.TypeObject && len(node.kinds) == 0 && node.object.openness == objectClosed && !node.object.patterns && canEncodeGoFields(node.object.properties)
 }
 
 // A JSON member need not fit Go's field-tag grammar. Exact maps keep such names
@@ -200,16 +230,16 @@ func canEncodeGoFields(properties map[string]*projectionNode) bool {
 	return true
 }
 
-func (e *featureGo) number(named bool) string {
+func (e *featureGo) number(position typePosition) string {
 	e.usesValue = true
-	if named {
+	if position == definitionPosition {
 		return "struct { " + goValueImport + ".Number }"
 	}
 	return goValueImport + ".Number"
 }
-func (e *featureGo) opaque(named bool) string {
+func (e *featureGo) opaque(position typePosition) string {
 	e.usesValue = true
-	if named {
+	if position == definitionPosition {
 		return "struct { " + goValueImport + ".JSON }"
 	}
 	return goValueImport + ".JSON"
@@ -268,7 +298,7 @@ func optionalGoField(node *projectionNode, expression string) string {
 	for node.pureReference() {
 		node = node.reference
 	}
-	if strings.HasPrefix(expression, "*") || len(node.kinds) > 0 || node.kind == "" || node.kind == typeNull || node.kind == typeInteger || node.kind == typeNumber {
+	if strings.HasPrefix(expression, "*") || len(node.kinds) > 0 || node.kind == "" || node.kind == portable.TypeNull || node.kind == portable.TypeInteger || node.kind == portable.TypeNumber {
 		return expression
 	}
 	return "*" + expression

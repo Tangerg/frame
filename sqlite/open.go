@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/localfile"
 	framevalue "github.com/Tangerg/frame/value"
 )
 
@@ -38,7 +40,7 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 		return nil, err
 	}
 	store := &Store{lock: lock, admission: config.Admission, owners: make(map[string]*Owner), maxRequestBytes: config.MaxRequestBytes, maxSubmissions: config.MaxSubmissionsPerOwner, maxRealmHistoryBytes: config.MaxRealmHistoryBytes, projectInstallation: config.ProjectInstallation}
-	store.control = &Owner{store: store, id: "frame.installations"}
+	store.control = &Owner{store: store, id: installationOwnerID}
 	defer func() {
 		if err != nil {
 			err = errors.Join(err, store.Close())
@@ -49,40 +51,14 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 			}
 		}
 	}()
-	if store.maxRequestBytes == 0 {
-		store.maxRequestBytes = defaultMaxRequestBytes
+	if err := store.resolveLimits(); err != nil {
+		return nil, err
 	}
-	if store.maxRequestBytes < 1 {
-		return nil, errors.New("sqlite: request byte limit must be positive")
+	owners := slices.SortedFunc(slices.Values(config.Owners), func(a, b OwnerSchema) int { return strings.Compare(a.ID, b.ID) })
+	statements, digest, err := store.registerOwners(owners)
+	if err != nil {
+		return nil, err
 	}
-	if store.maxSubmissions == 0 {
-		store.maxSubmissions = defaultMaxSubmissions
-	}
-	if store.maxSubmissions < 1 {
-		return nil, errors.New("sqlite: submission capacity must be positive")
-	}
-	if store.maxRealmHistoryBytes == 0 {
-		store.maxRealmHistoryBytes = defaultMaxRealmHistoryBytes
-	}
-	if store.maxRealmHistoryBytes < 1 {
-		return nil, errors.New("sqlite: realm history byte limit must be positive")
-	}
-	owners := slices.Clone(config.Owners)
-	slices.SortFunc(owners, func(a, b OwnerSchema) int { return strings.Compare(a.ID, b.ID) })
-	statements := []string{schema}
-	declarations := schema
-	for _, owner := range owners {
-		if !validID(owner.ID) || strings.HasPrefix(owner.ID, "frame.") || owner.References == nil {
-			return nil, errors.New("sqlite: owner requires an identity and a reference reader")
-		}
-		if _, duplicate := store.owners[owner.ID]; duplicate {
-			return nil, errors.New("sqlite: duplicate owner")
-		}
-		store.owners[owner.ID] = &Owner{store: store, id: owner.ID, references: owner.References}
-		statements = append(statements, owner.Statements...)
-		declarations += "\n-- owner " + owner.ID + "\n" + strings.Join(owner.Statements, ";\n")
-	}
-	digest := framevalue.Hash([]byte(declarations))
 	expectedShape, err := schemaShape(ctx, statements)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: owner schema: %w", err)
@@ -94,7 +70,7 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 		return nil, err
 	}
 	var unresolved int
-	if err := store.db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM frame_submissions WHERE state=? OR synchronized=0)+(SELECT count(*) FROM frame_attempts WHERE state IN (?,?))+(SELECT count(*) FROM frame_use_approvals WHERE state=?)`, submissionPrepared, attemptApproved, attemptHandoff, useApproved).Scan(&unresolved); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM frame_submissions WHERE state=? OR synchronized=0)+(SELECT count(*) FROM frame_attempts WHERE state IN (?,?))+(SELECT count(*) FROM frame_use_approvals WHERE state=?)`, submissionPrepared, AttemptApproved, AttemptHandoff, useApproved).Scan(&unresolved); err != nil {
 		return nil, err
 	}
 	if unresolved != 0 {
@@ -103,12 +79,47 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 	return store, nil
 }
 
+func (s *Store) resolveLimits() error {
+	if s.maxRequestBytes == 0 {
+		s.maxRequestBytes = defaultMaxRequestBytes
+	}
+	if s.maxSubmissions == 0 {
+		s.maxSubmissions = defaultMaxSubmissions
+	}
+	if s.maxRealmHistoryBytes == 0 {
+		s.maxRealmHistoryBytes = defaultMaxRealmHistoryBytes
+	}
+	if s.maxRequestBytes < 1 || s.maxSubmissions < 1 || s.maxRealmHistoryBytes < 1 {
+		return errors.New("sqlite: request, submission and realm history limits must be positive")
+	}
+	return nil
+}
+
+// registerOwners admits the complete owner set. Its declarations, in owner
+// order, are the schema identity a reopened database must match.
+func (s *Store) registerOwners(owners []OwnerSchema) ([]string, framevalue.Digest, error) {
+	statements := []string{schema}
+	declarations := schema
+	for _, owner := range owners {
+		if !frame.ValidName(owner.ID) || strings.HasPrefix(owner.ID, reservedOwnerPrefix) || owner.References == nil {
+			return nil, framevalue.Digest{}, errors.New("sqlite: owner requires an identity and a reference reader")
+		}
+		if _, duplicate := s.owners[owner.ID]; duplicate {
+			return nil, framevalue.Digest{}, errors.New("sqlite: duplicate owner")
+		}
+		s.owners[owner.ID] = &Owner{store: s, id: owner.ID, references: owner.References}
+		statements = append(statements, owner.Statements...)
+		declarations += "\n-- owner " + owner.ID + "\n" + strings.Join(owner.Statements, ";\n")
+	}
+	return statements, framevalue.Hash([]byte(declarations)), nil
+}
+
 func databasePath(requested string) (string, error) {
 	path, err := filepath.Abs(requested)
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), localfile.PrivateDirectoryMode); err != nil {
 		return "", err
 	}
 	parent, err := filepath.EvalSymlinks(filepath.Dir(path))
@@ -136,7 +147,7 @@ func (s *Store) openDatabase(ctx context.Context, path string) error {
 	if err := s.db.QueryRowContext(ctx, `PRAGMA journal_mode=WAL`).Scan(&journal); err != nil {
 		return err
 	}
-	if journal != "wal" {
+	if journal != walJournalMode {
 		return errors.New("sqlite: wal was not enabled")
 	}
 	for _, requirement := range []pragmaRequirement{

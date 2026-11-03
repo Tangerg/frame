@@ -37,7 +37,7 @@ func TestJointSubmissionRequiresTheOriginalLiveAdmission(t *testing.T) {
 			_, err := tx.ExecContext(ctx, `INSERT INTO documents VALUES('joint','converter',?,1)`, value.Hash([]byte("release")))
 			return []byte("joint"), err
 		}, nil)
-		if err == nil && (settlement.State != Committed || !settlement.Synchronized) {
+		if err == nil && (settlement.State != frame.CommitSucceeded || !settlement.Synchronized) {
 			t.Fatalf("joint settlement = %+v", settlement)
 		}
 		return err
@@ -142,7 +142,7 @@ func TestOnlyTheMatchedRequestCanSettleOrSynchronize(t *testing.T) {
 	checkedReplay()
 	applied := false
 	state, err := owner.Commit(t.Context(), id, request, func(context.Context, Executor) ([]byte, error) { applied = true; return []byte("evidence"), nil }, nil)
-	if err != nil || !applied || state.State != Committed {
+	if err != nil || !applied || state.State != frame.CommitSucceeded {
 		t.Fatalf("original submission did not execute: %+v %v", state, err)
 	}
 	checkedReplay()
@@ -169,7 +169,7 @@ func TestPostcommitPanicFencesAdmissionUntilTheOwnerRestores(t *testing.T) {
 		_, _ = owner.Commit(t.Context(), id, req, func(context.Context, Executor) ([]byte, error) { return []byte("original"), nil }, func(Settlement) error { panic(failure) })
 	}()
 	pending, err := owner.Settlement(t.Context(), id, req)
-	if err != nil || pending.State != Committed || pending.Synchronized || string(pending.Evidence) != "original" {
+	if err != nil || pending.State != frame.CommitSucceeded || pending.Synchronized || string(pending.Evidence) != "original" {
 		t.Fatalf("lost the real commit: %+v, %v", pending, err)
 	}
 	if _, err := owner.Prepare(t.Context(), []byte("next")); !errors.Is(err, frame.ErrRecoveryRequired) {

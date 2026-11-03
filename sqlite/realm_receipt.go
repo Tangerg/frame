@@ -3,8 +3,6 @@ package sqlite
 import (
 	"bytes"
 	"context"
-	"database/sql"
-	"errors"
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/value"
@@ -28,22 +26,17 @@ func (s *Store) ReserveRealmReceipt(ctx context.Context, id string, request valu
 		return nil, frame.ErrCapacity
 	}
 	err := s.transaction(ctx, func(tx Executor) error {
-		var reserved int64
-		var original value.Digest
-		err := tx.QueryRowContext(ctx, `SELECT request_digest,reserved_bytes FROM frame_realm_receipts WHERE operation_id=?`, id).Scan(&original, &reserved)
-		if err == nil {
-			if original != request || reserved != maximumBytes {
-				return ErrConflict
+		return recordOnce(func() (bool, error) {
+			var reserved int64
+			var original value.Digest
+			err := tx.QueryRowContext(ctx, `SELECT request_digest,reserved_bytes FROM frame_realm_receipts WHERE operation_id=?`, id).Scan(&original, &reserved)
+			return original == request && reserved == maximumBytes, err
+		}, func() error {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO frame_realm_receipts(operation_id,request_digest,reserved_bytes) VALUES(?,?,?)`, id, request, maximumBytes); err != nil {
+				return err
 			}
-			return nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO frame_realm_receipts(operation_id,request_digest,reserved_bytes) VALUES(?,?,?)`, id, request, maximumBytes); err != nil {
-			return err
-		}
-		return s.checkRealmHistoryCapacity(ctx, tx)
+			return s.checkRealmHistoryCapacity(ctx, tx)
+		})
 	})
 	if err != nil {
 		return nil, err

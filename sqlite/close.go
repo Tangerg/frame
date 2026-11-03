@@ -58,21 +58,16 @@ func (s *Store) closeOriginal() {
 
 func (s *Store) advanceClose() error {
 	s.transactions.Wait()
-	if s.db != nil && !s.databaseSealed {
-		// database/sql.Close only disposes idle connections. Pin the sole
-		// original connection first, seal the pool, then observe its own close.
-		if len(s.unconfirmed) == 0 && s.db.Stats().OpenConnections != 0 {
-			connection, err := s.db.Conn(context.Background())
-			if err != nil {
-				return err
-			}
-			s.unconfirmed = append(s.unconfirmed, connection)
+	if s.db != nil {
+		if err := s.sealDatabase(); err != nil {
+			return err
 		}
-		s.databaseCloseErr = s.db.Close()
-		s.databaseSealed = true
 	}
+	s.lifecycleMu.Lock()
+	sealErr := s.databaseCloseErr
+	s.lifecycleMu.Unlock()
 	remaining := s.unconfirmed[:0]
-	closeErr := s.databaseCloseErr
+	closeErr := sealErr
 	for _, connection := range s.unconfirmed {
 		released, err := closeOriginalConnection(connection)
 		closeErr = errors.Join(closeErr, err)
@@ -82,7 +77,7 @@ func (s *Store) advanceClose() error {
 	}
 	clear(s.unconfirmed[len(remaining):])
 	s.unconfirmed = remaining
-	if len(remaining) != 0 || s.databaseCloseErr != nil {
+	if len(remaining) != 0 || sealErr != nil {
 		return errors.Join(ErrIndeterminate, closeErr)
 	}
 	if s.lock != nil {
@@ -101,8 +96,28 @@ func (s *Store) retainUnconfirmedConnection(connection *sql.Conn, cause error) {
 	s.startClose()
 	// The checked-out original remains available to its close owner. Sealing
 	// the pool prevents queued transactions from waiting forever or replacing it.
+	_ = s.sealDatabase()
+}
+
+// sealDatabase closes the pool once. database/sql.Close only disposes idle
+// connections, so the sole open connection is pinned first, unless one is
+// already retained, and its own close is observed afterwards.
+func (s *Store) sealDatabase() error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.databaseSealed {
+		return nil
+	}
+	if len(s.unconfirmed) == 0 && s.db.Stats().OpenConnections != 0 {
+		connection, err := s.db.Conn(context.Background())
+		if err != nil {
+			return err
+		}
+		s.unconfirmed = append(s.unconfirmed, connection)
+	}
 	s.databaseCloseErr = s.db.Close()
 	s.databaseSealed = true
+	return nil
 }
 
 func closeOriginalConnection(connection *sql.Conn) (bool, error) {

@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+
+	"github.com/Tangerg/frame/internal/localfile"
 )
 
 // A writable ancestor can replace the private directory and its authenticated socket.
@@ -36,7 +38,7 @@ func verifyAuthorityDirectory(path string) error {
 }
 
 func lockDirectory(path string) (*os.File, error) {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, localfile.PrivateFileMode)
 	if err != nil {
 		return nil, err
 	}

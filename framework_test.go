@@ -17,7 +17,7 @@ func TestScopedStartSharesOnlyTheOriginalGrantAndFinalStop(t *testing.T) {
 	host := testHost(t, frame.HostConfig{})
 	var starts, stops atomic.Int32
 	unit, err := frame.DefineUnit(frame.UnitSpec{ID: "watcher", Prepare: func(s *frame.Setup) error {
-		if s.Scope() != "tenant-a" {
+		if s.ScopeGrant().ID() != "tenant-a" {
 			return errors.New("unexpected execution scope")
 		}
 		_, err := s.Cleanup("index", func() error { stops.Add(1); return nil })

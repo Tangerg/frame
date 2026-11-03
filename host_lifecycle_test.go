@@ -82,7 +82,7 @@ func TestHostWatchResourceBudgetTracksActualSubscriptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	host := testHost(t, frame.HostConfig{Lifetime: lifetime, MaxWatches: 2})
+	host := testHost(t, frame.HostConfig{Lifetime: lifetime, Limits: frame.HostLimits{MaxWatches: 2}})
 	_, watch, err := host.Watch(ctx)
 	if err != nil {
 		t.Fatal(err)

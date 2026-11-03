@@ -1,4 +1,5 @@
 import { FrameError } from "./errors.js";
+import type { ReleaseState } from "./protocol.generated.js";
 
 export type Awaitable<T> = T | PromiseLike<T>;
 
@@ -21,7 +22,7 @@ export type Release =
 
 export interface CloseOutcome {
   readonly closeId: string;
-  readonly status: "released" | "unconfirmed";
+  readonly status: ReleaseState;
   readonly pending: readonly string[];
   readonly failures: readonly Failure[];
   readonly omittedFailures: number;
@@ -167,12 +168,62 @@ class ExitRecord {
   }
 }
 
-interface Resource {
+/** A resource's cleanup progress; release proof may also arrive from its adapter. */
+type CleanupState = "pending" | "awaitingProof" | "released";
+
+class OwnedResource {
   readonly label: string;
-  cleanup?: () => Awaitable<void | Release>;
-  attempted: boolean;
-  released: boolean;
-  confirm?: () => void;
+  #cleanup?: () => Awaitable<void | Release>;
+  #state: CleanupState = "pending";
+  #onConfirm?: () => void;
+
+  constructor(
+    label: string,
+    cleanup: () => Awaitable<void | Release>,
+    onConfirm: () => void,
+  ) {
+    this.label = label;
+    this.#cleanup = cleanup;
+    this.#onConfirm = onConfirm;
+  }
+
+  get released(): boolean {
+    return this.#state === "released";
+  }
+
+  /** Runs cleanup at most once; a failure is recorded, never thrown. */
+  async attempt(record: (error: unknown) => void): Promise<void> {
+    if (this.#state !== "pending") return;
+    this.#state = "awaitingProof";
+    try {
+      const result = await this.#cleanup!();
+      if (result?.error !== undefined) record(result.error);
+      if (result === undefined || result.status === "released") this.#release();
+    } catch (error) {
+      record(error);
+    }
+  }
+
+  confirm(evidence: string): void {
+    boundedLifetimeText(evidence, "release evidence");
+    if (this.#state === "released") return;
+    if (this.#state === "pending")
+      throw new FrameError("invalid_plan", "resource exit has not started");
+    this.#release();
+    const notify = this.#onConfirm;
+    this.#onConfirm = undefined;
+    notify?.();
+  }
+
+  /** Detaches a released resource from its owner. */
+  forget(): void {
+    this.#onConfirm = undefined;
+  }
+
+  #release(): void {
+    this.#state = "released";
+    this.#cleanup = undefined;
+  }
 }
 
 export interface Cleanup {
@@ -185,7 +236,7 @@ export class Lifetime {
   readonly #controller = new AbortController();
   readonly #limits: LifetimeLimits;
   #tasks = new Set<Promise<unknown>>();
-  #resources: Resource[] = [];
+  #resources: OwnedResource[] = [];
   #children = new Map<Lifetime, () => void>();
   #failures: Failure[] = [];
   #omittedFailures = 0;
@@ -268,28 +319,14 @@ export class Lifetime {
       throw new FrameError("capacity", "lifetime resource capacity reached");
     if (typeof cleanup !== "function")
       throw new TypeError("cleanup must be a function");
-    const resource: Resource = {
-      label: boundedLifetimeText(label, "resource label"),
+    const resource = new OwnedResource(
+      boundedLifetimeText(label, "resource label"),
       cleanup,
-      attempted: false,
-      released: false,
-    };
-    resource.confirm = () => {
-      this.#resume();
-    };
+      () => this.#resume(),
+    );
     this.#resources.push(resource);
     return Object.freeze({
-      confirmReleased(evidence: string) {
-        boundedLifetimeText(evidence, "release evidence");
-        if (resource.released) return;
-        if (!resource.attempted)
-          throw new FrameError("invalid_plan", "resource exit has not started");
-        resource.released = true;
-        resource.cleanup = undefined;
-        const notify = resource.confirm;
-        resource.confirm = undefined;
-        notify?.();
-      },
+      confirmReleased: (evidence: string) => resource.confirm(evidence),
     });
   }
 
@@ -377,6 +414,17 @@ export class Lifetime {
     });
   }
 
+  /** Releases resources in reverse acquisition order, stopping at the first unproven one. */
+  async #releaseResources(): Promise<void> {
+    while (this.#resources.length) {
+      const resource = this.#resources[this.#resources.length - 1]!;
+      await resource.attempt((error) => this.#record("cleanup", error));
+      if (!resource.released) return;
+      resource.forget();
+      this.#resources.pop();
+    }
+  }
+
   async #drain(): Promise<void> {
     await Promise.allSettled(this.#tasks);
     const children = [...this.#children.keys()];
@@ -386,27 +434,8 @@ export class Lifetime {
         .filter((dependent) => dependent.closing)
         .map((dependent) => dependent.close()),
     );
-    if (this.#children.size === 0 && this.#dependents.size === 0) {
-      while (this.#resources.length) {
-        const resource = this.#resources[this.#resources.length - 1]!;
-        if (!resource.attempted) {
-          resource.attempted = true;
-          try {
-            const result = await resource.cleanup!();
-            if (result?.error !== undefined)
-              this.#record("cleanup", result.error);
-            if (result === undefined || result.status === "released")
-              resource.released = true;
-          } catch (error) {
-            this.#record("cleanup", error);
-          }
-        }
-        if (!resource.released) break;
-        resource.cleanup = undefined;
-        resource.confirm = undefined;
-        this.#resources.pop();
-      }
-    }
+    if (this.#children.size === 0 && this.#dependents.size === 0)
+      await this.#releaseResources();
     const pending = [...this.#children.keys()].map(
       (child) => `child:${child.label}`,
     );

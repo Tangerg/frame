@@ -58,7 +58,7 @@ type binding struct {
 	service  Service
 }
 
-func mismatch() error { return &Problem{profile.Errors.Contract, "service contract mismatch"} }
+func mismatch() error { return &Problem{wire.Errors.Contract, "service contract mismatch"} }
 
 type deliveries struct {
 	mu    sync.Mutex
@@ -104,7 +104,7 @@ func (d *deliveries) receive(ctx context.Context, raw jsontext.Value) (jsontext.
 	}); err != nil {
 		return nil, err
 	}
-	return jsontext.Value("true"), nil
+	return jsontext.Value(acknowledged), nil
 }
 
 type remote struct {
@@ -151,7 +151,7 @@ func (r *remote) invoke(ctx context.Context, invocation portable.Invocation, emi
 		params.Stream = token
 		ctx = call.ctx
 	}
-	if err := r.peer.request(ctx, profile.Methods.Call, params, &result); err != nil {
+	if err := r.peer.request(ctx, wire.Methods.Call, params, &result); err != nil {
 		return result, err
 	}
 	if err := method.ValidateOutput(result.Bytes()); err != nil {
@@ -203,7 +203,7 @@ func sendStream(ctx context.Context, conn *peer, source StreamingService, method
 			if err := method.ValidateChunk(chunk.Bytes()); err != nil {
 				return err
 			}
-			return conn.acknowledge(delivery, profile.Methods.Chunk, chunkParams{params.Stream, chunk})
+			return conn.acknowledge(delivery, wire.Methods.Chunk, chunkParams{params.Stream, chunk})
 		})
 	})
 }

@@ -46,6 +46,11 @@ func validateType(target reflect.Type, visited map[reflect.Type]bool) error {
 		}
 		return nil
 	}
+	return validateShape(target, visited)
+}
+
+// validateShape admits a type whose JSON shape follows from its kind alone.
+func validateShape(target reflect.Type, visited map[reflect.Type]bool) error {
 	switch target.Kind() {
 	case reflect.Slice, reflect.Array:
 		if target.Elem().Kind() == reflect.Uint8 {

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+
+	"github.com/Tangerg/frame/internal/nilness"
 )
 
 // Slots bind an author's language type to the same declaration inspected by the host.
@@ -42,7 +44,7 @@ type OutputSlot interface{ exportDeclaration() ExportDeclaration }
 func Imports(slots ...ImportSlot) []ImportDeclaration {
 	out := make([]ImportDeclaration, len(slots))
 	for i, s := range slots {
-		if !nilValue(s) {
+		if !nilness.Is(s) {
 			out[i] = s.importDeclaration()
 		}
 	}
@@ -51,7 +53,7 @@ func Imports(slots ...ImportSlot) []ImportDeclaration {
 func Exports(slots ...OutputSlot) []ExportDeclaration {
 	out := make([]ExportDeclaration, len(slots))
 	for i, s := range slots {
-		if !nilValue(s) {
+		if !nilness.Is(s) {
 			out[i] = s.exportDeclaration()
 		}
 	}

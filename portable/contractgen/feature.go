@@ -33,6 +33,38 @@ type featureArtifacts struct {
 	projection  *projection
 }
 
+// schemaFile is the published JSON Schema document that method references
+// address.
+const schemaFile = "schema.json"
+
+func schemaReference(definition string) string { return schemaFile + RefPrefix + definition }
+
+// methodFrame is one schema position of a method. Its suffix qualifies the
+// method's root symbol, so the frames of one method claim names as a family.
+type methodFrame string
+
+const (
+	frameInput  methodFrame = "Input"
+	frameOutput methodFrame = "Output"
+	frameChunk  methodFrame = "Chunk"
+)
+
+var methodFrames = []methodFrame{frameInput, frameOutput, frameChunk}
+
+func (f methodFrame) definition(root string) string { return root + string(f) }
+
+// schema returns the frame's schema; an absent chunk schema is empty.
+func (f methodFrame) schema(descriptor portable.MethodDescriptor) jsontext.Value {
+	switch f {
+	case frameInput:
+		return descriptor.Input
+	case frameOutput:
+		return descriptor.Output
+	default:
+		return descriptor.Stream
+	}
+}
+
 // Local definition names identify nodes only within their original method frame.
 // Equal spellings or bodies cannot establish identity across reference scopes.
 type schemaDefinition struct {
@@ -52,10 +84,8 @@ func buildFeature(data []byte) (*featureArtifacts, error) {
 	if err != nil {
 		return nil, err
 	}
-	descriptor := contract.Descriptor()
-	descriptors := descriptor.Methods
+	descriptors := contract.Descriptor().Methods
 	artifacts := &featureArtifacts{definitions: make(map[string]jsontext.Value), capability: contract}
-
 	roots, renamed, err := featureNames(descriptors)
 	if err != nil {
 		return nil, err
@@ -65,30 +95,30 @@ func buildFeature(data []byte) (*featureArtifacts, error) {
 			return nil, fmt.Errorf("feature contracts: method description is required for %q", descriptor.Name)
 		}
 		root := roots[descriptor.Name]
-		method := featureMethod{Name: descriptor.Name, Kind: descriptor.Kind, Target: descriptor.Target, Description: descriptor.Description, Input: "schema.json" + RefPrefix + root + "Input", Output: "schema.json" + RefPrefix + root + "Output"}
+		method := featureMethod{Name: descriptor.Name, Kind: descriptor.Kind, Target: descriptor.Target, Description: descriptor.Description, Input: schemaReference(frameInput.definition(root)), Output: schemaReference(frameOutput.definition(root))}
 		if len(descriptor.Stream) != 0 {
-			method.Stream = "schema.json" + RefPrefix + root + "Chunk"
-			if err := addFeatureSchema(artifacts, root+"Chunk", descriptor.Stream, renamed); err != nil {
-				return nil, err
-			}
+			method.Stream = schemaReference(frameChunk.definition(root))
 		}
-		for _, frame := range []struct {
-			name string
-			raw  jsontext.Value
-		}{{root + "Input", descriptor.Input}, {root + "Output", descriptor.Output}} {
-			if err := addFeatureSchema(artifacts, frame.name, frame.raw, renamed); err != nil {
-				return nil, err
+		for _, frame := range methodFrames {
+			if raw := frame.schema(descriptor); len(raw) != 0 {
+				if err := addFeatureSchema(artifacts, frame.definition(root), raw, renamed); err != nil {
+					return nil, err
+				}
 			}
 		}
 		artifacts.methods = append(artifacts.methods, method)
 	}
-	graph, err := newProjection(artifacts.definitions)
+	artifacts.projection, err = newProjection(artifacts.definitions)
 	if err != nil {
 		return nil, err
 	}
-	artifacts.projection = graph
-	definitions := graph.definitions
-	emitter := newTypeScript(graph)
+	artifacts.typescript = artifacts.renderTypeScript()
+	return artifacts, nil
+}
+
+func (f *featureArtifacts) renderTypeScript() string {
+	definitions := f.projection.definitions
+	emitter := newTypeScript(f.projection)
 	var declarations strings.Builder
 	for _, name := range slices.Sorted(maps.Keys(definitions)) {
 		declarations.WriteString(emitter.Definition(emitter.names[definitions[name]], definitions[name]))
@@ -103,21 +133,21 @@ func buildFeature(data []byte) (*featureArtifacts, error) {
 	line("")
 	output.WriteString(declarations.String())
 	typeName := func(reference string) string {
-		return emitter.names[definitions[strings.TrimPrefix(reference, "schema.json"+RefPrefix)]]
+		return emitter.names[definitions[strings.TrimPrefix(reference, schemaReference(""))]]
 	}
 	line("export interface %s {", methodInputs)
-	for _, method := range artifacts.methods {
+	for _, method := range f.methods {
 		line("  %s: %s;", TypeScriptStringLiteral(method.Name), typeName(method.Input))
 	}
 	line("}")
 	line("export interface %s {", methodOutputs)
-	for _, method := range artifacts.methods {
+	for _, method := range f.methods {
 		line("  %s: %s;", TypeScriptStringLiteral(method.Name), typeName(method.Output))
 	}
 	line("}")
-	if slices.ContainsFunc(artifacts.methods, func(method featureMethod) bool { return method.Stream != "" }) {
+	if slices.ContainsFunc(f.methods, func(method featureMethod) bool { return method.Stream != "" }) {
 		line("export interface %s {", methodChunks)
-		for _, method := range artifacts.methods {
+		for _, method := range f.methods {
 			if method.Stream != "" {
 				line("  %s: %s;", TypeScriptStringLiteral(method.Name), typeName(method.Stream))
 			}
@@ -125,7 +155,7 @@ func buildFeature(data []byte) (*featureArtifacts, error) {
 		line("}")
 	}
 	line("export const %s = {", methodsConstant)
-	for _, method := range artifacts.methods {
+	for _, method := range f.methods {
 		stream := ""
 		if method.Stream != "" {
 			stream = ", streaming: true"
@@ -133,27 +163,26 @@ func buildFeature(data []byte) (*featureArtifacts, error) {
 		line("  %s: { kind: %s, target: %s%s },", RuntimePropertyKey(method.Name), TypeScriptStringLiteral(string(method.Kind)), TypeScriptStringLiteral(method.Target), stream)
 	}
 	line("} as const;")
-	line("export const %s = { protocol: %s, reference: %s, contract: %s } as const;", capabilityConstant, TypeScriptStringLiteral(descriptor.Protocol), TypeScriptStringLiteral(descriptor.Reference), TypeScriptStringLiteral(contract.Identity().Digest().String()))
-	line("export const %s = %s;", capabilityJSONConstant, TypeScriptStringLiteral(string(contract.Identity().Bytes())))
-	artifacts.typescript = output.String()
-	return artifacts, nil
+	descriptor := f.capability.Descriptor()
+	identity := f.capability.Identity()
+	line("export const %s = { protocol: %s, reference: %s, contract: %s } as const;", capabilityConstant, TypeScriptStringLiteral(descriptor.Protocol), TypeScriptStringLiteral(descriptor.Reference), TypeScriptStringLiteral(identity.Digest().String()))
+	line("export const %s = %s;", capabilityJSONConstant, TypeScriptStringLiteral(string(identity.Bytes())))
+	return output.String()
 }
 
 func scopedDefinitions(descriptors []portable.MethodDescriptor, roots map[string]string) (map[schemaDefinition]jsontext.Value, error) {
 	definitions := make(map[schemaDefinition]jsontext.Value)
 	for _, descriptor := range descriptors {
 		root := roots[descriptor.Name]
-		for _, frame := range []struct {
-			name string
-			raw  jsontext.Value
-		}{{root + "Input", descriptor.Input}, {root + "Output", descriptor.Output}, {root + "Chunk", descriptor.Stream}} {
-			if len(frame.raw) == 0 || frame.raw.Kind() == 't' || frame.raw.Kind() == 'f' {
+		for _, frame := range methodFrames {
+			raw := frame.schema(descriptor)
+			if len(raw) == 0 || raw.Kind() == 't' || raw.Kind() == 'f' {
 				continue
 			}
 			var document struct {
 				Defs map[string]jsontext.Value `json:"$defs"`
 			}
-			if err := json.Unmarshal(frame.raw, &document); err != nil {
+			if err := json.Unmarshal(raw, &document); err != nil {
 				return nil, err
 			}
 			for name, body := range document.Defs {
@@ -161,7 +190,7 @@ func scopedDefinitions(descriptors []portable.MethodDescriptor, roots map[string
 				if err != nil {
 					return nil, err
 				}
-				definitions[schemaDefinition{root: frame.name, name: name}] = canonical.Bytes()
+				definitions[schemaDefinition{root: frame.definition(root), name: name}] = canonical.Bytes()
 			}
 		}
 	}
@@ -170,12 +199,16 @@ func scopedDefinitions(descriptors []portable.MethodDescriptor, roots map[string
 
 func featureNames(descriptors []portable.MethodDescriptor) (map[string]string, map[schemaDefinition]string, error) {
 	roots := make(map[string]string, len(descriptors))
+	suffixes := make([]string, len(methodFrames))
+	for i, frame := range methodFrames {
+		suffixes[i] = string(frame)
+	}
 	symbols := newSymbolTable()
 	descriptors = slices.Clone(descriptors)
 	slices.SortFunc(descriptors, func(left, right portable.MethodDescriptor) int { return strings.Compare(left.Name, right.Name) })
 	for _, descriptor := range descriptors {
 		root := goFeatureIdentifier(descriptor.Name[strings.LastIndex(descriptor.Name, "/")+1:])
-		roots[descriptor.Name] = symbols.claimFamily(root, "Input", "Output", "Chunk")
+		roots[descriptor.Name] = symbols.claimFamily(root, suffixes...)
 	}
 	keys, err := scopedDefinitions(descriptors, roots)
 	if err != nil {
@@ -275,11 +308,11 @@ func pureDefinitionReference(raw jsontext.Value) (string, bool, error) {
 	if err := json.Unmarshal(raw, &schema); err != nil {
 		return "", false, err
 	}
-	if len(schema) != 1 || len(schema["$ref"]) == 0 {
+	if len(schema) != 1 || len(schema[portable.KeywordRef]) == 0 {
 		return "", false, nil
 	}
 	var ref string
-	if err := json.Unmarshal(schema["$ref"], &ref); err != nil {
+	if err := json.Unmarshal(schema[portable.KeywordRef], &ref); err != nil {
 		return "", false, err
 	}
 	path, err := referencePath(ref)
@@ -290,7 +323,7 @@ func pureDefinitionReference(raw jsontext.Value) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	if len(tokens) == 2 && tokens[0] == "$defs" {
+	if len(tokens) == 2 && tokens[0] == portable.KeywordDefs {
 		return tokens[1], true, nil
 	}
 	return "", false, nil
@@ -306,18 +339,10 @@ func addFeatureSchema(artifacts *featureArtifacts, root string, raw jsontext.Val
 		artifacts.definitions[root] = raw
 		return nil
 	}
-	var document map[string]jsontext.Value
-	if err := json.Unmarshal(raw, &document); err != nil {
+	document, definitions, err := detachDefinitions(raw)
+	if err != nil {
 		return err
 	}
-	var definitions map[string]jsontext.Value
-	if defs := document["$defs"]; len(defs) != 0 {
-		if err := json.Unmarshal(defs, &definitions); err != nil {
-			return err
-		}
-	}
-	delete(document, "$defs")
-	delete(document, "$schema")
 	renamed := make(map[string]string, len(definitions))
 	for name := range definitions {
 		renamed[name] = names[schemaDefinition{root: root, name: name}]
@@ -347,7 +372,7 @@ func addFeatureSchema(artifacts *featureArtifacts, root string, raw jsontext.Val
 		if err != nil {
 			return err
 		}
-		updated, err = json.Marshal(map[string]string{"$ref": RefPrefix + matching[0]})
+		updated, err = json.Marshal(map[string]string{portable.KeywordRef: RefPrefix + matching[0]})
 		if err != nil {
 			return err
 		}
@@ -360,6 +385,24 @@ func addFeatureSchema(artifacts *featureArtifacts, root string, raw jsontext.Val
 	}
 	artifacts.definitions[root] = updated
 	return nil
+}
+
+// detachDefinitions splits a schema object into its body and its local
+// definitions. The dialect declaration is dropped because schema.json owns it.
+func detachDefinitions(raw jsontext.Value) (map[string]jsontext.Value, map[string]jsontext.Value, error) {
+	var document map[string]jsontext.Value
+	if err := json.Unmarshal(raw, &document); err != nil {
+		return nil, nil, err
+	}
+	var definitions map[string]jsontext.Value
+	if defs := document[portable.KeywordDefs]; len(defs) != 0 {
+		if err := json.Unmarshal(defs, &definitions); err != nil {
+			return nil, nil, err
+		}
+	}
+	delete(document, portable.KeywordDefs)
+	delete(document, portable.KeywordSchema)
+	return document, definitions, nil
 }
 
 func projectFeatureDefinitions(definitions map[string]jsontext.Value, renamed map[string]string, root string) (map[string]jsontext.Value, error) {
@@ -386,14 +429,14 @@ func rewriteFeatureRefs(raw jsontext.Value, renamed map[string]string, root stri
 }
 
 func rewriteFeatureSchema(raw jsontext.Value, renamed map[string]string, root string, profile portable.SchemaProfile) (jsontext.Value, error) {
-	if string(raw) == "true" || string(raw) == "false" {
+	if string(raw) == jsonTrue || string(raw) == jsonFalse {
 		return raw, nil
 	}
 	var node map[string]jsontext.Value
 	if err := json.Unmarshal(raw, &node); err != nil {
 		return nil, err
 	}
-	if reference := node["$ref"]; len(reference) != 0 {
+	if reference := node[portable.KeywordRef]; len(reference) != 0 {
 		var ref string
 		if err := json.Unmarshal(reference, &ref); err != nil {
 			return nil, err
@@ -406,13 +449,13 @@ func rewriteFeatureSchema(raw jsontext.Value, renamed map[string]string, root st
 		if err != nil {
 			return nil, err
 		}
-		target := []string{"$defs", root}
-		if len(tokens) >= 2 && tokens[0] == "$defs" {
+		target := []string{portable.KeywordDefs, root}
+		if len(tokens) >= 2 && tokens[0] == portable.KeywordDefs {
 			name := renamed[tokens[1]]
 			if name == "" {
 				return nil, fmt.Errorf("feature contracts: unknown definition %q", tokens[1])
 			}
-			target = []string{"$defs", name}
+			target = []string{portable.KeywordDefs, name}
 			tokens = tokens[2:]
 		}
 		target = append(target, tokens...)
@@ -424,7 +467,7 @@ func rewriteFeatureSchema(raw jsontext.Value, renamed map[string]string, root st
 		if err != nil {
 			return nil, err
 		}
-		node["$ref"] = encoded
+		node[portable.KeywordRef] = encoded
 	}
 	for key, child := range node {
 		updated, err := rewriteFeatureChildren(child, profile.Keywords[key].Children, renamed, root, profile)

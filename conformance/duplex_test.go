@@ -248,7 +248,7 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	attempts, err := store.Attempts(ctx)
-	if err != nil || len(attempts) != 1 || !attempts[0].Released || attempts[0].PendingHandoff {
+	if err != nil || len(attempts) != 1 || attempts[0].State != sqlite.AttemptReleased {
 		t.Fatalf("unsettled original execution: %v %v", attempts, err)
 	}
 }

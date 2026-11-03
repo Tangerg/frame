@@ -1,0 +1,104 @@
+{
+  "request": {
+    "required": [
+      "id",
+      "method",
+      "params"
+    ],
+    "optional": []
+  },
+  "cancel": {
+    "required": [
+      "method",
+      "params"
+    ],
+    "optional": []
+  },
+  "result": {
+    "required": [
+      "id",
+      "result"
+    ],
+    "optional": []
+  },
+  "failure": {
+    "required": [
+      "id",
+      "error"
+    ],
+    "optional": []
+  },
+  "problem": {
+    "required": [
+      "code",
+      "message"
+    ],
+    "optional": []
+  },
+  "hello": {
+    "required": [
+      "version",
+      "maxFrameBytes"
+    ],
+    "optional": []
+  },
+  "preparation": {
+    "required": [
+      "imports"
+    ],
+    "optional": []
+  },
+  "grant": {
+    "required": [
+      "handle",
+      "source"
+    ],
+    "optional": [
+      "valueContract"
+    ]
+  },
+  "source": {
+    "required": [
+      "installationId",
+      "release",
+      "unitId",
+      "export",
+      "contract"
+    ],
+    "optional": []
+  },
+  "contract": {
+    "required": [
+      "name",
+      "version",
+      "digest",
+      "kind",
+      "mode"
+    ],
+    "optional": []
+  },
+  "call": {
+    "required": [
+      "handle",
+      "member",
+      "input"
+    ],
+    "optional": [
+      "commandID",
+      "stream"
+    ]
+  },
+  "chunk": {
+    "required": [
+      "stream",
+      "value"
+    ],
+    "optional": []
+  },
+  "cancelled": {
+    "required": [
+      "id"
+    ],
+    "optional": []
+  }
+}

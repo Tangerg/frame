@@ -17,6 +17,12 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame/examples/document"
+	"github.com/Tangerg/frame/internal/localfile"
+)
+
+const (
+	shutdownTimeout   = 5 * time.Second
+	readHeaderTimeout = 5 * time.Second
 )
 
 func main() {
@@ -34,7 +40,7 @@ func run() (returned error) {
 	listen := flag.String("listen", "127.0.0.1:8088", "HTTP listen address")
 	web := flag.String("web", "", "built document Web directory")
 	flag.Parse()
-	if err := os.MkdirAll(*state, 0700); err != nil {
+	if err := os.MkdirAll(*state, localfile.PrivateDirectoryMode); err != nil {
 		return err
 	}
 	app, err := document.Open(context.Background(), document.Config{Database: filepath.Join(*state, "document.db"), ContentDirectory: filepath.Join(*state, "content"), DocumentsDirectory: *directory})
@@ -42,12 +48,12 @@ func run() (returned error) {
 		return err
 	}
 	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		returned = errors.Join(returned, app.Close(ctx))
 	}()
 	if *id == "" {
-		*id = randomToken()
+		*id = rand.Text()
 	}
 	var task document.Task
 	switch *command {
@@ -77,8 +83,8 @@ func serve(app *document.App, state, address, web string) error {
 	tokenPath := filepath.Join(state, "application-token")
 	token, err := os.ReadFile(tokenPath)
 	if errors.Is(err, os.ErrNotExist) {
-		token = []byte(randomToken())
-		err = os.WriteFile(tokenPath, token, 0600)
+		token = []byte(applicationToken())
+		err = os.WriteFile(tokenPath, token, localfile.PrivateFileMode)
 	}
 	if err != nil {
 		return err
@@ -91,7 +97,7 @@ func serve(app *document.App, state, address, web string) error {
 	if err != nil {
 		return err
 	}
-	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: readHeaderTimeout}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	fmt.Fprintf(os.Stderr, "Document workbench listening at http://%s; application token is in %s\n", listener.Addr(), tokenPath)
@@ -105,14 +111,15 @@ func serve(app *document.App, state, address, web string) error {
 		return err
 	case <-ctx.Done():
 	}
-	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdown, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	return server.Shutdown(shutdown)
 }
-func randomToken() string {
-	var value [24]byte
-	if _, err := rand.Read(value[:]); err != nil {
-		panic(err)
-	}
-	return hex.EncodeToString(value[:])
+
+// applicationToken returns a 256-bit secret, more than the minimum the
+// document handler accepts.
+func applicationToken() string {
+	var secret [32]byte
+	_, _ = rand.Read(secret[:])
+	return hex.EncodeToString(secret[:])
 }

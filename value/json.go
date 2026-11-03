@@ -1,136 +1,63 @@
 package value
 
 import (
-	"bytes"
+	jsonv1 "encoding/json"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
-	"fmt"
-	"maps"
-	"reflect"
-	"slices"
+	"errors"
 )
 
-// Decode into a fresh value so a refused shape cannot partially change its owner.
-func DecodeValue(raw jsontext.Value, dst any, path string) error {
-	destination := reflect.ValueOf(dst)
-	if !destination.IsValid() || destination.Kind() != reflect.Pointer || destination.IsNil() {
-		return fmt.Errorf("%s: destination must be a non-nil pointer", path)
+// JSON retains the admitted document. Object order and spelling do not change
+// identity, but numeric lexemes do. Its zero value represents absence.
+type JSON struct{ document string }
+
+func ParseJSON(data []byte) (JSON, error) {
+	value := jsontext.Value(append([]byte(nil), data...))
+	if err := value.Format(jsontext.ReorderRawObjects(true)); err != nil {
+		return JSON{}, err
 	}
-	target := destination.Type().Elem()
-	if err := ValidateType(target); err != nil {
-		return fmt.Errorf("%s: %w", path, err)
-	}
-	value := reflect.New(target)
-	if err := json.Unmarshal(raw, value.Interface(), json.RejectUnknownMembers(true), Numbers()); err != nil {
-		return fmt.Errorf("decode %s: %w", path, err)
-	}
-	if err := validateValueShape(raw, target, ""); err != nil {
-		return fmt.Errorf("%s: %w", path, err)
-	}
-	destination.Elem().Set(value.Elem())
-	return nil
+	return JSON{document: string(value)}, nil
 }
 
-// ShapeError keeps an authored field address available to protocol error projection.
-type ShapeError struct {
-	Field  string
-	Detail string
+func EncodeJSON[T any](value T) (JSON, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return JSON{}, err
+	}
+	return ParseJSON(data)
 }
 
-func (e *ShapeError) Error() string {
-	return e.Field + " " + e.Detail
-}
-
-// validateValueShape keeps typed decoding aligned with the generated schema.
-// Pointers in protocol DTOs represent omission, not nullable JSON fields; the
-// standard decoder otherwise collapses both spellings to nil. Opaque JSON
-// values remain open and may contain null by contract.
-func validateValueShape(raw jsontext.Value, target reflect.Type, path string) error {
-	for target.Kind() == reflect.Pointer {
-		target = target.Elem()
-	}
-	if opaqueType(target) {
-		return nil
-	}
-	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return &ShapeError{Field: path, Detail: "must not be null"}
-	}
-	if customDecoder(target) {
-		return nil
-	}
-
-	switch target.Kind() {
-	case reflect.Struct:
-		return validateStructShape(raw, target, path)
-	case reflect.Slice, reflect.Array:
-		if target.Elem().Kind() == reflect.Uint8 {
-			return nil
-		}
-		return validateSequenceShape(raw, target.Elem(), path)
-	case reflect.Map:
-		return validateMapShape(raw, target.Elem(), path)
+func (j JSON) Validate() error {
+	if j.document == "" {
+		return errors.New("json value: admitted value is required")
 	}
 	return nil
 }
 
-func validateStructShape(raw jsontext.Value, target reflect.Type, path string) error {
-	var object map[string]jsontext.Value
-	if err := json.Unmarshal(raw, &object); err != nil {
-		return fmt.Errorf("decode %s: %w", path, err)
+func (j JSON) String() string        { return j.document }
+func (j JSON) Bytes() jsontext.Value { return []byte(j.document) }
+
+func (j JSON) Digest() Digest {
+	if j.document == "" {
+		return Digest{}
 	}
-	fields, err := declaredFields(target, make(map[reflect.Type]bool))
+	return Hash([]byte(j.document))
+}
+
+func (j JSON) MarshalJSON() ([]byte, error) {
+	if err := j.Validate(); err != nil {
+		return nil, err
+	}
+	return []byte(j.document), nil
+}
+
+func (j *JSON) UnmarshalJSON(data []byte) error {
+	value, err := ParseJSON(data)
 	if err != nil {
 		return err
 	}
-	for _, field := range fields {
-		value, present := object[field.Name]
-		if !present {
-			if !field.Optional {
-				return &ShapeError{Field: fieldPath(path, field.Name), Detail: "is required"}
-			}
-			continue
-		}
-		if err := validateValueShape(value, field.Type, fieldPath(path, field.Name)); err != nil {
-			return err
-		}
-	}
+	*j = value
 	return nil
 }
 
-func validateSequenceShape(raw jsontext.Value, element reflect.Type, path string) error {
-	var values []jsontext.Value
-	if err := json.Unmarshal(raw, &values); err != nil {
-		return fmt.Errorf("decode %s: %w", path, err)
-	}
-	for index, value := range values {
-		if err := validateValueShape(value, element, fmt.Sprintf("%s[%d]", path, index)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func validateMapShape(raw jsontext.Value, element reflect.Type, path string) error {
-	var values map[string]jsontext.Value
-	if err := json.Unmarshal(raw, &values); err != nil {
-		return fmt.Errorf("decode %s: %w", path, err)
-	}
-	for _, key := range slices.Sorted(maps.Keys(values)) {
-		if err := validateValueShape(values[key], element, MapPath(path, key)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func fieldPath(parent, field string) string {
-	if parent == "" {
-		return field
-	}
-	return parent + "." + field
-}
-
-// MapPath quotes property names so a map key cannot alias a nested field path.
-func MapPath(parent, key string) string {
-	return fmt.Sprintf("%s[%q]", parent, key)
-}
+func (JSON) JSONSchemaModel() any { return jsonv1.RawMessage{} }

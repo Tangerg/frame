@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"errors"
-	"fmt"
 	"slices"
 
 	"github.com/Tangerg/frame"
@@ -28,10 +27,10 @@ type Attempt struct {
 }
 
 func (a Attempt) Validate() error {
-	if !validID(a.ID) || !validID(a.Realm) || a.Epoch == 0 || a.Profile.Validate() != nil {
+	if !frame.ValidName(a.ID) || !frame.ValidName(a.Realm) || a.Epoch == 0 || a.Profile.Validate() != nil {
 		return errors.New("sqlite: invalid execution attempt")
 	}
-	if a.Parent != "" && !validID(a.Parent) {
+	if a.Parent != "" && !frame.ValidName(a.Parent) {
 		return errors.New("sqlite: invalid parent attempt")
 	}
 	if a.Profile == frame.BrowserJS && (a.Scope.Validate() != nil || a.ScopeGeneration == 0 || a.Generation == 0) {
@@ -59,12 +58,28 @@ type ExitProof struct {
 	Evidence  []byte `json:"evidence"`
 }
 
-type AttemptRecord struct {
-	Attempt        Attempt    `json:"attempt"`
-	Released       bool       `json:"released"`
-	PendingHandoff bool       `json:"pendingHandoff"`
-	Proof          *ExitProof `json:"proof,omitempty"`
+func (p ExitProof) proves(attemptID string, maxEvidenceBytes int) bool {
+	return frame.ValidName(attemptID) && p.AttemptID == attemptID && frame.ValidName(p.Realm) && frame.ValidName(p.ExitID) && frame.ValidName(p.Kind) &&
+		len(p.Evidence) != 0 && len(p.Evidence) <= maxEvidenceBytes
 }
+
+// LocalExit is the exit proof of an attempt that never started: its driver
+// knows that outcome without external evidence.
+func (a Attempt) LocalExit(kind, evidence string) ExitProof {
+	return ExitProof{AttemptID: a.ID, Realm: a.Realm, ExitID: a.ID + localExitSeparator + kind, Kind: kind, Evidence: []byte(evidence)}
+}
+
+const localExitSeparator = ":"
+
+type AttemptRecord struct {
+	Attempt Attempt      `json:"attempt"`
+	State   AttemptState `json:"state"`
+	Proof   *ExitProof   `json:"proof,omitempty"`
+}
+
+// ExitProven reports a recorded exit proof, even while its handoff to the
+// runner is still unacknowledged.
+func (r AttemptRecord) ExitProven() bool { return r.State != AttemptApproved }
 
 // RecordAttempt must complete before the runner or Realm can create anything.
 // Reusing its identity never authorizes a second creation or a wider binding.
@@ -83,38 +98,32 @@ func (s *Store) RecordAttempt(ctx context.Context, attempt Attempt) error {
 		return errors.New("sqlite: attempt exceeds its byte limit")
 	}
 	return s.admission.Under(ctx, func() error {
-		err := s.transaction(ctx, func(tx Executor) error {
-			var previous []byte
-			err := tx.QueryRowContext(ctx, `SELECT request FROM frame_attempts WHERE id=?`, attempt.ID).Scan(&previous)
-			if err == nil {
-				if !bytes.Equal(previous, encoded) {
-					return ErrConflict
-				}
-				return nil
-			}
-			if !errors.Is(err, sql.ErrNoRows) {
-				return err
-			}
-			if attempt.Parent != "" {
-				var state attemptState
-				if err := tx.QueryRowContext(ctx, `SELECT state FROM frame_attempts WHERE id=?`, attempt.Parent).Scan(&state); err != nil {
-					return err
-				}
-				if err := state.validate(); err != nil {
-					return err
-				}
-				if state != attemptApproved {
-					return frame.ErrClosed
-				}
-			}
-			_, err = tx.ExecContext(ctx, `INSERT INTO frame_attempts(id,epoch,request,request_digest,state) VALUES(?,?,?,?,?)`, attempt.ID, attempt.Epoch, encoded, value.Hash(encoded), attemptApproved)
-			return err
-		})
-		if err != nil && !errors.Is(err, ErrConflict) && !errors.Is(err, frame.ErrClosed) {
-			s.admission.RequireRecovery(err)
-		}
-		return err
+		return s.fenceUnlessRefused(s.transaction(ctx, func(tx Executor) error {
+			return recordOnce(func() (bool, error) {
+				var previous []byte
+				err := tx.QueryRowContext(ctx, `SELECT request FROM frame_attempts WHERE id=?`, attempt.ID).Scan(&previous)
+				return bytes.Equal(previous, encoded), err
+			}, func() error { return insertAttempt(ctx, tx, attempt, encoded) })
+		}))
 	})
+}
+
+// insertAttempt approves a child attempt only while its parent is approved.
+func insertAttempt(ctx context.Context, tx Executor, attempt Attempt, encoded []byte) error {
+	if attempt.Parent != "" {
+		var state AttemptState
+		if err := tx.QueryRowContext(ctx, `SELECT state FROM frame_attempts WHERE id=?`, attempt.Parent).Scan(&state); err != nil {
+			return err
+		}
+		if err := state.validate(); err != nil {
+			return err
+		}
+		if state != AttemptApproved {
+			return frame.ErrClosed
+		}
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO frame_attempts(id,epoch,request,request_digest,state) VALUES(?,?,?,?,?)`, attempt.ID, attempt.Epoch, encoded, value.Hash(encoded), AttemptApproved)
+	return err
 }
 
 const attemptRecords = `SELECT request,request_digest,state,proof FROM frame_attempts`
@@ -124,7 +133,7 @@ func (s *Store) Attempts(ctx context.Context) ([]AttemptRecord, error) {
 	return readRecords(ctx, s, attemptRecords+" ORDER BY id", decodeAttempt)
 }
 func (s *Store) PendingAttempts(ctx context.Context) ([]AttemptRecord, error) {
-	return readRecords(ctx, s, attemptRecords+" WHERE state IN (?,?) ORDER BY id", decodeAttempt, attemptApproved, attemptHandoff)
+	return readRecords(ctx, s, attemptRecords+" WHERE state IN (?,?) ORDER BY id", decodeAttempt, AttemptApproved, AttemptHandoff)
 }
 func (s *Store) Attempt(ctx context.Context, id string) (AttemptRecord, error) {
 	return readRecord(ctx, s, attemptRecords+" WHERE id=?", decodeAttempt, id)
@@ -137,7 +146,7 @@ type protectedRecord struct {
 
 func decodeAttempt(row protectedRecord) (AttemptRecord, error) {
 	var record AttemptRecord
-	state := attemptState(row.state)
+	state := AttemptState(row.state)
 	if err := state.validate(); err != nil {
 		return record, err
 	}
@@ -147,9 +156,8 @@ func decodeAttempt(row protectedRecord) (AttemptRecord, error) {
 	if err := record.Attempt.Validate(); err != nil {
 		return record, err
 	}
-	record.PendingHandoff = state == attemptHandoff
-	record.Released = record.PendingHandoff || state == attemptReleased
-	if record.Released {
+	record.State = state
+	if record.ExitProven() {
 		if err := jsonv2.Unmarshal(row.proof, &record.Proof, jsonv2.RejectUnknownMembers(true)); err != nil {
 			return record, err
 		}
@@ -216,7 +224,7 @@ func scanRecords[T any](ctx context.Context, tx Reader, query string, decode fun
 func (s *Store) ExecutionDependencies(ctx context.Context) ([]frame.Dependency, error) {
 	var dependencies []frame.Dependency
 	err := s.Read(ctx, func(tx Reader) error {
-		attempts, err := scanRecords(ctx, tx, protectedAttempts, decodeAttempt, attemptApproved)
+		attempts, err := scanRecords(ctx, tx, protectedAttempts, decodeAttempt, AttemptApproved)
 		if err != nil {
 			return err
 		}
@@ -239,17 +247,17 @@ func (s *Store) ExecutionDependencies(ctx context.Context) ([]frame.Dependency, 
 }
 
 func (s *Store) ReleaseAttempt(ctx context.Context, id string, proof ExitProof) error {
-	return s.recordRelease(ctx, id, proof, attemptReleased)
+	return s.recordRelease(ctx, id, proof, AttemptReleased)
 }
 
 // AcceptExit commits the original proof before its runner may reclaim capacity.
 // Recovery retains the outstanding acknowledgement across either process crashing.
 func (s *Store) AcceptExit(ctx context.Context, id string, proof ExitProof) error {
-	return s.recordRelease(ctx, id, proof, attemptHandoff)
+	return s.recordRelease(ctx, id, proof, AttemptHandoff)
 }
 
-func (s *Store) recordRelease(ctx context.Context, id string, proof ExitProof, target attemptState) error {
-	if !validID(id) || proof.AttemptID != id || !validID(proof.Realm) || !validID(proof.ExitID) || !validID(proof.Kind) || len(proof.Evidence) == 0 || len(proof.Evidence) > s.maxRequestBytes {
+func (s *Store) recordRelease(ctx context.Context, id string, proof ExitProof, target AttemptState) error {
+	if !proof.proves(id, s.maxRequestBytes) {
 		return errors.New("sqlite: exact exit evidence is required")
 	}
 	encoded, err := json.Marshal(proof)
@@ -257,9 +265,9 @@ func (s *Store) recordRelease(ctx context.Context, id string, proof ExitProof, t
 		return err
 	}
 	return s.admission.Maintenance(ctx, func() error {
-		err := s.transaction(ctx, func(tx Executor) error {
+		return s.fenceUnlessRefused(s.transaction(ctx, func(tx Executor) error {
 			var request, previous []byte
-			var state attemptState
+			var state AttemptState
 			if err := tx.QueryRowContext(ctx, `SELECT request,state,proof FROM frame_attempts WHERE id=?`, id).Scan(&request, &state, &previous); err != nil {
 				return err
 			}
@@ -274,7 +282,7 @@ func (s *Store) recordRelease(ctx context.Context, id string, proof ExitProof, t
 			if err != nil {
 				return err
 			}
-			if state != attemptApproved && !bytes.Equal(previous, encoded) {
+			if state != AttemptApproved && !bytes.Equal(previous, encoded) {
 				return ErrConflict
 			}
 			if next == state {
@@ -282,19 +290,37 @@ func (s *Store) recordRelease(ctx context.Context, id string, proof ExitProof, t
 			}
 			_, err = tx.ExecContext(ctx, `UPDATE frame_attempts SET state=?,proof=? WHERE id=? AND state=?`, next, encoded, id, state)
 			return err
-		})
-		if err != nil && !errors.Is(err, ErrConflict) && !errors.Is(err, sql.ErrNoRows) {
-			s.admission.RequireRecovery(fmt.Errorf("persist exit proof: %w", err))
-		}
-		return err
+		}))
 	})
 }
 
-// Recovery and diagnostics may read without reopening admission. Mutations
-// require an Owner so they cannot bypass the recovery barrier.
-func (s *Store) Read(ctx context.Context, query func(Reader) error) error {
-	if query == nil {
-		return errors.New("sqlite: query is required")
+// RecordExitProof records a verified subordinate exit without releasing the
+// enclosing attempt. The driver owns scope validation; an acknowledgement can
+// be repeated only for these exact original bytes.
+func (s *Store) RecordExitProof(ctx context.Context, attemptID, scope, proofID string, evidence []byte) error {
+	if !frame.ValidName(attemptID) || !frame.ValidName(scope) || !frame.ValidName(proofID) || len(evidence) == 0 || len(evidence) > s.maxRequestBytes {
+		return frame.ErrInvalid
 	}
-	return s.transact(ctx, readTransaction, func(tx Executor) error { return query(readAccess{access: tx}) })
+	evidence = bytes.Clone(evidence)
+	return s.admission.Maintenance(ctx, func() error {
+		return s.transaction(ctx, func(tx Executor) error {
+			return recordOnce(func() (bool, error) {
+				var prior []byte
+				var priorID, priorScope string
+				err := tx.QueryRowContext(ctx, `SELECT scope,proof_id,evidence FROM frame_exit_proofs WHERE attempt_id=? AND (proof_id=? OR scope=?)`, attemptID, proofID, scope).Scan(&priorScope, &priorID, &prior)
+				return priorID == proofID && priorScope == scope && bytes.Equal(prior, evidence), err
+			}, func() error {
+				_, err := tx.ExecContext(ctx, `INSERT INTO frame_exit_proofs VALUES(?,?,?,?)`, attemptID, scope, proofID, evidence)
+				return err
+			})
+		})
+	})
+}
+
+func (s *Store) ExitProof(ctx context.Context, attemptID, proofID string) ([]byte, error) {
+	var evidence []byte
+	err := s.transaction(ctx, func(tx Executor) error {
+		return tx.QueryRowContext(ctx, `SELECT evidence FROM frame_exit_proofs WHERE attempt_id=? AND proof_id=?`, attemptID, proofID).Scan(&evidence)
+	})
+	return evidence, err
 }

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/cancellation"
+	"github.com/Tangerg/frame/internal/localfile"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -20,7 +22,7 @@ type ExitReceipt struct {
 }
 
 func (receipt ExitReceipt) valid() bool {
-	return validID(receipt.AttemptID) && receipt.Epoch != 0 && validID(receipt.RunnerID) && validID(receipt.ProofID)
+	return frame.ValidName(receipt.AttemptID) && receipt.Epoch != 0 && frame.ValidName(receipt.RunnerID) && frame.ValidName(receipt.ProofID)
 }
 func (receipt ExitReceipt) matches(o Observation) bool {
 	return o.State == Exited && o.Epoch == receipt.Epoch && o.RunnerID == receipt.RunnerID && o.ProofID == receipt.ProofID
@@ -59,7 +61,7 @@ func (s *Server) AcknowledgeExit(ctx context.Context, receipt ExitReceipt) error
 	if !receipt.valid() {
 		return frame.ErrInvalid
 	}
-	if err := ctx.Err(); err != nil {
+	if err := cancellation.Err(ctx); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -80,7 +82,7 @@ func (s *Server) AcknowledgeExit(ctx context.Context, receipt ExitReceipt) error
 	if _, outstanding := s.journal.Attempts[receipt.AttemptID]; !outstanding {
 		return nil
 	}
-	if err := os.MkdirAll(s.receiptDirectory(), 0700); err != nil {
+	if err := os.MkdirAll(s.receiptDirectory(), localfile.PrivateDirectoryMode); err != nil {
 		return err
 	}
 	if err := storeRecord(s.receiptPath(receipt.AttemptID), item); err != nil {

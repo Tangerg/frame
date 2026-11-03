@@ -15,159 +15,6 @@ import (
 	"github.com/Tangerg/frame/value"
 )
 
-func TestPreparationCapacityRetainsTheOriginalAdmission(t *testing.T) {
-	admission, err := frame.NewAdmissionWithLimits(frame.AdmissionLimits{MaxPreparations: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	original, abandon, err := admission.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer abandon()
-	if next, finish, err := admission.Begin(); !errors.Is(err, frame.ErrCapacity) || next != nil || finish != nil {
-		t.Fatalf("capacity evicted an original preparation: %v, finish=%v, %v", next, finish != nil, err)
-	}
-	published := false
-	if err := admission.Publish(t.Context(), original, nil, func() error {
-		published = true
-		return nil
-	}); err != nil || !published {
-		t.Fatalf("capacity refusal invalidated original publication: published=%v, %v", published, err)
-	}
-	_, finish, err := admission.Begin()
-	if err != nil {
-		t.Fatalf("original publication did not free preparation capacity: %v", err)
-	}
-	abandon()
-	if _, _, err := admission.Begin(); !errors.Is(err, frame.ErrCapacity) {
-		t.Fatalf("late original abandonment freed another preparation: %v", err)
-	}
-	finish()
-	finish()
-	last, abandonLast, err := admission.Begin()
-	if err != nil || last == nil {
-		t.Fatalf("original abandonment did not free capacity: %v", err)
-	}
-	abandonLast()
-	admission.RequireRecovery(errors.New("original preparation requires recovery"))
-	if next, finish, err := admission.Begin(); !errors.Is(err, frame.ErrRecoveryRequired) || next != nil || finish != nil {
-		t.Fatalf("new preparation escaped recovery: %v, finish=%v, %v", next, finish != nil, err)
-	}
-}
-
-func TestPreparationChangeCapacityCountsDistinctInstallations(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		changes []frame.InstallationID
-	}{
-		{"repeated installation", []frame.InstallationID{"first", "first", "first", "first"}},
-		{"exact distinct capacity", []frame.InstallationID{"first", "second", "first", "second"}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			admission, err := frame.NewAdmissionWithLimits(frame.AdmissionLimits{MaxPreparations: 1, MaxPreparationChanges: 2})
-			if err != nil {
-				t.Fatal(err)
-			}
-			preparation, abandon, err := admission.Begin()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer abandon()
-			for _, id := range test.changes {
-				if err := admission.Change(t.Context(), id, func() (bool, error) { return true, nil }); err != nil {
-					t.Fatal(err)
-				}
-			}
-			published := false
-			if err := admission.Publish(t.Context(), preparation, []frame.InstallationID{"unrelated"}, func() error {
-				published = true
-				return nil
-			}); err != nil || !published {
-				t.Fatalf("bounded unrelated change history blocked publication: published=%v, %v", published, err)
-			}
-			if admission.Revision() != uint64(len(test.changes)) {
-				t.Fatalf("repeated history lost committed changes: revision=%d", admission.Revision())
-			}
-		})
-	}
-}
-
-func TestExceededPreparationRetainsItsSlotUntilOriginalPublicationOrAbandonment(t *testing.T) {
-	for _, finishBy := range []string{"publication", "abandonment"} {
-		t.Run(finishBy, func(t *testing.T) {
-			admission, err := frame.NewAdmissionWithLimits(frame.AdmissionLimits{MaxPreparations: 2, MaxPreparationChanges: 2})
-			if err != nil {
-				t.Fatal(err)
-			}
-			original, abandon, err := admission.Begin()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer abandon()
-			committed := 0
-			change := func(id frame.InstallationID, diagnostic error) error {
-				return admission.Change(t.Context(), id, func() (bool, error) {
-					committed++
-					return true, diagnostic
-				})
-			}
-			for _, id := range []frame.InstallationID{"first", "second"} {
-				if err := change(id, nil); err != nil {
-					t.Fatal(err)
-				}
-			}
-			fresh, abandonFresh, err := admission.Begin()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer abandonFresh()
-			diagnostic := errors.New("committed transition has a local diagnostic")
-			if err := change("third", diagnostic); err != diagnostic {
-				t.Fatalf("history overflow rewrote the committed transition: %v", err)
-			}
-			for range 8 {
-				if err := change("third", nil); err != nil {
-					t.Fatalf("invalidated preparation blocked a later committed change: %v", err)
-				}
-			}
-			if admission.Revision() != uint64(committed) || committed != 11 {
-				t.Fatalf("history overflow lost accepted facts: commits=%d revision=%d", committed, admission.Revision())
-			}
-			if next, finish, err := admission.Begin(); !errors.Is(err, frame.ErrCapacity) || next != nil || finish != nil {
-				t.Fatalf("overflow evicted the original preparation slot: %v, %v", next, err)
-			}
-			published := false
-			if finishBy == "publication" {
-				err = admission.Publish(t.Context(), original, nil, func() error {
-					published = true
-					return nil
-				})
-				if !errors.Is(err, frame.ErrStaleBinding) || !errors.Is(err, frame.ErrCapacity) || published {
-					t.Fatalf("overflow published business work or lost its diagnosis: published=%v, %v", published, err)
-				}
-			} else {
-				abandon()
-			}
-			next, abandonNext, err := admission.Begin()
-			if err != nil || next == nil {
-				t.Fatalf("original completion did not release capacity: %v", err)
-			}
-			defer abandonNext()
-			abandon()
-			if _, _, err := admission.Begin(); !errors.Is(err, frame.ErrCapacity) {
-				t.Fatalf("late abandonment freed another preparation: %v", err)
-			}
-			if err := admission.Publish(t.Context(), fresh, []frame.InstallationID{"unrelated"}, func() error {
-				published = true
-				return nil
-			}); err != nil || !published {
-				t.Fatalf("another preparation inherited the original overflow: published=%v, %v", published, err)
-			}
-		})
-	}
-}
-
 type recoveryBudgetCause struct {
 	detail  string
 	onError func()
@@ -198,7 +45,7 @@ func TestRecoveryDiagnosticsRetainTheFirstCauseWithoutAccumulatingErrorGraphs(t 
 		t.Fatal(err)
 	}
 	first := &recoveryBudgetCause{detail: strings.Repeat("original failure ", 1000)}
-	first.onError = func() { admission.Revision() }
+	first.onError = func() { admission.Scope("diagnostic") }
 	admission.RequireRecovery(first)
 	before := admission.RecoveryError()
 	reports := reportAdditionalRecovery(admission)
@@ -428,7 +275,7 @@ func TestRestorationChecksTheWholeScopeBudgetBeforeProjection(t *testing.T) {
 }
 
 func TestNegativeAdmissionBudgetsAreRejected(t *testing.T) {
-	for _, limits := range []frame.AdmissionLimits{{MaxPreparations: -1}, {MaxPreparationChanges: -1}, {MaxScopes: -1}, {MaxUseOwners: -1}} {
+	for _, limits := range []frame.AdmissionLimits{{MaxScopes: -1}, {MaxUseOwners: -1}} {
 		if admission, err := frame.NewAdmissionWithLimits(limits); !errors.Is(err, frame.ErrInvalid) || admission != nil {
 			t.Fatalf("invalid admission budget was accepted: %v, %v", admission, err)
 		}

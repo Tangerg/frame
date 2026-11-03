@@ -160,3 +160,5 @@ func deriveMethod[Input, Output any](config MethodConfig, chunk jsontext.Value) 
 	}
 	return AdmitMethod(MethodDescriptor{Name: config.Name, Kind: config.Kind, Target: config.Target, Description: config.Description, Input: input, Output: output, Stream: chunk})
 }
+
+func (MethodKind) Values() []string { return []string{string(Query), string(Command)} }

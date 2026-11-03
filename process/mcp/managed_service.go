@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/Tangerg/frame/internal/cancellation"
+
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/process"
@@ -82,7 +84,7 @@ func (s *ManagedService) invoke(ctx context.Context, invocation portable.Invocat
 	if ctx == nil {
 		return framevalue.JSON{}, frame.ErrInvalid
 	}
-	if err := context.Cause(ctx); err != nil {
+	if err := cancellation.Err(ctx); err != nil {
 		return framevalue.JSON{}, err
 	}
 	method, ok := s.contract.capability.Method(invocation.Member())
@@ -97,44 +99,57 @@ func (s *ManagedService) invoke(ctx context.Context, invocation portable.Invocat
 		return framevalue.JSON{}, err
 	}
 	params.CommandID = invocation.CommandID()
-	if s.openCall != nil {
-		lease, err := reserveManagedLease(s.lifetime)
-		if err != nil {
-			return framevalue.JSON{}, err
-		}
-		grant, err := lease.issue(func() (*ManagedCallback, error) {
-			return s.openCall(ctx, s.session, ManagedCall{Source: s.source, Method: method, Input: invocation.Input(), CommandID: invocation.CommandID()})
-		})
-		defer func() { returned = errors.Join(returned, lease.finish(ctx)) }()
-		if err != nil {
-			return framevalue.JSON{}, err
-		}
-		if grant != nil {
-			if err := grant.attach(&params.ParamsBase, managedCallback); err != nil {
-				return framevalue.JSON{}, err
-			}
-		}
-	}
-	var raw jsontext.Value
-	if err := context.Cause(ctx); err != nil {
+	finish, err := s.grantCallback(ctx, method, invocation, &params.ParamsBase)
+	defer func() { returned = errors.Join(returned, finish()) }()
+	if err != nil {
 		return framevalue.JSON{}, err
 	}
+	if err := cancellation.Err(ctx); err != nil {
+		return framevalue.JSON{}, err
+	}
+	raw, err := s.dispatch(ctx, method, params, emit)
+	if err != nil {
+		return framevalue.JSON{}, err
+	}
+	return framevalue.ParseJSON(raw)
+}
+
+// grantCallback lets the backend call back into Frame while this invocation
+// runs. The returned finish must run after the call settles, even on error.
+func (s *ManagedService) grantCallback(ctx context.Context, method *portable.Method, invocation portable.Invocation, metadata *sdk.ParamsBase) (finish func() error, err error) {
+	finish = func() error { return nil }
+	if s.openCall == nil {
+		return finish, nil
+	}
+	lease, err := reserveManagedLease(s.lifetime)
+	if err != nil {
+		return finish, err
+	}
+	finish = func() error { return lease.finish(ctx) }
+	grant, err := lease.issue(func() (*ManagedCallback, error) {
+		return s.openCall(ctx, s.session, ManagedCall{Source: s.source, Method: method, Input: invocation.Input(), CommandID: invocation.CommandID()})
+	})
+	if err != nil || grant == nil {
+		return finish, err
+	}
+	return finish, grant.attach(metadata, managedCallback)
+}
+
+func (s *ManagedService) dispatch(ctx context.Context, method *portable.Method, params *managedParams, emit process.Emit) (jsontext.Value, error) {
+	var raw jsontext.Value
+	var err error
 	if emit != nil {
 		raw, err = s.stream(ctx, method, params, emit)
 	} else {
 		raw, err = managedRaw(ctx, s.session, managedInvoke, params)
 		if err != nil {
-			err = managedDispatchError(errors.Join(err, context.Cause(ctx)))
+			err = managedDispatchError(errors.Join(err, cancellation.Err(ctx)))
 		}
 	}
-	if err == nil {
-		err = managedDispatchError(method.ValidateOutput(raw))
-	}
 	if err != nil {
-
-		return framevalue.JSON{}, err
+		return nil, err
 	}
-	return framevalue.ParseJSON(raw)
+	return raw, managedDispatchError(method.ValidateOutput(raw))
 }
 
 func managedDispatchError(err error) error {

@@ -13,9 +13,11 @@ export interface BindingSnapshot {
   readonly rule: string;
 }
 
-export type ContractKind = "service" | "point" | "event";
+export const ContractKindValues = ["service", "point", "event"] as const;
+export type ContractKind = (typeof ContractKindValues)[number];
 
-export type ContractMode = "native" | "portable";
+export const ContractModeValues = ["native", "portable"] as const;
+export type ContractMode = (typeof ContractModeValues)[number];
 
 export interface ContractRef {
   readonly name: string;
@@ -89,8 +91,14 @@ export interface TaskResult {
   readonly diagnostics: readonly Diagnostic[];
 }
 
-export type TaskState =
-  "queued" | "running" | "completed" | "failed" | "cancelled";
+export const TaskStateValues = [
+  "queued",
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+] as const;
+export type TaskState = (typeof TaskStateValues)[number];
 
 export interface TaskView {
   readonly id: string;

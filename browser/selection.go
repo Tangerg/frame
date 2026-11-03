@@ -2,15 +2,13 @@ package browser
 
 import (
 	"context"
-	"errors"
 	"slices"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/sqlite"
 )
 
 func (b *Bridge) Acquire(ctx context.Context, token string, request AcquireRequest) (grant UseGrant, returned error) {
-	session, err := b.session(token, true)
+	session, err := b.liveSession(token)
 	if err != nil {
 		return UseGrant{}, err
 	}
@@ -21,68 +19,38 @@ func (b *Bridge) Acquire(ctx context.Context, token string, request AcquireReque
 	if err != nil {
 		return UseGrant{}, err
 	}
-	b.mu.Lock()
-	old, lookupErr := b.operationLocked(ctx, request.OperationID)
-	if lookupErr != nil {
-		b.mu.Unlock()
-		return UseGrant{}, lookupErr
-	}
-	if old != nil {
-		if old.kind != acquireOperation || old.realm != session.realm || old.digest != digest {
-			b.mu.Unlock()
-			return UseGrant{}, sqlite.ErrConflict
+	identity := controlRequestIdentity{Kind: acquireOperation, Realm: session.realm, Digest: digest}
+	var entry *browserExecution
+	var lease *snapshotLease
+	operation, replay, err := b.begin(ctx, request.OperationID, identity, func(operation *controlOperation) error {
+		entry, lease = b.executions.get(request.Execution.ID), b.snapshots[request.SnapshotID]
+		if session.cleanupOnly {
+			return errRealmSealed
 		}
-		done := old.done
-		b.mu.Unlock()
-		select {
-		case <-ctx.Done():
-			return UseGrant{}, ctx.Err()
-		case <-done:
+		if !entry.servesLocked(session.realm, request.Execution) || !lease.capturedFor(session.realm) {
+			return frame.ErrStaleBinding
 		}
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		if old.grant == nil {
-			return UseGrant{}, old.failure
+		operation.execution = entry.plan.Execution.ID
+		operation.parentID = request.ParentUseID
+		return nil
+	})
+	if err != nil {
+		return UseGrant{}, err
+	}
+	if replay {
+		if err := operation.repeats(identity); err != nil {
+			return UseGrant{}, err
 		}
-		return clone(*old.grant), nil
+		return b.awaitGrant(ctx, operation)
 	}
-	if session.cleanupOnly {
-		b.mu.Unlock()
-		return UseGrant{}, frame.ErrFenced
-	}
-	entry := b.executions[request.Execution.ID]
-	selection := b.snapshots[request.SnapshotID]
-	if entry == nil || entry.plan.Execution != request.Execution || entry.plan.Realm != session.realm || entry.retiring || selection == nil || selection.original == nil || selection.realm != session.realm {
-		b.mu.Unlock()
-		return UseGrant{}, frame.ErrStaleBinding
-	}
-	if len(b.operations) >= b.config.MaxPending {
-		b.mu.Unlock()
-		return UseGrant{}, frame.ErrCapacity
-	}
-	operation := &controlOperation{kind: acquireOperation, realm: session.realm, digest: digest, execution: entry.plan.Execution.ID, parentID: request.ParentUseID, done: make(chan struct{})}
-	b.operations[request.OperationID] = operation
-	b.mu.Unlock()
-	defer func() {
-		b.mu.Lock()
-		operation.failure = returned
-		if operation.grant == nil && operation.failure == nil {
-			operation.failure = frame.ErrUnavailable
-		}
-		b.mu.Unlock()
-		returned = errors.Join(returned, b.complete(ctx, request.OperationID, operation))
-	}()
+	defer func() { returned = b.finish(ctx, request.OperationID, operation, returned) }()
 	if err := b.reserveReceipt(ctx, request.OperationID, operation); err != nil {
 		return UseGrant{}, err
 	}
-	b.mu.Lock()
-	if session.cleanupOnly || entry.retiring || b.executions[request.Execution.ID] != entry || b.snapshots[request.SnapshotID] != selection {
-		b.mu.Unlock()
-		return UseGrant{}, frame.ErrStaleBinding
+	if err := b.takeLease(session, entry, request.SnapshotID, lease); err != nil {
+		return UseGrant{}, err
 	}
-	delete(b.snapshots, request.SnapshotID)
-	b.mu.Unlock()
-	plan, err := selection.bind(request.Selections)
+	plan, err := lease.bind(request.Selections)
 	if err != nil {
 		return UseGrant{}, err
 	}
@@ -97,6 +65,18 @@ func (b *Bridge) Acquire(ctx context.Context, token string, request AcquireReque
 	return b.deliverUse(ctx, session, entry, use, request.OperationID, operation)
 }
 
+// takeLease consumes the Snapshot lease exactly once, including for an
+// acquisition whose selection later fails.
+func (b *Bridge) takeLease(session *realmSession, entry *browserExecution, id string, lease *snapshotLease) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if session.cleanupOnly || entry.retiring || b.executions.get(entry.plan.Execution.ID) != entry || b.snapshots[id] != lease {
+		return frame.ErrStaleBinding
+	}
+	delete(b.snapshots, id)
+	return nil
+}
+
 func (b *Bridge) useConfig(session *realmSession, entry *browserExecution, parentID string) (frame.UseConfig, error) {
 	if session.application == nil {
 		return frame.UseConfig{}, frame.ErrFenced
@@ -107,7 +87,7 @@ func (b *Bridge) useConfig(session *realmSession, entry *browserExecution, paren
 	if parentID != "" {
 		b.mu.Lock()
 		parent := b.uses[parentID]
-		valid := parent != nil && parent.grant.Realm == session.realm && parent.grant.Execution == entry.plan.Execution && parent.grant.ScopeID == entry.plan.ScopeID && parent.grant.ScopeGeneration == entry.plan.ScopeGeneration && parent.releaseID == ""
+		valid := parent != nil && parent.grant.Realm == session.realm && parent.grant.Execution == entry.plan.Execution && parent.grant.ScopeID == entry.plan.ScopeID && parent.grant.ScopeGeneration == entry.plan.ScopeGeneration && !parent.released()
 		b.mu.Unlock()
 		if !valid {
 			return frame.UseConfig{}, frame.ErrStaleBinding
@@ -144,10 +124,10 @@ func (b *Bridge) deliverUse(ctx context.Context, session *realmSession, entry *b
 		use.BeginClose(err)
 		return UseGrant{}, err
 	}
-	retained := &browserUse{grant: clone(grant), use: use}
-	resource, err := use.Lifetime().Own(frame.Resource{Name: "browser use " + use.ID(), Cancel: func(error) { b.fence(entry) }, Close: func(context.Context) (frame.ReleaseState, error) {
+	retained := &browserUse{grant: copyWire(grant), use: use}
+	resource, err := use.Lifetime().Own(frame.Resource{Name: useResourcePrefix + use.ID(), Cancel: func(error) { b.fence(entry) }, Close: func(context.Context) (frame.ReleaseState, error) {
 		b.mu.Lock()
-		released := retained.releaseID != ""
+		released := retained.released()
 		b.mu.Unlock()
 		if released {
 			return frame.ResourceReleased, nil
@@ -168,20 +148,20 @@ func (b *Bridge) deliverUse(ctx context.Context, session *realmSession, entry *b
 		return UseGrant{}, frame.ErrFenced
 	}
 	b.uses[use.ID()] = retained
-	copy := clone(grant)
+	copy := copyWire(grant)
 	operation.grant = &copy
 	b.mu.Unlock()
 	return grant, nil
 }
 
 func (b *Bridge) ValidateUse(ctx context.Context, token string, grant UseGrant) error {
-	session, err := b.session(token, true)
+	session, err := b.liveSession(token)
 	if err != nil {
 		return err
 	}
 	b.mu.Lock()
 	retained := b.uses[grant.ID]
-	valid := retained != nil && retained.grant.Realm == session.realm && equal(retained.grant, grant) && retained.releaseID == ""
+	valid := retained != nil && retained.grant.Realm == session.realm && sameWire(retained.grant, grant) && !retained.released()
 	b.mu.Unlock()
 	if !valid {
 		return frame.ErrStaleBinding
@@ -192,69 +172,78 @@ func (b *Bridge) ValidateUse(ctx context.Context, token string, grant UseGrant) 
 	return b.config.Host.ValidateUse(ctx, retained.use)
 }
 
-func (b *Bridge) Route(ctx context.Context, token string, grant UseGrant, source, receiver LocalExport) (RouteGrant, error) {
+func (b *Bridge) Route(ctx context.Context, token string, grant UseGrant, source, receiver LocalExport) (route RouteGrant, returned error) {
 	if err := b.ValidateUse(ctx, token, grant); err != nil {
 		return RouteGrant{}, err
 	}
 	if source.Contract != receiver.Contract || source.Contract.Kind != frame.EventKind || source.Contract.Mode != frame.NativeMode {
 		return RouteGrant{}, frame.ErrContractMismatch
 	}
-	contains := func(export LocalExport) bool {
-		for _, object := range grant.Objects {
-			if object.Export == export {
-				return true
-			}
-		}
-		return false
-	}
-	if !contains(source) || !contains(receiver) {
+	if !grant.grants(source) || !grant.grants(receiver) {
 		return RouteGrant{}, frame.ErrStaleBinding
 	}
-	b.mu.Lock()
-	retained := b.uses[grant.ID]
-	atCapacity := len(b.routes)+b.openingRoutes >= b.config.MaxPending
-	if !atCapacity && retained != nil {
-		b.openingRoutes++
-	}
-	b.mu.Unlock()
-	if retained == nil {
-		return RouteGrant{}, frame.ErrClosed
-	}
-	if atCapacity {
-		return RouteGrant{}, frame.ErrCapacity
-	}
-	defer func() { b.mu.Lock(); b.openingRoutes--; b.mu.Unlock() }()
-	sourceRef, err := localSource(ctx, retained.use, source)
+	retained, err := b.reserveRoute(grant.ID)
 	if err != nil {
 		return RouteGrant{}, err
 	}
-	receiverRef, err := localSource(ctx, retained.use, receiver)
+	committed := false
+	defer func() {
+		if !committed {
+			b.mu.Lock()
+			b.routes.cancel()
+			b.mu.Unlock()
+		}
+	}()
+	original, err := b.newEventRoute(ctx, retained.use, source, receiver)
 	if err != nil {
 		return RouteGrant{}, err
 	}
-	original, err := b.config.Host.NewEventRoute(ctx, retained.use, retained.use, sourceRef, receiverRef)
-	if err != nil {
-		return RouteGrant{}, err
-	}
-	route := RouteGrant{ID: original.ID(), Use: grant, Source: source, Receiver: receiver}
+	route = RouteGrant{ID: original.ID(), Use: grant, Source: source, Receiver: receiver}
 	if err := b.checkRequest(validateRouteMethod, route); err != nil {
 		return RouteGrant{}, err
 	}
 	b.mu.Lock()
-	if b.uses[grant.ID] != retained || retained.releaseID != "" {
-		b.mu.Unlock()
+	defer b.mu.Unlock()
+	if b.uses[grant.ID] != retained || retained.released() {
 		return RouteGrant{}, frame.ErrClosed
 	}
-	b.routes[route.ID] = browserRoute{grant: clone(route), original: original}
-	b.mu.Unlock()
+	b.routes.commit(route.ID, browserRoute{grant: copyWire(route), original: original})
+	committed = true
 	return route, nil
+}
+
+// grants reports an object this grant exposes.
+func (g UseGrant) grants(export LocalExport) bool {
+	return slices.ContainsFunc(g.Objects, func(object ObjectRef) bool { return object.Export == export })
+}
+
+func (b *Bridge) reserveRoute(useID string) (*browserUse, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	retained := b.uses[useID]
+	if retained == nil {
+		return nil, frame.ErrClosed
+	}
+	return retained, b.routes.reserve()
+}
+
+func (b *Bridge) newEventRoute(ctx context.Context, use *frame.Use, source, receiver LocalExport) (*frame.EventRoute, error) {
+	sourceRef, err := localSource(ctx, use, source)
+	if err != nil {
+		return nil, err
+	}
+	receiverRef, err := localSource(ctx, use, receiver)
+	if err != nil {
+		return nil, err
+	}
+	return b.config.Host.NewEventRoute(ctx, use, use, sourceRef, receiverRef)
 }
 
 func (b *Bridge) ValidateRoute(ctx context.Context, token string, route RouteGrant) error {
 	b.mu.Lock()
-	original, exists := b.routes[route.ID]
+	original, exists := b.routes.lookup(route.ID)
 	b.mu.Unlock()
-	if !exists || !equal(original.grant, route) {
+	if !exists || !sameWire(original.grant, route) {
 		return frame.ErrStaleBinding
 	}
 	if err := b.ValidateUse(ctx, token, route.Use); err != nil {
@@ -275,11 +264,4 @@ func localSource(ctx context.Context, use *frame.Use, local LocalExport) (frame.
 		}
 	}
 	return frame.ExportRef{}, frame.ErrContractMismatch
-}
-
-func definitiveRejection(err error) bool {
-	if errors.Is(err, sqlite.ErrIndeterminate) || errors.Is(err, frame.ErrUnconfirmedRelease) {
-		return false
-	}
-	return errors.Is(err, frame.ErrInvalid) || errors.Is(err, frame.ErrUnavailable) || errors.Is(err, frame.ErrStaleBinding) || errors.Is(err, frame.ErrContractMismatch) || errors.Is(err, frame.ErrFenced) || errors.Is(err, frame.ErrClosed) || errors.Is(err, frame.ErrCapacity)
 }

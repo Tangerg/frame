@@ -132,7 +132,7 @@ func checkExecution(t *testing.T, protocol process.Protocol, capability *portabl
 		t.Fatalf("retire host: %+v %v", outcome, err)
 	}
 	records, err := store.Attempts(ctx)
-	if err != nil || len(records) != 1 || records[0].Attempt.Profile != protocol.Profile() || !records[0].Released || records[0].Proof == nil {
+	if err != nil || len(records) != 1 || records[0].Attempt.Profile != protocol.Profile() || !records[0].ExitProven() || records[0].Proof == nil {
 		t.Fatalf("original attempt: %+v %v", records, err)
 	}
 	exit, err := client.Inspect(ctx, records[0].Attempt.ID)

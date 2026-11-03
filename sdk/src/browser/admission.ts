@@ -1,5 +1,5 @@
 import { FrameError, type Lifetime } from "../index.js";
-import { stringifyJSON } from "../json.js";
+import { canonicalJSON } from "../json.js";
 import type {
   AcquireRequest,
   Execution,
@@ -66,7 +66,7 @@ export class UseAdmission {
     this.verifyIdentity(request);
     if (
       this.#request &&
-      stringifyJSON(this.#request, true) !== stringifyJSON(request, true)
+      canonicalJSON(this.#request) !== canonicalJSON(request)
     )
       throw new FrameError(
         "invalid_plan",
@@ -92,10 +92,7 @@ export class UseAdmission {
 
   verifyGrant(grant: UseGrant): void {
     this.verifyIdentity(grant);
-    if (
-      this.#grant &&
-      stringifyJSON(this.#grant, true) !== stringifyJSON(grant, true)
-    )
+    if (this.#grant && canonicalJSON(this.#grant) !== canonicalJSON(grant))
       throw new FrameError(
         "permission_denied",
         "use identity cannot be relabeled",

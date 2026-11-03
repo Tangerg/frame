@@ -24,13 +24,12 @@ func (b *Bridge) Handler() http.Handler {
 			writeProblem(writer, http.StatusMethodNotAllowed, invalidProblem.code, "POST is required")
 			return
 		}
-		authorization := request.Header.Get("Authorization")
-		if !strings.HasPrefix(authorization, "Bearer ") || len(authorization) > 1024 {
+		token, bearer := strings.CutPrefix(request.Header.Get(authorizationHeader), bearerScheme)
+		if !bearer || len(token) > maxTokenBytes {
 			writeProblem(writer, http.StatusUnauthorized, deniedProblem.code, "Realm authentication is required")
 			return
 		}
-		token := strings.TrimPrefix(authorization, "Bearer ")
-		if _, err := b.session(token, false); err != nil {
+		if _, err := b.anySession(token); err != nil {
 			writeProblem(writer, http.StatusUnauthorized, deniedProblem.code, "Realm authentication failed")
 			return
 		}
@@ -62,6 +61,14 @@ func (b *Bridge) Handler() http.Handler {
 		_, _ = writer.Write(encoded)
 	})
 }
+
+// A Realm token is short, so a longer Authorization header is refused before
+// any signature work.
+const (
+	authorizationHeader = "Authorization"
+	bearerScheme        = "Bearer "
+	maxTokenBytes       = 1024
+)
 
 func decodeInput[T any](input json.RawMessage) (T, error) {
 	var value T

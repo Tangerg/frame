@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"slices"
 	"sync"
@@ -75,33 +74,8 @@ func Open(ctx context.Context, config Config) (_ *App, err error) {
 		return nil, err
 	}
 	a.Host = host
-	var trustedArchive value.Digest
-	content, err := distribution.Open(distribution.Config{Directory: config.ContentDirectory, Admission: admission, Trust: func(_ context.Context, source distribution.Source, manifest distribution.Manifest, _ distribution.Lock) error {
-		if trustedArchive.IsZero() || source.ArchiveDigest != trustedArchive || manifest.Package != previewPackageName || manifest.Version != previewPackageVersion {
-			return distribution.ErrUntrusted
-		}
-		return nil
-	}, Retained: func(ctx context.Context, release value.Digest) (bool, error) {
-		records, err := store.Installations(ctx)
-		if err != nil {
-			return false, err
-		}
-		for _, record := range records {
-			if record.Release == release {
-				return true, nil
-			}
-		}
-		dependencies, err := store.ExecutionDependencies(ctx)
-		if err != nil {
-			return false, err
-		}
-		for _, dependency := range dependencies {
-			if dependency.Release == release {
-				return true, nil
-			}
-		}
-		return false, nil
-	}})
+	var trust previewTrust
+	content, err := distribution.Open(distribution.Config{Directory: config.ContentDirectory, Admission: admission, Trust: trust.check, Retained: a.retainsRelease})
 	if err != nil {
 		return nil, err
 	}
@@ -133,10 +107,65 @@ func Open(ctx context.Context, config Config) (_ *App, err error) {
 	if err := host.RegisterDriver(bridge); err != nil {
 		return nil, err
 	}
-	if err := a.restore(ctx, config.DocumentsDirectory, func(digest value.Digest) { trustedArchive = digest }); err != nil {
+	if err := a.restore(ctx, config.DocumentsDirectory, trust.pin); err != nil {
 		return nil, err
 	}
 	return a, nil
+}
+
+// previewTrust admits exactly the preview archive this application built.
+type previewTrust struct{ archive value.Digest }
+
+func (t *previewTrust) pin(archive value.Digest) { t.archive = archive }
+
+func (t *previewTrust) check(_ context.Context, source distribution.Source, manifest distribution.Manifest, _ distribution.Lock) error {
+	if t.archive.IsZero() || source.ArchiveDigest != t.archive || manifest.Package != previewPackageName || manifest.Version != previewPackageVersion {
+		return distribution.ErrUntrusted
+	}
+	return nil
+}
+
+// retainsRelease reports a release still installed or still protecting an
+// execution, whose content must therefore stay.
+func (a *App) retainsRelease(ctx context.Context, release value.Digest) (bool, error) {
+	records, err := a.Store.Installations(ctx)
+	if err != nil {
+		return false, err
+	}
+	if slices.ContainsFunc(records, func(record frame.InstallationRecord) bool { return record.Release == release }) {
+		return true, nil
+	}
+	dependencies, err := a.Store.ExecutionDependencies(ctx)
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(dependencies, func(dependency frame.Dependency) bool { return dependency.Release == release }), nil
+}
+
+// catalog is every plugin definition this application can install.
+type catalog struct {
+	files, converter, secondConverter, validators *frame.Plugin
+}
+
+func newCatalog(contracts Contracts) (catalog, error) {
+	files, err := FilePlugin(contracts)
+	if err != nil {
+		return catalog{}, err
+	}
+	converter, err := ConverterPlugin(contracts, "1")
+	if err != nil {
+		return catalog{}, err
+	}
+	second, err := ConverterPlugin(contracts, "2")
+	if err != nil {
+		return catalog{}, err
+	}
+	validators, err := ValidationPlugin(contracts)
+	return catalog{files: files, converter: converter, secondConverter: second, validators: validators}, err
+}
+
+func (c catalog) definitions() []*frame.Plugin {
+	return []*frame.Plugin{c.files, c.converter, c.secondConverter, c.validators}
 }
 
 func (a *App) restore(ctx context.Context, directory string, trustPreview func(value.Digest)) error {
@@ -147,50 +176,20 @@ func (a *App) restore(ctx context.Context, directory string, trustPreview func(v
 	if err := a.owner.RecoverPrepared(ctx); err != nil {
 		return err
 	}
-	var initialized bool
-	if err := a.Store.Read(ctx, func(tx sqlite.Reader) error {
-		return tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM document_bootstrap)`).Scan(&initialized)
-	}); err != nil {
-		return err
-	}
-
-	files, err := FilePlugin(a.Contracts)
+	initialized, err := a.initialized(ctx)
 	if err != nil {
 		return err
 	}
-	converter, err := ConverterPlugin(a.Contracts, "1")
+	plugins, err := newCatalog(a.Contracts)
 	if err != nil {
 		return err
 	}
-	second, err := ConverterPlugin(a.Contracts, "2")
+	preview, err := a.restorePreview(ctx, records, initialized, trustPreview)
 	if err != nil {
 		return err
 	}
-	validators, err := ValidationPlugin(a.Contracts)
-	if err != nil {
-		return err
-	}
-	definitions := []*frame.Plugin{files, converter, second, validators}
-	for _, record := range records {
-		if record.ID == previewInstallationID {
-			a.preview, err = a.Content.Inspect(ctx, record.Release)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	if a.preview.Digest.IsZero() && !initialized {
-		a.preview, err = buildPreview(ctx, a.Content, a.Contracts, trustPreview)
-		if err != nil {
-			return err
-		}
-	}
-	var preview *frame.Plugin
-	if !a.preview.Digest.IsZero() {
-		preview, err = previewDefinition(a.preview)
-		if err != nil {
-			return err
-		}
+	definitions := plugins.definitions()
+	if preview != nil {
 		definitions = append(definitions, preview)
 	}
 	if err := a.Host.Restore(ctx, records, definitions); err != nil {
@@ -208,7 +207,43 @@ func (a *App) restore(ctx context.Context, directory string, trustPreview func(v
 	if initialized {
 		return nil
 	}
-	directory, err = filepath.Abs(directory)
+	return a.bootstrap(ctx, directory, plugins, preview)
+}
+
+func (a *App) initialized(ctx context.Context) (bool, error) {
+	var initialized bool
+	err := a.Store.Read(ctx, func(tx sqlite.Reader) error {
+		return tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM document_bootstrap)`).Scan(&initialized)
+	})
+	return initialized, err
+}
+
+// restorePreview reads the installed preview release, or builds the first one
+// before the application has bootstrapped.
+func (a *App) restorePreview(ctx context.Context, records []frame.InstallationRecord, initialized bool, trustPreview func(value.Digest)) (*frame.Plugin, error) {
+	var err error
+	for _, record := range records {
+		if record.ID == previewInstallationID {
+			if a.preview, err = a.Content.Inspect(ctx, record.Release); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if a.preview.Digest.IsZero() && !initialized {
+		if a.preview, err = buildPreview(ctx, a.Content, a.Contracts, trustPreview); err != nil {
+			return nil, err
+		}
+	}
+	if a.preview.Digest.IsZero() {
+		return nil, nil
+	}
+	return previewDefinition(a.preview)
+}
+
+// bootstrap installs the initial plugins once; the bootstrap row records that
+// a restart must restore rather than install them again.
+func (a *App) bootstrap(ctx context.Context, directory string, plugins catalog, preview *frame.Plugin) error {
+	directory, err := filepath.Abs(directory)
 	if err != nil {
 		return err
 	}
@@ -217,9 +252,9 @@ func (a *App) restore(ctx context.Context, directory string, trustPreview func(v
 		return err
 	}
 	for _, installation := range []frame.InstallationConfig{
-		{ID: fileInstallationID, Plugin: files, Configuration: configuration, Enabled: true},
-		{ID: converterInstallationID, Plugin: converter, Enabled: true},
-		{ID: validatorInstallationID, Plugin: validators, Enabled: true},
+		{ID: fileInstallationID, Plugin: plugins.files, Configuration: configuration, Enabled: true},
+		{ID: converterInstallationID, Plugin: plugins.converter, Enabled: true},
+		{ID: validatorInstallationID, Plugin: plugins.validators, Enabled: true},
 		{ID: previewInstallationID, Plugin: preview, Enabled: true},
 	} {
 		if _, installed := a.Host.Installation(installation.ID); installed {
@@ -387,5 +422,3 @@ func (a *App) Close(ctx context.Context) error {
 	}
 	return errors.Join(err, a.Store.Close())
 }
-
-func (a *App) String() string { return fmt.Sprintf("document workbench (%s)", a.Store.ID()) }

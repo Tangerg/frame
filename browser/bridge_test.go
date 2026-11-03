@@ -225,7 +225,7 @@ func (e *bridgeEnvironment) acquire(plan browser.LocalPlan, operation string) (b
 }
 
 func executionProof(plan browser.LocalPlan) browser.CloseProof {
-	return browser.CloseProof{CloseID: "close:" + plan.Execution.ID, ProofID: "proof:" + plan.Execution.ID, Authority: plan.Authority, Realm: plan.Realm, Execution: plan.Execution, ScopeID: plan.ScopeID, ScopeGeneration: plan.ScopeGeneration, ScopeKind: browser.ExecutionScope, Instances: []string{plan.Units[0].Instance.ID}, Status: browser.Released}
+	return browser.CloseProof{CloseID: "close:" + plan.Execution.ID, ProofID: "proof:" + plan.Execution.ID, Authority: plan.Authority, Realm: plan.Realm, Execution: plan.Execution, ScopeID: plan.ScopeID, ScopeGeneration: plan.ScopeGeneration, ScopeKind: browser.ExecutionScope, Instances: []string{plan.Units[0].Instance.ID}, Status: frame.ResourceReleased}
 }
 func useProof(plan browser.LocalPlan, grant browser.UseGrant) browser.CloseProof {
 	proof := executionProof(plan)
@@ -364,7 +364,7 @@ func TestExactBindingChildKeepsOriginalParentExecutionOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, record := range attempts {
-		if record.Attempt.ID == providerPlan.Execution.ID && record.Released {
+		if record.Attempt.ID == providerPlan.Execution.ID && record.ExitProven() {
 			t.Fatal("parent execution released independent provider execution")
 		}
 	}
@@ -401,7 +401,7 @@ func TestParentUseProofClosesUnknownChildGrantWithoutClosingExecution(t *testing
 		t.Fatal(err)
 	}
 	for _, attempt := range attempts {
-		if (attempt.Attempt.ID == parentPlan.Execution.ID || attempt.Attempt.ID == providerPlan.Execution.ID) && attempt.Released {
+		if (attempt.Attempt.ID == parentPlan.Execution.ID || attempt.Attempt.ID == providerPlan.Execution.ID) && attempt.ExitProven() {
 			t.Fatal("Use proof released an execution")
 		}
 	}
@@ -448,7 +448,7 @@ func TestPublicationWithdrawalPreservesAcceptedUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	attempts, err := e.store.Attempts(e.ctx)
-	if err != nil || attempts[0].Released {
+	if err != nil || attempts[0].ExitProven() {
 		t.Fatalf("subordinate proof released execution: %+v %v", attempts, err)
 	}
 }
@@ -483,7 +483,7 @@ func TestExecutionExitCoversAcceptedPublicationWithoutSeparateWithdrawal(t *test
 		t.Fatal("execution exit left its original delegated Use active")
 	}
 	attempts, err := e.store.Attempts(e.ctx)
-	if err != nil || len(attempts) != 1 || !attempts[0].Released {
+	if err != nil || len(attempts) != 1 || !attempts[0].ExitProven() {
 		t.Fatalf("execution exit was acknowledged before its attempt released: %+v %v", attempts, err)
 	}
 	uses, err := e.store.Uses(e.ctx)

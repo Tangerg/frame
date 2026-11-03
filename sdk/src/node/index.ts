@@ -2,8 +2,10 @@
 import { randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import { Lifetime, type Awaitable } from "../index.js";
+import { DIGEST_PATTERN } from "../protocol.generated.js";
 import {
   Capability,
+  admitShape,
   exactFields,
   validToken,
   type ServiceContract,
@@ -13,6 +15,7 @@ import {
   type CallContext,
 } from "./contract.js";
 import { Peer, ProcessError } from "./peer.js";
+import shapes from "./shapes.generated.json" with { type: "json" };
 import wire from "./wire.json" with { type: "json" };
 
 export {
@@ -185,14 +188,16 @@ class StreamCall {
   }
 }
 
+const digestPattern = new RegExp(DIGEST_PATTERN);
+
 function digest(value: unknown): value is string {
-  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+  return typeof value === "string" && digestPattern.test(value);
 }
 
 function checkPortableRef(
   value: unknown,
 ): asserts value is Record<string, unknown> {
-  exactFields(value, ["name", "version", "digest", "kind", "mode"]);
+  admitShape(value, shapes.contract);
   if (
     !validToken(value.name) ||
     !validToken(value.version) ||
@@ -303,14 +308,8 @@ class Instance<I extends Imports, E extends Exports> {
           "import cardinality mismatch",
         );
       const clients = bindings.map((binding: unknown) => {
-        exactFields(binding, ["handle", "source"], ["valueContract"]);
-        exactFields(binding.source, [
-          "installationId",
-          "release",
-          "unitId",
-          "export",
-          "contract",
-        ]);
+        admitShape(binding, shapes.grant);
+        admitShape(binding.source, shapes.source);
         if (
           !validToken(binding.handle) ||
           !validToken(binding.source.installationId) ||
@@ -354,134 +353,16 @@ class Instance<I extends Imports, E extends Exports> {
     signal: AbortSignal,
   ): Promise<unknown> {
     switch (method) {
-      case wire.methods.hello: {
-        this.#expect("new");
-        exactFields(params, ["version", "maxFrameBytes"]);
-        if (
-          params.version !== wire.version ||
-          !Number.isSafeInteger(params.maxFrameBytes) ||
-          (params.maxFrameBytes as number) < 1
-        )
-          throw new ProcessError(
-            wire.errors.contract,
-            "incompatible process profile",
-          );
-        const maxFrameBytes = Math.min(
-          wire.maxFrameBytes,
-          params.maxFrameBytes as number,
-        );
-        this.peer.limit(maxFrameBytes);
-        this.#phase = "described";
-        return {
-          version: wire.version,
-          unit: this.unit.id,
-          maxFrameBytes,
-          imports: Object.fromEntries(
-            Object.entries(this.unit.imports).map(([k, t]) => [
-              k,
-              ("contract" in t ? t.contract : t).identity,
-            ]),
-          ),
-          exports: Object.fromEntries(
-            Object.entries(this.unit.exports).map(([k, t]) => [k, t.identity]),
-          ),
-        };
-      }
-      case wire.methods.prepare: {
-        this.#expect("described");
-        exactFields(params, ["imports"]);
-        const imports = this.#imports(params.imports);
-        this.#phase = "preparing";
-        try {
-          const handlers = await this.lifetime.run(() =>
-            this.unit.setup({
-              imports,
-              lifetime: this.lifetime,
-              onActivate: (start) => {
-                this.#expect("preparing");
-                if (this.#activate)
-                  throw new TypeError("activation already registered");
-                this.#activate = start;
-              },
-            }),
-          );
-          exactFields(handlers, Object.keys(this.unit.exports));
-          const table: Record<string, Record<string, Handler>> = Object.create(
-            null,
-          );
-          for (const [name, contract] of Object.entries(this.unit.exports)) {
-            const members = handlers[name];
-            exactFields(
-              members,
-              contract.descriptor.methods.map((m) => m.name),
-            );
-            if (
-              Object.values(members).some(
-                (handler) => typeof handler !== "function",
-              )
-            )
-              throw new TypeError("required member is not callable");
-            table[name] = Object.freeze({ ...members }) as Record<
-              string,
-              Handler
-            >;
-          }
-          signal.throwIfAborted();
-          this.#expect("preparing");
-          this.#exports = Object.freeze(table);
-          this.#phase = "prepared";
-          return true;
-        } catch (error) {
-          this.#phase = "closed";
-          await this.lifetime.close();
-          throw error;
-        }
-      }
-      case wire.methods.activate: {
-        this.#expect("prepared");
-        exactFields(params, []);
-        this.#phase = "active";
-        try {
-          await this.lifetime.run(() =>
-            this.#activate?.({
-              start: (job) => {
-                this.#expect("active");
-                void this.lifetime.run(job).catch((error) => {
-                  if (!this.lifetime.signal.aborted) this.peer.stop(error);
-                });
-              },
-            }),
-          );
-          signal.throwIfAborted();
-          return true;
-        } catch (error) {
-          this.#phase = "closed";
-          await this.lifetime.close();
-          throw error;
-        }
-      }
-      case wire.methods.close: {
-        exactFields(params, []);
-        this.#phase = "closed";
-        const outcome = await this.lifetime.close();
-        if (outcome.status !== "released")
-          throw new ProcessError(
-            wire.errors.unknown,
-            "resource release unconfirmed",
-          );
-        return true;
-      }
-      case wire.methods.chunk: {
-        this.#expect("active");
-        exactFields(params, ["stream", "value"]);
-        const receive =
-          typeof params.stream === "string"
-            ? this.#streams.get(params.stream)
-            : undefined;
-        if (!receive) throw new TypeError("unknown stream handle");
-        await receive(params.value, signal);
-        return true;
-      }
+      case wire.methods.hello:
+        return this.#hello(params);
+      case wire.methods.prepare:
+        return this.#prepare(params, signal);
+      case wire.methods.activate:
+        return this.#activateUnit(params, signal);
+      case wire.methods.close:
+        return this.#close(params);
+      case wire.methods.chunk:
+        return this.#chunk(params, signal);
       case wire.methods.call:
         return this.#call(params, signal);
       default:
@@ -489,14 +370,140 @@ class Instance<I extends Imports, E extends Exports> {
     }
   }
 
+  #hello(params: unknown) {
+    this.#expect("new");
+    admitShape(params, shapes.hello);
+    if (
+      params.version !== wire.version ||
+      !Number.isSafeInteger(params.maxFrameBytes) ||
+      (params.maxFrameBytes as number) < 1
+    )
+      throw new ProcessError(
+        wire.errors.contract,
+        "incompatible process profile",
+      );
+    const maxFrameBytes = Math.min(
+      wire.maxFrameBytes,
+      params.maxFrameBytes as number,
+    );
+    this.peer.limit(maxFrameBytes);
+    this.#phase = "described";
+    return {
+      version: wire.version,
+      unit: this.unit.id,
+      maxFrameBytes,
+      imports: Object.fromEntries(
+        Object.entries(this.unit.imports).map(([k, t]) => [
+          k,
+          ("contract" in t ? t.contract : t).identity,
+        ]),
+      ),
+      exports: Object.fromEntries(
+        Object.entries(this.unit.exports).map(([k, t]) => [k, t.identity]),
+      ),
+    };
+  }
+
+  async #prepare(params: unknown, signal: AbortSignal) {
+    this.#expect("described");
+    admitShape(params, shapes.preparation);
+    const imports = this.#imports(params.imports);
+    this.#phase = "preparing";
+    try {
+      const handlers = await this.lifetime.run(() =>
+        this.unit.setup({
+          imports,
+          lifetime: this.lifetime,
+          onActivate: (start) => {
+            this.#expect("preparing");
+            if (this.#activate)
+              throw new TypeError("activation already registered");
+            this.#activate = start;
+          },
+        }),
+      );
+      exactFields(handlers, Object.keys(this.unit.exports));
+      const table: Record<string, Record<string, Handler>> = Object.create(
+        null,
+      );
+      for (const [name, contract] of Object.entries(this.unit.exports)) {
+        const members = handlers[name];
+        exactFields(
+          members,
+          contract.descriptor.methods.map((m) => m.name),
+        );
+        if (
+          Object.values(members).some(
+            (handler) => typeof handler !== "function",
+          )
+        )
+          throw new TypeError("required member is not callable");
+        table[name] = Object.freeze({ ...members }) as Record<string, Handler>;
+      }
+      signal.throwIfAborted();
+      this.#expect("preparing");
+      this.#exports = Object.freeze(table);
+      this.#phase = "prepared";
+      return true;
+    } catch (error) {
+      this.#phase = "closed";
+      await this.lifetime.close();
+      throw error;
+    }
+  }
+
+  async #activateUnit(params: unknown, signal: AbortSignal) {
+    this.#expect("prepared");
+    exactFields(params, []);
+    this.#phase = "active";
+    try {
+      await this.lifetime.run(() =>
+        this.#activate?.({
+          start: (job) => {
+            this.#expect("active");
+            void this.lifetime.run(job).catch((error) => {
+              if (!this.lifetime.signal.aborted) this.peer.stop(error);
+            });
+          },
+        }),
+      );
+      signal.throwIfAborted();
+      return true;
+    } catch (error) {
+      this.#phase = "closed";
+      await this.lifetime.close();
+      throw error;
+    }
+  }
+
+  async #close(params: unknown) {
+    exactFields(params, []);
+    this.#phase = "closed";
+    const outcome = await this.lifetime.close();
+    if (outcome.status !== "released")
+      throw new ProcessError(
+        wire.errors.unknown,
+        "resource release unconfirmed",
+      );
+    return true;
+  }
+
+  async #chunk(params: unknown, signal: AbortSignal) {
+    this.#expect("active");
+    admitShape(params, shapes.chunk);
+    const receive =
+      typeof params.stream === "string"
+        ? this.#streams.get(params.stream)
+        : undefined;
+    if (!receive) throw new TypeError("unknown stream handle");
+    await receive(params.value, signal);
+    return true;
+  }
+
   #boundCall(params: unknown) {
     this.#expect("active");
     try {
-      exactFields(
-        params,
-        ["handle", "member", "input"],
-        ["stream", "commandID"],
-      );
+      admitShape(params, shapes.call);
       if (
         !validToken(params.handle) ||
         !validToken(params.member) ||

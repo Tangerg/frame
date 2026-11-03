@@ -59,8 +59,3 @@ func (id InstallationID) String() string  { return string(id) }
 func (id UnitID) String() string          { return string(id) }
 func (id ScopeID) String() string         { return string(id) }
 func (id RealmID) String() string         { return string(id) }
-
-func ParseInstallationID(value string) (InstallationID, error) {
-	id := InstallationID(value)
-	return id, id.Validate()
-}

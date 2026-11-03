@@ -99,7 +99,7 @@ func Plugin(contracts document.Contracts) (*frame.Plugin, error) {
 			return errors.New("authoring: template requires one content slot")
 		}
 		preparedTemplate := filepath.Join(workspace, "template.html")
-		if err := os.WriteFile(preparedTemplate, []byte(template.Text), 0600); err != nil {
+		if err := os.WriteFile(preparedTemplate, []byte(template.Text), localfile.PrivateFileMode); err != nil {
 			return err
 		}
 		convert := document.Converter(func(ctx context.Context, ref document.DocumentRef) (document.Converted, error) {

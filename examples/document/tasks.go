@@ -66,15 +66,6 @@ type PreparedTask struct {
 	plan       *frame.BindingPlan
 }
 
-func (p *PreparedTask) Definition() TaskDefinition {
-	if p == nil {
-		return TaskDefinition{}
-	}
-	result := p.definition
-	result.Binding = result.Binding.Clone()
-	return result
-}
-
 func taskSchema() sqlite.OwnerSchema {
 	states := TaskState("").Values()
 	for i, state := range states {
@@ -224,7 +215,7 @@ func (a *App) Queue(ctx context.Context, id, path string) (Task, sqlite.Submissi
 		return Task{}, sqlite.SubmissionID{}, err
 	}
 	settlement, err := a.CommitTask(ctx, prepared)
-	if err != nil || settlement.State != sqlite.Committed {
+	if err != nil || settlement.State != frame.CommitSucceeded {
 		if original, observed := a.Task(ctx, id); observed == nil && original.Definition.Source.Path == path {
 			return original, original.Submission, nil
 		}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/cancellation"
 )
 
 // DaemonConfig identifies a separately packaged runner executable and its
@@ -41,6 +42,9 @@ type Daemon struct {
 	closeErr  error
 }
 
+// readinessPollInterval paces probes of a just-started daemon's socket.
+const readinessPollInterval = 10 * time.Millisecond
+
 func NewDaemon(config DaemonConfig) (*Daemon, error) {
 	if !filepath.IsAbs(config.Executable) || !filepath.IsAbs(config.Directory) || config.StartTimeout <= 0 {
 		return nil, errors.New("runner: daemon requires absolute executable and directory and startup limit")
@@ -56,7 +60,7 @@ func (d *Daemon) connect(ctx context.Context) error {
 	if ctx == nil {
 		return frame.ErrInvalid
 	}
-	if err := ctx.Err(); err != nil {
+	if err := cancellation.Err(ctx); err != nil {
 		return err
 	}
 	d.mu.Lock()
@@ -76,7 +80,7 @@ func (d *Daemon) connect(ctx context.Context) error {
 	d.mu.Unlock()
 	select {
 	case <-ctx.Done():
-		return context.Cause(ctx)
+		return cancellation.Err(ctx)
 	case <-d.ready:
 		return d.err
 	}
@@ -102,7 +106,7 @@ func (d *Daemon) start(ctx context.Context) error {
 	d.command = command
 	d.exited = make(chan struct{})
 	go func() { d.exitErr = command.Wait(); close(d.exited) }()
-	ticker := time.NewTicker(10 * time.Millisecond)
+	ticker := time.NewTicker(readinessPollInterval)
 	defer ticker.Stop()
 	for {
 		_, err := d.client.Identity(ctx)
@@ -114,7 +118,7 @@ func (d *Daemon) start(ctx context.Context) error {
 		}
 		select {
 		case <-ctx.Done():
-			return context.Cause(ctx)
+			return cancellation.Err(ctx)
 		case <-d.exited:
 			return errors.Join(errors.New("runner: original daemon exited before readiness"), d.exitErr)
 		case <-ticker.C:
@@ -194,7 +198,7 @@ func (d *Daemon) Close(ctx context.Context) error {
 	})
 	select {
 	case <-ctx.Done():
-		return context.Cause(ctx)
+		return cancellation.Err(ctx)
 	case <-d.closeDone:
 		return d.closeErr
 	}

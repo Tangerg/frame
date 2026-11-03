@@ -3,7 +3,6 @@ package distribution
 import (
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"io"
 	"io/fs"
@@ -12,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -47,8 +47,16 @@ func (s *Store) openOwner() (err error) {
 	if err := s.validateDirectory(); err != nil {
 		return err
 	}
-	// The directory lock proves that no previous Store can still own these
-	// private operations. Recovery never removes a public release namespace.
+	if err := s.reclaimPrivate(); err != nil {
+		return err
+	}
+	return s.lock.Sync()
+}
+
+// reclaimPrivate removes staging and retiring directories left by a previous
+// Store. The directory lock proves that no such Store still owns them, and a
+// public release namespace is never touched.
+func (s *Store) reclaimPrivate() (err error) {
 	directory, err := s.root.Open(".")
 	if err != nil {
 		return err
@@ -75,10 +83,9 @@ func (s *Store) openOwner() (err error) {
 			}
 		}
 		if errors.Is(readErr, io.EOF) {
-			break
+			return nil
 		}
 	}
-	return s.lock.Sync()
 }
 
 // validateDirectory detects replacement of any canonical parent or the root.
@@ -99,12 +106,31 @@ func (s *Store) validateDirectory() error {
 	return nil
 }
 
-// beginOperation reserves real directory I/O before it starts. Existing lease
-// reads remain possible while Close joins them; new claims and mutations seal.
-func (s *Store) beginOperation(existing bool) (func(), error) {
+// storePhase is the Store's lifecycle. Draining refuses new work while granted
+// Leases finish; releasing closes the root and gives up the directory lock.
+type storePhase uint8
+
+const (
+	storeOpen storePhase = iota
+	storeDraining
+	storeReleasing
+)
+
+// ioOrigin distinguishes new work, which closing refuses, from I/O that an
+// already granted Lease still performs while the Store closes.
+type ioOrigin uint8
+
+const (
+	newOperation ioOrigin = iota
+	leaseOperation
+)
+
+// beginOperation reserves real directory I/O before it starts; Close waits for
+// every reservation to finish.
+func (s *Store) beginOperation(origin ioOrigin) (func(), error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closeAttempted || s.closing && !existing {
+	if s.phase == storeReleasing || s.phase == storeDraining && origin == newOperation {
 		return nil, frame.ErrClosed
 	}
 	if err := s.validateDirectory(); err != nil {
@@ -131,15 +157,15 @@ func (s *Store) Close(ctx context.Context) error {
 		return frame.ErrInvalid
 	}
 	s.mu.Lock()
-	if !s.closing {
-		s.closing = true
+	if s.phase == storeOpen {
+		s.phase = storeDraining
 		go s.closeOriginal()
 	}
 	done := s.closeDone
 	s.mu.Unlock()
 	select {
 	case <-ctx.Done():
-		return context.Cause(ctx)
+		return cancellation.Err(ctx)
 	case <-done:
 		return s.closeErr
 	}
@@ -154,7 +180,7 @@ func (s *Store) closeOriginal() {
 			<-changed
 			continue
 		}
-		s.closeAttempted = true
+		s.phase = storeReleasing
 		s.mu.Unlock()
 		err := s.root.Close()
 		if err == nil {
@@ -191,11 +217,7 @@ func (s *Store) openRelease(digest value.Digest) (*os.Root, error) {
 
 func (s *Store) privateDirectory(prefix string) (string, *os.Root, fs.FileInfo, error) {
 	for range privateDirectoryAttempts {
-		var entropy [16]byte
-		if _, err := rand.Read(entropy[:]); err != nil {
-			return "", nil, nil, err
-		}
-		name := prefix + hex.EncodeToString(entropy[:])
+		name := prefix + rand.Text()
 		if err := s.root.Mkdir(name, privateDirectoryMode); errors.Is(err, os.ErrExist) {
 			continue
 		} else if err != nil {

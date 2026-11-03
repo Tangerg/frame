@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/cancellation"
 )
 
 // Reserve the lifetime slot before a broker can issue credentials. The runner's
@@ -88,7 +89,7 @@ func (l *managedLease) close(ctx context.Context) (frame.ReleaseState, error) {
 	select {
 	case <-l.revoked:
 	case <-ctx.Done():
-		return frame.ResourceUnconfirmed, context.Cause(ctx)
+		return frame.ResourceUnconfirmed, cancellation.Err(ctx)
 	}
 	if l.err != nil {
 		select {
@@ -102,7 +103,7 @@ func (l *managedLease) close(ctx context.Context) (frame.ReleaseState, error) {
 	case <-l.released:
 		return frame.ResourceReleased, nil
 	case <-ctx.Done():
-		return frame.ResourceUnconfirmed, context.Cause(ctx)
+		return frame.ResourceUnconfirmed, cancellation.Err(ctx)
 	}
 }
 

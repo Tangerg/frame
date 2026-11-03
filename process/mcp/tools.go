@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/Tangerg/frame/internal/cancellation"
+
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/process"
@@ -47,8 +49,9 @@ func (p Tools) Prepare(setup *frame.Setup, metadata process.ExportMetadata, maxi
 			if len(descriptor.Stream) != 0 {
 				return nil, fmt.Errorf("%w: MCP tool %q must be unary", frame.ErrContractMismatch, descriptor.Name)
 			}
-			var schema struct{ Type string }
-			if err := json.Unmarshal(descriptor.Input, &schema); err != nil || schema.Type != "object" {
+			// MCP tool arguments are always a JSON object of named values.
+			var schema struct{ Type portable.SchemaType }
+			if err := json.Unmarshal(descriptor.Input, &schema); err != nil || schema.Type != portable.TypeObject {
 				return nil, fmt.Errorf("%w: MCP tool %q needs an object input schema", frame.ErrContractMismatch, descriptor.Name)
 			}
 			method, _ := contract.Method(descriptor.Name)
@@ -200,7 +203,7 @@ func (s *toolService) Invoke(ctx context.Context, invocation portable.Invocation
 	if len(raw) == 0 || raw[0] != '{' {
 		return value.JSON{}, fmt.Errorf("%w: MCP tool arguments must be an object", frame.ErrContractMismatch)
 	}
-	if err := context.Cause(ctx); err != nil {
+	if err := cancellation.Err(ctx); err != nil {
 		return value.JSON{}, err
 	}
 	params := &sdk.CallToolParams{Name: name, Arguments: json.RawMessage(raw)}
@@ -211,7 +214,7 @@ func (s *toolService) Invoke(ctx context.Context, invocation portable.Invocation
 	}
 	result, err := s.connection.session.CallTool(ctx, params)
 	if err != nil {
-		return value.JSON{}, errors.Join(process.ErrOutcomeUnknown, err, context.Cause(ctx))
+		return value.JSON{}, errors.Join(process.ErrOutcomeUnknown, err, cancellation.Err(ctx))
 	}
 	if result.NeedsInput() {
 		return value.JSON{}, fmt.Errorf("%w: MCP tool requested an unsupported input round", process.ErrOutcomeUnknown)

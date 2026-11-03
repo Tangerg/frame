@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/Tangerg/frame/internal/cancellation"
+
 	sqlitedriver "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -38,7 +40,7 @@ func OpenSchema(ctx context.Context, path string, statements []string) (*sql.DB,
 
 	if path != ":memory:" {
 		if err := admitWAL(ctx, db); err != nil {
-			return nil, errors.Join(fmt.Errorf("sqlite: admit wal: %w", err), cancellationError(ctx), db.Close())
+			return nil, errors.Join(fmt.Errorf("sqlite: admit wal: %w", err), cancellation.Err(ctx), db.Close())
 		}
 	}
 	if err := InstallSchema(ctx, db, statements); err != nil {
@@ -61,7 +63,7 @@ func admitWAL(ctx context.Context, db *sql.DB) (err error) {
 		if err := connection.QueryRowContext(ctx, `PRAGMA journal_mode=WAL`).Scan(&mode); err != nil {
 			return err
 		}
-		if mode != "wal" {
+		if mode != walJournalMode {
 			return fmt.Errorf("journal mode is %q, require wal", mode)
 		}
 		return nil
@@ -79,7 +81,7 @@ func waitForSQLite(ctx context.Context, limit time.Duration, attempt func() erro
 	deadline := time.NewTimer(limit)
 	defer deadline.Stop()
 	for {
-		if err := cancellationError(ctx); err != nil {
+		if err := cancellation.Err(ctx); err != nil {
 			return err
 		}
 		err := attempt()
@@ -92,7 +94,7 @@ func waitForSQLite(ctx context.Context, limit time.Duration, attempt func() erro
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return cancellationError(ctx)
+			return cancellation.Err(ctx)
 		case <-deadline.C:
 			timer.Stop()
 			return err

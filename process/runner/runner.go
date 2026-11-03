@@ -3,10 +3,10 @@
 package runner
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"errors"
@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/internal/localfile"
 	framevalue "github.com/Tangerg/frame/value"
 )
@@ -107,9 +108,10 @@ type storedAttempt struct {
 const (
 	journalVersion            = 2
 	journalFilename           = "attempts.json"
+	authorityLockFilename     = "authority.lock"
+	lostWaitReason            = "runner restarted without the original child wait identity"
 	defaultMaxAttempts        = 4096
 	defaultMaxExecutableBytes = 512 << 20
-	maxIdentityBytes          = 256
 )
 
 type journal struct {
@@ -147,82 +149,92 @@ type Server struct {
 }
 
 func Open(config Config) (_ *Server, err error) {
-	if config.Directory == "" {
-		return nil, errors.New("runner: state directory is required")
-	}
-	if config.MaxAttempts == 0 {
-		config.MaxAttempts = defaultMaxAttempts
-	}
-	if config.MaxExecutableBytes == 0 {
-		config.MaxExecutableBytes = defaultMaxExecutableBytes
-	}
-	if config.MaxControlConnections == 0 {
-		config.MaxControlConnections = defaultControlConnections
-	}
-	if config.ControlTimeout == 0 {
-		config.ControlTimeout = defaultControlTimeout
-	}
-	if config.MaxAttempts < 1 || config.MaxExecutableBytes < 1 || config.MaxControlConnections < 1 || config.ControlTimeout < 0 {
-		return nil, frame.ErrCapacity
-	}
-	config.Directory, err = filepath.Abs(config.Directory)
+	config, err = config.resolve()
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(config.Directory, 0700); err != nil {
-		return nil, err
-	}
-	config.Directory, err = filepath.EvalSymlinks(config.Directory)
+	lock, err := lockDirectory(filepath.Join(config.Directory, authorityLockFilename))
 	if err != nil {
 		return nil, err
-	}
-	if err := verifyAuthorityDirectory(config.Directory); err != nil {
-		return nil, err
-	}
-	lock, err := lockDirectory(filepath.Join(config.Directory, "authority.lock"))
-	if err != nil {
-		return nil, err
-	}
-	server := &Server{
-		config: config, id: randomID(), lock: lock, fenced: true,
-		processes: make(map[string]*process), terminalObservations: make(map[string]Observation),
-		journal: journal{Version: journalVersion, Attempts: make(map[string]storedAttempt)},
 	}
 	defer func() {
 		if err != nil {
 			err = errors.Join(err, unlockDirectory(lock))
 		}
 	}()
-	data, readErr := os.ReadFile(filepath.Join(config.Directory, journalFilename))
-	if readErr == nil {
-		if err := jsonv2.Unmarshal(data, &server.journal, jsonv2.RejectUnknownMembers(true)); err != nil {
-			return nil, fmt.Errorf("runner: invalid journal: %w", err)
-		}
-		if server.journal.Version != journalVersion || server.journal.Attempts == nil || len(server.journal.Attempts) > config.MaxAttempts {
-			return nil, errors.New("runner: incompatible journal")
-		}
-		for id, attempt := range server.journal.Attempts {
-			if id != attempt.Observation.AttemptID || !validID(id) || attempt.RequestDigest.Validate() != nil {
-				return nil, errors.New("runner: invalid attempt record")
-			}
-			switch attempt.Observation.State {
-			case Starting, Running:
-				attempt.Observation.State = Unknown
-				attempt.Observation.Reason = "runner restarted without the original child wait identity"
-				attempt.Observation.PID = 0
-				server.journal.Attempts[id] = attempt
-			case Exited, Unknown:
-			default:
-				return nil, errors.New("runner: invalid attempt state")
-			}
-		}
-	} else if !errors.Is(readErr, os.ErrNotExist) {
-		return nil, readErr
+	journal, err := loadJournal(filepath.Join(config.Directory, journalFilename), config.MaxAttempts)
+	if err != nil {
+		return nil, err
+	}
+	server := &Server{
+		config: config, id: rand.Text(), lock: lock, fenced: true, journal: journal,
+		processes: make(map[string]*process), terminalObservations: make(map[string]Observation),
 	}
 	if err := server.persist(); err != nil {
 		return nil, err
 	}
 	return server, nil
+}
+
+// resolve applies the default limits and canonicalizes the private state
+// directory this runner owns.
+func (c Config) resolve() (Config, error) {
+	if c.Directory == "" {
+		return c, errors.New("runner: state directory is required")
+	}
+	c.MaxAttempts = cmp.Or(c.MaxAttempts, defaultMaxAttempts)
+	c.MaxExecutableBytes = cmp.Or(c.MaxExecutableBytes, defaultMaxExecutableBytes)
+	c.MaxControlConnections = cmp.Or(c.MaxControlConnections, defaultControlConnections)
+	c.ControlTimeout = cmp.Or(c.ControlTimeout, defaultControlTimeout)
+	if c.MaxAttempts < 1 || c.MaxExecutableBytes < 1 || c.MaxControlConnections < 1 || c.ControlTimeout < 0 {
+		return c, frame.ErrCapacity
+	}
+	directory, err := filepath.Abs(c.Directory)
+	if err != nil {
+		return c, err
+	}
+	if err := os.MkdirAll(directory, localfile.PrivateDirectoryMode); err != nil {
+		return c, err
+	}
+	if c.Directory, err = filepath.EvalSymlinks(directory); err != nil {
+		return c, err
+	}
+	return c, verifyAuthorityDirectory(c.Directory)
+}
+
+// loadJournal reads the attempts of an earlier runner. A child it was still
+// waiting for becomes Unknown: no later runner holds that wait identity.
+func loadJournal(path string, maxAttempts int) (journal, error) {
+	loaded := journal{Version: journalVersion, Attempts: make(map[string]storedAttempt)}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return loaded, nil
+	}
+	if err != nil {
+		return journal{}, err
+	}
+	if err := jsonv2.Unmarshal(data, &loaded, jsonv2.RejectUnknownMembers(true)); err != nil {
+		return journal{}, fmt.Errorf("runner: invalid journal: %w", err)
+	}
+	if loaded.Version != journalVersion || loaded.Attempts == nil || len(loaded.Attempts) > maxAttempts {
+		return journal{}, errors.New("runner: incompatible journal")
+	}
+	for id, attempt := range loaded.Attempts {
+		if id != attempt.Observation.AttemptID || !frame.ValidName(id) || attempt.RequestDigest.Validate() != nil {
+			return journal{}, errors.New("runner: invalid attempt record")
+		}
+		switch attempt.Observation.State {
+		case Starting, Running:
+			attempt.Observation.State = Unknown
+			attempt.Observation.Reason = lostWaitReason
+			attempt.Observation.PID = 0
+			loaded.Attempts[id] = attempt
+		case Exited, Unknown:
+		default:
+			return journal{}, errors.New("runner: invalid attempt state")
+		}
+	}
+	return loaded, nil
 }
 
 // Fence settles all earlier Launch entries before advancing the creation epoch.
@@ -253,7 +265,7 @@ func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ Observati
 	if err := validateLaunch(request); err != nil {
 		return Observation{}, err
 	}
-	if err := ctx.Err(); err != nil {
+	if err := cancellation.Err(ctx); err != nil {
 		return Observation{}, err
 	}
 	digest, err := requestIdentity(request)
@@ -268,8 +280,8 @@ func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ Observati
 	if s.closed || s.fenced || request.RunnerID != s.id || request.Epoch != s.journal.Epoch {
 		return Observation{}, ErrFenced
 	}
-	if err := ctx.Err(); err != nil {
-		return Observation{}, context.Cause(ctx)
+	if err := cancellation.Err(ctx); err != nil {
+		return Observation{}, err
 	}
 	if len(s.journal.Attempts) >= s.config.MaxAttempts {
 		return Observation{}, frame.ErrCapacity
@@ -290,34 +302,14 @@ func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ Observati
 			err = errors.Join(err, releaseExecutable(path))
 		}
 	}()
-	// A stderr copy pipe would make Wait depend on descriptors inherited by descendants.
-	command := exec.Command(path, request.Args...)
-	command.Env = append([]string{}, request.Env...)
-	command.Dir = request.Directory
-	stdin, err := command.StdinPipe()
+	live, reason, err := spawn(path, request)
 	if err != nil {
-		return s.failedStart(request.AttemptID, "stdin creation failed", err)
-	}
-	stdout, stdoutWriter, err := os.Pipe()
-	if err != nil {
-		_ = stdin.Close()
-		return s.failedStart(request.AttemptID, "stdout creation failed", err)
-	}
-	command.Stdout = stdoutWriter
-	// Diagnostics must not fill a pipe and stall a process before Attach. The
-	// host may explicitly provide structured logging through its plugin contract.
-	if err := command.Start(); err != nil {
-		_ = stdin.Close()
-		_ = stdout.Close()
-		_ = stdoutWriter.Close()
-		return s.failedStart(request.AttemptID, "process creation failed", err)
+		return s.failedStart(request.AttemptID, reason, err)
 	}
 	started = true
-	_ = stdoutWriter.Close()
-	live := &process{command: command, kill: command.Process.Kill, stdin: stdin, stdout: stdout, environment: slices.Clone(request.Env), done: make(chan struct{})}
 	s.processes[request.AttemptID] = live
 	observation.State = Running
-	observation.PID = command.Process.Pid
+	observation.PID = live.command.Process.Pid
 	record := s.journal.Attempts[request.AttemptID]
 	record.Observation = observation
 	s.journal.Attempts[request.AttemptID] = record
@@ -331,6 +323,36 @@ func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ Observati
 		return observation, errors.Join(ErrUnknown, persistErr)
 	}
 	return observation, nil
+}
+
+// spawn starts the verified executable with only stdin and stdout connected.
+// Diagnostics must not fill a pipe and stall a process before Attach, and a
+// stderr copy pipe would make Wait depend on descriptors inherited by
+// descendants. On failure it returns the persisted reason.
+func spawn(path string, request LaunchRequest) (*process, string, error) {
+	command := exec.Command(path, request.Args...)
+	// A nil Env would inherit the runner's environment.
+	command.Env = append([]string{}, request.Env...)
+	command.Dir = request.Directory
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		return nil, "stdin creation failed", err
+	}
+	stdout, stdoutWriter, err := os.Pipe()
+	if err != nil {
+		_ = stdin.Close()
+		return nil, "stdout creation failed", err
+	}
+	command.Stdout = stdoutWriter
+	err = command.Start()
+	_ = stdoutWriter.Close()
+	if err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		return nil, "process creation failed", err
+	}
+	live := &process{command: command, kill: command.Process.Kill, stdin: stdin, stdout: stdout, environment: slices.Clone(request.Env), done: make(chan struct{})}
+	return live, "", nil
 }
 
 func (s *Server) replayLaunch(request LaunchRequest, digest framevalue.Digest) (Observation, bool, error) {
@@ -419,7 +441,7 @@ func (s *Server) wait(id string, live *process, path string) {
 	if exited {
 		item.Observation.State = Exited
 		item.Observation.ExitCode = new(live.command.ProcessState.ExitCode())
-		item.Observation.ProofID = randomID()
+		item.Observation.ProofID = rand.Text()
 		item.Observation.Reason = "direct child wait completed"
 		if cleanupErr != nil {
 			item.Observation.Reason += "; " + cleanupErr.Error()
@@ -455,7 +477,7 @@ func releaseExecutable(path string) error {
 func (s *Server) failedStart(id, reason string, cause error) (Observation, error) {
 	item := s.journal.Attempts[id]
 	item.Observation.State = Exited
-	item.Observation.ProofID = randomID()
+	item.Observation.ProofID = rand.Text()
 	item.Observation.Reason = reason
 	observed, err := s.publishTerminal(id, item.Observation)
 	return observed, errors.Join(cause, err)
@@ -581,7 +603,7 @@ func validateLaunch(request LaunchRequest) error {
 	if request.Directory != "" && !filepath.IsAbs(request.Directory) {
 		return errors.New("runner: working directory must be absolute")
 	}
-	if request.CredentialRevision != "" && !validID(request.CredentialRevision) {
+	if request.CredentialRevision != "" && !frame.ValidName(request.CredentialRevision) {
 		return errors.New("runner: invalid credential revision")
 	}
 	names := map[string]bool{}
@@ -605,15 +627,4 @@ func requestIdentity(request LaunchRequest) (framevalue.Digest, error) {
 		return framevalue.Digest{}, err
 	}
 	return framevalue.Hash(data), nil
-}
-
-func validID(value string) bool {
-	return value != "" && len(value) <= maxIdentityBytes && !strings.ContainsAny(value, "\x00\r\n\t ")
-}
-func randomID() string {
-	var value [24]byte
-	if _, err := rand.Read(value[:]); err != nil {
-		panic(err)
-	}
-	return hex.EncodeToString(value[:])
 }

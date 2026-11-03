@@ -130,7 +130,11 @@ func TestReadyBindingCannotAcquireAnotherSetupIdentity(t *testing.T) {
 				t.Fatalf("replacement did not change the setup identity: %v", err)
 			}
 			config := UseConfig{Owner: owner, Scope: scope}
-			use, err := host.acquireReadyBinding(ctx, original, config, scenario.recordID)
+			var use *Use
+			plan, err = host.readyPlan(original, config.Realm)
+			if err == nil {
+				use, err = host.acquirePrepared(ctx, plan, config, scenario.recordID)
+			}
 			if !errors.Is(err, ErrStaleBinding) || use != nil {
 				if use != nil {
 					_, _ = use.Close(ctx)

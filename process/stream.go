@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"sync"
+
+	"github.com/Tangerg/frame/internal/cancellation"
 )
 
 var (
@@ -78,7 +80,7 @@ func (s *streamCall) deliver(wait context.Context, emit func(context.Context) er
 	stop := context.AfterFunc(wait, func() { cancel(context.Cause(wait)) })
 	defer stop()
 	defer cancel(nil)
-	return errors.Join(emit(ctx), context.Cause(ctx))
+	return errors.Join(emit(ctx), cancellation.Err(ctx))
 }
 
 func (s *streamCall) finish(err error) error {

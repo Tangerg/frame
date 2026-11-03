@@ -14,6 +14,7 @@ import (
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
 	"github.com/Tangerg/frame/distribution"
+	"github.com/Tangerg/frame/internal/localfile"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -52,14 +53,14 @@ func buildPreview(ctx context.Context, store *distribution.Store, contracts Cont
 		return distribution.Release{}, err
 	}
 	module = slices.Concat([]byte("const published = Object.freeze("), declaration, []byte(");\n"), module)
-	if err := os.WriteFile(filepath.Join(directory, previewModulePath), module, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(directory, previewModulePath), module, localfile.PrivateFileMode); err != nil {
 		return distribution.Release{}, err
 	}
 	theme, err := assets.ReadFile("assets/" + themeResourcePath)
 	if err != nil {
 		return distribution.Release{}, err
 	}
-	if err := os.WriteFile(filepath.Join(directory, themeResourcePath), theme, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(directory, themeResourcePath), theme, localfile.PrivateFileMode); err != nil {
 		return distribution.Release{}, err
 	}
 	manifest := distribution.Manifest{
@@ -78,7 +79,7 @@ func buildPreview(ctx context.Context, store *distribution.Store, contracts Cont
 		return distribution.Release{}, err
 	}
 	path := filepath.Join(directory, "preview.zip")
-	if err := os.WriteFile(path, archive.Bytes(), 0600); err != nil {
+	if err := os.WriteFile(path, archive.Bytes(), localfile.PrivateFileMode); err != nil {
 		return distribution.Release{}, err
 	}
 	authorize(value.Hash(archive.Bytes()))

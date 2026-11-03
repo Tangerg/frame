@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -82,82 +83,130 @@ func equalityCost(total int, comparisons int, weight uint64) int {
 	return total + comparisons*int(weight)
 }
 
+// jsonBudget bounds one document before any tree is built. A value has no
+// byte budget of its own: its transport owner chooses that limit.
+type jsonBudget struct {
+	maxBytes int
+	maxNodes int
+}
+
+func descriptorBudget() jsonBudget {
+	limits := ProfileLimits()
+	return jsonBudget{maxBytes: limits.MaxDescriptorBytes, maxNodes: limits.MaxDescriptorNodes}
+}
+
+func valueBudget() jsonBudget {
+	return jsonBudget{maxBytes: math.MaxInt, maxNodes: ProfileLimits().MaxValueNodes}
+}
+
 // checkJSON counts values rather than object member names. It runs before tree
 // decoding, numeric expansion, or a recursive schema engine can consume input.
-func checkJSON(raw []byte, maximumBytes int) (jsonSize, error) {
-	limits := ProfileLimits()
-	maximumNodes := limits.MaxValueNodes
-	if maximumBytes != 0 {
-		maximumNodes = limits.MaxDescriptorNodes
+func checkJSON(raw []byte, budget jsonBudget) (jsonSize, error) {
+	if len(raw) > budget.maxBytes {
+		return jsonSize{}, limit("descriptor bytes", budget.maxBytes)
 	}
-	if maximumBytes != 0 && len(raw) > maximumBytes {
-		return jsonSize{}, limit("descriptor bytes", maximumBytes)
-	}
-	type frame struct {
-		kind     jsontext.Kind
-		key      bool
-		children int
-		weight   uint64
-	}
-	var size jsonSize
-	var stack []frame
+	counter := jsonCounter{maxNodes: budget.maxNodes, maxDepth: ProfileLimits().MaxJSONDepth}
 	decoder := jsontext.NewDecoder(bytes.NewReader(raw))
 	for {
 		token, err := decoder.ReadToken()
 		if err == io.EOF {
-			if size.nodes == 0 || len(stack) != 0 {
+			if counter.size.nodes == 0 || len(counter.stack) != 0 {
 				return jsonSize{}, errors.New("portable: one complete JSON value is required")
 			}
-			return size, nil
+			return counter.size, nil
 		}
 		if err != nil {
 			return jsonSize{}, err
 		}
-		kind := token.Kind()
-		if kind == '}' || kind == ']' {
-			parent := stack[len(stack)-1]
-			if kind == ']' {
-				size.equality = equalityCost(size.equality, parent.children-1, size.weight-parent.weight)
-			}
-			stack = stack[:len(stack)-1]
-			continue
-		}
-		if len(stack) > 0 {
-			parent := &stack[len(stack)-1]
-			if parent.kind == '{' && parent.key {
-				parent.key = false
-				size.keys++
-				size.weight += uint64(max(1, len(token.String())))
-				continue
-			}
-			parent.children++
-			if parent.kind == '{' {
-				parent.key = true
-			}
-		} else if size.nodes > 0 {
-			return jsonSize{}, errors.New("portable: only one JSON value is permitted")
-		}
-		size.nodes++
-		if size.nodes > maximumNodes {
-			return jsonSize{}, limit("JSON value nodes", maximumNodes)
-		}
-		depth := len(stack) + 1
-		if depth > limits.MaxJSONDepth {
-			return jsonSize{}, limit("JSON depth", limits.MaxJSONDepth)
-		}
-		size.depth = max(size.depth, depth)
-		size.weight++
-		if kind == '{' || kind == '[' {
-			stack = append(stack, frame{kind: kind, key: kind == '{', weight: size.weight})
-		} else if kind == '0' {
-			size.weight += uint64(len(token.String()))
-			if err := checkNumber(token.String()); err != nil {
-				return jsonSize{}, err
-			}
-		} else if kind == '"' {
-			size.weight += uint64(len(token.String()))
+		if err := counter.count(token); err != nil {
+			return jsonSize{}, err
 		}
 	}
+}
+
+// jsonFrame is an open object or array. weight is the document weight at its
+// start, so its own weight is known when it closes.
+type jsonFrame struct {
+	kind     jsontext.Kind
+	key      bool
+	children int
+	weight   uint64
+}
+
+type jsonCounter struct {
+	size     jsonSize
+	stack    []jsonFrame
+	maxNodes int
+	maxDepth int
+}
+
+func (c *jsonCounter) count(token jsontext.Token) error {
+	kind := token.Kind()
+	if kind == '}' || kind == ']' {
+		c.closeContainer(kind)
+		return nil
+	}
+	if c.memberName(token) {
+		return nil
+	}
+	if err := c.enterValue(); err != nil {
+		return err
+	}
+	switch kind {
+	case '{', '[':
+		c.stack = append(c.stack, jsonFrame{kind: kind, key: kind == '{', weight: c.size.weight})
+	case '0':
+		c.size.weight += uint64(len(token.String()))
+		return checkNumber(token.String())
+	case '"':
+		c.size.weight += uint64(len(token.String()))
+	}
+	return nil
+}
+
+// closeContainer charges an array for comparing its elements for uniqueness.
+func (c *jsonCounter) closeContainer(kind jsontext.Kind) {
+	parent := c.stack[len(c.stack)-1]
+	if kind == ']' {
+		c.size.equality = equalityCost(c.size.equality, parent.children-1, c.size.weight-parent.weight)
+	}
+	c.stack = c.stack[:len(c.stack)-1]
+}
+
+// memberName counts an object member name, which is not a value node.
+func (c *jsonCounter) memberName(token jsontext.Token) bool {
+	if len(c.stack) == 0 {
+		return false
+	}
+	parent := &c.stack[len(c.stack)-1]
+	if parent.kind != '{' || !parent.key {
+		return false
+	}
+	parent.key = false
+	c.size.keys++
+	c.size.weight += uint64(max(1, len(token.String())))
+	return true
+}
+
+func (c *jsonCounter) enterValue() error {
+	if len(c.stack) > 0 {
+		parent := &c.stack[len(c.stack)-1]
+		parent.children++
+		parent.key = parent.kind == '{'
+	} else if c.size.nodes > 0 {
+		return errors.New("portable: only one JSON value is permitted")
+	}
+	c.size.nodes++
+	if c.size.nodes > c.maxNodes {
+		return limit("JSON value nodes", c.maxNodes)
+	}
+	depth := len(c.stack) + 1
+	if depth > c.maxDepth {
+		return limit("JSON depth", c.maxDepth)
+	}
+	c.size.depth = max(c.size.depth, depth)
+	c.size.weight++
+	return nil
 }
 
 func checkNumber(number string) error {
@@ -181,7 +230,7 @@ func checkNumber(number string) error {
 // CheckDescriptor also protects constructors that accept an already encoded
 // descriptor, before allocating its typed projection.
 func CheckDescriptor(raw []byte) error {
-	_, err := checkJSON(raw, ProfileLimits().MaxDescriptorBytes)
+	_, err := checkJSON(raw, descriptorBudget())
 	return err
 }
 

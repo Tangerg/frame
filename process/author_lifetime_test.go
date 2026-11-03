@@ -29,16 +29,16 @@ func TestServeRetirementJoinsPreparationBeforeResourceCleanup(t *testing.T) {
 		client, server := net.Pipe()
 		served := make(chan error, 1)
 		go func() { served <- Serve(ctx, server, unit) }()
-		host := newPeer(client, profile.MaxFrameBytes, nil)
+		host := newPeer(client, wire.MaxFrameBytes, nil)
 		host.start()
 		defer host.end(context.Canceled)
 		var description description
-		if err := host.request(context.Background(), profile.Methods.Hello, hello{profile.Version, profile.MaxFrameBytes}, &description); err != nil {
+		if err := host.request(context.Background(), wire.Methods.Hello, hello{wire.Version, wire.MaxFrameBytes}, &description); err != nil {
 			t.Fatal(err)
 		}
 		prepared := make(chan error, 1)
 		go func() {
-			prepared <- host.acknowledge(context.Background(), profile.Methods.Prepare, preparation{Imports: map[string][]offered{}})
+			prepared <- host.acknowledge(context.Background(), wire.Methods.Prepare, preparation{Imports: map[string][]offered{}})
 		}()
 		<-started
 		cancel()

@@ -9,27 +9,16 @@ import (
 	"errors"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/value"
 )
 
 var _ frame.InstallationStore = (*Store)(nil)
-var _ frame.ExecutionProtection = (*Store)(nil)
 
 func (s *Store) CommitInstallation(ctx context.Context, change frame.InstallationChange) (state frame.CommitState, err error) {
 	if err := s.admission.CheckAdmitted(ctx); err != nil {
 		return frame.CommitRejected, err
 	}
-	var id frame.InstallationID
-	if change.Before != nil {
-		id = change.Before.ID
-	}
-	if change.After != nil {
-		if id != "" && id != change.After.ID {
-			return frame.CommitRejected, ErrConflict
-		}
-		id = change.After.ID
-	}
-	if err := id.Validate(); err != nil {
+	id, err := changedInstallation(change)
+	if err != nil {
 		return frame.CommitRejected, err
 	}
 	request, err := json.Marshal(change)
@@ -60,64 +49,83 @@ func (s *Store) CommitInstallation(ctx context.Context, change frame.Installatio
 		err = errors.Join(err, cleanupErr)
 	}()
 	settlement, err := s.control.commit(ctx, submission, request, func(ctx context.Context, tx Executor) ([]byte, error) {
-		var stored []byte
-		readErr := tx.QueryRowContext(ctx, `SELECT record FROM frame_installations WHERE id=?`, id).Scan(&stored)
-		if change.Before == nil {
-			if readErr == nil {
-				return nil, ErrConflict
-			}
-			if !errors.Is(readErr, sql.ErrNoRows) {
-				return nil, readErr
-			}
-		} else {
-			if readErr != nil {
-				return nil, readErr
-			}
-			expected, err := json.Marshal(change.Before)
-			if err != nil {
-				return nil, err
-			}
-			if !bytes.Equal(stored, expected) {
-				return nil, ErrConflict
-			}
-		}
-		if change.After == nil {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM frame_installations WHERE id=?`, id); err != nil {
-				return nil, err
-			}
-		} else {
-			encoded, err := json.Marshal(change.After)
-			if err != nil {
-				return nil, err
-			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO frame_installations(id,record) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record`, id, encoded); err != nil {
-				return nil, err
-			}
-		}
-		if s.projectInstallation != nil {
-			projection := frame.InstallationChange{}
-			if change.Before != nil {
-				before := change.Before.Clone()
-				projection.Before = &before
-			}
-			if change.After != nil {
-				after := change.After.Clone()
-				projection.After = &after
-			}
-			if err := s.projectInstallation(ctx, tx, projection); err != nil {
-				return nil, err
-			}
-		}
-		return []byte(id), nil
-	}, nil, false)
-	switch settlement.State {
-	case Committed:
-		return frame.CommitSucceeded, err
-	case NotCommitted:
-		return frame.CommitRejected, err
-	default:
-		return frame.CommitIndeterminate, err
+		return []byte(id), s.applyInstallation(ctx, tx, id, change)
+	}, nil, confirmByCaller)
+	return settlement.State, err
+}
+
+// changedInstallation names the one installation a change replaces.
+func changedInstallation(change frame.InstallationChange) (frame.InstallationID, error) {
+	var id frame.InstallationID
+	if change.Before != nil {
+		id = change.Before.ID
 	}
+	if change.After != nil {
+		if id != "" && id != change.After.ID {
+			return "", ErrConflict
+		}
+		id = change.After.ID
+	}
+	return id, id.Validate()
+}
+
+// applyInstallation compares the stored record with the expected one and
+// replaces it, then projects the same change into the business tables.
+func (s *Store) applyInstallation(ctx context.Context, tx Executor, id frame.InstallationID, change frame.InstallationChange) error {
+	if err := checkInstalled(ctx, tx, id, change.Before); err != nil {
+		return err
+	}
+	if change.After == nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM frame_installations WHERE id=?`, id); err != nil {
+			return err
+		}
+	} else {
+		encoded, err := json.Marshal(change.After)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO frame_installations(id,record) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record`, id, encoded); err != nil {
+			return err
+		}
+	}
+	if s.projectInstallation == nil {
+		return nil
+	}
+	return s.projectInstallation(ctx, tx, cloneChange(change))
+}
+
+func checkInstalled(ctx context.Context, tx Executor, id frame.InstallationID, expected *frame.InstallationRecord) error {
+	var stored []byte
+	err := tx.QueryRowContext(ctx, `SELECT record FROM frame_installations WHERE id=?`, id).Scan(&stored)
+	switch {
+	case expected == nil && err == nil:
+		return ErrConflict
+	case expected == nil && errors.Is(err, sql.ErrNoRows):
+		return nil
+	case err != nil:
+		return err
+	}
+	encoded, err := json.Marshal(expected)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(stored, encoded) {
+		return ErrConflict
+	}
+	return nil
+}
+
+func cloneChange(change frame.InstallationChange) frame.InstallationChange {
+	var projection frame.InstallationChange
+	if change.Before != nil {
+		before := change.Before.Clone()
+		projection.Before = &before
+	}
+	if change.After != nil {
+		after := change.After.Clone()
+		projection.After = &after
+	}
+	return projection
 }
 
 func (s *Store) ConfirmInstallation(ctx context.Context, id frame.InstallationID) error {
@@ -203,152 +211,5 @@ func (s *Store) ConfirmRestoredInstallations(ctx context.Context) error {
 			return err
 		}
 		return s.control.compactSettled(ctx)
-	})
-}
-
-func (s *Store) ApproveUse(ctx context.Context, approval frame.UseApproval) error {
-	if err := s.admission.CheckAdmitted(ctx); err != nil {
-		return err
-	}
-	if !validID(approval.ID) || approval.Realm.Validate() != nil || approval.Scope.Validate() != nil || approval.Epoch != s.epoch {
-		return frame.ErrInvalid
-	}
-	if err := approval.Binding.Validate(); err != nil {
-		return err
-	}
-	encoded, err := json.Marshal(approval)
-	if err != nil {
-		return err
-	}
-	if len(encoded) > s.maxRequestBytes {
-		return frame.ErrCapacity
-	}
-	err = s.transaction(ctx, func(tx Executor) error {
-		var previous []byte
-		err := tx.QueryRowContext(ctx, `SELECT request FROM frame_use_approvals WHERE id=?`, approval.ID).Scan(&previous)
-		if err == nil {
-			if !bytes.Equal(previous, encoded) {
-				return ErrConflict
-			}
-			return nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if approval.ParentID != "" {
-			var state useState
-			if err := tx.QueryRowContext(ctx, `SELECT state FROM frame_use_approvals WHERE id=?`, approval.ParentID).Scan(&state); err != nil {
-				return err
-			}
-			if err := state.validate(); err != nil {
-				return err
-			}
-			if state != useApproved {
-				return frame.ErrClosed
-			}
-		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO frame_use_approvals(id,request,request_digest,state) VALUES(?,?,?,?)`, approval.ID, encoded, value.Hash(encoded), useApproved)
-		return err
-	})
-	if err != nil && !errors.Is(err, ErrConflict) && !errors.Is(err, frame.ErrClosed) {
-		s.admission.RequireRecovery(err)
-	}
-	return err
-}
-
-type UseRecord struct {
-	Approval frame.UseApproval
-	Released bool
-	Proof    *UseProof
-}
-
-type UseProof struct {
-	Host  *frame.CloseOutcome `json:"host,omitempty"`
-	Realm *ExitProof          `json:"realm,omitempty"`
-}
-
-const useRecords = `SELECT request,request_digest,state,proof FROM frame_use_approvals`
-const protectedUses = useRecords + ` WHERE state=? ORDER BY id`
-
-func (s *Store) Uses(ctx context.Context) ([]UseRecord, error) {
-	return readRecords(ctx, s, useRecords+" ORDER BY id", decodeUse)
-}
-func (s *Store) Use(ctx context.Context, id string) (UseRecord, error) {
-	return readRecord(ctx, s, useRecords+" WHERE id=?", decodeUse, id)
-}
-func (s *Store) ExecutionUses(ctx context.Context, id string) ([]UseRecord, error) {
-	return readRecords(ctx, s, useRecords+` WHERE execution_id=? ORDER BY id`, decodeUse, id)
-}
-
-func decodeUse(row protectedRecord) (UseRecord, error) {
-	var record UseRecord
-	state := useState(row.state)
-	if err := state.validate(); err != nil {
-		return record, err
-	}
-	if err := jsonv2.Unmarshal(row.request, &record.Approval, jsonv2.RejectUnknownMembers(true)); err != nil {
-		return record, err
-	}
-	if err := record.Approval.Binding.Validate(); err != nil {
-		return record, err
-	}
-	record.Released = state == useReleased
-	if len(row.proof) != 0 {
-		if err := jsonv2.Unmarshal(row.proof, &record.Proof, jsonv2.RejectUnknownMembers(true)); err != nil {
-			return record, err
-		}
-	}
-	if record.Released && (record.Proof == nil || record.Proof.Host == nil && record.Proof.Realm == nil || record.Proof.Host != nil && !record.Proof.Host.Released) {
-		return record, errors.New("sqlite: released use lacks proof")
-	}
-	return record, nil
-}
-
-func (s *Store) ReleaseUse(ctx context.Context, id string, outcome frame.CloseOutcome) error {
-	if !validID(id) || outcome.ID == 0 {
-		return frame.ErrInvalid
-	}
-	encoded, err := json.Marshal(UseProof{Host: &outcome})
-	if err != nil {
-		return err
-	}
-	if len(encoded) > s.maxRequestBytes {
-		return frame.ErrCapacity
-	}
-	return s.admission.Maintenance(ctx, func() error {
-		err := s.transaction(ctx, func(tx Executor) error {
-			var state useState
-			var previous []byte
-			if err := tx.QueryRowContext(ctx, `SELECT state,proof FROM frame_use_approvals WHERE id=?`, id).Scan(&state, &previous); err != nil {
-				return err
-			}
-			if err := state.validate(); err != nil {
-				return err
-			}
-			if state == useReleased {
-				if !bytes.Equal(previous, encoded) {
-					return ErrConflict
-				}
-				return nil
-			}
-			if len(previous) != 0 {
-				var prior UseProof
-				if err := json.Unmarshal(previous, &prior); err != nil {
-					return err
-				}
-				if prior.Host == nil || prior.Host.ID != outcome.ID {
-					return ErrConflict
-				}
-			}
-			if outcome.Released {
-				state = useReleased
-			}
-			_, err := tx.ExecContext(ctx, `UPDATE frame_use_approvals SET state=?,proof=? WHERE id=?`, state, encoded, id)
-			return err
-		})
-		if err != nil && !errors.Is(err, ErrConflict) && !errors.Is(err, sql.ErrNoRows) {
-			s.admission.RequireRecovery(err)
-		}
-		return err
 	})
 }

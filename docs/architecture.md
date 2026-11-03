@@ -41,8 +41,9 @@ The profile admits only `date`, `time`, `date-time`, `uuid`, `json-pointer` and
 `relative-json-pointer` formats. Unsupported format names are rejected when a
 descriptor is admitted. `portable.ProfileSchema` owns the dialect, keyword value
 shapes and schema-child topology, including whether an edge consumes instance
-depth. Go exports that declaration, the format inventory, resource budgets and
-regular-expression atom meanings into `portable/profile.generated.json`; the
+depth. Go exports that declaration, the format inventory, resource budgets,
+regular-expression atom meanings and variable-width syntax into
+`portable/profile.generated.json`; the
 Node adapter consumes that projection while each runtime keeps its own mature
 predicate compiler. In particular, whitespace uses Go's
 ASCII character set, a dot excludes LF, and the end anchor requires the end of
@@ -94,7 +95,7 @@ The live execution path admits the original plan. A durable host can configure R
 The Host reads closing state from its original Lifetime. Closing an injected
 Lifetime or cancelling its parent fences the same operations as `Host.Close`;
 there is no independently advanced Host close flag. Each Watch is a resource
-of that Lifetime, so a live subscription consumes both `HostConfig.MaxWatches`
+of that Lifetime, so a live subscription consumes both `HostLimits.MaxWatches`
 and one `LifetimeLimits.MaxResources` entry. Closing the Watch closes its
 channel and then returns both capacities. A Host with no Watches reserves no
 subscription resource.

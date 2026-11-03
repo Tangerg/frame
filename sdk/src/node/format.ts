@@ -36,43 +36,61 @@ function clockPart(value: string): number {
     : Number.NaN;
 }
 
-function time(value: string): boolean {
-  if (value.length < 9 || value[2] !== ":" || value[5] !== ":") return false;
+interface Clock {
+  readonly hour: number;
+  readonly minute: number;
+  readonly second: number;
+}
+
+/** Reads the leading HH:MM:SS of a time, or undefined when out of range. */
+function clock(value: string): Clock | undefined {
+  if (value.length < 9 || value[2] !== ":" || value[5] !== ":")
+    return undefined;
   const hour = clockPart(value.slice(0, 2));
   const minute = clockPart(value.slice(3, 5));
   const second = clockPart(value.slice(6, 8));
+  return hour >= 0 &&
+    hour < hoursPerDay &&
+    minute >= 0 &&
+    minute < minutesPerHour &&
+    second >= 0 &&
+    second <= maximumSecond
+    ? { hour, minute, second }
+    : undefined;
+}
+
+/** Reads a zone designator as minutes to add to reach UTC. */
+function zoneOffset(zone: string): number | undefined {
+  if (zone === "Z" || zone === "z") return 0;
+  if (
+    zone.length !== 6 ||
+    (zone[0] !== "+" && zone[0] !== "-") ||
+    zone[3] !== ":"
+  )
+    return undefined;
+  const hour = clockPart(zone.slice(1, 3));
+  const minute = clockPart(zone.slice(4, 6));
   if (
     !(hour >= 0 && hour < hoursPerDay) ||
-    !(minute >= 0 && minute < minutesPerHour) ||
-    !(second >= 0 && second <= maximumSecond)
+    !(minute >= 0 && minute < minutesPerHour)
   )
-    return false;
-  let zone = value.slice(8);
-  if (zone.startsWith(".")) {
-    const fraction = /^\.[0-9]+/.exec(zone);
-    if (!fraction) return false;
-    zone = zone.slice(fraction[0].length);
-  }
-  let utcMinute = hour * minutesPerHour + minute;
-  if (zone !== "Z" && zone !== "z") {
-    if (
-      zone.length !== 6 ||
-      (zone[0] !== "+" && zone[0] !== "-") ||
-      zone[3] !== ":"
-    )
-      return false;
-    const offsetHour = clockPart(zone.slice(1, 3));
-    const offsetMinute = clockPart(zone.slice(4, 6));
-    if (
-      !(offsetHour >= 0 && offsetHour < hoursPerDay) ||
-      !(offsetMinute >= 0 && offsetMinute < minutesPerHour)
-    )
-      return false;
-    const offset = offsetHour * minutesPerHour + offsetMinute;
-    utcMinute += zone[0] === "-" ? offset : -offset;
-    utcMinute = (utcMinute + minutesPerDay) % minutesPerDay;
-  }
-  return second < maximumSecond || utcMinute === minutesPerDay - 1;
+    return undefined;
+  const offset = hour * minutesPerHour + minute;
+  return zone[0] === "-" ? offset : -offset;
+}
+
+/** A leap second is valid only in the last minute of the UTC day. */
+function time(value: string): boolean {
+  const parts = clock(value);
+  if (!parts) return false;
+  const zone = value.slice(8).replace(/^\.[0-9]+/, "");
+  if (zone.startsWith(".")) return false;
+  const offset = zoneOffset(zone);
+  if (offset === undefined) return false;
+  const utcMinute =
+    (parts.hour * minutesPerHour + parts.minute + offset + minutesPerDay) %
+    minutesPerDay;
+  return parts.second < maximumSecond || utcMinute === minutesPerDay - 1;
 }
 
 function pointer(value: string): boolean {

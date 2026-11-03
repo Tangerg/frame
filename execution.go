@@ -46,12 +46,23 @@ type BoundValue struct {
 	Local bool
 }
 
+// Setup is one preparation of an Instance. It ends when the preparation
+// returns; an activation callback registered during it runs after admission.
 type Setup struct {
 	host     *Host
 	instance *Instance
 	work     *Work
 	imports  map[string][]BoundValue
 	staged   *stagedExports
+	// Setup is a handle: copies share the same activation registration.
+	activation *activation
+}
+
+// activation is the callback a setup registered to run after admission. Host.mu
+// guards it; sealing ends registration when the preparation returns.
+type activation struct {
+	callback func(context.Context) error
+	sealed   bool
 }
 
 func (s *Setup) Unit() UnitDeclaration     { return s.instance.unit.Clone() }
@@ -61,17 +72,10 @@ func (s *Setup) Configuration() []byte     { return bytes.Clone(s.instance.confi
 func (s *Setup) InstanceID() string        { return s.instance.id }
 func (s *Setup) Generation() uint64        { return s.instance.generation }
 func (s *Setup) Epoch() uint64             { return s.host.epoch }
-func (s *Setup) Scope() ScopeID            { return s.ScopeGrant().ID() }
-func (s *Setup) ScopeGeneration() uint64   { return s.ScopeGrant().Generation() }
-func (s *Setup) ScopeGrant() ScopeGrant {
-	if s.instance.startGrant.owner != nil {
-		return s.instance.startGrant
-	}
-	return s.instance.scope
-}
-func (s *Setup) Realm() RealmID           { return s.instance.realm }
-func (s *Setup) Lifetime() *Lifetime      { return s.instance.lifetime }
-func (s *Setup) Context() context.Context { return s.work.Context() }
+func (s *Setup) ScopeGrant() ScopeGrant    { return s.instance.grant() }
+func (s *Setup) Realm() RealmID            { return s.instance.realm }
+func (s *Setup) Lifetime() *Lifetime       { return s.instance.lifetime }
+func (s *Setup) Context() context.Context  { return s.work.Context() }
 
 func (s *Setup) ValueContract(ref ContractRef) (ContractRef, error) {
 	return s.host.ValueContract(ref)
@@ -108,23 +112,23 @@ func (s *Setup) OnActivate(activate func(context.Context) error) error {
 	}
 	s.host.mu.Lock()
 	defer s.host.mu.Unlock()
-	if s.instance.preparationSealed || s.instance.retiring {
+	if s.activation.sealed || s.instance.retiring {
 		return ErrClosed
 	}
-	if s.instance.activation != nil {
+	if s.activation.callback != nil {
 		return ErrInvalid
 	}
-	s.instance.activation = activate
+	s.activation.callback = activate
 	return nil
 }
 
 func (s *Setup) sealPreparation() func(context.Context) error {
 	s.host.mu.Lock()
 	defer s.host.mu.Unlock()
-	s.instance.preparationSealed = true
-	activation := s.instance.activation
-	s.instance.activation = nil
-	return activation
+	s.activation.sealed = true
+	callback := s.activation.callback
+	s.activation.callback = nil
+	return callback
 }
 
 func (s *Setup) Imports(slot string) ([]BoundValue, error) {
@@ -135,46 +139,44 @@ func (s *Setup) Imports(slot string) ([]BoundValue, error) {
 	return slices.Clone(values), nil
 }
 
-func readImport[T any](setup *Setup, slot string, contract Contract[T], optional bool) (T, bool, error) {
-	var zero T
-	if setup == nil || contract.value == nil {
-		return zero, false, ErrInvalid
+// readImport returns the single value bound to the import the author expects.
+// An optional import without a provider reports found=false.
+func readImport[T any](setup *Setup, expected ImportDeclaration) (value T, found bool, err error) {
+	if setup == nil || expected.Contract == (ContractRef{}) {
+		return value, false, ErrInvalid
 	}
-	for _, declared := range setup.instance.binding.Imports {
-		if declared.Slot != slot {
-			continue
-		}
-		if declared.Contract != contract.Ref() || declared.Optional != optional {
-			return zero, false, ErrContractMismatch
-		}
-		values := setup.imports[slot]
-		if len(values) == 0 {
-			if optional {
-				return zero, false, nil
-			}
-			return zero, false, ErrUnavailable
-		}
-		if len(values) != 1 || values[0].Source.Contract != declared.Contract {
-			return zero, false, ErrContractMismatch
-		}
-		if values[0].Local {
-			return zero, false, ErrUnavailable
-		}
-		value, ok := values[0].Value.(T)
-		if !ok {
-			return zero, false, ErrContractMismatch
-		}
-		return value, true, nil
+	declared, exists := setup.instance.unit.importSlot(expected.Slot)
+	if !exists {
+		return value, false, fmt.Errorf("%w: undeclared import slot %q", ErrInvalid, expected.Slot)
 	}
-	return zero, false, fmt.Errorf("%w: undeclared import slot %q", ErrInvalid, slot)
+	if declared.Contract != expected.Contract || declared.Optional != expected.Optional {
+		return value, false, ErrContractMismatch
+	}
+	values := setup.imports[expected.Slot]
+	switch {
+	case len(values) == 0 && expected.Optional:
+		return value, false, nil
+	case len(values) == 0:
+		return value, false, ErrUnavailable
+	case len(values) != 1 || values[0].Source.Contract != declared.Contract:
+		return value, false, ErrContractMismatch
+	case values[0].Local:
+		return value, false, ErrUnavailable
+	}
+	value, ok := values[0].Value.(T)
+	if !ok {
+		return value, false, ErrContractMismatch
+	}
+	return value, true, nil
 }
 
 func Import[T any](setup *Setup, slot string, contract Contract[T]) (T, error) {
-	value, _, err := readImport(setup, slot, contract, false)
+	value, _, err := readImport[T](setup, ImportDeclaration{Slot: slot, Contract: contract.Ref()})
 	return value, err
 }
+
 func OptionalImport[T any](setup *Setup, slot string, contract Contract[T]) (T, bool, error) {
-	return readImport(setup, slot, contract, true)
+	return readImport[T](setup, ImportDeclaration{Slot: slot, Contract: contract.Ref(), Optional: true})
 }
 
 func Provide[T any](name string, contract Contract[T], value T) ExportValue {

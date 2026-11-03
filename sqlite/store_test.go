@@ -72,21 +72,21 @@ func TestSubmissionAtomicBindingAndStableConclusion(t *testing.T) {
 		_, err := tx.ExecContext(ctx, `INSERT INTO documents VALUES('a','converter',?,1)`, value.Hash([]byte("release")))
 		return []byte("document:a"), err
 	}, nil)
-	if err != nil || settlement.State != Committed || !settlement.Synchronized {
+	if err != nil || settlement.State != frame.CommitSucceeded || !settlement.Synchronized {
 		t.Fatalf("commit: %+v %v", settlement, err)
 	}
 	if err := admission.Under(ctx, func() error { return admission.CheckUnused(ctx, "converter") }); !errors.Is(err, frame.ErrInUse) {
 		t.Fatalf("binding was not visible: %v", err)
 	}
 	replayed, err := owner.Commit(ctx, id, request, func(context.Context, Executor) ([]byte, error) { mutations++; return nil, nil }, nil)
-	if err != nil || replayed.State != Committed || mutations != 1 {
+	if err != nil || replayed.State != frame.CommitSucceeded || mutations != 1 {
 		t.Fatalf("repeated mutation: %+v %v count=%d", replayed, err, mutations)
 	}
 	if _, err := owner.Commit(ctx, id, []byte("changed"), func(context.Context, Executor) ([]byte, error) { t.Fatal("conflict executed"); return nil, nil }, nil); !errors.Is(err, ErrConflict) {
 		t.Fatalf("conflict: %v", err)
 	}
 	// The business owner can release its reference without erasing its earlier
-	// admission evidence. The conclusion remains Committed after completion.
+	// admission evidence. The conclusion remains frame.CommitSucceeded after completion.
 	finish, err := owner.Prepare(ctx, []byte("finish"))
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +102,7 @@ func TestSubmissionAtomicBindingAndStableConclusion(t *testing.T) {
 		t.Fatal(err)
 	}
 	settlement, err = owner.Settlement(ctx, id, request)
-	if err != nil || settlement.State != Committed {
+	if err != nil || settlement.State != frame.CommitSucceeded {
 		t.Fatalf("history followed current references: %+v %v", settlement, err)
 	}
 	var count int
@@ -124,7 +124,7 @@ func TestCanceledMutationSettlesBeforeAdmissionReopens(t *testing.T) {
 		cancel()
 		return nil, err
 	}, nil)
-	if !errors.Is(err, context.Canceled) || settlement.State != NotCommitted {
+	if !errors.Is(err, context.Canceled) || settlement.State != frame.CommitRejected {
 		t.Fatalf("canceled settlement: %+v %v", settlement, err)
 	}
 	var count int
@@ -137,7 +137,7 @@ func TestCanceledMutationSettlesBeforeAdmissionReopens(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = owner.Commit(context.Background(), id, request, func(context.Context, Executor) ([]byte, error) {
-		t.Fatal("terminal NotCommitted was replayed")
+		t.Fatal("terminal frame.CommitRejected was replayed")
 		return nil, nil
 	}, nil)
 	if err != nil {
@@ -206,7 +206,7 @@ func TestSynchronizedFailureKeepsRecoveryBarrier(t *testing.T) {
 	}
 	failed := errors.New("local authority unavailable")
 	settlement, err := owner.Commit(ctx, id, []byte("sync"), func(context.Context, Executor) ([]byte, error) { return []byte("accepted"), nil }, func(Settlement) error { return failed })
-	if !errors.Is(err, failed) || settlement.State != Committed {
+	if !errors.Is(err, failed) || settlement.State != frame.CommitSucceeded {
 		t.Fatalf("known commit lost: %+v %v", settlement, err)
 	}
 	if _, err := owner.Prepare(ctx, []byte("new")); !errors.Is(err, frame.ErrRecoveryRequired) {
@@ -343,9 +343,9 @@ func TestCrashSettlementUsesOriginalIntent(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := NotCommitted
+			want := frame.CommitRejected
 			if phase == "after-commit" {
-				want = Committed
+				want = frame.CommitSucceeded
 			}
 			if settlement.State != want {
 				t.Fatalf("settlement %s, want %s", settlement.State, want)
@@ -356,7 +356,7 @@ func TestCrashSettlementUsesOriginalIntent(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if (count == 1) != (want == Committed) {
+			if (count == 1) != (want == frame.CommitSucceeded) {
 				t.Fatalf("mutation and evidence diverged: %d %s", count, settlement.State)
 			}
 		})
@@ -505,7 +505,7 @@ func TestProtectionQueriesDoNotReadReleasedHistory(t *testing.T) {
 	for _, projection := range []struct {
 		query string
 		state any
-	}{{protectedAttempts, attemptApproved}, {protectedUses, useApproved}} {
+	}{{protectedAttempts, AttemptApproved}, {protectedUses, useApproved}} {
 		rows, err := store.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+projection.query, projection.state)
 		if err != nil {
 			t.Fatal(err)
@@ -540,7 +540,7 @@ func TestProtectionQueriesDoNotReadReleasedHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	pending, err := store.PendingAttempts(ctx)
-	if err != nil || len(pending) != 1 || !pending[0].PendingHandoff {
+	if err != nil || len(pending) != 1 || !(pending[0].State == AttemptHandoff) {
 		t.Fatalf("pending handoff=%+v %v", pending, err)
 	}
 	if err := store.ReleaseAttempt(ctx, active.ID, proof); err != nil {

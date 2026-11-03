@@ -46,6 +46,8 @@ func (r UnitRef) Validate() error {
 	return r.UnitID.Validate()
 }
 
+func (r UnitRef) String() string { return r.InstallationID.String() + "/" + r.UnitID.String() }
+
 func (r UnitRef) Dependency() Dependency {
 	return Dependency{InstallationID: r.InstallationID, Release: r.Release}
 }
@@ -81,6 +83,12 @@ type ImportDeclaration struct {
 func (d ImportDeclaration) Clone() ImportDeclaration {
 	d.Providers = slices.Clone(d.Providers)
 	return d
+}
+
+// equal distinguishes unresolved providers (nil) from a resolved empty set.
+func (d ImportDeclaration) equal(other ImportDeclaration) bool {
+	return d.Slot == other.Slot && d.Contract == other.Contract && d.Optional == other.Optional &&
+		(d.Providers == nil) == (other.Providers == nil) && slices.Equal(d.Providers, other.Providers)
 }
 
 func (d ImportDeclaration) Validate() error {
@@ -135,6 +143,20 @@ func (d UnitDeclaration) Clone() UnitDeclaration {
 	}
 	d.Exports = slices.Clone(d.Exports)
 	return d
+}
+
+func (d UnitDeclaration) importSlot(slot string) (ImportDeclaration, bool) {
+	for _, declared := range d.Imports {
+		if declared.Slot == slot {
+			return declared, true
+		}
+	}
+	return ImportDeclaration{}, false
+}
+
+func (d UnitDeclaration) equal(other UnitDeclaration) bool {
+	return d.ID == other.ID && d.Profile == other.Profile &&
+		slices.EqualFunc(d.Imports, other.Imports, ImportDeclaration.equal) && slices.Equal(d.Exports, other.Exports)
 }
 
 func (d UnitDeclaration) Validate() error {
@@ -195,9 +217,7 @@ func (b UnitBinding) canonical() UnitBinding {
 
 func (b UnitBinding) equal(other UnitBinding) bool {
 	left, right := b.canonical(), other.canonical()
-	return left.Source == right.Source && left.Configuration == right.Configuration && slices.EqualFunc(left.Imports, right.Imports, func(a, b ImportDeclaration) bool {
-		return a.Slot == b.Slot && a.Contract == b.Contract && a.Optional == b.Optional && (a.Providers == nil) == (b.Providers == nil) && slices.Equal(a.Providers, b.Providers)
-	})
+	return left.Source == right.Source && left.Configuration == right.Configuration && slices.EqualFunc(left.Imports, right.Imports, ImportDeclaration.equal)
 }
 
 // BindingSnapshot is immutable routing evidence when retained by its domain
@@ -235,6 +255,10 @@ func (b BindingSnapshot) Clone() BindingSnapshot {
 
 func compareUnit(a, b UnitRef) int {
 	return cmp.Or(cmp.Compare(a.InstallationID, b.InstallationID), a.Release.Compare(b.Release), cmp.Compare(a.UnitID, b.UnitID))
+}
+
+func compareExport(a, b ExportRef) int {
+	return cmp.Or(compareUnit(a.Unit(), b.Unit()), cmp.Compare(a.Export, b.Export))
 }
 
 const bindingFormatVersion = 1

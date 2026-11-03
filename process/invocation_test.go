@@ -64,7 +64,7 @@ func TestCommandIdentitySurvivesNeutralRelayAndRejectionsDoNotEnterHandler(t *te
 			}
 			for _, commandID := range invalid {
 				var result value.JSON
-				err := service.peer.request(t.Context(), profile.Methods.Call, callParams{Handle: service.handle, Member: method.Name(), Input: input, CommandID: commandID}, &result)
+				err := service.peer.request(t.Context(), wire.Methods.Call, callParams{Handle: service.handle, Member: method.Name(), Input: input, CommandID: commandID}, &result)
 				if err == nil || errors.Is(err, ErrOutcomeUnknown) {
 					t.Fatalf("invalid identity reached handler: %s %v", commandID, err)
 				}

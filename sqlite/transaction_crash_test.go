@@ -20,11 +20,11 @@ import (
 )
 
 type transactionCut struct {
-	Phase    string          `json:"phase"`
-	IDs      []SubmissionID  `json:"ids,omitempty"`
-	State    SettlementState `json:"state,omitempty"`
-	Recovery bool            `json:"recovery,omitempty"`
-	CloseErr string          `json:"closeError,omitempty"`
+	Phase    string            `json:"phase"`
+	IDs      []SubmissionID    `json:"ids,omitempty"`
+	State    frame.CommitState `json:"state,omitempty"`
+	Recovery bool              `json:"recovery,omitempty"`
+	CloseErr string            `json:"closeError,omitempty"`
 }
 
 func startTransactionCut(t *testing.T, phase string) (string, transactionCut, func()) {
@@ -71,7 +71,7 @@ func startTransactionCut(t *testing.T, phase string) (string, transactionCut, fu
 
 func TestUnconfirmedDisposalRetainsAuthorityUntilOriginalProcessExit(t *testing.T) {
 	path, cut, kill := startTransactionCut(t, "unconfirmed-disposal")
-	if cut.State != Indeterminate || !cut.Recovery || cut.CloseErr == "" || len(cut.IDs) != 1 {
+	if cut.State != frame.CommitIndeterminate || !cut.Recovery || cut.CloseErr == "" || len(cut.IDs) != 1 {
 		t.Errorf("unconfirmed original transaction was reported as settled: %+v", cut)
 	}
 	// The old connection can still commit. Its Store must retain the real file
@@ -101,7 +101,7 @@ func TestUnconfirmedDisposalRetainsAuthorityUntilOriginalProcessExit(t *testing.
 		t.Fatal("child did not report its original issued intent")
 	}
 	settlement, err := owner.Settlement(t.Context(), cut.IDs[0], []byte("unconfirmed-disposal"))
-	if err != nil || settlement.State != NotCommitted {
+	if err != nil || settlement.State != frame.CommitRejected {
 		t.Fatalf("original connection committed after process exit: %+v error=%v", settlement, err)
 	}
 	assertFaultDocumentCount(t, store, 0)
@@ -134,7 +134,7 @@ func TestPrepareAcknowledgementCrashRecoversAllocatedOriginalIntent(t *testing.T
 	defer store.Close()
 	owner, _ := store.Owner("documents")
 	pending, err := owner.Pending(t.Context())
-	if err != nil || len(pending) != 1 || pending[0].ID.Sequence != 1 || pending[0].State != Indeterminate {
+	if err != nil || len(pending) != 1 || pending[0].ID.Sequence != 1 || pending[0].State != frame.CommitIndeterminate {
 		t.Fatalf("allocation response loss left a missing or duplicate intent: %+v error=%v", pending, err)
 	}
 	if admission.RecoveryError() == nil {
@@ -146,7 +146,7 @@ func TestPrepareAcknowledgementCrashRecoversAllocatedOriginalIntent(t *testing.T
 	}
 	id := pending[0].ID
 	settlement, err := owner.Settlement(t.Context(), id, []byte("prepare-committed"))
-	if err != nil || settlement.State != NotCommitted {
+	if err != nil || settlement.State != frame.CommitRejected {
 		t.Fatalf("undispatched allocation was not settled from its original evidence: %+v error=%v", settlement, err)
 	}
 	if err := owner.Confirm(t.Context(), id); err != nil {
@@ -202,7 +202,7 @@ func TestCompactionCrashKeepsWatermarkAndEvidenceAtomic(t *testing.T) {
 					if !errors.Is(err, ErrEvidenceExpired) {
 						t.Fatalf("committed watermark retained/recreated expired evidence: %+v error=%v", settlement, err)
 					}
-				} else if err != nil || settlement.State != Committed || !settlement.Synchronized {
+				} else if err != nil || settlement.State != frame.CommitSucceeded || !settlement.Synchronized {
 					t.Fatalf("uncommitted compaction lost original evidence: %+v error=%v", settlement, err)
 				}
 				_, err = owner.Commit(t.Context(), id, request, func(context.Context, Executor) ([]byte, error) {

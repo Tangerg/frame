@@ -10,19 +10,17 @@ import (
 	"github.com/Tangerg/frame/value"
 )
 
-func TestGeneratedSchemaProfileMatchesOwner(t *testing.T) {
+func TestGeneratedRuntimeProfileMatchesOwner(t *testing.T) {
 	data, err := os.ReadFile("profile.generated.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var generated struct {
-		Schema portable.SchemaProfile `json:"schema"`
-	}
+	var generated portable.RuntimeProfile
 	if err := json.Unmarshal(data, &generated); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(generated.Schema, portable.ProfileSchema()) {
-		t.Fatal("schema profile projection is stale; run go generate ./internal/sdkgen")
+	if !reflect.DeepEqual(generated, portable.CurrentRuntimeProfile()) {
+		t.Fatal("runtime profile projection is stale; run go generate ./internal/sdkgen")
 	}
 }
 

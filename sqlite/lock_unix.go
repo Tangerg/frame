@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"syscall"
+
+	"github.com/Tangerg/frame/internal/localfile"
 )
 
 func acquireAuthority(path string) (*os.File, error) {
@@ -36,7 +38,7 @@ func releaseAuthority(file *os.File) error {
 }
 
 func openAuthorityFile(path string) (*os.File, error) {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, localfile.PrivateFileMode)
 	if err != nil {
 		return nil, err
 	}

@@ -222,7 +222,7 @@ func TestUnadmittedRetirementRetriesOriginalProof(t *testing.T) {
 		t.Fatal(err)
 	}
 	record, err := e.store.Attempt(e.ctx, id)
-	if err != nil || !record.Released || record.Proof.Kind != "not-admitted" {
+	if err != nil || !record.ExitProven() || record.Proof.Kind != "not-admitted" {
 		t.Fatalf("release: %+v, %v", record, err)
 	}
 	if err = e.host.WaitInstanceRetired(e.ctx, id); err != nil {

@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 
 	"github.com/Tangerg/frame/browser"
+	"github.com/Tangerg/frame/internal/localfile"
 	"github.com/Tangerg/frame/portable"
+	"github.com/Tangerg/frame/process"
 )
 
 //go:generate go run . ../..
@@ -23,21 +25,22 @@ func main() {
 	if err := browser.WriteTypeScript(&types); err != nil {
 		log.Fatal(err)
 	}
-	profile := struct {
-		Protocol string                 `json:"protocol"`
-		Limits   portable.Limits        `json:"limits"`
-		Pattern  portable.PatternSyntax `json:"pattern"`
-		Formats  portable.StringFormats `json:"formats"`
-		Schema   portable.SchemaProfile `json:"schema"`
-	}{portable.Protocol, portable.ProfileLimits(), portable.ProfilePatternSyntax(), portable.ProfileStringFormats(), portable.ProfileSchema()}
+	profile := portable.CurrentRuntimeProfile()
 	encodedProfile, err := json.MarshalIndent(profile, "", "  ")
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "sdk/src/protocol.generated.ts"), types.Bytes(), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "sdk/src/protocol.generated.ts"), types.Bytes(), localfile.PublicFileMode); err != nil {
 		log.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "portable/profile.generated.json"), append(encodedProfile, '\n'), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "portable/profile.generated.json"), append(encodedProfile, '\n'), localfile.PublicFileMode); err != nil {
+		log.Fatal(err)
+	}
+	encodedShapes, err := json.MarshalIndent(process.Shapes(), "", "  ")
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "process/shapes.generated.json"), append(encodedShapes, '\n'), localfile.PublicFileMode); err != nil {
 		log.Fatal(err)
 	}
 }

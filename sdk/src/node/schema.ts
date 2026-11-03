@@ -331,28 +331,11 @@ export function compileSchema(source: unknown): (value: unknown) => void {
       return;
     }
     const record = value as RecordValue;
-    if (typeof record.$ref === "string") {
-      const pointer = decodeURIComponent(record.$ref.slice(1));
-      let target: unknown = schema;
-      for (const segment of pointer === "" ? [] : pointer.slice(1).split("/")) {
-        const key = segment.replaceAll("~1", "/").replaceAll("~0", "~");
-        if (
-          !target ||
-          typeof target !== "object" ||
-          !Object.hasOwn(target, key)
-        )
-          throw new Error("plugin: unresolved local schema reference");
-        target = (target as RecordValue)[key];
-      }
-      if (
-        typeof target !== "boolean" &&
-        (target === null ||
-          typeof target !== "object" ||
-          Array.isArray(target) ||
-          numeric(target))
-      )
-        throw new Error("plugin: schema reference must identify a schema");
-    }
+    if (
+      typeof record.$ref === "string" &&
+      !isSchema(resolveLocalReference(schema, record.$ref))
+    )
+      throw new Error("plugin: schema reference must identify a schema");
     for (const [name, field] of Object.entries(record)) {
       for (const child of subschemas(name, field)) checkReferences(child.value);
     }
@@ -510,4 +493,28 @@ function schemaWork(document: unknown): { work: number[]; unique: boolean } {
     queue.push(...node.same, ...node.descend);
   }
   return { work, unique };
+}
+
+/** Follows a local JSON Pointer reference through the schema document. */
+function resolveLocalReference(schema: unknown, reference: string): unknown {
+  const pointer = decodeURIComponent(reference.slice(1));
+  let target = schema;
+  for (const segment of pointer === "" ? [] : pointer.slice(1).split("/")) {
+    const key = segment.replaceAll("~1", "/").replaceAll("~0", "~");
+    if (!target || typeof target !== "object" || !Object.hasOwn(target, key))
+      throw new Error("plugin: unresolved local schema reference");
+    target = (target as RecordValue)[key];
+  }
+  return target;
+}
+
+/** A schema is a boolean or a plain object, never an array or a number. */
+function isSchema(value: unknown): boolean {
+  return (
+    typeof value === "boolean" ||
+    (value !== null &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      !numeric(value))
+  );
 }

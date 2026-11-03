@@ -9,22 +9,11 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Tangerg/frame/portable"
 	framevalue "github.com/Tangerg/frame/value"
 )
 
 const RefPrefix = "#/$defs/"
-
-type schemaType string
-
-const (
-	typeArray   schemaType = "array"
-	typeBoolean schemaType = "boolean"
-	typeInteger schemaType = "integer"
-	typeNull    schemaType = "null"
-	typeNumber  schemaType = "number"
-	typeObject  schemaType = "object"
-	typeString  schemaType = "string"
-)
 
 type objectOpenness uint8
 
@@ -45,8 +34,8 @@ type objectProjection struct {
 // One admitted schema graph supplies both renderers. Missing additionalProperties
 // is open; boolean schemas and reference targets never share a primitive sentinel.
 type projectionNode struct {
-	kind          schemaType
-	kinds         []schemaType
+	kind          portable.SchemaType
+	kinds         []portable.SchemaType
 	forbidden     bool
 	reference     *projectionNode
 	referencePath string
@@ -131,10 +120,10 @@ func newProjection(definitions map[string]jsontext.Value) (*projection, error) {
 func (p *projection) parse(raw jsontext.Value, path string) (*projectionNode, error) {
 	n := &projectionNode{}
 	p.paths[path] = n
-	if string(raw) == "true" {
+	if string(raw) == jsonTrue {
 		return n, nil
 	}
-	if string(raw) == "false" {
+	if string(raw) == jsonFalse {
 		n.forbidden = true
 		return n, nil
 	}
@@ -147,7 +136,7 @@ func (p *projection) parse(raw jsontext.Value, path string) (*projectionNode, er
 	if len(wire.Const) != 0 {
 		n.allOf = append(n.allOf, &projectionNode{literals: []jsontext.Value{wire.Const}})
 	}
-	var kinds []schemaType
+	var kinds []portable.SchemaType
 	if len(wire.Type) != 0 {
 		if err := json.Unmarshal(wire.Type, &n.kind); err != nil {
 			if err := json.Unmarshal(wire.Type, &kinds); err != nil {
@@ -156,77 +145,110 @@ func (p *projection) parse(raw jsontext.Value, path string) (*projectionNode, er
 		}
 	}
 	n.object.required = slices.Clone(wire.Required)
-	n.object.properties = make(map[string]*projectionNode, len(wire.Properties))
 	n.object.patterns = len(wire.PatternProperties) != 0
+	if err := p.parseMembers(n, wire, path); err != nil {
+		return nil, err
+	}
+	if err := p.parseSubschemas(n, wire, path); err != nil {
+		return nil, err
+	}
+	if err := p.parseCombinators(n, wire, path); err != nil {
+		return nil, err
+	}
+	n.kinds = kinds
+	return n, nil
+}
+
+// parseMembers parses the named subschemas; only properties become members
+// of the projected object.
+func (p *projection) parseMembers(n *projectionNode, wire schemaDocument, path string) error {
+	n.object.properties = make(map[string]*projectionNode, len(wire.Properties))
 	for _, entry := range []struct {
 		keyword  string
 		children map[string]jsontext.Value
 	}{
-		{"properties", wire.Properties}, {"patternProperties", wire.PatternProperties}, {"$defs", wire.Defs}, {"definitions", wire.Definitions},
+		{portable.KeywordProperties, wire.Properties}, {portable.KeywordPatternProperties, wire.PatternProperties}, {portable.KeywordDefs, wire.Defs}, {portable.KeywordDefinitions, wire.Definitions},
 	} {
 		for _, name := range slices.Sorted(maps.Keys(entry.children)) {
 			child, err := p.parse(entry.children[name], path+"/"+entry.keyword+"/"+pointerToken(name))
 			if err != nil {
-				return nil, err
+				return err
 			}
-			if entry.keyword == "properties" {
+			if entry.keyword == portable.KeywordProperties {
 				n.object.properties[name] = child
 			}
 		}
 	}
+	return nil
+}
+
+// parseSubschemas parses the single-schema keywords. Only additional
+// properties and items shape the projection; the others are still admitted.
+func (p *projection) parseSubschemas(n *projectionNode, wire schemaDocument, path string) error {
 	for _, entry := range []struct {
 		keyword string
 		raw     jsontext.Value
 		target  **projectionNode
 	}{
-		{"additionalProperties", wire.Additional, &n.object.additional}, {"items", wire.Items, &n.items},
-		{"not", wire.Not, nil}, {"if", wire.If, nil}, {"then", wire.Then, nil}, {"else", wire.Else, nil}, {"contains", wire.Contains, nil}, {"propertyNames", wire.PropertyNames, nil},
+		{portable.KeywordAdditionalProperties, wire.Additional, &n.object.additional}, {portable.KeywordItems, wire.Items, &n.items},
+		{portable.KeywordNot, wire.Not, nil}, {portable.KeywordIf, wire.If, nil}, {portable.KeywordThen, wire.Then, nil}, {portable.KeywordElse, wire.Else, nil}, {portable.KeywordContains, wire.Contains, nil}, {portable.KeywordPropertyNames, wire.PropertyNames, nil},
 	} {
 		if len(entry.raw) == 0 {
 			continue
 		}
 		child, err := p.parse(entry.raw, path+"/"+entry.keyword)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if entry.target != nil {
 			*entry.target = child
 		}
 	}
-	if n.object.additional != nil {
-		if n.object.additional.forbidden {
-			n.object.openness = objectClosed
-		} else if string(wire.Additional) != "true" {
-			n.object.openness = objectTyped
-		}
+	switch {
+	case n.object.additional == nil:
+	case n.object.additional.forbidden:
+		n.object.openness = objectClosed
+	case string(wire.Additional) != jsonTrue:
+		n.object.openness = objectTyped
 	}
+	return nil
+}
+
+// parseCombinators parses allOf, anyOf and oneOf. A oneOf beside an anyOf is
+// a further constraint, so it joins allOf rather than widening anyOf.
+func (p *projection) parseCombinators(n *projectionNode, wire schemaDocument, path string) error {
 	for _, entry := range []struct {
 		keyword  string
 		children []jsontext.Value
 		target   *[]*projectionNode
 	}{
-		{"allOf", wire.AllOf, &n.allOf}, {"anyOf", wire.AnyOf, &n.anyOf}, {"oneOf", wire.OneOf, &n.anyOf},
+		{portable.KeywordAllOf, wire.AllOf, &n.allOf}, {portable.KeywordAnyOf, wire.AnyOf, &n.anyOf}, {portable.KeywordOneOf, wire.OneOf, &n.anyOf},
 	} {
 		if len(entry.children) == 0 {
 			continue
 		}
-		var children []*projectionNode
+		children := make([]*projectionNode, 0, len(entry.children))
 		for index, raw := range entry.children {
 			child, err := p.parse(raw, fmt.Sprintf("%s/%s/%d", path, entry.keyword, index))
 			if err != nil {
-				return nil, err
+				return err
 			}
 			children = append(children, child)
 		}
-		if entry.keyword == "oneOf" && len(wire.AnyOf) > 0 {
+		if entry.keyword == portable.KeywordOneOf && len(wire.AnyOf) > 0 {
 			n.allOf = append(n.allOf, &projectionNode{anyOf: children})
 		} else {
 			*entry.target = append(*entry.target, children...)
 		}
 	}
-	n.kinds = kinds
-	return n, nil
+	return nil
 }
+
+// jsonTrue and jsonFalse are the boolean schemas: accept or refuse everything.
+const (
+	jsonTrue  = "true"
+	jsonFalse = "false"
+)
 
 func (n *projectionNode) required(name string) bool { return slices.Contains(n.object.required, name) }
 
@@ -308,7 +330,7 @@ func (o objectProjection) property(name string) *projectionNode {
 	return nil
 }
 
-func (n *projectionNode) contextualKind(inherited schemaType) (schemaType, schemaType) {
+func (n *projectionNode) contextualKind(inherited portable.SchemaType) (portable.SchemaType, portable.SchemaType) {
 	kind, contextKind := n.kind, n.kind
 	if contextKind == "" {
 		contextKind = inherited
@@ -322,11 +344,11 @@ func (n *projectionNode) contextualKind(inherited schemaType) (schemaType, schem
 		}
 	}
 	if kind == "" {
-		if contextKind == typeObject && n.object.constrained() {
-			kind = typeObject
+		if contextKind == portable.TypeObject && n.object.constrained() {
+			kind = portable.TypeObject
 		}
-		if contextKind == typeArray && n.items != nil {
-			kind = typeArray
+		if contextKind == portable.TypeArray && n.items != nil {
+			kind = portable.TypeArray
 		}
 	}
 	return kind, contextKind

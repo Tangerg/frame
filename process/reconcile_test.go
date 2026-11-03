@@ -79,7 +79,7 @@ func TestReconcileRefusesChildProofBeforeOriginalProtocolCleanup(t *testing.T) {
 		t.Fatalf("early reconciliation: %v", err)
 	}
 	attempts, err := e.store.Attempts(e.ctx)
-	if err != nil || attempts[0].Released || attempts[0].Proof != nil {
+	if err != nil || attempts[0].ExitProven() || attempts[0].Proof != nil {
 		t.Fatalf("early reconciliation advanced exit handoff: %+v %v", attempts, err)
 	}
 	if outcome, err := e.host.Close(e.ctx); err != nil || !outcome.Released {

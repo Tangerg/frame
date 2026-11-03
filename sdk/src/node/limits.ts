@@ -32,104 +32,143 @@ export interface JSONSize {
   weight: number;
 }
 
+/** Accounts for the encoded size of a document while it is counted. */
+interface ByteMeter {
+  add(count: number): void;
+  encoded(value: unknown): void;
+}
+
+/** A value's byte budget belongs to its transport, so values are not metered. */
+const unmetered: ByteMeter = { add() {}, encoded() {} };
+
+class DescriptorBytes implements ByteMeter {
+  #bytes = 0;
+
+  add(count: number): void {
+    this.#bytes += count;
+    if (this.#bytes > PORTABLE_LIMITS.maxDescriptorBytes)
+      exceeded("descriptor bytes", PORTABLE_LIMITS.maxDescriptorBytes);
+  }
+
+  encoded(value: unknown): void {
+    if (
+      typeof value === "string" &&
+      value.length > PORTABLE_LIMITS.maxDescriptorBytes
+    )
+      exceeded("descriptor bytes", PORTABLE_LIMITS.maxDescriptorBytes);
+    this.add(Buffer.byteLength(stringifyJSON(value)));
+  }
+}
+
+// The encoded length of each JSON literal and separator.
+const NULL_BYTES = 4;
+const TRUE_BYTES = 4;
+const FALSE_BYTES = 5;
+const BRACKET_BYTES = 2;
+const SEPARATOR_BYTES = 1;
+
 // Count before clone/stringification can recurse or numeric validation expands
 // a lexeme. Payload bytes remain the transport/call owner's explicit budget.
-function checkJSON(value: unknown, descriptor: boolean): JSONSize {
-  const maximumNodes = descriptor
-    ? PORTABLE_LIMITS.maxDescriptorNodes
-    : PORTABLE_LIMITS.maxValueNodes;
-  const size: JSONSize = {
+class JSONCounter {
+  readonly size: JSONSize = {
     nodes: 0,
     depth: 0,
     keys: 0,
     equality: 0,
     weight: 0,
   };
-  let bytes = 0;
-  const ancestors = new Set<object>();
-  const addBytes = (count: number) => {
-    bytes += count;
-    if (descriptor && bytes > PORTABLE_LIMITS.maxDescriptorBytes)
-      exceeded("descriptor bytes", PORTABLE_LIMITS.maxDescriptorBytes);
-  };
-  const text = (value: string) => {
-    if (!descriptor) return;
-    if (value.length > PORTABLE_LIMITS.maxDescriptorBytes)
-      exceeded("descriptor bytes", PORTABLE_LIMITS.maxDescriptorBytes);
-    addBytes(Buffer.byteLength(stringifyJSON(value)));
-  };
-  function visit(value: unknown, depth: number): void {
-    if (++size.nodes > maximumNodes) exceeded("JSON value nodes", maximumNodes);
+  readonly #ancestors = new Set<object>();
+  readonly #maxNodes: number;
+  readonly #bytes: ByteMeter;
+
+  constructor(maxNodes: number, bytes: ByteMeter) {
+    this.#maxNodes = maxNodes;
+    this.#bytes = bytes;
+  }
+
+  visit(value: unknown, depth: number): void {
+    if (++this.size.nodes > this.#maxNodes)
+      exceeded("JSON value nodes", this.#maxNodes);
     if (depth > PORTABLE_LIMITS.maxJSONDepth)
       exceeded("JSON depth", PORTABLE_LIMITS.maxJSONDepth);
-    size.depth = Math.max(size.depth, depth);
-    size.weight++;
-    if (isJSONNumber(value)) {
-      const number = value.toString();
-      checkNumber(number);
-      size.weight += number.length;
-      if (descriptor) addBytes(Buffer.byteLength(stringifyJSON(value)));
-      return;
-    }
-    if (typeof value === "string") {
-      size.weight += Buffer.byteLength(value);
-      text(value);
-      return;
-    }
-    if (value === null || value === undefined || typeof value === "boolean") {
-      addBytes(value === true ? 4 : value === false ? 5 : 4);
-      return;
-    }
-    if (typeof value !== "object")
+    this.size.depth = Math.max(this.size.depth, depth);
+    this.size.weight++;
+    if (isJSONNumber(value)) this.#number(value.toString(), value);
+    else if (typeof value === "string") {
+      this.size.weight += Buffer.byteLength(value);
+      this.#bytes.encoded(value);
+    } else if (value === null || value === undefined)
+      this.#bytes.add(NULL_BYTES);
+    else if (typeof value === "boolean")
+      this.#bytes.add(value ? TRUE_BYTES : FALSE_BYTES);
+    else if (value instanceof Date) {
+      this.size.weight += Buffer.byteLength(stringifyJSON(value));
+      this.#bytes.encoded(value);
+    } else this.#container(value, depth);
+  }
+
+  #number(lexeme: string, value: unknown): void {
+    checkNumber(lexeme);
+    this.size.weight += lexeme.length;
+    this.#bytes.encoded(value);
+  }
+
+  #container(value: unknown, depth: number): void {
+    if (typeof value !== "object" || value === null)
       throw new TypeError("portable: unsupported JSON value");
-    if (value instanceof Date) {
-      size.weight += Buffer.byteLength(stringifyJSON(value));
-      if (descriptor) addBytes(Buffer.byteLength(stringifyJSON(value)));
-      return;
-    }
     if (
       !Array.isArray(value) &&
       Object.getPrototypeOf(value) !== Object.prototype &&
       Object.getPrototypeOf(value) !== null
     )
       throw new TypeError("portable: JSON object must be a plain record");
-    if (ancestors.has(value))
+    if (this.#ancestors.has(value))
       throw new TypeError("portable: cyclic JSON value");
-    ancestors.add(value);
-    addBytes(2);
-    const startWeight = size.weight;
-    let count = 0;
-    if (Array.isArray(value)) {
-      for (const child of value) {
-        if (count++ > 0) addBytes(1);
-        visit(child, depth + 1);
-      }
-    } else {
-      for (const [key, child] of Object.entries(value)) {
-        if (child === undefined) continue;
-        if (count++ > 0) addBytes(1);
-        text(key);
-        addBytes(1);
-        size.keys++;
-        size.weight += Math.max(1, Buffer.byteLength(key));
-        visit(child, depth + 1);
-      }
-    }
-    if (Array.isArray(value) && count > 1)
-      size.equality = Math.min(
-        PORTABLE_LIMITS.maxEqualityWork + 1,
-        size.equality + (count - 1) * (size.weight - startWeight),
-      );
-    ancestors.delete(value);
+    this.#ancestors.add(value);
+    this.#bytes.add(BRACKET_BYTES);
+    if (Array.isArray(value)) this.#array(value, depth);
+    else this.#object(value as Record<string, unknown>, depth);
+    this.#ancestors.delete(value);
   }
-  visit(value, 1);
-  return size;
+
+  /** Charges an array for comparing its elements for uniqueness. */
+  #array(value: readonly unknown[], depth: number): void {
+    const startWeight = this.size.weight;
+    value.forEach((child, index) => {
+      if (index > 0) this.#bytes.add(SEPARATOR_BYTES);
+      this.visit(child, depth + 1);
+    });
+    if (value.length > 1)
+      this.size.equality = Math.min(
+        PORTABLE_LIMITS.maxEqualityWork + 1,
+        this.size.equality +
+          (value.length - 1) * (this.size.weight - startWeight),
+      );
+  }
+
+  #object(value: Record<string, unknown>, depth: number): void {
+    let count = 0;
+    for (const [key, child] of Object.entries(value)) {
+      if (child === undefined) continue;
+      if (count++ > 0) this.#bytes.add(SEPARATOR_BYTES);
+      this.#bytes.encoded(key);
+      this.#bytes.add(SEPARATOR_BYTES);
+      this.size.keys++;
+      this.size.weight += Math.max(1, Buffer.byteLength(key));
+      this.visit(child, depth + 1);
+    }
+  }
 }
 
 export function checkDescriptor(value: unknown): void {
-  checkJSON(value, true);
+  new JSONCounter(
+    PORTABLE_LIMITS.maxDescriptorNodes,
+    new DescriptorBytes(),
+  ).visit(value, 1);
 }
 
 export function checkValue(value: unknown): JSONSize {
-  return checkJSON(value, false);
+  const counter = new JSONCounter(PORTABLE_LIMITS.maxValueNodes, unmetered);
+  counter.visit(value, 1);
+  return counter.size;
 }

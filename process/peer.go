@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/Tangerg/frame/internal/cancellation"
 	framevalue "github.com/Tangerg/frame/value"
 )
 
@@ -26,16 +27,16 @@ type Problem struct {
 
 func (p *Problem) Error() string { return p.Code + ": " + p.Message }
 func (p *Problem) Is(target error) bool {
-	if p.Code == profile.Errors.Cancelled {
+	if p.Code == wire.Errors.Cancelled {
 		return target == context.Canceled || target == ErrOutcomeUnknown
 	}
-	return p.Code == profile.Errors.Unknown && target == ErrOutcomeUnknown
+	return p.Code == wire.Errors.Unknown && target == ErrOutcomeUnknown
 }
 
 func (p *Problem) valid() bool {
 	switch p.Code {
-	case profile.Errors.Invalid, profile.Errors.Capacity, profile.Errors.Contract,
-		profile.Errors.Unknown, profile.Errors.Closed, profile.Errors.Cancelled:
+	case wire.Errors.Invalid, wire.Errors.Capacity, wire.Errors.Contract,
+		wire.Errors.Unknown, wire.Errors.Closed, wire.Errors.Cancelled:
 		return true
 	default:
 		return false
@@ -50,7 +51,7 @@ type envelope struct {
 	Error  *Problem       `json:"error,omitzero"`
 }
 
-type cancellation struct {
+type cancelParams struct {
 	ID string `json:"id"`
 }
 type dispatch func(context.Context, string, jsontext.Value) (jsontext.Value, error)
@@ -78,7 +79,7 @@ type peer struct {
 func newPeer(channel io.ReadWriteCloser, maxFrame int, handle dispatch) *peer {
 	ctx, stop := context.WithCancelCause(context.Background())
 	return &peer{transport: channel, handle: handle, ctx: ctx, stop: stop, done: make(chan struct{}), readDone: make(chan struct{}), writeDone: make(chan struct{}), joined: make(chan struct{}),
-		out: make(chan []byte, profile.MaxInFlight*2), maxFrame: maxFrame,
+		out: make(chan []byte, wire.MaxInFlight*2), maxFrame: maxFrame,
 		pending: make(map[string]chan envelope), running: make(map[string]context.CancelFunc)}
 }
 
@@ -113,7 +114,7 @@ func (p *peer) sendLocked(msg envelope) error {
 		return err
 	}
 	if len(data)+1 > p.maxFrame {
-		return &Problem{profile.Errors.Capacity, "frame exceeds limit"}
+		return &Problem{wire.Errors.Capacity, "frame exceeds limit"}
 	}
 	if err := p.ctx.Err(); err != nil {
 		return context.Cause(p.ctx)
@@ -122,7 +123,7 @@ func (p *peer) sendLocked(msg envelope) error {
 	case p.out <- append(data, '\n'):
 		return nil
 	default:
-		return &Problem{profile.Errors.Capacity, "output queue full"}
+		return &Problem{wire.Errors.Capacity, "output queue full"}
 	}
 }
 
@@ -185,57 +186,72 @@ func (p *peer) readLoop() {
 	}
 }
 
-// Preserve field presence even for JSON null. Generic struct decoding alone
-// collapses an explicit null discriminator into the absence of that field.
+var errInvalidEnvelope = errors.New("process: invalid envelope fields")
+
+// parseEnvelope identifies a message by exactly the members it carries; a
+// member sent as null is present, which decoding into envelope would hide.
 func parseEnvelope(raw []byte) (envelope, error) {
-	var fields map[string]jsontext.Value
+	var fields rawEnvelope
+	if err := json.Unmarshal(raw, &fields, json.RejectUnknownMembers(true)); err != nil {
+		return envelope{}, err
+	}
+	present := fields.present()
+	switch {
+	case shapes.Request.Admits(present):
+		return fields.request(false)
+	case shapes.Cancel.Admits(present):
+		return fields.request(true)
+	case shapes.Result.Admits(present):
+		id, err := fields.identity()
+		return envelope{ID: id, Result: fields.Result}, err
+	case shapes.Failure.Admits(present):
+		return fields.failure()
+	default:
+		return envelope{}, errInvalidEnvelope
+	}
+}
+
+// request admits a call, which carries its identity, or a cancellation,
+// which carries none.
+func (r rawEnvelope) request(cancel bool) (envelope, error) {
 	var msg envelope
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return msg, err
+	if r.Method.Kind() != '"' || json.Unmarshal(r.Method, &msg.Method) != nil || msg.Method == "" || r.Params.Kind() != '{' {
+		return envelope{}, errInvalidEnvelope
 	}
-	invalid := errors.New("process: invalid envelope fields")
-	id, hasID := fields["id"]
-	if hasID {
-		if id.Kind() != '"' || json.Unmarshal(id, &msg.ID) != nil {
-			return msg, invalid
-		}
-		if _, ok := requestNumber(msg.ID); !ok {
-			return msg, invalid
+	if cancel != (msg.Method == wire.Methods.Cancel) {
+		return envelope{}, errInvalidEnvelope
+	}
+	if !cancel {
+		var err error
+		if msg.ID, err = r.identity(); err != nil {
+			return envelope{}, err
 		}
 	}
-	if op, request := fields["method"]; request {
-		if op.Kind() != '"' || json.Unmarshal(op, &msg.Method) != nil || msg.Method == "" {
-			return msg, invalid
-		}
-		msg.Params = fields["params"]
-		if msg.Params.Kind() != '{' {
-			return msg, invalid
-		}
-		if msg.Method == profile.Methods.Cancel {
-			if hasID || len(fields) != 2 {
-				return msg, invalid
-			}
-		} else if !hasID || len(fields) != 3 {
-			return msg, invalid
-		}
-		return msg, nil
+	msg.Params = r.Params
+	return msg, nil
+}
+
+func (r rawEnvelope) failure() (envelope, error) {
+	id, err := r.identity()
+	if err != nil {
+		return envelope{}, err
 	}
-	if !hasID || len(fields) != 2 {
-		return msg, invalid
+	var problem Problem
+	if r.Error.Kind() != '{' || framevalue.DecodeValue(r.Error, &problem, "error") != nil || problem.Code == "" {
+		return envelope{}, errInvalidEnvelope
 	}
-	if result, ok := fields["result"]; ok {
-		msg.Result = result
-		return msg, nil
+	return envelope{ID: id, Error: &problem}, nil
+}
+
+func (r rawEnvelope) identity() (string, error) {
+	var id string
+	if r.ID.Kind() != '"' || json.Unmarshal(r.ID, &id) != nil {
+		return "", errInvalidEnvelope
 	}
-	if problem, ok := fields["error"]; ok {
-		var value Problem
-		if problem.Kind() != '{' || framevalue.DecodeValue(problem, &value, "error") != nil || value.Code == "" {
-			return msg, invalid
-		}
-		msg.Error = &value
-		return msg, nil
+	if _, ok := requestNumber(id); !ok {
+		return "", errInvalidEnvelope
 	}
-	return msg, invalid
+	return id, nil
 }
 
 func requestNumber(id string) (uint64, bool) {
@@ -244,21 +260,8 @@ func requestNumber(id string) (uint64, bool) {
 }
 
 func (p *peer) receive(msg envelope) error {
-	if msg.Method == profile.Methods.Cancel && msg.ID == "" {
-		var c cancellation
-		if msg.Result != nil || msg.Error != nil || decode(msg.Params, &c) != nil {
-			return errors.New("process: invalid cancellation")
-		}
-		if _, ok := requestNumber(c.ID); !ok {
-			return errors.New("process: invalid cancellation identity")
-		}
-		p.mu.Lock()
-		cancel := p.running[c.ID]
-		p.mu.Unlock()
-		if cancel != nil {
-			cancel()
-		}
-		return nil
+	if msg.Method == wire.Methods.Cancel && msg.ID == "" {
+		return p.receiveCancellation(msg)
 	}
 	n, ok := requestNumber(msg.ID)
 	if !ok {
@@ -267,23 +270,50 @@ func (p *peer) receive(msg envelope) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if msg.Method == "" {
-		if msg.Params != nil || (msg.Result == nil) == (msg.Error == nil) || n > p.next || msg.Error != nil && !msg.Error.valid() {
-			return errors.New("process: invalid response")
-		}
-		reply := p.pending[msg.ID]
-		if reply == nil {
-			return errors.New("process: duplicate or unknown response")
-		}
-		delete(p.pending, msg.ID)
-		reply <- msg
-		return nil
+		return p.receiveResponseLocked(msg, n)
 	}
+	return p.receiveRequestLocked(msg, n)
+}
+
+func (p *peer) receiveCancellation(msg envelope) error {
+	var c cancelParams
+	if msg.Result != nil || msg.Error != nil || decode(msg.Params, &c) != nil {
+		return errors.New("process: invalid cancellation")
+	}
+	if _, ok := requestNumber(c.ID); !ok {
+		return errors.New("process: invalid cancellation identity")
+	}
+	p.mu.Lock()
+	cancel := p.running[c.ID]
+	p.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return nil
+}
+
+// receiveResponseLocked delivers the single reply to a request this peer sent.
+func (p *peer) receiveResponseLocked(msg envelope, n uint64) error {
+	if msg.Params != nil || (msg.Result == nil) == (msg.Error == nil) || n > p.next || msg.Error != nil && !msg.Error.valid() {
+		return errors.New("process: invalid response")
+	}
+	reply := p.pending[msg.ID]
+	if reply == nil {
+		return errors.New("process: duplicate or unknown response")
+	}
+	delete(p.pending, msg.ID)
+	reply <- msg
+	return nil
+}
+
+// receiveRequestLocked starts a request; identities must strictly increase.
+func (p *peer) receiveRequestLocked(msg envelope, n uint64) error {
 	if n <= p.lastIn || msg.Result != nil || msg.Error != nil || msg.Params.Kind() != '{' {
 		return errors.New("process: invalid request")
 	}
 	p.lastIn = n
-	if len(p.running) >= profile.MaxInFlight {
-		return p.sendLocked(envelope{ID: msg.ID, Error: &Problem{profile.Errors.Capacity, "too many active calls"}})
+	if len(p.running) >= wire.MaxInFlight {
+		return p.sendLocked(envelope{ID: msg.ID, Error: &Problem{wire.Errors.Capacity, "too many active calls"}})
 	}
 	ctx, cancel := context.WithCancel(p.ctx)
 	p.running[msg.ID] = cancel
@@ -300,13 +330,13 @@ func (p *peer) respond(ctx context.Context, cancel context.CancelFunc, msg envel
 	if err != nil {
 		reply.Result = nil
 		if errors.Is(err, context.Canceled) {
-			reply.Error = &Problem{profile.Errors.Cancelled, "request cancelled"}
+			reply.Error = &Problem{wire.Errors.Cancelled, "request cancelled"}
 		} else if errors.Is(err, ErrOutcomeUnknown) {
-			reply.Error = &Problem{profile.Errors.Unknown, "operation did not return a confirmed result"}
+			reply.Error = &Problem{wire.Errors.Unknown, "operation did not return a confirmed result"}
 		} else if established, ok := errors.AsType[*Problem](err); ok {
 			reply.Error = established
 		} else {
-			reply.Error = &Problem{profile.Errors.Unknown, "operation did not return a confirmed result"}
+			reply.Error = &Problem{wire.Errors.Unknown, "operation did not return a confirmed result"}
 		}
 	}
 	p.mu.Lock()
@@ -329,14 +359,14 @@ func (p *peer) run(ctx context.Context, msg envelope) (result jsontext.Value, er
 
 func decode(raw jsontext.Value, out any) error {
 	if err := framevalue.DecodeValue(raw, out, "wire"); err != nil {
-		return &Problem{profile.Errors.Invalid, "invalid payload"}
+		return &Problem{wire.Errors.Invalid, "invalid payload"}
 	}
 	return nil
 }
 
 func (p *peer) request(ctx context.Context, method string, params, result any) error {
 	if err := ctx.Err(); err != nil {
-		return context.Cause(ctx)
+		return cancellation.Err(ctx)
 	}
 	data, err := json.Marshal(params)
 	if err != nil {
@@ -346,11 +376,11 @@ func (p *peer) request(ctx context.Context, method string, params, result any) e
 	p.mu.Lock()
 	if err := ctx.Err(); err != nil {
 		p.mu.Unlock()
-		return context.Cause(ctx)
+		return cancellation.Err(ctx)
 	}
-	if len(p.pending) >= profile.MaxInFlight || p.next == ^uint64(0) {
+	if len(p.pending) >= wire.MaxInFlight || p.next == ^uint64(0) {
 		p.mu.Unlock()
-		return &Problem{profile.Errors.Capacity, "request limit reached"}
+		return &Problem{wire.Errors.Capacity, "request limit reached"}
 	}
 	p.next++
 	id := strconv.FormatUint(p.next, 10)
@@ -385,13 +415,13 @@ func (p *peer) request(ctx context.Context, method string, params, result any) e
 		}
 		// Keep the slot until an actual reply or disconnection. Abandoned
 		// operations cannot multiply the remote workload beyond our bound.
-		data, _ := json.Marshal(cancellation{id})
-		err := p.sendLocked(envelope{Method: profile.Methods.Cancel, Params: data})
+		data, _ := json.Marshal(cancelParams{id})
+		err := p.sendLocked(envelope{Method: wire.Methods.Cancel, Params: data})
 		p.mu.Unlock()
 		if err != nil {
 			p.end(err)
 		}
-		return errors.Join(ErrOutcomeUnknown, context.Cause(ctx))
+		return errors.Join(ErrOutcomeUnknown, cancellation.Err(ctx))
 	}
 }
 

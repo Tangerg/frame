@@ -26,69 +26,83 @@
       {
         "name": "d",
         "expression": "[\\u{30}-\\u{39}]",
-        "class": true
+        "class": true,
+        "set": true
       },
       {
         "name": "D",
         "expression": "[\\u{0}-\\u{2f}\\u{3a}-\\u{10ffff}]",
-        "class": true
+        "class": true,
+        "set": true
       },
       {
         "name": "s",
         "expression": "[\\u{9}-\\u{a}\\u{c}-\\u{d}\\u{20}]",
-        "class": true
+        "class": true,
+        "set": true
       },
       {
         "name": "S",
         "expression": "[\\u{0}-\\u{8}\\u{b}\\u{e}-\\u{1f}\\u{21}-\\u{10ffff}]",
-        "class": true
+        "class": true,
+        "set": true
       },
       {
         "name": "w",
         "expression": "[\\u{30}-\\u{39}\\u{41}-\\u{5a}\\u{5f}\\u{61}-\\u{7a}]",
-        "class": true
+        "class": true,
+        "set": true
       },
       {
         "name": "W",
         "expression": "[\\u{0}-\\u{2f}\\u{3a}-\\u{40}\\u{5b}-\\u{5e}\\u{60}\\u{7b}-\\u{10ffff}]",
-        "class": true
+        "class": true,
+        "set": true
       },
       {
         "name": "b",
         "expression": "\\b",
-        "class": false
+        "class": false,
+        "set": false
       },
       {
         "name": "B",
         "expression": "\\B",
-        "class": false
+        "class": false,
+        "set": false
       },
       {
         "name": "f",
         "expression": "[\\u{c}]",
-        "class": true
+        "class": true,
+        "set": false
       },
       {
         "name": "n",
         "expression": "[\\u{a}]",
-        "class": true
+        "class": true,
+        "set": false
       },
       {
         "name": "r",
         "expression": "[\\u{d}]",
-        "class": true
+        "class": true,
+        "set": false
       },
       {
         "name": "t",
         "expression": "[\\u{9}]",
-        "class": true
+        "class": true,
+        "set": false
       },
       {
         "name": "v",
         "expression": "[\\u{b}]",
-        "class": true
+        "class": true,
+        "set": false
       }
     ],
+    "variableWidth": "*+?|()}",
     "dot": "[^\\n]",
     "end": "(?![\\s\\S])"
   },
@@ -271,5 +285,32 @@
         "annotation": true
       }
     }
+  },
+  "descriptors": {
+    "capability": {
+      "required": [
+        "protocol",
+        "reference",
+        "methods"
+      ],
+      "optional": []
+    },
+    "method": {
+      "required": [
+        "name",
+        "kind",
+        "description",
+        "input",
+        "output"
+      ],
+      "optional": [
+        "target",
+        "stream"
+      ]
+    },
+    "methodKinds": [
+      "query",
+      "command"
+    ]
   }
 }

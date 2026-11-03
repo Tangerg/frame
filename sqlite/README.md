@@ -57,9 +57,9 @@ The mutation returns bounded evidence locating its committed change. This is
 submission evidence, not a plugin's business receipt. Actual business results stay
 with their original owner. An optional synchronization callback updates the local
 authority after a confirmed commit and before admission reopens. Its failure
-preserves Committed and raises the recovery barrier.
+preserves the committed conclusion and raises the recovery barrier.
 
-Committed and NotCommitted are terminal. Repeating the same identity returns its
+`frame.CommitSucceeded` and `frame.CommitRejected` are terminal. Repeating the same identity returns its
 original conclusion; changing its request is a conflict. Context cancellation is
 checked before COMMIT. Cleanup responsibility starts before BEGIN or an authorizer
 change is attempted, since a failed acknowledgement does not prove that the

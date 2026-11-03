@@ -2,12 +2,13 @@ package browser
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
+	"fmt"
 	"strconv"
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/sqlite"
-	"github.com/Tangerg/frame/value"
 )
 
 // The receipt prevents recapture after this lease has been consumed or closed.
@@ -40,13 +41,18 @@ func newSnapshotLease(id string, authority Authority, realm Realm, original *fra
 			if err != nil {
 				return nil, err
 			}
-			token := newToken()
+			token := rand.Text()
 			lease.candidates[token] = candidate
 			projection.Candidates = append(projection.Candidates, Candidate{PublicationID: candidate.ID(), Source: candidate.Source(), MetadataJSON: string(metadata), Token: token})
 		}
 		lease.projection.Points = append(lease.projection.Points, projection)
 	}
 	return lease, nil
+}
+
+// capturedFor reports a completed capture that realm may consume.
+func (s *snapshotLease) capturedFor(realm Realm) bool {
+	return s != nil && s.original != nil && s.realm == realm
 }
 
 func (s *snapshotLease) bind(requests []Selection) (*frame.BindingPlan, error) {
@@ -70,90 +76,93 @@ func (s *snapshotLease) bind(requests []Selection) (*frame.BindingPlan, error) {
 }
 
 func (b *Bridge) Snapshot(ctx context.Context, token string, request SnapshotRequest) (snapshot Snapshot, returned error) {
-	session, err := b.session(token, false)
+	session, err := b.anySession(token)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	if !frame.ValidName(request.OperationID) {
 		return Snapshot{}, frame.ErrInvalid
 	}
-	if err := b.checkRequest(snapshotOperation, request); err != nil {
+	if err := b.checkRequest(snapshotMethod, request); err != nil {
 		return Snapshot{}, err
 	}
 	digest, err := requestDigest(request)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	b.mu.Lock()
-	previous, err := b.operationLocked(ctx, request.OperationID)
+	identity := controlRequestIdentity{Kind: snapshotOperation, Realm: session.realm, Digest: digest}
+	// The placeholder lease reserves capacity and lets a racing close or seal
+	// discard the capture before it is published.
+	pending := &snapshotLease{realm: session.realm}
+	operation, replay, err := b.begin(ctx, request.OperationID, identity, func(*controlOperation) error {
+		if session.cleanupOnly {
+			return errRealmSealed
+		}
+		if len(b.snapshots) >= b.config.MaxPending {
+			return fmt.Errorf("%w: snapshots", frame.ErrCapacity)
+		}
+		b.snapshots[request.OperationID] = pending
+		return nil
+	})
 	if err != nil {
-		b.mu.Unlock()
 		return Snapshot{}, err
 	}
-	if previous != nil {
-		b.mu.Unlock()
-		return b.replaySnapshot(ctx, session.realm, request.OperationID, digest, previous)
+	if replay {
+		return b.replaySnapshot(ctx, request.OperationID, identity, operation)
 	}
-	if session.cleanupOnly {
-		b.mu.Unlock()
-		return Snapshot{}, frame.ErrFenced
-	}
-	if len(b.snapshots) >= b.config.MaxPending || len(b.operations) >= b.config.MaxPending {
-		b.mu.Unlock()
-		return Snapshot{}, frame.ErrCapacity
-	}
-	operation := &controlOperation{kind: snapshotOperation, realm: session.realm, digest: digest, done: make(chan struct{})}
-	retained := &snapshotLease{realm: session.realm}
-	b.operations[request.OperationID] = operation
-	b.snapshots[request.OperationID] = retained
-	b.mu.Unlock()
 	defer func() {
-		b.mu.Lock()
-		operation.failure = returned
-		if returned != nil && b.snapshots[request.OperationID] == retained {
-			delete(b.snapshots, request.OperationID)
+		if returned != nil {
+			b.mu.Lock()
+			if b.snapshots[request.OperationID] == pending {
+				delete(b.snapshots, request.OperationID)
+			}
+			b.mu.Unlock()
 		}
-		b.mu.Unlock()
-		returned = errors.Join(returned, b.complete(ctx, request.OperationID, operation))
+		returned = b.finish(ctx, request.OperationID, operation, returned)
 	}()
 	if err := b.reserveReceipt(ctx, request.OperationID, operation); err != nil {
 		return Snapshot{}, err
 	}
-	points, err := b.snapshotPoints(request.Points)
+	lease, err := b.captureLease(ctx, session.realm, request)
 	if err != nil {
-		return Snapshot{}, err
-	}
-	original, err := b.config.Host.SnapshotIn(ctx, RealmID(session.realm), points...)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	lease, err := newSnapshotLease(request.OperationID, b.authority, session.realm, original, points)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	if err := b.checkResponse(lease.projection); err != nil {
 		return Snapshot{}, err
 	}
 	b.mu.Lock()
-	if session.cleanupOnly || b.snapshots[request.OperationID] != retained {
-		b.mu.Unlock()
+	defer b.mu.Unlock()
+	if session.cleanupOnly || b.snapshots[request.OperationID] != pending {
 		return Snapshot{}, frame.ErrFenced
 	}
 	b.snapshots[request.OperationID] = lease
-	retained = lease
-	b.mu.Unlock()
-	return clone(lease.projection), nil
+	pending = lease
+	return copyWire(lease.projection), nil
 }
 
-func (b *Bridge) replaySnapshot(ctx context.Context, realm Realm, id string, digest value.Digest, operation *controlOperation) (Snapshot, error) {
-	if operation.realm != realm {
-		return Snapshot{}, frame.ErrFenced
+func (b *Bridge) captureLease(ctx context.Context, realm Realm, request SnapshotRequest) (*snapshotLease, error) {
+	points, err := b.snapshotPoints(request.Points)
+	if err != nil {
+		return nil, err
 	}
-	if operation.kind != snapshotOperation && operation.kind != closeSnapshotOperation {
-		return Snapshot{}, sqlite.ErrConflict
+	original, err := b.config.Host.SnapshotIn(ctx, RealmID(realm), points...)
+	if err != nil {
+		return nil, err
 	}
-	if operation.kind == snapshotOperation && operation.digest != digest {
-		return Snapshot{}, sqlite.ErrConflict
+	lease, err := newSnapshotLease(request.OperationID, b.authority, realm, original, points)
+	if err != nil {
+		return nil, err
+	}
+	return lease, b.checkResponse(lease.projection)
+}
+
+// replaySnapshot observes the original capture of id. A close that already
+// claimed id answers every later capture with ErrClosed.
+func (b *Bridge) replaySnapshot(ctx context.Context, id string, request controlRequestIdentity, operation *controlOperation) (Snapshot, error) {
+	if err := operation.ownsSnapshot(request.Realm); err != nil {
+		return Snapshot{}, err
+	}
+	if operation.Kind == snapshotOperation {
+		if err := operation.repeats(request); err != nil {
+			return Snapshot{}, err
+		}
 	}
 	if err := operation.wait(ctx); err != nil {
 		return Snapshot{}, err
@@ -167,7 +176,18 @@ func (b *Bridge) replaySnapshot(ctx context.Context, realm Realm, id string, dig
 	if lease == nil {
 		return Snapshot{}, frame.ErrClosed
 	}
-	return clone(lease.projection), nil
+	return copyWire(lease.projection), nil
+}
+
+// ownsSnapshot accepts a capture or close of a Snapshot made by realm.
+func (o *controlOperation) ownsSnapshot(realm Realm) error {
+	if o.Realm != realm {
+		return frame.ErrFenced
+	}
+	if o.Kind != snapshotOperation && o.Kind != closeSnapshotOperation {
+		return sqlite.ErrConflict
+	}
+	return nil
 }
 
 func (b *Bridge) snapshotPoints(names []string) ([]frame.ContractRef, error) {
@@ -197,43 +217,34 @@ func (b *Bridge) snapshotPoints(names []string) ([]frame.ContractRef, error) {
 // A close that arrives before capture reserves the original identity as closed.
 // Otherwise a delayed request could create a lease after cleanup was acknowledged.
 func (b *Bridge) CloseSnapshot(ctx context.Context, token, snapshotID string) error {
-	session, err := b.session(token, false)
+	session, err := b.anySession(token)
 	if err != nil {
 		return err
 	}
 	if !frame.ValidName(snapshotID) {
 		return frame.ErrInvalid
 	}
-	b.mu.Lock()
-	operation, err := b.operationLocked(ctx, snapshotID)
-	if err != nil {
-		b.mu.Unlock()
-		return err
+	if b.sealed(session) {
+		// Sealing already discarded every lease of this Realm.
+		return nil
 	}
-	if operation == nil {
-		if session.cleanupOnly {
-			b.mu.Unlock()
-			return nil
-		}
-		if len(b.operations) >= b.config.MaxPending {
-			b.mu.Unlock()
-			return frame.ErrCapacity
-		}
-		operation = &controlOperation{kind: closeSnapshotOperation, realm: session.realm, failure: frame.ErrClosed, done: make(chan struct{})}
-		b.operations[snapshotID] = operation
-		b.mu.Unlock()
+	identity := controlRequestIdentity{Kind: closeSnapshotOperation, Realm: session.realm}
+	operation, replay, err := b.begin(ctx, snapshotID, identity, func(operation *controlOperation) error {
+		operation.failure = frame.ErrClosed
+		return nil
+	})
+	switch {
+	case err != nil:
+		return err
+	case !replay:
 		if err := b.reserveReceipt(ctx, snapshotID, operation); err != nil {
 			operation.failure = err
 			return errors.Join(err, b.complete(ctx, snapshotID, operation))
 		}
 		return b.complete(ctx, snapshotID, operation)
 	}
-	b.mu.Unlock()
-	if operation.realm != session.realm {
-		return frame.ErrFenced
-	}
-	if operation.kind != snapshotOperation && operation.kind != closeSnapshotOperation {
-		return sqlite.ErrConflict
+	if err := operation.ownsSnapshot(session.realm); err != nil {
+		return err
 	}
 	if err := operation.wait(ctx); err != nil {
 		return err

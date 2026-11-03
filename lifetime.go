@@ -19,6 +19,10 @@ const (
 	ResourceUnconfirmed ReleaseState = "unconfirmed"
 )
 
+func (ReleaseState) Values() []string {
+	return []string{string(ResourceReleased), string(ResourceUnconfirmed)}
+}
+
 var (
 	ErrUnconfirmedRelease = errors.New("frame: resource release unconfirmed")
 	ErrCloseFailed        = errors.New("frame: resource cleanup failed")
@@ -45,13 +49,24 @@ type CloseOutcome struct {
 	OmittedFailures uint64         `json:"omittedFailures"`
 }
 
+// cleanupState is the progress of a resource's own Close callback. Release
+// proof is a separate fact: it may arrive before, during or after cleanup.
+type cleanupState uint8
+
+const (
+	cleanupPending cleanupState = iota
+	cleanupRunning
+	cleanupReturned
+)
+
+// resourceEntry is a node of the release graph: it closes only after every
+// consumer that depends on it has been released.
 type resourceEntry struct {
 	resource     Resource
 	dependencies []*resourceEntry
 	consumers    int
 	index        int
-	attempted    bool
-	running      bool
+	cleanup      cleanupState
 	released     bool
 }
 
@@ -74,6 +89,7 @@ type Lifetime struct {
 	stopParent      func() bool
 	changed         chan struct{}
 	work            map[*Work]struct{}
+	holds           int
 	resources       []*resourceEntry
 	limits          LifetimeLimits
 	closing         *Close
@@ -83,28 +99,50 @@ type Lifetime struct {
 	omittedFailures uint64
 }
 
+// workKind separates a Lifetime's own work, which closing cancels, from a
+// consumer's hold, which retirement drains before it closes anything.
+type workKind uint8
+
+const (
+	ownWork workKind = iota
+	consumerHold
+)
+
+// Work is an admitted interval inside a Lifetime.
 type Work struct {
 	lifetime *Lifetime
 	ctx      context.Context
 	cancel   context.CancelCauseFunc
+	kind     workKind
 	finished bool
 }
 
 // Close is one owned retirement, independent of all callers waiting for it.
+// It settles once no cleanup is running, even if some release is unconfirmed.
 type Close struct {
 	lifetime    *Lifetime
 	id          uint64
 	settled     chan struct{}
 	settledOnce sync.Once
-	ready       []*resourceEntry
-	running     int
+	// releasing starts after all work has drained; ready then holds the
+	// resources whose consumers have all been released.
+	releasing bool
+	ready     []*resourceEntry
+	running   int
 }
+
+func (c *Close) settle() { c.settledOnce.Do(func() { close(c.settled) }) }
 
 var closeSequence atomic.Uint64
 
 const (
 	defaultLifetimeWork      = 4096
 	defaultLifetimeResources = 4096
+	// Close evidence is retained in terminal handles and wire reports, so its
+	// size cannot grow with the number or verbosity of failing resources.
+	maxCloseFailures     = 32
+	maxCloseDetailBytes  = 2048
+	cancellationResource = "cancellation"
 )
 
 func NewLifetime(parent context.Context) *Lifetime {
@@ -121,14 +159,11 @@ func NewLifetimeWithLimits(parent context.Context, limits LifetimeLimits) (*Life
 	if parent == nil {
 		return nil, ErrInvalid
 	}
-	if limits.MaxWork == 0 {
-		limits.MaxWork = defaultLifetimeWork
+	if err := resolveLimit("lifetime work", &limits.MaxWork, defaultLifetimeWork); err != nil {
+		return nil, err
 	}
-	if limits.MaxResources == 0 {
-		limits.MaxResources = defaultLifetimeResources
-	}
-	if limits.MaxWork < 1 || limits.MaxResources < 1 {
-		return nil, ErrInvalid
+	if err := resolveLimit("lifetime resources", &limits.MaxResources, defaultLifetimeResources); err != nil {
+		return nil, err
 	}
 	ctx, cancel := context.WithCancelCause(context.WithoutCancel(parent))
 	l := &Lifetime{ctx: ctx, cancelContext: cancel, changed: make(chan struct{}), work: make(map[*Work]struct{}), limits: limits}
@@ -149,7 +184,21 @@ func (l *Lifetime) Context() context.Context { l.mu.Lock(); defer l.mu.Unlock();
 func (l *Lifetime) isClosing() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	return l.closingLocked()
+}
+
+func (l *Lifetime) closingLocked() bool {
 	return l.closing != nil || l.released || l.ctx.Err() != nil
+}
+
+// closeOutcome observes the current close, if one has begun.
+func (l *Lifetime) closeOutcome() (CloseOutcome, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closing == nil {
+		return CloseOutcome{}, false
+	}
+	return l.outcomeLocked(l.closing.id), true
 }
 
 func (l *Lifetime) cancel(cause error) {
@@ -162,27 +211,51 @@ func (l *Lifetime) cancel(cause error) {
 func (l *Lifetime) signalLocked() { close(l.changed); l.changed = make(chan struct{}) }
 
 func (l *Lifetime) Enter(ctx context.Context) (*Work, error) {
-	if ctx == nil {
-		return nil, ErrInvalid
-	}
+	return l.enter(ctx, ownWork)
+}
+
+// hold registers a consumer that retirement drains instead of cancelling. Its
+// context ends only when the Lifetime itself begins closing.
+func (l *Lifetime) hold() (*Work, error) {
+	return l.enter(context.Background(), consumerHold)
+}
+
+func (l *Lifetime) enter(ctx context.Context, kind workKind) (*Work, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.closing != nil || l.released || l.ctx.Err() != nil {
+	if l.closingLocked() {
 		return nil, ErrClosed
-	}
-	if err := contextError(ctx); err != nil {
-		return nil, err
 	}
 	if len(l.work) >= l.limits.MaxWork {
 		return nil, fmt.Errorf("%w: lifetime work", ErrCapacity)
 	}
 	child, cancel := context.WithCancelCause(ctx)
-	work := &Work{lifetime: l, ctx: child, cancel: cancel}
+	work := &Work{lifetime: l, ctx: child, cancel: cancel, kind: kind}
 	l.work[work] = struct{}{}
+	if kind == consumerHold {
+		l.holds++
+	}
 	return work, nil
+}
+
+// awaitUnheld waits for every hold to finish without cancelling any of them.
+func (l *Lifetime) awaitUnheld(ctx context.Context) error {
+	for {
+		l.mu.Lock()
+		holds, changed := l.holds, l.changed
+		l.mu.Unlock()
+		if holds == 0 {
+			return nil
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return contextError(ctx)
+		}
+	}
 }
 
 func (w *Work) Context() context.Context { return w.ctx }
@@ -199,6 +272,9 @@ func (w *Work) Finish() {
 	}
 	w.finished = true
 	delete(l.work, w)
+	if w.kind == consumerHold {
+		l.holds--
+	}
 	l.signalLocked()
 	l.mu.Unlock()
 	w.cancel(ErrClosed)
@@ -334,81 +410,100 @@ func (l *Lifetime) BeginClose(cause error) *Close {
 }
 
 func (l *Lifetime) retire(operation *Close, cancellations []func(error), cause error) {
+	l.deliverCancellations(cancellations, cause)
+	l.awaitWork()
+	l.releaseResources(operation)
+}
+
+func (l *Lifetime) deliverCancellations(cancellations []func(error), cause error) {
 	for _, cancel := range cancellations {
 		if err := invokeCancel(cancel, cause); err != nil {
 			detail := closeFailureDetail(err)
 			l.mu.Lock()
-			l.recordFailureLocked("cancellation", detail, err)
+			l.recordFailureLocked(cancellationResource, detail, err)
 			l.mu.Unlock()
 		}
 	}
+}
+
+func (l *Lifetime) awaitWork() {
 	for {
 		l.mu.Lock()
-		if len(l.work) == 0 {
-			l.mu.Unlock()
-			break
-		}
-		changed := l.changed
+		idle, changed := len(l.work) == 0, l.changed
 		l.mu.Unlock()
+		if idle {
+			return
+		}
 		<-changed
 	}
+}
+
+// releaseResources closes resources in dependency order, each as soon as its
+// consumers have been released, until every release is proved.
+func (l *Lifetime) releaseResources(operation *Close) {
 	l.mu.Lock()
-	operation.ready = make([]*resourceEntry, 0, len(l.resources))
+	operation.releasing = true
 	for _, entry := range l.resources {
 		l.enqueueResourceLocked(entry)
 	}
 	l.mu.Unlock()
 	for {
 		l.mu.Lock()
-		ready := operation.ready
-		operation.ready = []*resourceEntry{}
-		for _, entry := range ready {
-			if !entry.released {
-				entry.attempted = true
-				entry.running = true
-				operation.running++
-			}
-		}
 		if len(l.resources) == 0 {
-			l.released = true
-			operation.ready = nil
-			l.resources = nil
-			l.work = nil
-			l.causes = weak.Pointer[CloseCauses]{}
-			stop := l.stopParent
-			l.stopParent = nil
-			terminal, cancel := context.WithCancelCause(context.Background())
-			cancel(ErrClosed)
-			l.ctx = terminal
-			l.cancelContext = cancel
-			l.signalLocked()
+			stop := l.releaseLocked()
 			l.mu.Unlock()
 			if stop != nil {
 				stop()
 			}
-			operation.settledOnce.Do(func() { close(operation.settled) })
+			operation.settle()
 			return
 		}
-		changed := l.changed
-		running := operation.running
+		ready := operation.startReadyLocked()
+		changed, running := l.changed, operation.running
 		l.mu.Unlock()
 		if running == 0 {
-			operation.settledOnce.Do(func() { close(operation.settled) })
+			operation.settle()
 		}
 		for _, entry := range ready {
-			l.mu.Lock()
-			closeResource := entry.resource.Close
-			l.mu.Unlock()
-			if closeResource != nil {
-				go l.closeResource(entry, closeResource)
-			}
+			go l.closeResource(entry)
 		}
 		<-changed
 	}
 }
 
+func (c *Close) startReadyLocked() []*resourceEntry {
+	ready := c.ready
+	c.ready = nil
+	started := ready[:0]
+	for _, entry := range ready {
+		if entry.released {
+			continue
+		}
+		entry.cleanup = cleanupRunning
+		c.running++
+		started = append(started, entry)
+	}
+	return started
+}
+
+// releaseLocked makes the Lifetime terminal and returns its parent watch to stop.
+func (l *Lifetime) releaseLocked() func() bool {
+	l.released = true
+	l.resources = nil
+	l.work = nil
+	l.causes = weak.Pointer[CloseCauses]{}
+	terminal, cancel := context.WithCancelCause(context.Background())
+	cancel(ErrClosed)
+	l.ctx = terminal
+	l.cancelContext = cancel
+	l.signalLocked()
+	stop := l.stopParent
+	l.stopParent = nil
+	return stop
+}
+
 func (l *Lifetime) enqueueResourceLocked(entry *resourceEntry) {
-	if l.closing != nil && l.closing.ready != nil && entry.consumers == 0 && !entry.attempted && !entry.released {
+	if l.closing != nil && l.closing.releasing && entry.consumers == 0 && entry.cleanup == cleanupPending && !entry.released {
 		l.closing.ready = append(l.closing.ready, entry)
 	}
 }
@@ -454,11 +549,15 @@ func invokeResourceClose(closeResource func(context.Context) (ReleaseState, erro
 	return state, err
 }
 
-func (l *Lifetime) closeResource(entry *resourceEntry, closeResource func(context.Context) (ReleaseState, error)) {
-	state, err := invokeResourceClose(closeResource, context.WithoutCancel(l.Context()))
+func (l *Lifetime) closeResource(entry *resourceEntry) {
+	l.mu.Lock()
+	closeResource := entry.resource.Close
+	ctx := context.WithoutCancel(l.ctx)
+	l.mu.Unlock()
+	state, err := invokeResourceClose(closeResource, ctx)
 	detail := closeFailureDetail(err)
 	l.mu.Lock()
-	entry.running = false
+	entry.cleanup = cleanupReturned
 	l.closing.running--
 	if state == ResourceReleased {
 		entry.released = true
@@ -479,14 +578,13 @@ func closeFailureDetail(err error) string {
 	if err == nil {
 		return ""
 	}
-	const maxDetailBytes = 2048
-	return boundedDetail(fmt.Sprint(err), maxDetailBytes)
+	return boundedDetail(fmt.Sprint(err))
 }
 
-func boundedDetail(detail string, maxDetailBytes int) string {
-	detail = strings.ToValidUTF8(detail, "\uFFFD")
-	if len(detail) > maxDetailBytes {
-		detail = detail[:maxDetailBytes]
+func boundedDetail(detail string) string {
+	detail = strings.ToValidUTF8(detail, string(utf8.RuneError))
+	if len(detail) > maxCloseDetailBytes {
+		detail = detail[:maxCloseDetailBytes]
 		for !utf8.ValidString(detail) {
 			detail = detail[:len(detail)-1]
 		}
@@ -499,8 +597,7 @@ func (l *Lifetime) recordFailureLocked(name, detail string, cause error) {
 	if observation := l.causes.Value(); observation != nil {
 		observation.record(name, cause)
 	}
-	const maxFailures = 32
-	if len(l.failures) == maxFailures {
+	if len(l.failures) == maxCloseFailures {
 		l.omittedFailures++
 		return
 	}
@@ -522,7 +619,7 @@ func (h *ResourceHandle) ConfirmReleased(diagnostic error) error {
 	if diagnostic != nil {
 		l.recordFailureLocked(h.entry.resource.Name, detail, diagnostic)
 	}
-	if !h.entry.running {
+	if h.entry.cleanup != cleanupRunning {
 		l.forgetResourceLocked(h.entry)
 	}
 	l.signalLocked()
@@ -580,6 +677,15 @@ func withoutUnconfirmedState(err error) error {
 	return err
 }
 
+// releaseState concludes a resource whose release is a nested close. A pending
+// nested release is reported as unconfirmed, not as a cleanup failure.
+func releaseState(outcome CloseOutcome, err error) (ReleaseState, error) {
+	if outcome.Released {
+		return ResourceReleased, err
+	}
+	return ResourceUnconfirmed, withoutUnconfirmedState(err)
+}
+
 func (c *Close) Outcome() CloseOutcome {
 	c.lifetime.mu.Lock()
 	defer c.lifetime.mu.Unlock()
@@ -595,21 +701,14 @@ func (c *Close) Wait(ctx context.Context) (CloseOutcome, error) {
 	}
 	select {
 	case <-c.settled:
-		outcome := c.Outcome()
-		return outcome, outcomeError(outcome)
-	default:
+	case <-ctx.Done():
 	}
+	// A settled close wins over a simultaneously cancelled wait.
 	select {
 	case <-c.settled:
 		outcome := c.Outcome()
 		return outcome, outcomeError(outcome)
-	case <-ctx.Done():
-		select {
-		case <-c.settled:
-			outcome := c.Outcome()
-			return outcome, outcomeError(outcome)
-		default:
-		}
+	default:
 		return c.Outcome(), contextError(ctx)
 	}
 }

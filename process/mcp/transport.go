@@ -12,6 +12,8 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/Tangerg/frame/internal/cancellation"
+
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/go-sdk/jsonrpc"
 	sdk "github.com/Tangerg/go-sdk/mcp"
@@ -137,7 +139,7 @@ func (c *interruptibleConnection) Write(ctx context.Context, message jsonrpc.Mes
 	// to leave that queue without interrupting the sender that owns the stream.
 	select {
 	case <-ctx.Done():
-		return context.Cause(ctx)
+		return cancellation.Err(ctx)
 	case c.sending <- struct{}{}:
 	}
 	defer func() {

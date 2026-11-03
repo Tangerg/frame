@@ -196,7 +196,7 @@ func indexArtifacts(declared []Artifact) (map[string]Artifact, error) {
 		if artifact.Size < 0 || artifact.Digest.Validate() != nil {
 			return nil, fmt.Errorf("%w: artifact %q", ErrInvalid, artifact.Path)
 		}
-		if err := paths.admit(artifact.Path, false); err != nil {
+		if err := paths.admit(artifact.Path, fileEntry); err != nil {
 			return nil, err
 		}
 		artifacts[artifact.Path] = artifact
@@ -489,33 +489,62 @@ func validRuntime(value RuntimeReference) bool {
 const maxArtifactPathBytes = 1024
 const maxArtifactPathSegmentBytes = 240
 
+// Release paths must stay valid on every platform a host may extract to, so
+// Windows device names and reserved characters are refused everywhere.
+var (
+	windowsDeviceNames            = []string{"con", "prn", "aux", "nul"}
+	windowsNumberedDevicePrefixes = []string{"com", "lpt"}
+)
+
+const windowsReservedCharacters = ":*?\"<>|"
+
 func validPath(value string) bool {
 	if value == "" || len(value) > maxArtifactPathBytes || !fs.ValidPath(value) || value == "." || strings.Contains(value, "\\") {
 		return false
 	}
-	for _, segment := range strings.Split(value, "/") {
-		if strings.HasSuffix(segment, ".") || strings.HasSuffix(segment, " ") || len(segment) > maxArtifactPathSegmentBytes {
-			return false
-		}
-		stem := strings.ToLower(strings.SplitN(segment, ".", 2)[0])
-		if stem == "con" || stem == "prn" || stem == "aux" || stem == "nul" || (len(stem) == 4 && (strings.HasPrefix(stem, "com") || strings.HasPrefix(stem, "lpt")) && stem[3] >= '1' && stem[3] <= '9') {
-			return false
-		}
+	if strings.ContainsFunc(value, unportableRune) {
+		return false
 	}
-	for _, r := range value {
-		if r < '!' || r > '~' || strings.ContainsRune(":*?\"<>|", r) {
-			return false
-		}
+	return !slices.ContainsFunc(strings.Split(value, "/"), unportableSegment)
+}
+
+// unportableRune refuses everything but printable ASCII and the characters
+// Windows reserves.
+func unportableRune(r rune) bool {
+	return r < '!' || r > '~' || strings.ContainsRune(windowsReservedCharacters, r)
+}
+
+func unportableSegment(segment string) bool {
+	if strings.HasSuffix(segment, ".") || strings.HasSuffix(segment, " ") || len(segment) > maxArtifactPathSegmentBytes {
+		return true
 	}
-	return true
+	stem := strings.ToLower(strings.SplitN(segment, ".", 2)[0])
+	return slices.Contains(windowsDeviceNames, stem) || numberedDevice(stem)
+}
+
+// numberedDevice reports COM1-COM9 and LPT1-LPT9.
+func numberedDevice(stem string) bool {
+	if len(stem) != 4 || stem[3] < '1' || stem[3] > '9' {
+		return false
+	}
+	return slices.Contains(windowsNumberedDevicePrefixes, stem[:3])
 }
 
 func isReleaseMetadata(name string) bool { return name == ManifestName || name == LockName }
 
+type entryKind uint8
+
+const (
+	fileEntry entryKind = iota
+	directoryEntry
+)
+
+// archivePath is one case-folded release path. An implicit path exists only
+// as the ancestor of an explicitly listed entry.
 type archivePath struct {
-	name      string
-	directory bool
-	explicit  bool
+	name     string
+	kind     entryKind
+	explicit bool
 }
 
 type archivePaths map[string]archivePath
@@ -524,24 +553,24 @@ func releasePaths() archivePaths {
 	return archivePaths{ManifestName: {name: ManifestName, explicit: true}, LockName: {name: LockName, explicit: true}}
 }
 
-func (paths archivePaths) admit(name string, directory bool) error {
+func (paths archivePaths) admit(name string, kind entryKind) error {
 	if !validPath(name) {
 		return fmt.Errorf("%w: unsafe path", ErrInvalid)
 	}
 	key := strings.ToLower(name)
-	if prior, exists := paths[key]; exists && (prior.explicit || !directory || !prior.directory || prior.name != name) {
+	if prior, exists := paths[key]; exists && (prior.explicit || kind != directoryEntry || prior.kind != directoryEntry || prior.name != name) {
 		return fmt.Errorf("%w: duplicate or aliased path", ErrInvalid)
 	}
 	for ancestor := path.Dir(name); ancestor != "."; ancestor = path.Dir(ancestor) {
 		key := strings.ToLower(ancestor)
 		if prior, ok := paths[key]; ok {
-			if !prior.directory || prior.name != ancestor {
+			if prior.kind != directoryEntry || prior.name != ancestor {
 				return fmt.Errorf("%w: file or alias is a path ancestor", ErrInvalid)
 			}
 		} else {
-			paths[key] = archivePath{name: ancestor, directory: true}
+			paths[key] = archivePath{name: ancestor, kind: directoryEntry}
 		}
 	}
-	paths[key] = archivePath{name: name, directory: directory, explicit: true}
+	paths[key] = archivePath{name: name, kind: kind, explicit: true}
 	return nil
 }

@@ -38,7 +38,7 @@ func TestCancellationWhileWaitingForAdmissionDoesNotDispatch(t *testing.T) {
 	defer cancel()
 	observed := make(chan struct{})
 	ctx := admissionObservedContext{base, sync.OnceFunc(func() { close(observed) })}
-	p := newPeer(nil, profile.MaxFrameBytes, nil)
+	p := newPeer(nil, wire.MaxFrameBytes, nil)
 	service := &remote{peer: p, handle: "writer", contract: contract}
 	p.mu.Lock()
 	finished := make(chan error, 1)
@@ -75,11 +75,11 @@ func TestCancellationDuringPayloadEncodingDoesNotDispatch(t *testing.T) {
 	// before admission without depending on scheduler timing or payload size.
 	continued := make(chan struct{})
 	payload := pausedPayload{started: make(chan struct{}), continueMarshal: continued}
-	p := newPeer(nil, profile.MaxFrameBytes, nil)
+	p := newPeer(nil, wire.MaxFrameBytes, nil)
 	finished := make(chan error, 1)
 	go func() {
 		var result bool
-		finished <- p.request(ctx, profile.Methods.Call, payload, &result)
+		finished <- p.request(ctx, wire.Methods.Call, payload, &result)
 	}()
 	<-payload.started
 	cause := errors.New("caller withdrew the request")

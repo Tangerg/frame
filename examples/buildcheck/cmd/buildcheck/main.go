@@ -20,13 +20,15 @@ func main() {
 	}
 }
 
+const maxInputBytes = 4 << 20
+
 func run(apply bool) error {
-	data, err := io.ReadAll(io.LimitReader(os.Stdin, (4<<20)+1))
+	data, err := io.ReadAll(io.LimitReader(os.Stdin, maxInputBytes+1))
 	if err != nil {
 		return err
 	}
-	if len(data) > 4<<20 {
-		return fmt.Errorf("buildcheck: input exceeds 4 MiB")
+	if len(data) > maxInputBytes {
+		return fmt.Errorf("buildcheck: input exceeds %d bytes", maxInputBytes)
 	}
 	source := buildcheck.NewSource(string(data))
 	engine, err := buildcheck.New(context.Background(), source)

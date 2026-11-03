@@ -238,7 +238,7 @@ func TestChildDependencyOutsideStartAttemptSurvivesHostProcessCrash(t *testing.T
 		t.Fatal(err)
 	}
 	for _, record := range attempts {
-		if record.Attempt.ID != first.Plan.Execution.ID && record.Released {
+		if record.Attempt.ID != first.Plan.Execution.ID && record.ExitProven() {
 			t.Fatalf("a subordinate Use proof released an independent execution: %+v", record)
 		}
 	}

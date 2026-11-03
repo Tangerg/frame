@@ -1,6 +1,7 @@
 package frame
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -8,7 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	framevalue "github.com/Tangerg/frame/value"
+	"github.com/Tangerg/frame/internal/cancellation"
+	"github.com/Tangerg/frame/internal/nilness"
 )
 
 // UseOwner reads the original business records. It must use a current committed
@@ -27,52 +29,41 @@ type RetainedDependency struct {
 }
 
 type AdmissionLimits struct {
-	MaxPreparations       int
-	MaxPreparationChanges int
-	MaxScopes             int
-	MaxUseOwners          int
+	MaxScopes    int
+	MaxUseOwners int
 }
 
 const (
-	defaultMaxPreparations       = 4096
-	defaultMaxPreparationChanges = 4096
-	defaultMaxScopes             = 4096
-	defaultMaxUseOwners          = 256
+	defaultMaxScopes    = 4096
+	defaultMaxUseOwners = 256
 )
 
 // Admission serializes new uses with changes and bounded storage commits. Its
 // state mutex is never held during storage, execution or consumer code.
 type Admission struct {
-	slot         chan struct{}
+	slot   chan struct{}
+	limits AdmissionLimits
+
 	mu           sync.Mutex
-	preparations map[*Preparation]struct{}
 	owners       map[string]UseOwner
 	ownersSealed bool
 	scopes       map[scopeKey]scopeState
-	limits       AdmissionLimits
-	recovery     error
-	reports      uint64
-	barrier      uint64
-	revision     uint64
+	// barrier counts every recovery report. recovery is the first cause of the
+	// current barrier, which began at recoveryStart.
+	barrier       uint64
+	recovery      error
+	recoveryStart uint64
 }
 
-type Preparation struct {
-	owner           *Admission
-	changed         map[InstallationID]struct{}
-	changesExceeded bool
-}
-
-// A recovery report observes the original fence. Additional reports are a
-// count, not retained error graphs or another ledger of unsettled operations.
+// recoveryReport observes the original fence. Later reports are only counted,
+// so retaining it cannot retain their error graphs.
 type recoveryReport struct {
 	cause      error
 	additional uint64
 }
 
 func (r *recoveryReport) Error() string {
-	const maxDetailBytes = 2048
-	detail := boundedDetail(r.cause.Error(), maxDetailBytes)
-	text := ErrRecoveryRequired.Error() + ": " + detail
+	text := ErrRecoveryRequired.Error() + ": " + boundedDetail(r.cause.Error())
 	if r.additional != 0 {
 		text += fmt.Sprintf("; %d additional recovery reports", r.additional)
 	}
@@ -81,61 +72,14 @@ func (r *recoveryReport) Error() string {
 
 func (r *recoveryReport) Unwrap() []error { return []error{ErrRecoveryRequired, r.cause} }
 
-func (a *Admission) recoveryErrorLocked() error {
-	if a.recovery == nil {
-		return nil
-	}
-	return &recoveryReport{cause: a.recovery, additional: a.reports}
-}
-
-type scopeKey struct {
-	id           ScopeID
-	installation bool
-}
-
-type scopeState struct {
-	context    context.Context
-	cancel     context.CancelFunc
-	generation uint64
-	open       bool
-}
-
-type ScopeObservation struct {
-	ID         ScopeID
-	Generation uint64
-	Fenced     bool
-}
-
-// ScopeGrant is an approval of a particular scope generation. Copying the value
-// does not create permission to reopen that scope after it has been fenced.
-type ScopeGrant struct {
-	context    context.Context
-	owner      *Admission
-	key        scopeKey
-	generation uint64
-}
-
 type admissionContextKey struct{}
-type admissionContext struct {
+
+// admissionProof marks a context derived inside one Admit call. It stops
+// authorizing work as soon as that call returns.
+type admissionProof struct {
 	owner  *Admission
 	active atomic.Bool
 }
-
-func (g ScopeGrant) ID() ScopeID { return g.key.id }
-
-// WireID identifies the scope independently of its generation. A tenant's
-// chosen name cannot collide with the installation namespace on a remote Realm.
-func (g ScopeGrant) WireID() ScopeID {
-	if g.owner == nil {
-		return ""
-	}
-	namespace := "application/"
-	if g.key.installation {
-		namespace = "installation/"
-	}
-	return ScopeID(namespace + framevalue.Hash([]byte(g.key.id)).String())
-}
-func (g ScopeGrant) Generation() uint64 { return g.generation }
 
 func NewAdmission() *Admission {
 	admission, err := NewAdmissionWithLimits(AdmissionLimits{})
@@ -145,30 +89,20 @@ func NewAdmission() *Admission {
 	return admission
 }
 
-// NewAdmissionWithLimits bounds original preparation, scope and business-owner
-// records. A closed scope retains its generation and still occupies capacity.
+// NewAdmissionWithLimits bounds scope and business-owner records. A fenced
+// scope retains its generation and still occupies capacity.
 func NewAdmissionWithLimits(limits AdmissionLimits) (*Admission, error) {
-	if limits.MaxPreparations == 0 {
-		limits.MaxPreparations = defaultMaxPreparations
+	if err := resolveLimit("scopes", &limits.MaxScopes, defaultMaxScopes); err != nil {
+		return nil, err
 	}
-	if limits.MaxPreparationChanges == 0 {
-		limits.MaxPreparationChanges = defaultMaxPreparationChanges
-	}
-	if limits.MaxScopes == 0 {
-		limits.MaxScopes = defaultMaxScopes
-	}
-	if limits.MaxUseOwners == 0 {
-		limits.MaxUseOwners = defaultMaxUseOwners
-	}
-	if limits.MaxPreparations < 1 || limits.MaxPreparationChanges < 1 || limits.MaxScopes < 1 || limits.MaxUseOwners < 1 {
-		return nil, ErrInvalid
+	if err := resolveLimit("use owners", &limits.MaxUseOwners, defaultMaxUseOwners); err != nil {
+		return nil, err
 	}
 	return &Admission{
-		slot:         make(chan struct{}, 1),
-		preparations: make(map[*Preparation]struct{}),
-		owners:       make(map[string]UseOwner),
-		scopes:       make(map[scopeKey]scopeState),
-		limits:       limits,
+		slot:   make(chan struct{}, 1),
+		limits: limits,
+		owners: make(map[string]UseOwner),
+		scopes: make(map[scopeKey]scopeState),
 	}, nil
 }
 
@@ -176,14 +110,13 @@ func contextError(ctx context.Context) error {
 	if ctx == nil {
 		return ErrInvalid
 	}
-	if err := ctx.Err(); err != nil {
-		return errors.Join(err, context.Cause(ctx))
-	}
-	return nil
+	return cancellation.Err(ctx)
 }
 
-func (a *Admission) enter(ctx context.Context, maintenance bool) (func(), error) {
-	if ctx == nil || a == nil {
+// acquire takes the single admission slot; the caller must call the returned
+// release exactly once.
+func (a *Admission) acquire(ctx context.Context) (func(), error) {
+	if a == nil {
 		return nil, ErrInvalid
 	}
 	if err := contextError(ctx); err != nil {
@@ -194,21 +127,12 @@ func (a *Admission) enter(ctx context.Context, maintenance bool) (func(), error)
 	case <-ctx.Done():
 		return nil, contextError(ctx)
 	}
-	leave := func() { <-a.slot }
+	release := func() { <-a.slot }
 	if err := contextError(ctx); err != nil {
-		leave()
+		release()
 		return nil, err
 	}
-	if !maintenance {
-		a.mu.Lock()
-		err := a.recoveryErrorLocked()
-		a.mu.Unlock()
-		if err != nil {
-			leave()
-			return nil, err
-		}
-	}
-	return leave, nil
+	return release, nil
 }
 
 // Under accepts trusted bounded work. It must not invoke a plugin, perform
@@ -226,19 +150,22 @@ func (a *Admission) Admit(ctx context.Context, apply func(context.Context) error
 	if apply == nil {
 		return ErrInvalid
 	}
-	leave, err := a.enter(ctx, false)
+	release, err := a.acquire(ctx)
 	if err != nil {
 		return err
 	}
-	defer leave()
-	proof := &admissionContext{owner: a}
+	defer release()
+	if err := a.RecoveryError(); err != nil {
+		return err
+	}
+	proof := &admissionProof{owner: a}
 	proof.active.Store(true)
 	defer proof.active.Store(false)
 	return apply(context.WithValue(ctx, admissionContextKey{}, proof))
 }
 
 func (a *Admission) CheckAdmitted(ctx context.Context) error {
-	proof, ok := ctx.Value(admissionContextKey{}).(*admissionContext)
+	proof, ok := ctx.Value(admissionContextKey{}).(*admissionProof)
 	if !ok || proof.owner != a || !proof.active.Load() {
 		return fmt.Errorf("%w: active shared admission is required", ErrInvalid)
 	}
@@ -251,131 +178,38 @@ func (a *Admission) Maintenance(ctx context.Context, apply func() error) error {
 	if apply == nil {
 		return ErrInvalid
 	}
-	leave, err := a.enter(ctx, true)
+	release, err := a.acquire(ctx)
 	if err != nil {
 		return err
 	}
-	defer leave()
+	defer release()
 	return apply()
 }
-
-func (a *Admission) Begin() (*Preparation, func(), error) {
-	a.mu.Lock()
-	if a.recovery != nil {
-		err := a.recoveryErrorLocked()
-		a.mu.Unlock()
-		return nil, nil, err
-	}
-	if len(a.preparations) >= a.limits.MaxPreparations {
-		a.mu.Unlock()
-		return nil, nil, fmt.Errorf("%w: preparations", ErrCapacity)
-	}
-	p := &Preparation{owner: a, changed: make(map[InstallationID]struct{})}
-	a.preparations[p] = struct{}{}
-	a.mu.Unlock()
-	var once sync.Once
-	abandon := func() {
-		once.Do(func() {
-			a.mu.Lock()
-			delete(a.preparations, p)
-			p.changed = nil
-			a.mu.Unlock()
-		})
-	}
-	return p, abandon, nil
-}
-
-func (a *Admission) Publish(ctx context.Context, p *Preparation, dependencies []InstallationID, publish func() error) error {
-	if p == nil || p.owner != a || publish == nil {
-		return ErrInvalid
-	}
-	return a.Under(ctx, func() error {
-		a.mu.Lock()
-		_, active := a.preparations[p]
-		delete(a.preparations, p)
-		exceeded := p.changesExceeded
-		var changed InstallationID
-		for _, id := range dependencies {
-			if _, ok := p.changed[id]; ok {
-				changed = id
-				break
-			}
-		}
-		p.changed = nil
-		a.mu.Unlock()
-		if !active {
-			return fmt.Errorf("%w: preparation is no longer active", ErrStaleBinding)
-		}
-		if exceeded {
-			return fmt.Errorf("%w: preparation change history exceeds %d installations: %w", ErrStaleBinding, a.limits.MaxPreparationChanges, ErrCapacity)
-		}
-		if changed != "" {
-			return fmt.Errorf("%w: installation %s changed during preparation", ErrStaleBinding, changed)
-		}
-		return publish()
-	})
-}
-
-func (a *Admission) recordChange(id InstallationID) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.revision++
-	for p := range a.preparations {
-		if p.changesExceeded {
-			continue
-		}
-		if _, exists := p.changed[id]; exists {
-			continue
-		}
-		if len(p.changed) == a.limits.MaxPreparationChanges {
-			// Committed changes remain facts. Only this unfinished preparation
-			// loses permission to publish when its bounded read history is full.
-			p.changesExceeded = true
-			continue
-		}
-		p.changed[id] = struct{}{}
-	}
-}
-
-// Change records a definite committed transition even when its subsequent
-// local projection reports an error. An indeterminate commit must first call
-// RequireRecovery; it must not report changed=false as proof of rollback.
-func (a *Admission) Change(ctx context.Context, id InstallationID, apply func() (bool, error)) error {
-	if err := id.Validate(); err != nil {
-		return err
-	}
-	if apply == nil {
-		return ErrInvalid
-	}
-	return a.Under(ctx, func() error {
-		changed, err := apply()
-		if changed {
-			a.recordChange(id)
-		}
-		return err
-	})
-}
-
-func (a *Admission) Revision() uint64 { a.mu.Lock(); defer a.mu.Unlock(); return a.revision }
 
 func (a *Admission) RequireRecovery(cause error) {
 	if cause == nil {
 		cause = ErrRecoveryRequired
 	}
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.barrier++
 	if a.recovery == nil {
 		a.recovery = cause
-	} else if a.reports != ^uint64(0) {
-		a.reports++
+		a.recoveryStart = a.barrier
 	}
-	a.barrier++
-	a.mu.Unlock()
 }
 
 func (a *Admission) RecoveryError() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.recoveryErrorLocked()
+}
+
+func (a *Admission) recoveryErrorLocked() error {
+	if a.recovery == nil {
+		return nil
+	}
+	return &recoveryReport{cause: a.recovery, additional: a.barrier - a.recoveryStart}
 }
 
 // Recover only clears the barrier it observed. A new failure raised during
@@ -386,7 +220,7 @@ func (a *Admission) Recover(ctx context.Context, restore func() error) error {
 	}
 	return a.Maintenance(ctx, func() error {
 		a.mu.Lock()
-		barrier := a.barrier
+		observed := a.barrier
 		a.mu.Unlock()
 		if err := restore(); err != nil {
 			a.RequireRecovery(err)
@@ -394,11 +228,10 @@ func (a *Admission) Recover(ctx context.Context, restore func() error) error {
 		}
 		a.mu.Lock()
 		defer a.mu.Unlock()
-		if a.barrier != barrier {
+		if a.barrier != observed {
 			return a.recoveryErrorLocked()
 		}
 		a.recovery = nil
-		a.reports = 0
 		return nil
 	})
 }
@@ -410,17 +243,13 @@ func (a *Admission) RegisterUseOwner(owner UseOwner) error {
 func (a *Admission) registerUseOwners(owners []UseOwner) error {
 	pending := make(map[string]UseOwner, len(owners))
 	for _, owner := range owners {
-		if nilValue(owner) {
+		if nilness.Is(owner) || !ValidName(owner.ID()) {
 			return ErrInvalid
 		}
-		id := owner.ID()
-		if !ValidName(id) {
-			return ErrInvalid
+		if _, exists := pending[owner.ID()]; exists {
+			return fmt.Errorf("%w: duplicate use owner %s", ErrInvalid, owner.ID())
 		}
-		if _, exists := pending[id]; exists {
-			return fmt.Errorf("%w: duplicate use owner %s", ErrInvalid, id)
-		}
-		pending[id] = owner
+		pending[owner.ID()] = owner
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -445,55 +274,61 @@ func (a *Admission) registerUseOwners(owners []UseOwner) error {
 // commands call it from admission; diagnostic reads may call it directly.
 // An unavailable owner cannot prove the absence of retained dependencies.
 func (a *Admission) Retained(ctx context.Context, id InstallationID) ([]RetainedDependency, error) {
-	if ctx == nil {
-		return nil, ErrInvalid
+	if err := contextError(ctx); err != nil {
+		return nil, err
 	}
 	if err := id.Validate(); err != nil {
 		return nil, err
 	}
-	if err := contextError(ctx); err != nil {
-		return nil, err
-	}
-	a.mu.Lock()
-	ids := make([]string, 0, len(a.owners))
-	for id := range a.owners {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
-	owners := make([]UseOwner, 0, len(ids))
-	for _, id := range ids {
-		owners = append(owners, a.owners[id])
-	}
-	a.mu.Unlock()
 	var result []RetainedDependency
-	for index, owner := range owners {
-		ownerID := ids[index]
-		values, err := owner.Held(ctx, id)
+	for _, owner := range a.sortedOwners() {
+		values, err := a.held(ctx, owner, id)
 		if err != nil {
-			failure := fmt.Errorf("frame: read retained dependencies from %s: %w", ownerID, err)
-			if onlyRequestCancellation(ctx, err) {
-				return nil, failure
-			}
-			a.RequireRecovery(failure)
-			return nil, errors.Join(ErrRecoveryRequired, failure)
-		}
-		for _, value := range values {
-			if err := value.Validate(); err != nil {
-				failure := fmt.Errorf("frame: invalid retained dependency from %s: %w", ownerID, err)
-				a.RequireRecovery(failure)
-				return nil, errors.Join(ErrRecoveryRequired, failure)
-			}
-			if value.InstallationID != id {
-				failure := fmt.Errorf("%w: use owner %s returned another installation", ErrInvalid, ownerID)
-				a.RequireRecovery(failure)
-				return nil, errors.Join(ErrRecoveryRequired, failure)
-			}
+			return nil, err
 		}
 		for _, value := range CompactDependencies(values) {
-			result = append(result, RetainedDependency{OwnerID: ownerID, Dependency: value})
+			result = append(result, RetainedDependency{OwnerID: owner.ID(), Dependency: value})
 		}
 	}
 	return result, nil
+}
+
+func (a *Admission) sortedOwners() []UseOwner {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	owners := make([]UseOwner, 0, len(a.owners))
+	for _, owner := range a.owners {
+		owners = append(owners, owner)
+	}
+	slices.SortFunc(owners, func(x, y UseOwner) int { return cmp.Compare(x.ID(), y.ID()) })
+	return owners
+}
+
+// held reads one owner. Any answer it cannot trust requires recovery, except a
+// failure caused only by this request's own cancellation.
+func (a *Admission) held(ctx context.Context, owner UseOwner, id InstallationID) ([]Dependency, error) {
+	values, err := owner.Held(ctx, id)
+	if err != nil {
+		failure := fmt.Errorf("frame: read retained dependencies from %s: %w", owner.ID(), err)
+		if onlyRequestCancellation(ctx, err) {
+			return nil, failure
+		}
+		return nil, a.untrusted(failure)
+	}
+	for _, value := range values {
+		if err := value.Validate(); err != nil {
+			return nil, a.untrusted(fmt.Errorf("frame: invalid retained dependency from %s: %w", owner.ID(), err))
+		}
+		if value.InstallationID != id {
+			return nil, a.untrusted(fmt.Errorf("%w: use owner %s returned another installation", ErrInvalid, owner.ID()))
+		}
+	}
+	return values, nil
+}
+
+func (a *Admission) untrusted(failure error) error {
+	a.RequireRecovery(failure)
+	return errors.Join(ErrRecoveryRequired, failure)
 }
 
 // Held projects the distinct dependencies from the same original owner reads.
@@ -518,15 +353,7 @@ func onlyRequestCancellation(ctx context.Context, err error) bool {
 	switch value := err.(type) {
 	case interface{ Unwrap() []error }:
 		causes := value.Unwrap()
-		if len(causes) == 0 {
-			return false
-		}
-		for _, cause := range causes {
-			if !onlyRequestCancellation(ctx, cause) {
-				return false
-			}
-		}
-		return true
+		return len(causes) > 0 && !slices.ContainsFunc(causes, func(cause error) bool { return !onlyRequestCancellation(ctx, cause) })
 	case interface{ Unwrap() error }:
 		return onlyRequestCancellation(ctx, value.Unwrap())
 	default:
@@ -552,109 +379,6 @@ func (a *Admission) CheckUnused(ctx context.Context, id InstallationID) error {
 	}
 	if len(values) != 0 {
 		return fmt.Errorf("%w: %s", ErrInUse, id)
-	}
-	return nil
-}
-
-func (a *Admission) OpenScope(ctx context.Context, id ScopeID) (ScopeGrant, error) {
-	if err := id.Validate(); err != nil {
-		return ScopeGrant{}, err
-	}
-	var grant ScopeGrant
-	err := a.Under(ctx, func() error {
-		var err error
-		grant, err = a.openScope(scopeKey{id: id})
-		return err
-	})
-	return grant, err
-}
-
-// Scope allocation is checked before a durable installation mutation. The
-// caller holds the shared gate, which also serializes every scope allocation.
-func (a *Admission) checkScopeCapacity(ids ...scopeKey) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	missing := make(map[scopeKey]struct{})
-	for _, id := range ids {
-		if _, exists := a.scopes[id]; !exists {
-			missing[id] = struct{}{}
-		}
-	}
-	if len(a.scopes)+len(missing) > a.limits.MaxScopes {
-		return fmt.Errorf("%w: scopes", ErrCapacity)
-	}
-	return nil
-}
-
-func (a *Admission) openScope(id scopeKey) (ScopeGrant, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	state, exists := a.scopes[id]
-	if !exists && len(a.scopes) >= a.limits.MaxScopes {
-		return ScopeGrant{}, fmt.Errorf("%w: scopes", ErrCapacity)
-	}
-	if !state.open {
-		state.generation++
-		state.context, state.cancel = context.WithCancel(context.Background())
-		state.open = true
-		a.scopes[id] = state
-	}
-	return ScopeGrant{owner: a, key: id, generation: state.generation, context: state.context}, nil
-}
-
-// Restoring committed enabled state cannot revoke a later local fence. A cold
-// scope has no earlier grant to preserve, so only that case starts a generation.
-func (a *Admission) restoreScope(id scopeKey) (ScopeGrant, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	state, exists := a.scopes[id]
-	if !exists {
-		if len(a.scopes) >= a.limits.MaxScopes {
-			return ScopeGrant{}, fmt.Errorf("%w: scopes", ErrCapacity)
-		}
-		state.generation++
-		state.context, state.cancel = context.WithCancel(context.Background())
-		state.open = true
-		a.scopes[id] = state
-	}
-	return ScopeGrant{owner: a, key: id, generation: state.generation, context: state.context}, nil
-}
-
-// FenceScope is a local monotonic action and never waits for storage or the
-// admission slot. Unknown scopes have no grants to revoke and allocate no
-// record. Fencing does not claim remote work has finished.
-func (a *Admission) FenceScope(id ScopeID) { a.fenceScope(scopeKey{id: id}) }
-
-func (a *Admission) fenceScope(id scopeKey) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	state, exists := a.scopes[id]
-	if !exists {
-		return
-	}
-	state.open = false
-	state.cancel()
-	a.scopes[id] = state
-}
-
-// Scope observes the original generation and fence even while recovery blocks
-// new admission. The observation does not grant authority to use or reopen it.
-func (a *Admission) Scope(id ScopeID) (ScopeObservation, bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	state, exists := a.scopes[scopeKey{id: id}]
-	if !exists {
-		return ScopeObservation{}, false
-	}
-	return ScopeObservation{ID: id, Generation: state.generation, Fenced: !state.open}, true
-}
-
-func (a *Admission) ValidateScope(grant ScopeGrant) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	state := a.scopes[grant.key]
-	if grant.owner != a || !state.open || state.generation != grant.generation {
-		return ErrFenced
 	}
 	return nil
 }

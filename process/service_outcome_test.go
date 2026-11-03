@@ -21,11 +21,11 @@ func connectedService(t *testing.T, descriptor portable.MethodDescriptor, implem
 	}
 	a, b := net.Pipe()
 	delivery := &deliveries{}
-	left := newPeer(a, profile.MaxFrameBytes, func(ctx context.Context, _ string, raw jsontext.Value) (jsontext.Value, error) {
+	left := newPeer(a, wire.MaxFrameBytes, func(ctx context.Context, _ string, raw jsontext.Value) (jsontext.Value, error) {
 		return delivery.receive(ctx, raw)
 	})
 	var right *peer
-	right = newPeer(b, profile.MaxFrameBytes, func(ctx context.Context, _ string, raw jsontext.Value) (jsontext.Value, error) {
+	right = newPeer(b, wire.MaxFrameBytes, func(ctx context.Context, _ string, raw jsontext.Value) (jsontext.Value, error) {
 		return dispatchCall(ctx, right, map[string]binding{"one": {contract, implementation}}, raw)
 	})
 	left.start()
@@ -147,7 +147,7 @@ func TestHandlerFailureCannotClaimNonDispatchAfterAnEffect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, failure := range []error{context.Canceled, &Problem{profile.Errors.Contract, "handler failed after its effect"}} {
+	for _, failure := range []error{context.Canceled, &Problem{wire.Errors.Contract, "handler failed after its effect"}} {
 		t.Run(failure.Error(), func(t *testing.T) {
 			var effects atomic.Int32
 			service := connectedService(t, method.Descriptor(), Handler(func(context.Context, portable.Invocation) (value.JSON, error) {
@@ -182,7 +182,7 @@ func TestRejectionBeforeHandlerDoesNotClaimAnUnknownEffect(t *testing.T) {
 		t.Fatalf("local pre-dispatch cancellation: %v", err)
 	}
 	var result value.JSON
-	err = service.peer.request(t.Context(), profile.Methods.Call, callParams{Handle: service.handle, Member: "undeclared", Input: input}, &result)
+	err = service.peer.request(t.Context(), wire.Methods.Call, callParams{Handle: service.handle, Member: "undeclared", Input: input}, &result)
 	if err == nil || errors.Is(err, ErrOutcomeUnknown) {
 		t.Fatalf("framework pre-dispatch rejection: %v", err)
 	}

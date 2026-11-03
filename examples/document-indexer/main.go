@@ -199,7 +199,7 @@ func run(ctx context.Context, entry string) (answer string, returned error) {
 		return "", err
 	}
 	defer func() { returned = errors.Join(returned, store.Close()) }()
-	driver, err := process.New(process.Config{Runner: runner.Dial(socket), Store: store, Source: program, CloseTimeout: 5 * time.Second, MaxFrameBytes: 1 << 20})
+	driver, err := process.New(process.Config{Runner: runner.Dial(socket), Store: store, Source: program, CloseTimeout: closeTimeout, MaxFrameBytes: maxFrameBytes})
 	if err != nil {
 		return "", err
 	}
@@ -208,7 +208,7 @@ func run(ctx context.Context, entry string) (answer string, returned error) {
 		return "", err
 	}
 	defer func() {
-		closing, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		closing, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		_, err := host.Close(closing)
 		returned = errors.Join(returned, err)
@@ -227,7 +227,7 @@ func run(ctx context.Context, entry string) (answer string, returned error) {
 		return "", err
 	}
 	defer func() {
-		closing, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		closing, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		returned = errors.Join(returned, running.Stop(closing))
 	}()
@@ -243,10 +243,17 @@ func run(ctx context.Context, entry string) (answer string, returned error) {
 	return answer, nil
 }
 
+const (
+	closeTimeout    = 5 * time.Second
+	shutdownTimeout = 10 * time.Second
+	runTimeout      = 30 * time.Second
+	maxFrameBytes   = 1 << 20
+)
+
 func main() {
 	entry := flag.String("entry", "examples/document-indexer/index.mjs", "trusted Node plugin entry")
 	flag.Parse()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
 	defer cancel()
 	text, err := run(ctx, *entry)
 	if err != nil {

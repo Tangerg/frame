@@ -48,50 +48,79 @@ func (p ManagedProtocol) Prepare(setup *frame.Setup, metadata process.ExportMeta
 		return nil, fmt.Errorf("%w: managed export declarations differ", frame.ErrContractMismatch)
 	}
 	prepared := &managedConnection{openStream: p.OpenStream, openCall: p.OpenCall, setup: setup, contributions: make([]managedContribution, 0, len(declared)), maxBytes: maxBytes, onActivate: setup.OnActivate, contracts: make(map[string]*ManagedContract)}
-	imports := make(map[string]frame.ImportDeclaration, len(unit.Imports))
+	builder := managedBuilder{protocol: p, setup: setup, connection: prepared, imports: make(map[string]frame.ImportDeclaration, len(unit.Imports)), used: make(map[string]bool, len(unit.Imports)), routes: make(managedRoutes)}
 	for _, slot := range unit.Imports {
-		imports[slot.Slot] = slot
+		builder.imports[slot.Slot] = slot
 	}
-	used := make(map[string]bool, len(imports))
-	routes := make(managedRoutes)
 	for _, export := range unit.Exports {
-		source := declared[export.Name]
-		if source.Contract == nil || source.Contract.capability == nil || !managedExportName.MatchString(source.Name) {
-			return nil, fmt.Errorf("%w: missing managed export %q", frame.ErrContractMismatch, export.Name)
-		}
-		capability, err := process.DeclaredCapability(setup, export.Contract)
-		if err != nil {
+		if err := builder.add(export, declared[export.Name], metadata); err != nil {
 			return nil, err
 		}
-		if capability.Identity() != source.Contract.capability.Identity() {
-			return nil, frame.ErrContractMismatch
-		}
-		if other := prepared.contracts[source.Name]; other != nil && other.wire != source.Contract.wire {
-			return nil, frame.ErrContractMismatch
-		}
-		for _, member := range capability.Descriptor().Methods {
-			if len(member.Stream) != 0 && p.OpenStream == nil {
-				return nil, fmt.Errorf("%w: managed streaming requires reverse delivery", frame.ErrContractMismatch)
-			}
-		}
-		prepared.contracts[source.Name] = source.Contract
-		dependencies, err := projectDependencies(setup, imports, used, routes, source.Requires)
-		if err != nil {
-			return nil, err
-		}
-		if source.Background || len(dependencies) > 0 {
-			if p.OpenCallbacks == nil {
-				return nil, fmt.Errorf("%w: managed contribution requires a host callback lease", frame.ErrContractMismatch)
-			}
-			prepared.openCallbacks = p.OpenCallbacks
-		}
-		prepared.contributions = append(prepared.contributions, managedContribution{ID: export.Name, Export: source.Name, Requires: dependencies, Background: managedBackground(source.Background, setup)})
-		prepared.values = append(prepared.values, metadata.Export(export, nil))
 	}
-	if len(used) != len(imports) {
+	if len(builder.used) != len(builder.imports) {
 		return nil, fmt.Errorf("%w: unowned managed import", frame.ErrContractMismatch)
 	}
 	return prepared, nil
+}
+
+// managedBuilder projects each approved Frame export onto the physical export
+// the managed package declares for it. Every Frame import must be required
+// by exactly the contributions that use it.
+type managedBuilder struct {
+	protocol   ManagedProtocol
+	setup      *frame.Setup
+	connection *managedConnection
+	imports    map[string]frame.ImportDeclaration
+	used       map[string]bool
+	routes     managedRoutes
+}
+
+func (b *managedBuilder) add(export frame.ExportDeclaration, source ManagedExport, metadata process.ExportMetadata) error {
+	if source.Contract == nil || source.Contract.capability == nil || !managedExportName.MatchString(source.Name) {
+		return fmt.Errorf("%w: missing managed export %q", frame.ErrContractMismatch, export.Name)
+	}
+	if err := b.checkContract(export, source); err != nil {
+		return err
+	}
+	b.connection.contracts[source.Name] = source.Contract
+	dependencies, err := projectDependencies(b.setup, b.imports, b.used, b.routes, source.Requires)
+	if err != nil {
+		return err
+	}
+	if source.Background || len(dependencies) > 0 {
+		if b.protocol.OpenCallbacks == nil {
+			return fmt.Errorf("%w: managed contribution requires a host callback lease", frame.ErrContractMismatch)
+		}
+		b.connection.openCallbacks = b.protocol.OpenCallbacks
+	}
+	contribution := managedContribution{ID: export.Name, Export: source.Name, Requires: dependencies}
+	if source.Background {
+		contribution.Background = installationTarget(b.setup)
+	}
+	b.connection.contributions = append(b.connection.contributions, contribution)
+	b.connection.values = append(b.connection.values, metadata.Export(export, nil))
+	return nil
+}
+
+// checkContract requires the managed contract to be the approved capability,
+// one wire projection per physical export, and reverse delivery for streams.
+func (b *managedBuilder) checkContract(export frame.ExportDeclaration, source ManagedExport) error {
+	capability, err := process.DeclaredCapability(b.setup, export.Contract)
+	if err != nil {
+		return err
+	}
+	if capability.Identity() != source.Contract.capability.Identity() {
+		return frame.ErrContractMismatch
+	}
+	if other := b.connection.contracts[source.Name]; other != nil && other.wire != source.Contract.wire {
+		return frame.ErrContractMismatch
+	}
+	for _, member := range capability.Descriptor().Methods {
+		if len(member.Stream) != 0 && b.protocol.OpenStream == nil {
+			return fmt.Errorf("%w: managed streaming requires reverse delivery", frame.ErrContractMismatch)
+		}
+	}
+	return nil
 }
 
 type managedConnection struct {

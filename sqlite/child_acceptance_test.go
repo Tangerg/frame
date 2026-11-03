@@ -172,7 +172,7 @@ func openChildAcceptance(t *testing.T, path string, initialize bool) *childAccep
 			_, err = tx.ExecContext(ctx, `INSERT INTO parent_jobs VALUES('parent',1,?)`, encoded)
 			return []byte("parent"), err
 		}, nil)
-		if err != nil || settlement.State != Committed {
+		if err != nil || settlement.State != frame.CommitSucceeded {
 			t.Fatalf("initialize parent: %+v, %v", settlement, err)
 		}
 	}
@@ -291,11 +291,11 @@ func TestDurableChildAcceptanceAndParentFinalizationShareOneAdmission(t *testing
 			}
 			resume()
 			parentResult, childResult := <-parentDone, <-childDone
-			if parentResult.err != nil || parentResult.settlement.State != Committed {
+			if parentResult.err != nil || parentResult.settlement.State != frame.CommitSucceeded {
 				t.Fatalf("parent finalization: %+v", parentResult)
 			}
 			if first == "child" {
-				if childResult.err != nil || childResult.settlement.State != Committed {
+				if childResult.err != nil || childResult.settlement.State != frame.CommitSucceeded {
 					t.Fatalf("original child acceptance: %+v", childResult)
 				}
 				operation, binding := f.childBinding(t)
@@ -306,7 +306,7 @@ func TestDurableChildAcceptanceAndParentFinalizationShareOneAdmission(t *testing
 					t.Fatalf("parent finalization discarded child retention: %v", err)
 				}
 			} else {
-				if !errors.Is(childResult.err, errParentFinal) || childResult.settlement.State != NotCommitted {
+				if !errors.Is(childResult.err, errParentFinal) || childResult.settlement.State != frame.CommitRejected {
 					t.Fatalf("child bypassed final parent precondition: %+v", childResult)
 				}
 				var children int
@@ -350,7 +350,7 @@ func TestCommittedChildSurvivesParentUseClosureWithoutAutomaticDispatch(t *testi
 		return nil
 	}})
 	settlement, err := f.owner.Commit(t.Context(), id, request, f.accept(plan, string(request)), nil)
-	if err != nil || settlement.State != Committed || !lost.Load() {
+	if err != nil || settlement.State != frame.CommitSucceeded || !lost.Load() {
 		t.Fatalf("original accepted child was not settled: %+v, %v", settlement, err)
 	}
 	if outcome, err := parentUse.Close(t.Context()); err != nil || !outcome.Released {
@@ -374,7 +374,7 @@ func TestCommittedChildSurvivesParentUseClosureWithoutAutomaticDispatch(t *testi
 		t.Fatal("observing accepted child replayed its mutation")
 		return nil, nil
 	}, nil)
-	if err != nil || repeated.State != Committed || string(repeated.Evidence) != string(request) {
+	if err != nil || repeated.State != frame.CommitSucceeded || string(repeated.Evidence) != string(request) {
 		t.Fatalf("child acceptance was rewritten after parent exit: %+v, %v", repeated, err)
 	}
 }
@@ -434,7 +434,7 @@ func TestDurableChildCrashRecoveryUsesOriginalAcceptanceAndOperation(t *testing.
 				t.Fatal(err)
 			}
 			if phase != "committed-before-response" {
-				if settlement.State != NotCommitted {
+				if settlement.State != frame.CommitRejected {
 					t.Fatalf("uncommitted child became accepted: %+v", settlement)
 				}
 				var children int
@@ -449,7 +449,7 @@ func TestDurableChildCrashRecoveryUsesOriginalAcceptanceAndOperation(t *testing.
 				return
 			}
 			operation, binding := f.childBinding(t)
-			if settlement.State != Committed || operation != string(request) || string(settlement.Evidence) != operation || len(binding.Roots) != 1 || binding.Roots[0] != f.child {
+			if settlement.State != frame.CommitSucceeded || operation != string(request) || string(settlement.Evidence) != operation || len(binding.Roots) != 1 || binding.Roots[0] != f.child {
 				t.Fatalf("committed child lost its original evidence: %+v; operation=%q binding=%+v", settlement, operation, binding)
 			}
 			if err := f.host.Uninstall(t.Context(), f.child.InstallationID); !errors.Is(err, frame.ErrInUse) {
@@ -522,7 +522,7 @@ func TestDurableChildCommitCutProcess(t *testing.T) {
 		},
 	})
 	settlement, err := f.owner.Commit(t.Context(), id, request, f.accept(plan, string(request)), nil)
-	if phase == "commit-unconfirmed" && errors.Is(err, ErrIndeterminate) && settlement.State == Indeterminate && errors.Is(f.admission.RecoveryError(), frame.ErrRecoveryRequired) {
+	if phase == "commit-unconfirmed" && errors.Is(err, ErrIndeterminate) && settlement.State == frame.CommitIndeterminate && errors.Is(f.admission.RecoveryError(), frame.ErrRecoveryRequired) {
 		cut.Unknown = true
 		pause()
 	}

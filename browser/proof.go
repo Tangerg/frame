@@ -16,11 +16,11 @@ import (
 // affected durable protection have settled. A transport retry performs no new
 // cleanup and cannot relabel another Realm, Use or scope generation.
 func (b *Bridge) Prove(ctx context.Context, token string, proof CloseProof) (ProofAcknowledgement, error) {
-	session, err := b.session(token, false)
+	session, err := b.anySession(token)
 	if err != nil {
 		return ProofAcknowledgement{}, err
 	}
-	if proof.Realm != session.realm || proof.Authority.ID != b.authority.ID || !frame.ValidName(proof.CloseID) || !frame.ValidName(proof.ProofID) || proof.Status != Released {
+	if !proof.claims(session.realm, b.authority) {
 		return ProofAcknowledgement{}, frame.ErrInvalid
 	}
 	encoded, err := json.Marshal(proof)
@@ -52,12 +52,24 @@ func (b *Bridge) Prove(ctx context.Context, token string, proof CloseProof) (Pro
 	if err := b.config.Store.RecordExitProof(ctx, attempt.ID, scope, proof.ProofID, encoded); err != nil {
 		return ProofAcknowledgement{}, err
 	}
-	exit := sqlite.ExitProof{AttemptID: attempt.ID, Realm: attempt.Realm, ExitID: proof.CloseID, Kind: "browser-" + string(proof.ScopeKind), Evidence: encoded}
+	exit := sqlite.ExitProof{AttemptID: attempt.ID, Realm: attempt.Realm, ExitID: proof.CloseID, Kind: proof.exitKind(), Evidence: encoded}
 	if err := b.releaseProven(ctx, proof, attempt, publication, exit); err != nil {
 		return ProofAcknowledgement{}, err
 	}
 	return ack, nil
 }
+
+// proofKindPrefix qualifies a browser exit proof by the scope it releases.
+const proofKindPrefix = "browser-"
+
+// claims reports whether the proof is a well-formed confirmed exit addressed to
+// this Realm and authority epoch. Only released evidence may settle protection.
+func (p CloseProof) claims(realm Realm, authority Authority) bool {
+	return p.Realm == realm && p.Authority.ID == authority.ID && frame.ValidName(p.CloseID) && frame.ValidName(p.ProofID) &&
+		p.Status == frame.ResourceReleased && !hasDuplicate(p.Instances)
+}
+
+func (p CloseProof) exitKind() string { return proofKindPrefix + string(p.ScopeKind) }
 
 func (b *Bridge) releaseProven(ctx context.Context, proof CloseProof, attempt sqlite.Attempt, publication *controlOperation, exit sqlite.ExitProof) error {
 	switch proof.ScopeKind {
@@ -77,7 +89,7 @@ func (b *Bridge) releaseProven(ctx context.Context, proof CloseProof, attempt sq
 
 func (b *Bridge) provenAttempt(ctx context.Context, session *realmSession, proof CloseProof) (sqlite.Attempt, error) {
 	b.mu.Lock()
-	entry := b.executions[proof.Execution.ID]
+	entry := b.executions.get(proof.Execution.ID)
 	unadmitted := entry != nil && !entry.admitted
 	b.mu.Unlock()
 	if unadmitted {
@@ -93,9 +105,6 @@ func (b *Bridge) provenAttempt(ctx context.Context, session *realmSession, proof
 	attempt := record.Attempt
 	if isUnadmittedRecord(record) || !matchesAttempt(attempt, proof.Authority, session.realm, proof.Execution, proof.ScopeID, proof.ScopeGeneration) {
 		return sqlite.Attempt{}, frame.ErrStaleBinding
-	}
-	if hasDuplicate(proof.Instances) {
-		return sqlite.Attempt{}, frame.ErrInvalid
 	}
 	return attempt, nil
 }
@@ -145,10 +154,10 @@ func (b *Bridge) bindProofUse(ctx context.Context, session *realmSession, attemp
 func (b *Bridge) bindProofPublication(session *realmSession, attempt sqlite.Attempt, proof CloseProof) (*controlOperation, error) {
 	b.mu.Lock()
 	publication := b.publications[proof.PublicationID]
-	executing := b.executions[attempt.ID] != nil
+	executing := b.executions.get(attempt.ID) != nil
 	b.mu.Unlock()
 	if publication != nil {
-		if publication.execution != attempt.ID || publication.realm != session.realm {
+		if publication.execution != attempt.ID || publication.Realm != session.realm {
 			return nil, frame.ErrStaleBinding
 		}
 		if _, err := b.config.Host.Publication(publication.execution, publication.publication.Publication.OperationID); !errors.Is(err, frame.ErrUnavailable) {
@@ -169,68 +178,94 @@ func (b *Bridge) bindProofPublication(session *realmSession, attempt sqlite.Atte
 // unknown child response cannot make a parent proof wait on itself forever.
 func (b *Bridge) releaseUseTree(ctx context.Context, id string, attempt sqlite.Attempt, proof sqlite.ExitProof) error {
 	covered := map[string]bool{id: true}
-	waited := map[*controlOperation]bool{}
-	var records []sqlite.UseRecord
+	joined := make(map[*controlOperation]bool)
 	for {
-		var err error
-		records, err = b.config.Store.ExecutionUses(ctx, attempt.ID)
+		records, err := b.config.Store.ExecutionUses(ctx, attempt.ID)
 		if err != nil {
 			return err
 		}
-		changed := true
-		for changed {
-			changed = false
-			for _, record := range records {
-				if covered[record.Approval.ParentID] && !covered[record.Approval.ID] {
-					if record.Approval.ExecutionID != attempt.ID || record.Approval.Realm != frame.RealmID(attempt.Realm) {
-						return frame.ErrStaleBinding
-					}
-					covered[record.Approval.ID] = true
-					changed = true
-				}
-			}
+		if err := coverDelegated(covered, records, attempt); err != nil {
+			return err
 		}
 		b.mu.Lock()
-		for useID := range covered {
-			if live := b.uses[useID]; live != nil {
-				live.releaseID = proof.ExitID
-			}
-		}
-		var pending []*controlOperation
-		for _, operation := range b.operations {
-			if covered[operation.parentID] && !waited[operation] {
-				pending = append(pending, operation)
-				waited[operation] = true
-			}
-		}
+		b.markReleasedLocked(covered, proof.ExitID)
+		pending := b.unjoinedLocked(joined, func(operation *controlOperation) bool { return covered[operation.parentID] })
 		b.mu.Unlock()
 		if len(pending) == 0 {
-			break
+			return b.releaseCovered(ctx, covered, records, attempt, proof)
 		}
-		for _, operation := range pending {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-operation.done:
-			}
+		if err := awaitOperations(ctx, pending); err != nil {
+			return err
 		}
 	}
+}
+
+// coverDelegated extends covered with every Use delegated from a covered Use.
+func coverDelegated(covered map[string]bool, records []sqlite.UseRecord, attempt sqlite.Attempt) error {
+	for changed := true; changed; {
+		changed = false
+		for _, record := range records {
+			approval := record.Approval
+			if !covered[approval.ParentID] || covered[approval.ID] {
+				continue
+			}
+			if approval.ExecutionID != attempt.ID || approval.Realm != frame.RealmID(attempt.Realm) {
+				return frame.ErrStaleBinding
+			}
+			covered[approval.ID] = true
+			changed = true
+		}
+	}
+	return nil
+}
+
+func (b *Bridge) markReleasedLocked(uses map[string]bool, exitID string) {
+	for id := range uses {
+		if live := b.uses[id]; live != nil {
+			live.releasedBy = exitID
+		}
+	}
+}
+
+// unjoinedLocked returns the live operations selected by belongs that have not
+// been joined yet, and marks them joined.
+func (b *Bridge) unjoinedLocked(joined map[*controlOperation]bool, belongs func(*controlOperation) bool) []*controlOperation {
+	var pending []*controlOperation
+	for _, operation := range b.operations {
+		if belongs(operation) && !joined[operation] {
+			joined[operation] = true
+			pending = append(pending, operation)
+		}
+	}
+	return pending
+}
+
+func awaitOperations(ctx context.Context, operations []*controlOperation) error {
+	for _, operation := range operations {
+		if err := operation.wait(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// releaseCovered confirms every live resource first, so a parent Use can then
+// join its children regardless of the order of the durable records.
+func (b *Bridge) releaseCovered(ctx context.Context, covered map[string]bool, records []sqlite.UseRecord, attempt sqlite.Attempt, proof sqlite.ExitProof) error {
 	b.mu.Lock()
 	var resources []*frame.ResourceHandle
-	for useID := range covered {
-		if live := b.uses[useID]; live != nil {
+	for id := range covered {
+		if live := b.uses[id]; live != nil {
 			resources = append(resources, live.resource)
 		}
 	}
 	b.mu.Unlock()
-	for _, resource := range resources {
-		if err := resource.ConfirmReleased(nil); err != nil {
-			return err
-		}
+	if err := confirmAll(resources); err != nil {
+		return err
 	}
 	for _, record := range records {
 		if covered[record.Approval.ID] {
-			if err := b.releaseUse(ctx, record.Approval.ID, attempt, proof, record.Released); err != nil {
+			if err := b.releaseUse(ctx, record, attempt, proof); err != nil {
 				return err
 			}
 		}
@@ -238,11 +273,21 @@ func (b *Bridge) releaseUseTree(ctx context.Context, id string, attempt sqlite.A
 	return nil
 }
 
-func (b *Bridge) releaseUse(ctx context.Context, id string, attempt sqlite.Attempt, proof sqlite.ExitProof, alreadyReleased bool) error {
+func confirmAll(resources []*frame.ResourceHandle) error {
+	for _, resource := range resources {
+		if err := resource.ConfirmReleased(nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *Bridge) releaseUse(ctx context.Context, record sqlite.UseRecord, attempt sqlite.Attempt, proof sqlite.ExitProof) error {
+	id := record.Approval.ID
 	b.mu.Lock()
 	retained := b.uses[id]
 	if retained != nil {
-		retained.releaseID = proof.ExitID
+		retained.releasedBy = proof.ExitID
 	}
 	b.mu.Unlock()
 	if retained != nil {
@@ -260,9 +305,9 @@ func (b *Bridge) releaseUse(ctx context.Context, id string, attempt sqlite.Attem
 		}
 		b.mu.Lock()
 		delete(b.uses, id)
-		for routeID, route := range b.routes {
+		for routeID, route := range b.routes.all() {
 			if route.grant.Use.ID == id {
-				delete(b.routes, routeID)
+				b.routes.remove(routeID)
 			}
 		}
 		b.mu.Unlock()
@@ -270,7 +315,7 @@ func (b *Bridge) releaseUse(ctx context.Context, id string, attempt sqlite.Attem
 		// do not turn confirmed release back into uncertainty.
 		return nil
 	}
-	if alreadyReleased {
+	if record.Released {
 		return nil
 	}
 	if attempt.Epoch == b.config.Store.Epoch() {
@@ -279,62 +324,42 @@ func (b *Bridge) releaseUse(ctx context.Context, id string, attempt sqlite.Attem
 	return b.config.Store.ReleaseRealmUse(ctx, id, frame.RealmID(attempt.Realm), attempt.ID, proof)
 }
 
+// releaseExecution settles an admitted execution from its exit proof: its
+// in-flight operations, its Host instance, every Use it served and finally
+// its durable attempt.
 func (b *Bridge) releaseExecution(ctx context.Context, attempt sqlite.Attempt, proof sqlite.ExitProof) error {
 	b.mu.Lock()
-	entry := b.executions[attempt.ID]
+	entry := b.executions.get(attempt.ID)
 	if entry != nil {
 		entry.retiring = true
 	}
-	var pending []<-chan struct{}
-	for _, operation := range b.operations {
-		if operation.execution == attempt.ID {
-			pending = append(pending, operation.done)
-		}
-	}
+	pending := b.unjoinedLocked(make(map[*controlOperation]bool), func(operation *controlOperation) bool { return operation.execution == attempt.ID })
 	b.mu.Unlock()
 	// A request that crossed the boundary before this exact exit may still be
 	// registering its original Use. Join it before reading the durable set.
-	for _, done := range pending {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-done:
-		}
+	if err := awaitOperations(ctx, pending); err != nil {
+		return err
 	}
 	if entry != nil {
 		if err := b.config.Host.RetireInstance(ctx, attempt.ID); err != nil && !errors.Is(err, frame.ErrUnavailable) {
 			return err
 		}
 	}
-	uses, err := b.config.Store.ExecutionUses(ctx, attempt.ID)
+	records, err := b.config.Store.ExecutionUses(ctx, attempt.ID)
 	if err != nil {
 		return err
 	}
-	// Confirm every actual remote resource first. Parent Use retirement can
-	// then join its children without depending on the order of this query.
-	b.mu.Lock()
-	var resources []*frame.ResourceHandle
-	for _, record := range uses {
+	served := make(map[string]bool, len(records))
+	for _, record := range records {
 		if record.Approval.ExecutionID == attempt.ID && record.Approval.Realm == frame.RealmID(attempt.Realm) {
-			if live := b.uses[record.Approval.ID]; live != nil {
-				live.releaseID = proof.ExitID
-				resources = append(resources, live.resource)
-			}
+			served[record.Approval.ID] = true
 		}
 	}
+	b.mu.Lock()
+	b.markReleasedLocked(served, proof.ExitID)
 	b.mu.Unlock()
-	for _, resource := range resources {
-		if err := resource.ConfirmReleased(nil); err != nil {
-			return err
-		}
-	}
-	for _, record := range uses {
-		if record.Approval.ExecutionID != attempt.ID || record.Approval.Realm != frame.RealmID(attempt.Realm) {
-			continue
-		}
-		if err := b.releaseUse(ctx, record.Approval.ID, attempt, proof, record.Released); err != nil {
-			return err
-		}
+	if err := b.releaseCovered(ctx, served, records, attempt, proof); err != nil {
+		return err
 	}
 	if err := b.config.Store.ReleaseAttempt(ctx, attempt.ID, proof); err != nil {
 		return err
@@ -345,14 +370,20 @@ func (b *Bridge) releaseExecution(ctx context.Context, attempt sqlite.Attempt, p
 		}
 	}
 	b.mu.Lock()
+	b.forgetExecutionLocked(attempt, entry)
+	b.mu.Unlock()
+	return nil
+}
+
+func (b *Bridge) forgetExecutionLocked(attempt sqlite.Attempt, entry *browserExecution) {
 	for id, use := range b.uses {
 		if use.grant.Execution.ID == attempt.ID {
 			delete(b.uses, id)
 		}
 	}
-	for id, route := range b.routes {
+	for id, route := range b.routes.all() {
 		if route.grant.Use.Execution.ID == attempt.ID {
-			delete(b.routes, id)
+			b.routes.remove(id)
 		}
 	}
 	for id, operation := range b.publications {
@@ -364,18 +395,49 @@ func (b *Bridge) releaseExecution(ctx context.Context, attempt sqlite.Attempt, p
 		b.removeExecutionLocked(entry)
 		b.reapRealmLocked(entry.plan.Realm)
 	}
-	if session := b.sessions[attempt.Realm]; session != nil {
+	if session := b.sessions.get(frame.RealmID(attempt.Realm)); session != nil {
 		session.revision++
 	}
-	b.mu.Unlock()
-	return nil
+}
+
+// revalidate returns the reported executions when every one of them is still
+// the current plan of this Realm and authority epoch. Anything else leaves the
+// Realm only able to clean up.
+func (b *Bridge) revalidate(ctx context.Context, token string, session *realmSession, request ReconnectRequest) ([]*browserExecution, bool) {
+	entries, current := b.reportedExecutions(session, request)
+	if !current {
+		return nil, false
+	}
+	for _, entry := range entries {
+		if b.validateCurrentPlan(ctx, token, entry.plan) != nil {
+			return nil, false
+		}
+	}
+	return entries, true
+}
+
+func (b *Bridge) reportedExecutions(session *realmSession, request ReconnectRequest) ([]*browserExecution, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if session.cleanupOnly || request.Authority != b.authority {
+		return nil, false
+	}
+	entries := make([]*browserExecution, 0, len(request.Executions))
+	for _, execution := range request.Executions {
+		entry := b.executions.get(execution.ID)
+		if entry == nil || entry.plan.Execution != execution || entry.plan.Realm != session.realm || entry.retiring {
+			return nil, false
+		}
+		entries = append(entries, entry)
+	}
+	return entries, true
 }
 
 func (b *Bridge) Reconnect(ctx context.Context, token string, request ReconnectRequest) (ReconnectResult, error) {
 	if err := b.checkRequest(reconnectMethod, request); err != nil {
 		return ReconnectResult{}, err
 	}
-	session, err := b.session(token, false)
+	session, err := b.anySession(token)
 	if err != nil {
 		return ReconnectResult{}, err
 	}
@@ -383,27 +445,8 @@ func (b *Bridge) Reconnect(ctx context.Context, token string, request ReconnectR
 		return ReconnectResult{}, frame.ErrInvalid
 	}
 	result := ReconnectResult{Authority: b.authority, Realm: session.realm, Mode: Revalidated, Executions: []RevalidatedExecution{}}
-	b.mu.Lock()
-	cleanupOnly := session.cleanupOnly || request.Authority != b.authority
-	entries := make([]*browserExecution, 0, len(request.Executions))
-	for _, execution := range request.Executions {
-		entry := b.executions[execution.ID]
-		if entry == nil || entry.plan.Execution != execution || entry.plan.Realm != session.realm || entry.retiring {
-			cleanupOnly = true
-			continue
-		}
-		entries = append(entries, entry)
-	}
-	b.mu.Unlock()
-	if !cleanupOnly {
-		for _, entry := range entries {
-			if err := b.validateCurrentPlan(ctx, token, entry.plan); err != nil {
-				cleanupOnly = true
-				break
-			}
-		}
-	}
-	if cleanupOnly {
+	entries, revalidated := b.revalidate(ctx, token, session, request)
+	if !revalidated {
 		if err := b.SealRealm(ctx, token); err != nil {
 			return ReconnectResult{}, err
 		}
@@ -434,48 +477,4 @@ func sameSet(left, right []string) bool {
 	slices.Sort(a)
 	slices.Sort(b)
 	return slices.Equal(a, b)
-}
-
-// SealRealm revokes new creation and public admission in this exact Realm.
-// Already admitted plans remain protected until their original exit is proven.
-// Other windows using the same installation retain their independent scopes.
-func (b *Bridge) SealRealm(ctx context.Context, token string) error {
-	session, err := b.session(token, false)
-	if err != nil {
-		return err
-	}
-	b.mu.Lock()
-	b.sealSessionLocked(session)
-	var entries []*browserExecution
-	for _, entry := range b.executions {
-		if entry.plan.Realm == session.realm {
-			entries = append(entries, entry)
-		}
-	}
-	b.reapRealmLocked(session.realm)
-	b.mu.Unlock()
-	if session.application != nil {
-		session.application.BeginClose(frame.ErrFenced)
-	}
-	var failures []error
-	for _, entry := range entries {
-		b.fence(entry)
-		if err := b.config.Host.RetireInstance(ctx, entry.attempt.ID); err != nil && !errors.Is(err, frame.ErrUnavailable) {
-			failures = append(failures, err)
-			continue
-		}
-		_, err := b.closeExecution(ctx, entry)
-		failures = append(failures, err)
-	}
-	return errors.Join(failures...)
-}
-
-func (b *Bridge) sealSessionLocked(session *realmSession) {
-	session.cleanupOnly = true
-	session.revision++
-	for id, snapshot := range b.snapshots {
-		if snapshot.realm == session.realm {
-			delete(b.snapshots, id)
-		}
-	}
 }

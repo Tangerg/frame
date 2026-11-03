@@ -33,7 +33,7 @@ type ManagedCallback struct {
 
 func (g ManagedCallback) attach(metadata *sdk.ParamsBase, key string) error {
 	endpoint, err := url.Parse(g.Endpoint)
-	if err != nil || endpoint.Scheme != "http" || endpoint.Hostname() != "127.0.0.1" || endpoint.Port() == "" || endpoint.Path != "/" || endpoint.RawQuery != "" || endpoint.User != nil || endpoint.Fragment != "" || g.MaxResponseBytes <= 0 || g.MaxResponseBytes == math.MaxInt64 || g.Revoke == nil || g.Released == nil {
+	if err != nil || endpoint.Scheme != callbackScheme || endpoint.Hostname() != loopbackHost || endpoint.Port() == "" || endpoint.Path != "/" || endpoint.RawQuery != "" || endpoint.User != nil || endpoint.Fragment != "" || g.MaxResponseBytes <= 0 || g.MaxResponseBytes == math.MaxInt64 || g.Revoke == nil || g.Released == nil {
 		return errors.New("mcp: invalid managed callback lease")
 	}
 	for _, token := range []string{g.Credential, g.Call} {
@@ -142,9 +142,10 @@ func projectDependencies(setup *frame.Setup, imports map[string]frame.ImportDecl
 	return dependencies, nil
 }
 
-func managedBackground(enabled bool, setup *frame.Setup) *portable.Target {
-	if !enabled {
-		return nil
-	}
-	return &portable.Target{Scope: "installation", Reference: setup.Binding().Source.InstallationID.String()}
+// installationTarget addresses the installation a background contribution
+// runs for, independently of any foreground Use.
+func installationTarget(setup *frame.Setup) *portable.Target {
+	return &portable.Target{Scope: installationTargetScope, Reference: setup.Binding().Source.InstallationID.String()}
 }
+
+const installationTargetScope = "installation"

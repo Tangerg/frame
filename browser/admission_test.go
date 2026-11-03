@@ -68,7 +68,7 @@ func TestPollKeepsUnadmittedExitWithHost(t *testing.T) {
 		t.Fatalf("original non-admission was not recoverable: %+v %v", admission, err)
 	}
 	record, err := e.store.Attempt(e.ctx, plan.Execution.ID)
-	if err != nil || !record.Released || record.Proof.Kind != "not-admitted" {
+	if err != nil || !record.ExitProven() || record.Proof.Kind != "not-admitted" {
 		t.Fatalf("poll transferred the Host's exit ownership: %+v %v", record, err)
 	}
 	if _, err := e.bridge.Prove(e.ctx, e.credentials.Token, proof); !errors.Is(err, frame.ErrStaleBinding) {
@@ -87,7 +87,7 @@ func TestAdmissionRetainsOriginalBrowserExitAcrossLostReply(t *testing.T) {
 		t.Fatal("sealed preparation succeeded")
 	}
 	record, err := e.store.Attempt(e.ctx, plan.Execution.ID)
-	if err != nil || record.Released {
+	if err != nil || record.ExitProven() {
 		t.Fatalf("Host replaced the admitted browser's proof: %+v %v", record, err)
 	}
 	admission, err := e.bridge.AdmitPlan(e.ctx, e.credentials.Token, plan)
@@ -176,7 +176,7 @@ func TestUncommittedNonAdmissionKeepsPendingOwner(t *testing.T) {
 		t.Fatalf("storage failure discarded the pending local owner: %+v %v", admission, err)
 	}
 	record, err := e.store.Attempt(e.ctx, plan.Execution.ID)
-	if err != nil || record.Released {
+	if err != nil || record.ExitProven() {
 		t.Fatalf("failed settlement changed original protection: %+v %v", record, err)
 	}
 	if _, err := db.Exec("DROP TRIGGER refuse_admission_exit"); err != nil {
@@ -217,7 +217,7 @@ func TestAdmissionAndRealmSealHaveOneExitOwner(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if record.Released {
+			if record.ExitProven() {
 				if admission.Decision != browser.PlanNotAdmitted || record.Proof.Kind != "not-admitted" {
 					t.Fatalf("Host and browser both acquired exit ownership: %+v %+v", admission, record)
 				}

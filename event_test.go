@@ -60,7 +60,7 @@ func TestNativeEventRouteIsOwnedByUsesAndCallbackCanReenter(t *testing.T) {
 
 func TestWatchOverflowRequiresResnapshot(t *testing.T) {
 	ctx := testContext(t)
-	host := testHost(t, frame.HostConfig{WatchCapacity: 1})
+	host := testHost(t, frame.HostConfig{Limits: frame.HostLimits{WatchBuffer: 1}})
 	point, _ := frame.NewPoint[string, string]("example.watch", "1")
 	if err := host.Register(point); err != nil {
 		t.Fatal(err)

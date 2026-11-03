@@ -7,23 +7,23 @@ import (
 	"strconv"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/sqlite"
 )
 
-const unadmittedExitKind = "not-admitted"
+// An unadmitted execution exits without having run, so its proof is a fixed
+// document the Host can produce alone.
+const (
+	unadmittedExitKind     = "not-admitted"
+	unadmittedExitEvidence = `{"admitted":false}`
+)
 
 func unadmittedExitProof(attempt sqlite.Attempt) sqlite.ExitProof {
-	return sqlite.ExitProof{
-		AttemptID: attempt.ID,
-		Realm:     attempt.Realm,
-		ExitID:    attempt.ID + ":" + unadmittedExitKind,
-		Kind:      unadmittedExitKind,
-		Evidence:  []byte(`{"admitted":false}`),
-	}
+	return attempt.LocalExit(unadmittedExitKind, unadmittedExitEvidence)
 }
 
 func isUnadmittedRecord(record sqlite.AttemptRecord) bool {
-	return record.Released && record.Proof != nil && equal(*record.Proof, unadmittedExitProof(record.Attempt))
+	return record.ExitProven() && record.Proof != nil && sameWire(*record.Proof, unadmittedExitProof(record.Attempt))
 }
 
 // Poll does not transfer an exit obligation. The Runtime reserves its original
@@ -32,14 +32,14 @@ func (b *Bridge) AdmitPlan(ctx context.Context, token string, plan LocalPlan) (P
 	if err := b.checkRequest(admitPlanMethod, plan); err != nil {
 		return PlanAdmission{}, err
 	}
-	session, err := b.session(token, false)
+	session, err := b.anySession(token)
 	if err != nil {
 		return PlanAdmission{}, err
 	}
 	if plan.Protocol != Protocol || plan.Authority.ID != b.authority.ID || plan.Realm != session.realm {
 		return PlanAdmission{}, frame.ErrStaleBinding
 	}
-	if err := ctx.Err(); err != nil {
+	if err := cancellation.Err(ctx); err != nil {
 		return PlanAdmission{}, err
 	}
 	result := PlanAdmission{Authority: b.authority, Realm: plan.Realm, Execution: plan.Execution, Decision: PlanCleanupRequired}
@@ -47,17 +47,16 @@ func (b *Bridge) AdmitPlan(ctx context.Context, token string, plan LocalPlan) (P
 		return PlanAdmission{}, err
 	}
 	b.mu.Lock()
-	entry := b.executions[plan.Execution.ID]
+	entry := b.executions.get(plan.Execution.ID)
 	if entry == nil {
 		b.mu.Unlock()
 		return b.recordedPlanAdmission(ctx, plan, result)
 	}
-	if !equal(entry.plan, plan) {
+	if !sameWire(entry.plan, plan) {
 		b.mu.Unlock()
 		return PlanAdmission{}, frame.ErrStaleBinding
 	}
-	cleanup := entry.retiring || session.cleanupOnly
-	admitted := entry.admitted
+	cleanup, admitted := entry.retiring || session.cleanupOnly, entry.admitted
 	if !cleanup {
 		// The pending Runtime owner already exists. A failed currentness check
 		// must retain that owner instead of racing a Host non-admission proof.
@@ -65,18 +64,28 @@ func (b *Bridge) AdmitPlan(ctx context.Context, token string, plan LocalPlan) (P
 	}
 	b.mu.Unlock()
 	if cleanup {
-		if !admitted {
-			state, err := b.closeExecution(ctx, entry)
-			if err != nil {
-				return PlanAdmission{}, err
-			}
-			if state == frame.ResourceReleased {
-				result.Decision = PlanNotAdmitted
-				return result, nil
-			}
-		}
-		return b.recordedPlanAdmission(ctx, plan, result)
+		return b.admitForCleanup(ctx, entry, admitted, plan, result)
 	}
+	return b.admitCurrent(ctx, session, entry, plan, result)
+}
+
+// admitForCleanup answers a plan that may no longer start. An execution never
+// admitted is settled here; otherwise its Runtime owes the exit proof.
+func (b *Bridge) admitForCleanup(ctx context.Context, entry *browserExecution, admitted bool, plan LocalPlan, result PlanAdmission) (PlanAdmission, error) {
+	if !admitted {
+		state, err := b.closeExecution(ctx, entry)
+		if err != nil {
+			return PlanAdmission{}, err
+		}
+		if state == frame.ResourceReleased {
+			result.Decision = PlanNotAdmitted
+			return result, nil
+		}
+	}
+	return b.recordedPlanAdmission(ctx, plan, result)
+}
+
+func (b *Bridge) admitCurrent(ctx context.Context, session *realmSession, entry *browserExecution, plan LocalPlan, result PlanAdmission) (PlanAdmission, error) {
 	if err := entry.setup.ValidateCurrent(ctx); err != nil {
 		b.fence(entry)
 		if !errors.Is(err, frame.ErrStaleBinding) && !errors.Is(err, frame.ErrFenced) && !errors.Is(err, frame.ErrClosed) {
@@ -85,7 +94,7 @@ func (b *Bridge) AdmitPlan(ctx context.Context, token string, plan LocalPlan) (P
 		return b.recordedPlanAdmission(ctx, plan, result)
 	}
 	b.mu.Lock()
-	live := b.executions[plan.Execution.ID] == entry && !entry.retiring && !session.cleanupOnly
+	live := b.executions.get(plan.Execution.ID) == entry && !entry.retiring && !session.cleanupOnly
 	b.mu.Unlock()
 	if !live {
 		return b.recordedPlanAdmission(ctx, plan, result)
@@ -108,7 +117,7 @@ func (b *Bridge) recordedPlanAdmission(ctx context.Context, plan LocalPlan, resu
 	switch {
 	case isUnadmittedRecord(record):
 		result.Decision = PlanNotAdmitted
-	case record.Released:
+	case record.ExitProven():
 		result.Decision = PlanSettled
 	default:
 		result.Decision = PlanCleanupRequired

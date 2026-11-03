@@ -1,7 +1,8 @@
 import type { Readable, Writable } from "node:stream";
 import { parseJSON, stringifyJSON } from "../json.js";
 import wire from "./wire.json" with { type: "json" };
-import { exactFields } from "./contract.js";
+import { admitShape } from "./contract.js";
+import shapes from "./shapes.generated.json" with { type: "json" };
 
 type FailureOptions = ErrorOptions & { outcome?: "unknown" };
 
@@ -199,39 +200,39 @@ export class Peer {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
       throw new TypeError("expected wire object");
     const value = parsed as Record<string, unknown>;
-    if (!("method" in value)) {
-      const failed = "error" in value;
-      exactFields(value, ["id", failed ? "error" : "result"]);
-      sequence(value.id);
-      const id = value.id as string;
-      const call = this.#pending.get(id);
-      if (!call) throw new TypeError("unknown response");
-      let failure: ProcessError | undefined;
-      if (failed) {
-        exactFields(value.error, ["code", "message"]);
-        if (
-          typeof value.error.code !== "string" ||
-          typeof value.error.message !== "string"
-        )
-          throw new TypeError("invalid failure");
-        failure = ProcessError.fromReply(value.error.code, value.error.message);
-      }
-      this.#pending.delete(id);
-      call.dispose();
-      if (failure) call.reject(failure);
-      else call.resolve(value.result);
-      return;
-    }
-    if (value.method === wire.methods.cancel) {
-      exactFields(value, ["method", "params"]);
-      exactFields(value.params, ["id"]);
-      sequence(value.params.id);
-      this.#incoming
-        .get(value.params.id as string)
-        ?.abort(new ProcessError(wire.errors.cancelled, "request cancelled"));
-      return;
-    }
-    exactFields(value, ["id", "method", "params"]);
+    if (!("method" in value)) this.#receiveResponse(value);
+    else if (value.method === wire.methods.cancel)
+      this.#receiveCancellation(value);
+    else this.#receiveRequest(value, dispatch);
+  }
+
+  /** Settles the single pending call a response answers. */
+  #receiveResponse(value: Record<string, unknown>): void {
+    const failed = "error" in value;
+    admitShape(value, failed ? shapes.failure : shapes.result);
+    sequence(value.id);
+    const id = value.id as string;
+    const call = this.#pending.get(id);
+    if (!call) throw new TypeError("unknown response");
+    const failure = failed ? replyFailure(value.error) : undefined;
+    this.#pending.delete(id);
+    call.dispose();
+    if (failure) call.reject(failure);
+    else call.resolve(value.result);
+  }
+
+  #receiveCancellation(value: Record<string, unknown>): void {
+    admitShape(value, shapes.cancel);
+    admitShape(value.params, shapes.cancelled);
+    sequence(value.params.id);
+    this.#incoming
+      .get(value.params.id as string)
+      ?.abort(new ProcessError(wire.errors.cancelled, "request cancelled"));
+  }
+
+  /** Starts a request; identities must strictly increase. */
+  #receiveRequest(value: Record<string, unknown>, dispatch: Dispatch): void {
+    admitShape(value, shapes.request);
     const num = sequence(value.id);
     if (num <= this.#received || typeof value.method !== "string")
       throw new TypeError("invalid request order");
@@ -319,4 +320,11 @@ export class Peer {
       this.output.off("error", interrupted);
     }
   }
+}
+
+function replyFailure(error: unknown): ProcessError {
+  admitShape(error, shapes.problem);
+  if (typeof error.code !== "string" || typeof error.message !== "string")
+    throw new TypeError("invalid failure");
+  return ProcessError.fromReply(error.code, error.message);
 }

@@ -118,7 +118,7 @@ func TestLifetimeResourceCapacityWaitsForOriginalProof(t *testing.T) {
 
 func TestHostUseCapacityIncludesUnconfirmedRetirement(t *testing.T) {
 	ctx := testContext(t)
-	host := testHost(t, frame.HostConfig{MaxUses: 1})
+	host := testHost(t, frame.HostConfig{Limits: frame.HostLimits{MaxUses: 1}})
 	point, _ := frame.NewPoint[string, string]("example.capacity", "1")
 	if err := host.Register(point); err != nil {
 		t.Fatal(err)
@@ -200,7 +200,7 @@ func TestHostUseCapacityIncludesUnconfirmedRetirement(t *testing.T) {
 
 func TestWatchCapacityRefusesNewStreamsWithoutEvictingOriginal(t *testing.T) {
 	ctx := testContext(t)
-	host := testHost(t, frame.HostConfig{MaxWatches: 1, WatchCapacity: 1})
+	host := testHost(t, frame.HostConfig{Limits: frame.HostLimits{MaxWatches: 1, WatchBuffer: 1}})
 	point, _ := frame.NewPoint[string, string]("example.watched", "1")
 	if err := host.Register(point); err != nil {
 		t.Fatal(err)
@@ -244,7 +244,7 @@ func TestNegativeCoreBudgetsAreRejected(t *testing.T) {
 			t.Fatalf("invalid lifetime budget was accepted: %v, %v", lifetime, err)
 		}
 	}
-	for _, config := range []frame.HostConfig{{MaxUses: -1}, {MaxWatches: -1}} {
+	for _, config := range []frame.HostConfig{{Limits: frame.HostLimits{MaxUses: -1}}, {Limits: frame.HostLimits{MaxWatches: -1}}} {
 		if host, err := frame.NewHost(t.Context(), config); !errors.Is(err, frame.ErrInvalid) || host != nil {
 			t.Fatalf("invalid Host budget was accepted: %v, %v", host, err)
 		}

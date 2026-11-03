@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/Tangerg/frame/internal/localfile"
 	"github.com/Tangerg/frame/portable"
 )
 
@@ -24,7 +25,7 @@ func Generate(source, directory, tsDirectory string, goOutputs ...GoOutput) erro
 		return nil
 	}
 	reader := os.Stdin
-	if source != "-" {
+	if source != standardInput {
 		file, err := os.Open(source)
 		if err != nil {
 			return err
@@ -45,7 +46,7 @@ func Generate(source, directory, tsDirectory string, goOutputs ...GoOutput) erro
 			name   string
 			encode func() ([]byte, error)
 		}{
-			{"schema.json", feature.schemaJSON},
+			{schemaFile, feature.schemaJSON},
 			{"methods.generated.json", feature.methodsJSON},
 			{"capability.generated.json", feature.capabilityJSON},
 		} {
@@ -76,6 +77,16 @@ type artifact struct {
 	body []byte
 }
 
+// standardInput names the descriptor source read from os.Stdin.
+const standardInput = "-"
+
+// A stage directory holds the next file and a link to the original one.
+const (
+	stagePattern      = ".frame-contract-"
+	nextStageName     = "next"
+	originalStageName = "original"
+)
+
 type stagedArtifact struct {
 	target   string
 	original os.FileInfo
@@ -85,54 +96,9 @@ type stagedArtifact struct {
 // Generated files can span filesystems. Stage beside each destination and retain
 // its original inode until all renames succeed, so an ordinary failure is reversible.
 func publishArtifacts(source string, outputs []artifact) (err error) {
-	var input os.FileInfo
-	if source != "-" {
-		input, err = os.Stat(source)
-		if err != nil {
-			return err
-		}
-	}
-	targets := make(map[string]bool, len(outputs))
-	stages := make([]stagedArtifact, len(outputs))
-	for i, output := range outputs {
-		absolute, err := filepath.Abs(output.path)
-		if err != nil {
-			return err
-		}
-		parent, err := canonicalParent(filepath.Dir(absolute))
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(parent, filepath.Base(absolute))
-		if targets[target] {
-			return fmt.Errorf("feature contracts: duplicate output %s", target)
-		}
-		targets[target] = true
-		info, err := os.Lstat(target)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		if info != nil {
-			if !info.Mode().IsRegular() {
-				return fmt.Errorf("feature contracts: output is not a regular file: %s", target)
-			}
-			if input != nil && os.SameFile(input, info) {
-				return fmt.Errorf("feature contracts: output would overwrite descriptor input %s", source)
-			}
-			for _, prior := range stages[:i] {
-				if prior.original != nil && os.SameFile(info, prior.original) {
-					return fmt.Errorf("feature contracts: aliased outputs %s and %s", prior.target, target)
-				}
-			}
-		}
-		stages[i] = stagedArtifact{target: target, original: info}
-	}
-	for _, s := range stages {
-		for parent := filepath.Dir(s.target); parent != filepath.Dir(parent); parent = filepath.Dir(parent) {
-			if targets[parent] {
-				return fmt.Errorf("feature contracts: output is also a parent: %s", parent)
-			}
-		}
+	stages, err := planStages(source, outputs)
+	if err != nil {
+		return err
 	}
 	defer func() {
 		for _, s := range stages {
@@ -149,10 +115,83 @@ func publishArtifacts(source string, outputs []artifact) (err error) {
 	return commitArtifacts(stages)
 }
 
+// planStages resolves each output to a distinct regular file that is neither
+// the descriptor input, another output, nor the parent of another output.
+func planStages(source string, outputs []artifact) ([]stagedArtifact, error) {
+	var input os.FileInfo
+	if source != standardInput {
+		var err error
+		if input, err = os.Stat(source); err != nil {
+			return nil, err
+		}
+	}
+	targets := make(map[string]bool, len(outputs))
+	stages := make([]stagedArtifact, 0, len(outputs))
+	for _, output := range outputs {
+		stage, err := resolveStage(output.path)
+		if err != nil {
+			return nil, err
+		}
+		if targets[stage.target] {
+			return nil, fmt.Errorf("feature contracts: duplicate output %s", stage.target)
+		}
+		targets[stage.target] = true
+		if err := stage.checkDistinct(source, input, stages); err != nil {
+			return nil, err
+		}
+		stages = append(stages, stage)
+	}
+	for _, s := range stages {
+		for parent := filepath.Dir(s.target); parent != filepath.Dir(parent); parent = filepath.Dir(parent) {
+			if targets[parent] {
+				return nil, fmt.Errorf("feature contracts: output is also a parent: %s", parent)
+			}
+		}
+	}
+	return stages, nil
+}
+
+func resolveStage(path string) (stagedArtifact, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return stagedArtifact{}, err
+	}
+	parent, err := canonicalParent(filepath.Dir(absolute))
+	if err != nil {
+		return stagedArtifact{}, err
+	}
+	target := filepath.Join(parent, filepath.Base(absolute))
+	info, err := os.Lstat(target)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return stagedArtifact{}, err
+	}
+	if info != nil && !info.Mode().IsRegular() {
+		return stagedArtifact{}, fmt.Errorf("feature contracts: output is not a regular file: %s", target)
+	}
+	return stagedArtifact{target: target, original: info}, nil
+}
+
+// checkDistinct refuses an existing output that aliases the input or an
+// earlier output through a hard link.
+func (s stagedArtifact) checkDistinct(source string, input os.FileInfo, earlier []stagedArtifact) error {
+	if s.original == nil {
+		return nil
+	}
+	if input != nil && os.SameFile(input, s.original) {
+		return fmt.Errorf("feature contracts: output would overwrite descriptor input %s", source)
+	}
+	for _, prior := range earlier {
+		if prior.original != nil && os.SameFile(s.original, prior.original) {
+			return fmt.Errorf("feature contracts: aliased outputs %s and %s", prior.target, s.target)
+		}
+	}
+	return nil
+}
+
 func commitArtifacts(stages []stagedArtifact) error {
 	for i := range stages {
 		s := &stages[i]
-		if err := os.Rename(filepath.Join(s.stage, "next"), s.target); err != nil {
+		if err := os.Rename(filepath.Join(s.stage, nextStageName), s.target); err != nil {
 			for j := i - 1; j >= 0; j-- {
 				err = errors.Join(err, stages[j].restore())
 			}
@@ -166,7 +205,7 @@ func (s *stagedArtifact) restore() error {
 	if s.original == nil {
 		return os.Remove(s.target)
 	}
-	if err := os.Rename(filepath.Join(s.stage, "original"), s.target); err != nil {
+	if err := os.Rename(filepath.Join(s.stage, originalStageName), s.target); err != nil {
 		// Preserve the backup when the filesystem refuses rollback as well.
 		backup := s.stage
 		s.stage = ""
@@ -196,20 +235,20 @@ func canonicalParent(directory string) (string, error) {
 
 func (s *stagedArtifact) prepare(body []byte) error {
 	directory := filepath.Dir(s.target)
-	if err := os.MkdirAll(directory, 0755); err != nil {
+	if err := os.MkdirAll(directory, localfile.PublicDirectoryMode); err != nil {
 		return err
 	}
-	stage, err := os.MkdirTemp(directory, ".frame-contract-")
+	stage, err := os.MkdirTemp(directory, stagePattern)
 	if err != nil {
 		return err
 	}
 	s.stage = stage
-	mode := os.FileMode(0644)
+	mode := localfile.PublicFileMode
 	if s.original != nil {
-		if err := os.Link(s.target, filepath.Join(stage, "original")); err != nil {
+		if err := os.Link(s.target, filepath.Join(stage, originalStageName)); err != nil {
 			return err
 		}
 		mode = s.original.Mode().Perm()
 	}
-	return os.WriteFile(filepath.Join(stage, "next"), body, mode)
+	return os.WriteFile(filepath.Join(stage, nextStageName), body, mode)
 }

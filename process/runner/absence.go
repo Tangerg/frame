@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -18,7 +19,7 @@ type AttemptRef struct {
 }
 
 func (r AttemptRef) valid() bool {
-	return validID(r.AttemptID) && validID(r.RunnerID) && r.Epoch != 0
+	return frame.ValidName(r.AttemptID) && frame.ValidName(r.RunnerID) && r.Epoch != 0
 }
 
 type AbsenceProof struct {
@@ -45,7 +46,7 @@ func (p AbsenceProof) Validate(request AttemptRef) error {
 // one lock. A replacement authority cannot prove absence for its predecessor,
 // including when it replaces that authority between a client's control calls.
 func (s *Server) ProveAbsent(ctx context.Context, request AttemptRef) (AbsenceProof, error) {
-	if err := ctx.Err(); err != nil {
+	if err := cancellation.Err(ctx); err != nil {
 		return AbsenceProof{}, err
 	}
 	if !request.valid() {

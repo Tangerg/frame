@@ -1,4 +1,10 @@
-import type { ContractRef } from "./protocol.generated.js";
+import {
+  ContractModeValues,
+  DIGEST_PATTERN,
+  type ContractRef,
+} from "./protocol.generated.js";
+
+const digestPattern = new RegExp(DIGEST_PATTERN);
 import { FrameError } from "./errors.js";
 import { identity } from "./identity.js";
 
@@ -16,9 +22,9 @@ function checked(ref: ContractRef, kind: ContractRef["kind"]): ContractRef {
   identity(ref.name, "contract name");
   identity(ref.version, "contract version");
   if (
-    !/^[a-f0-9]{64}$/.test(ref.digest) ||
+    !digestPattern.test(ref.digest) ||
     ref.kind !== kind ||
-    (ref.mode !== "native" && ref.mode !== "portable")
+    !ContractModeValues.includes(ref.mode)
   ) {
     throw new FrameError(
       "contract_mismatch",

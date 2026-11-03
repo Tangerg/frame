@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/nilness"
 	"github.com/Tangerg/frame/portable"
 )
 
@@ -62,7 +63,7 @@ func (s *server) transition(before, after phase) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.state != before {
-		return &Problem{profile.Errors.Invalid, "invalid lifecycle transition"}
+		return &Problem{wire.Errors.Invalid, "invalid lifecycle transition"}
 	}
 	s.state = after
 	return nil
@@ -75,84 +76,104 @@ func identities(contracts map[string]*portable.Capability) map[string]string {
 	}
 	return result
 }
+
+// acknowledged is the result of a method that only reports success.
+const acknowledged = "true"
+
 func (s *server) handle(ctx context.Context, method string, raw jsontext.Value) (jsontext.Value, error) {
 	switch method {
-	case profile.Methods.Hello:
-		var host hello
-		if err := decode(raw, &host); err != nil {
-			return nil, err
-		}
-		if host.Version != profile.Version || host.MaxFrameBytes <= 0 {
-			return nil, mismatch()
-		}
-		if err := s.transition(newSession, described); err != nil {
-			return nil, err
-		}
-		limit := min(host.MaxFrameBytes, profile.MaxFrameBytes)
-		if err := s.peer.reduceFrame(limit); err != nil {
-			return nil, err
-		}
-		return json.Marshal(description{profile.Version, limit, string(s.unit.ID), identities(s.unit.Exports), identities(s.unit.Imports)})
-	case profile.Methods.Prepare:
+	case wire.Methods.Hello:
+		return s.hello(raw)
+	case wire.Methods.Prepare:
 		return s.prepare(ctx, raw)
-	case profile.Methods.Activate:
-		if err := decode(raw, &struct{}{}); err != nil {
-			return nil, err
-		}
-		work, err := s.life.Enter(ctx)
-		if err != nil {
-			return nil, err
-		}
-		defer work.Finish()
-		if err := s.transition(prepared, activating); err != nil {
-			return nil, err
-		}
-		if s.activate != nil {
-			if err := s.activate(work.Context()); err != nil {
-				s.mu.Lock()
-				s.state = closed
-				s.mu.Unlock()
-				return nil, err
-			}
-		}
-		if err := s.transition(activating, active); err != nil {
-			return nil, err
-		}
-		return jsontext.Value("true"), nil
-	case profile.Methods.Call:
-		s.mu.Lock()
-		ready := s.state == active
-		s.mu.Unlock()
-		if !ready {
-			return nil, &Problem{profile.Errors.Closed, "instance is not active"}
-		}
-		work, err := s.life.Enter(ctx)
-		if err != nil {
-			return nil, err
-		}
-		defer work.Finish()
-		return dispatchCall(work.Context(), s.peer, s.bound, raw)
-	case profile.Methods.Chunk:
+	case wire.Methods.Activate:
+		return s.activateUnit(ctx, raw)
+	case wire.Methods.Call:
+		return s.call(ctx, raw)
+	case wire.Methods.Chunk:
 		return s.deliveries.receive(ctx, raw)
-	case profile.Methods.Close:
-		if err := decode(raw, &struct{}{}); err != nil {
+	case wire.Methods.Close:
+		return s.close(ctx, raw)
+	default:
+		return nil, &Problem{wire.Errors.Invalid, "unknown operation"}
+	}
+}
+
+func (s *server) hello(raw jsontext.Value) (jsontext.Value, error) {
+	var host hello
+	if err := decode(raw, &host); err != nil {
+		return nil, err
+	}
+	if host.Version != wire.Version || host.MaxFrameBytes <= 0 {
+		return nil, mismatch()
+	}
+	if err := s.transition(newSession, described); err != nil {
+		return nil, err
+	}
+	limit := min(host.MaxFrameBytes, wire.MaxFrameBytes)
+	if err := s.peer.reduceFrame(limit); err != nil {
+		return nil, err
+	}
+	return json.Marshal(description{wire.Version, limit, string(s.unit.ID), identities(s.unit.Exports), identities(s.unit.Imports)})
+}
+
+func (s *server) activateUnit(ctx context.Context, raw jsontext.Value) (jsontext.Value, error) {
+	if err := decode(raw, &struct{}{}); err != nil {
+		return nil, err
+	}
+	work, err := s.life.Enter(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer work.Finish()
+	if err := s.transition(prepared, activating); err != nil {
+		return nil, err
+	}
+	if s.activate != nil {
+		if err := s.activate(work.Context()); err != nil {
+			s.mu.Lock()
+			s.state = closed
+			s.mu.Unlock()
 			return nil, err
 		}
-		s.mu.Lock()
-		if s.state != active && s.state != activating {
-			s.mu.Unlock()
-			return nil, &Problem{profile.Errors.Invalid, "invalid lifecycle transition"}
-		}
-		s.state = closed
-		s.mu.Unlock()
-		outcome, err := s.life.Close(ctx)
-		if err != nil || !outcome.Released {
-			return nil, errors.Join(ErrOutcomeUnknown, err)
-		}
-		return jsontext.Value("true"), nil
-	default:
-		return nil, &Problem{profile.Errors.Invalid, "unknown operation"}
 	}
+	if err := s.transition(activating, active); err != nil {
+		return nil, err
+	}
+	return jsontext.Value(acknowledged), nil
+}
+
+func (s *server) call(ctx context.Context, raw jsontext.Value) (jsontext.Value, error) {
+	s.mu.Lock()
+	ready := s.state == active
+	s.mu.Unlock()
+	if !ready {
+		return nil, &Problem{wire.Errors.Closed, "instance is not active"}
+	}
+	work, err := s.life.Enter(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer work.Finish()
+	return dispatchCall(work.Context(), s.peer, s.bound, raw)
+}
+
+func (s *server) close(ctx context.Context, raw jsontext.Value) (jsontext.Value, error) {
+	if err := decode(raw, &struct{}{}); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	if s.state != active && s.state != activating {
+		s.mu.Unlock()
+		return nil, &Problem{wire.Errors.Invalid, "invalid lifecycle transition"}
+	}
+	s.state = closed
+	s.mu.Unlock()
+	outcome, err := s.life.Close(ctx)
+	if err != nil || !outcome.Released {
+		return nil, errors.Join(ErrOutcomeUnknown, err)
+	}
+	return jsontext.Value(acknowledged), nil
 }
 
 func (s *server) prepare(ctx context.Context, raw jsontext.Value) (jsontext.Value, error) {
@@ -196,7 +217,7 @@ func (s *server) prepare(ctx context.Context, raw jsontext.Value) (jsontext.Valu
 	bound := make(map[string]binding, len(p.Exports))
 	for name, contract := range s.unit.Exports {
 		svc := p.Exports[name]
-		if nilDependency(svc) {
+		if nilness.Is(svc) {
 			return nil, mismatch()
 		}
 		bound[name] = binding{contract, svc}
@@ -206,12 +227,12 @@ func (s *server) prepare(ctx context.Context, raw jsontext.Value) (jsontext.Valu
 	s.activate = p.Activate
 	s.state = prepared
 	s.mu.Unlock()
-	return jsontext.Value("true"), nil
+	return jsontext.Value(acknowledged), nil
 }
 
 // Serve owns the duplex channel until disconnection and joins accepted plugin work.
 func Serve(ctx context.Context, channel io.ReadWriteCloser, unit Unit) error {
-	if ctx == nil || nilDependency(channel) || unit.ID.Validate() != nil || unit.Prepare == nil {
+	if ctx == nil || nilness.Is(channel) || unit.ID.Validate() != nil || unit.Prepare == nil {
 		return frame.ErrInvalid
 	}
 	for _, set := range []map[string]*portable.Capability{unit.Imports, unit.Exports} {
@@ -224,7 +245,7 @@ func Serve(ctx context.Context, channel io.ReadWriteCloser, unit Unit) error {
 	unit.Imports = maps.Clone(unit.Imports)
 	unit.Exports = maps.Clone(unit.Exports)
 	s := &server{unit: unit, life: frame.NewLifetime(ctx)}
-	s.peer = newPeer(channel, profile.MaxFrameBytes, s.handle)
+	s.peer = newPeer(channel, wire.MaxFrameBytes, s.handle)
 	s.peer.start()
 	stop := context.AfterFunc(ctx, func() { s.peer.end(context.Cause(ctx)) })
 	<-s.peer.done

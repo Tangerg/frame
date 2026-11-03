@@ -117,10 +117,10 @@ func TestRecoveryRequiresOriginalSealedNonCreationEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			if scenario == "same-runner" {
-				if !records[0].Released || records[0].Proof == nil || records[0].Proof.Kind != "sealed-not-started" || records[0].Proof.Realm != identity.ID || len(dependencies) != 0 {
+				if !records[0].ExitProven() || records[0].Proof == nil || records[0].Proof.Kind != "sealed-not-started" || records[0].Proof.Realm != identity.ID || len(dependencies) != 0 {
 					t.Fatalf("original non-creation evidence was not settled: %+v %+v", records, dependencies)
 				}
-			} else if records[0].Released || records[0].Proof != nil || len(dependencies) != 1 || dependencies[0] != attempt.Source.Dependency() {
+			} else if records[0].ExitProven() || records[0].Proof != nil || len(dependencies) != 1 || dependencies[0] != attempt.Source.Dependency() {
 				t.Fatalf("unknown execution lost its exact protection: %+v %+v", records, dependencies)
 			}
 			if source.programCalls.Load() != 0 {
@@ -211,7 +211,7 @@ func TestRecoverOriginalExitHandoffAcrossHostRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			records, err := store.Attempts(ctx)
-			if err != nil || len(records) != 1 || records[0].PendingHandoff || !records[0].Released || records[0].Proof.ExitID != exit.ProofID {
+			if err != nil || len(records) != 1 || (records[0].State == sqlite.AttemptHandoff) || !records[0].ExitProven() || records[0].Proof.ExitID != exit.ProofID {
 				t.Fatalf("unsettled original handoff: %+v %v", records, err)
 			}
 		})

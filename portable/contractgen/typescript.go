@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/Tangerg/frame/portable"
 )
 
 const (
@@ -42,7 +44,7 @@ func (t *typeScript) numberType() string {
 }
 
 func (t *typeScript) Definition(name string, node *projectionNode) string {
-	if node.kind == typeObject && !node.object.impossible() && node.reference == nil && len(node.allOf) == 0 && len(node.anyOf) == 0 && len(node.literals) == 0 && node.object.openness == objectClosed && !node.object.patterns && len(node.object.properties) > 0 {
+	if node.kind == portable.TypeObject && !node.object.impossible() && node.reference == nil && len(node.allOf) == 0 && len(node.anyOf) == 0 && len(node.literals) == 0 && node.object.openness == objectClosed && !node.object.patterns && len(node.object.properties) > 0 {
 		var out strings.Builder
 		fmt.Fprintf(&out, "export interface %s {\n", name)
 		for _, name := range t.propertyNames(node) {
@@ -56,12 +58,12 @@ func (t *typeScript) Definition(name string, node *projectionNode) string {
 
 func (t *typeScript) TypeOf(node *projectionNode) string { return t.expression(node, "") }
 
-func (t *typeScript) expression(node *projectionNode, inherited schemaType) string {
+func (t *typeScript) expression(node *projectionNode, inherited portable.SchemaType) string {
 	if node == nil {
-		return "unknown"
+		return tsUnknown
 	}
 	if node.forbidden {
-		return "never"
+		return tsNever
 	}
 	if len(node.kinds) > 0 {
 		branches := make([]string, len(node.kinds))
@@ -111,24 +113,24 @@ func (t *typeScript) propertyNames(node *projectionNode) []string {
 	return names
 }
 
-func (t *typeScript) keyword(kind, contextKind schemaType, node *projectionNode) string {
+func (t *typeScript) keyword(kind, contextKind portable.SchemaType, node *projectionNode) string {
 	switch kind {
-	case typeString:
+	case portable.TypeString:
 		return "string"
-	case typeInteger, typeNumber:
+	case portable.TypeInteger, portable.TypeNumber:
 		return t.numberType()
-	case typeBoolean:
+	case portable.TypeBoolean:
 		return "boolean"
-	case typeNull:
+	case portable.TypeNull:
 		return "null"
-	case typeArray:
+	case portable.TypeArray:
 		// Generic array syntax owns its grouping even for unions and intersections.
 		return typeScriptArray + "<" + t.TypeOf(node.items) + ">"
-	case typeObject:
+	case portable.TypeObject:
 		return t.object(node)
 	default:
 		if contextKind != "" {
-			return "unknown"
+			return tsUnknown
 		}
 		var parts []string
 		// Applicator keywords constrain only their instance kind. A nullable or
@@ -145,7 +147,7 @@ func (t *typeScript) keyword(kind, contextKind schemaType, node *projectionNode)
 
 func (t *typeScript) object(node *projectionNode) string {
 	if node.object.impossible() {
-		return "never"
+		return tsNever
 	}
 	var fields []string
 	for _, name := range t.propertyNames(node) {
@@ -241,34 +243,41 @@ func QuoteAll(values []string) []string {
 	return out
 }
 
+// The TypeScript top and bottom types absorb or vanish in unions and
+// intersections.
+const (
+	tsUnknown = "unknown"
+	tsNever   = "never"
+)
+
 func unionOf(parts []string) string {
 	var members []string
 	for _, part := range parts {
-		if part == "unknown" {
-			return "unknown"
+		if part == tsUnknown {
+			return tsUnknown
 		}
-		if part != "never" && !slices.Contains(members, part) {
+		if part != tsNever && !slices.Contains(members, part) {
 			members = append(members, part)
 		}
 	}
 	if len(members) == 0 {
-		return "never"
+		return tsNever
 	}
 	return strings.Join(members, " | ")
 }
 func intersectionOf(parts []string) string {
 	var members []string
 	for _, part := range parts {
-		if part == "never" {
-			return "never"
+		if part == tsNever {
+			return tsNever
 		}
-		if part == "unknown" || slices.Contains(members, part) {
+		if part == tsUnknown || slices.Contains(members, part) {
 			continue
 		}
 		members = append(members, part)
 	}
 	if len(members) == 0 {
-		return "unknown"
+		return tsUnknown
 	}
 	if len(members) == 1 {
 		return members[0]

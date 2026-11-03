@@ -2,8 +2,6 @@ package sqlite
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/value"
@@ -19,32 +17,27 @@ type RealmCredential struct {
 }
 
 func (s *Store) RegisterRealm(ctx context.Context, credential RealmCredential) error {
-	if !validID(credential.ID) || !validID(credential.Epoch) || !frame.ValidName(credential.OperationID) || credential.ResumeVerifier.Validate() != nil {
+	if !frame.ValidName(credential.ID) || !frame.ValidName(credential.Epoch) || !frame.ValidName(credential.OperationID) || credential.ResumeVerifier.Validate() != nil {
 		return frame.ErrInvalid
 	}
 	return s.admission.Under(ctx, func() error {
 		return s.transaction(ctx, func(tx Executor) error {
-			var previous RealmCredential
-			err := tx.QueryRowContext(ctx, `SELECT id,epoch,operation_id,resume_verifier FROM frame_realms WHERE (id=? AND epoch=?) OR operation_id=?`, credential.ID, credential.Epoch, credential.OperationID).Scan(&previous.ID, &previous.Epoch, &previous.OperationID, &previous.ResumeVerifier)
-			if err == nil {
-				if previous != credential {
-					return ErrConflict
+			return recordOnce(func() (bool, error) {
+				var previous RealmCredential
+				err := tx.QueryRowContext(ctx, `SELECT id,epoch,operation_id,resume_verifier FROM frame_realms WHERE (id=? AND epoch=?) OR operation_id=?`, credential.ID, credential.Epoch, credential.OperationID).Scan(&previous.ID, &previous.Epoch, &previous.OperationID, &previous.ResumeVerifier)
+				return previous == credential, err
+			}, func() error {
+				if _, err := tx.ExecContext(ctx, `INSERT INTO frame_realms(id,epoch,operation_id,resume_verifier) VALUES(?,?,?,?)`, credential.ID, credential.Epoch, credential.OperationID, credential.ResumeVerifier); err != nil {
+					return err
 				}
-				return nil
-			}
-			if !errors.Is(err, sql.ErrNoRows) {
-				return err
-			}
-			if _, err = tx.ExecContext(ctx, `INSERT INTO frame_realms(id,epoch,operation_id,resume_verifier) VALUES(?,?,?,?)`, credential.ID, credential.Epoch, credential.OperationID, credential.ResumeVerifier); err != nil {
-				return err
-			}
-			return s.checkRealmHistoryCapacity(ctx, tx)
+				return s.checkRealmHistoryCapacity(ctx, tx)
+			})
 		})
 	})
 }
 
 func (s *Store) RealmCredential(ctx context.Context, id, epoch string) (RealmCredential, error) {
-	if !validID(id) || !validID(epoch) {
+	if !frame.ValidName(id) || !frame.ValidName(epoch) {
 		return RealmCredential{}, frame.ErrInvalid
 	}
 	credential := RealmCredential{ID: id, Epoch: epoch}

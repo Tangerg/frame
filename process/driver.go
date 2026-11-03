@@ -8,12 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"reflect"
 	"slices"
 	"sync"
 	"time"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/nilness"
 	"github.com/Tangerg/frame/process/runner"
 	"github.com/Tangerg/frame/sqlite"
 	framevalue "github.com/Tangerg/frame/value"
@@ -88,21 +88,21 @@ const (
 )
 
 func New(config Config) (*Driver, error) {
-	if nilDependency(config.Runner) || config.Store == nil || nilDependency(config.Source) || config.CloseTimeout <= 0 || config.MaxFrameBytes <= 0 {
+	if nilness.Is(config.Runner) || config.Store == nil || nilness.Is(config.Source) || config.CloseTimeout <= 0 || config.MaxFrameBytes <= 0 {
 		return nil, fmt.Errorf("%w: process driver requires runner, store, source and explicit limits", frame.ErrInvalid)
 	}
 	if config.Protocol == nil {
 		config.Protocol = localProtocol{}
 	}
-	if nilDependency(config.Protocol) {
+	if nilness.Is(config.Protocol) {
 		return nil, fmt.Errorf("%w: missing process protocol", frame.ErrInvalid)
 	}
 	name := config.Protocol.Profile()
 	if err := name.Validate(); err != nil {
 		return nil, err
 	}
-	if name == frame.LocalProcess && config.MaxFrameBytes > profile.MaxFrameBytes {
-		return nil, fmt.Errorf("%w: neutral process frame exceeds %d bytes", frame.ErrInvalid, profile.MaxFrameBytes)
+	if name == frame.LocalProcess && config.MaxFrameBytes > wire.MaxFrameBytes {
+		return nil, fmt.Errorf("%w: neutral process frame exceeds %d bytes", frame.ErrInvalid, wire.MaxFrameBytes)
 	}
 	if name == frame.NativeGo {
 		return nil, fmt.Errorf("%w: reserved native profile", frame.ErrInvalid)
@@ -110,48 +110,21 @@ func New(config Config) (*Driver, error) {
 	return &Driver{config: config, profile: name, live: make(map[string]*execution)}, nil
 }
 
-func nilDependency(dependency any) bool {
-	value := reflect.ValueOf(dependency)
-	if !value.IsValid() {
-		return true
-	}
-	switch value.Kind() {
-	case reflect.Pointer, reflect.Interface, reflect.Func, reflect.Map, reflect.Slice, reflect.Chan:
-		return value.IsNil()
-	default:
-		return false
-	}
-}
-
 func (d *Driver) Profile() frame.Profile { return d.profile }
+
+const (
+	executionResourcePrefix = "local process "
+	contentResourceName     = "process content"
+)
 
 func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.ExportValue, error) {
 	if setup == nil || !setup.UsesAuthority(d.config.Store) {
 		return nil, frame.ErrFenced
 	}
-	unit := setup.Unit()
-	if unit.Profile != d.profile {
-		return nil, frame.ErrContractMismatch
+	if err := d.checkUnit(setup.Unit()); err != nil {
+		return nil, err
 	}
-	for _, requirement := range unit.Imports {
-		if requirement.Contract.Mode != frame.PortableMode {
-			return nil, frame.ErrContractMismatch
-		}
-	}
-	for _, export := range unit.Exports {
-		if export.Contract.Mode != frame.PortableMode {
-			return nil, frame.ErrContractMismatch
-		}
-	}
-	program, err := d.config.Source.Program(ctx, setup.Binding())
-	var content *frame.ResourceHandle
-	if program.ReleaseContent != nil {
-		var ownErr error
-		content, ownErr = setup.Cleanup("process content", program.ReleaseContent)
-		if ownErr != nil {
-			return nil, errors.Join(err, ownErr, program.ReleaseContent())
-		}
-	}
+	program, content, err := d.program(ctx, setup)
 	if err != nil {
 		return nil, err
 	}
@@ -159,20 +132,14 @@ func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 	if err != nil {
 		return nil, err
 	}
-	if nilDependency(connection) {
+	if nilness.Is(connection) {
 		return nil, fmt.Errorf("%w: missing protocol connection", frame.ErrInvalid)
 	}
-	if err := d.config.Runner.Fence(ctx, setup.Epoch()); err != nil {
-		return nil, err
-	}
-	identity, err := d.config.Runner.Identity(ctx)
+	realm, err := d.currentRunner(ctx, setup.Epoch())
 	if err != nil {
 		return nil, err
 	}
-	if identity.Fenced || identity.Epoch != setup.Epoch() {
-		return nil, frame.ErrFenced
-	}
-	attempt := sqlite.Attempt{ID: setup.InstanceID(), Epoch: setup.Epoch(), Source: setup.Binding().Source, Binding: setup.Snapshot(), Realm: identity.ID, Profile: d.profile}
+	attempt := sqlite.Attempt{ID: setup.InstanceID(), Epoch: setup.Epoch(), Source: setup.Binding().Source, Binding: setup.Snapshot(), Realm: realm, Profile: d.profile}
 	if err := d.config.Store.RecordAttempt(ctx, attempt); err != nil {
 		return nil, err
 	}
@@ -180,16 +147,15 @@ func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 	stopPreparation := context.AfterFunc(ctx, func() { cancel(context.Cause(ctx)) })
 	defer stopPreparation()
 	e := &execution{driver: d, attempt: attempt, ready: make(chan struct{}), cancel: cancel}
-	var resources []*frame.ResourceHandle
+	var dependencies []*frame.ResourceHandle
 	if content != nil {
-		resources = append(resources, content)
+		dependencies = append(dependencies, content)
 	}
-	resource, err := setup.Own(frame.Resource{Name: "local process " + attempt.ID, Cancel: cancel, Close: e.close}, resources...)
+	resource, err := setup.Own(frame.Resource{Name: executionResourcePrefix + attempt.ID, Cancel: cancel, Close: e.close}, dependencies...)
 	if err != nil {
 		cancel(err)
 		// No creation was dispatched; this proof is local, exact and final.
-		proof := undispatchedProof(attempt)
-		return nil, errors.Join(err, d.config.Store.ReleaseAttempt(context.WithoutCancel(ctx), attempt.ID, proof))
+		return nil, errors.Join(err, d.config.Store.ReleaseAttempt(context.WithoutCancel(ctx), attempt.ID, undispatchedProof(attempt)))
 	}
 	e.resource = resource
 	d.mu.Lock()
@@ -199,11 +165,68 @@ func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 	if err := ownedCtx.Err(); err != nil {
 		return nil, errors.Join(err, context.Cause(ownedCtx))
 	}
+	return e.start(ownedCtx, setup, program, connection)
+}
+
+// checkUnit admits only Portable contracts: a child process cannot share a
+// native Go value with the Host.
+func (d *Driver) checkUnit(unit frame.UnitDeclaration) error {
+	if unit.Profile != d.profile {
+		return frame.ErrContractMismatch
+	}
+	for _, requirement := range unit.Imports {
+		if requirement.Contract.Mode != frame.PortableMode {
+			return frame.ErrContractMismatch
+		}
+	}
+	for _, export := range unit.Exports {
+		if export.Contract.Mode != frame.PortableMode {
+			return frame.ErrContractMismatch
+		}
+	}
+	return nil
+}
+
+// program resolves the approved executable. Its content lease becomes a
+// resource of the Setup even when resolution fails after acquiring it.
+func (d *Driver) program(ctx context.Context, setup *frame.Setup) (Program, *frame.ResourceHandle, error) {
+	program, err := d.config.Source.Program(ctx, setup.Binding())
+	if program.ReleaseContent == nil {
+		return program, nil, err
+	}
+	content, ownErr := setup.Cleanup(contentResourceName, program.ReleaseContent)
+	if ownErr != nil {
+		return Program{}, nil, errors.Join(err, ownErr, program.ReleaseContent())
+	}
+	return program, content, err
+}
+
+// currentRunner fences older epochs and returns the identity of the runner
+// that will own the child, which must already serve this epoch.
+func (d *Driver) currentRunner(ctx context.Context, epoch uint64) (string, error) {
+	if err := d.config.Runner.Fence(ctx, epoch); err != nil {
+		return "", err
+	}
+	identity, err := d.config.Runner.Identity(ctx)
+	if err != nil {
+		return "", err
+	}
+	if identity.Fenced || identity.Epoch != epoch {
+		return "", frame.ErrFenced
+	}
+	return identity.ID, nil
+}
+
+// start dispatches the durable attempt to the runner and connects the
+// protocol over the attached child. From here on only the runner's wait
+// result can prove the child's exit.
+func (e *execution) start(ctx context.Context, setup *frame.Setup, program Program, connection Connection) ([]frame.ExportValue, error) {
 	e.mu.Lock()
 	e.started = true
 	e.mu.Unlock()
-	observation, err := d.config.Runner.Launch(ownedCtx, runner.LaunchRequest{
-		AttemptRef: runnerAttempt(attempt), Command: program.Command,
+	attempt := runnerAttempt(e.attempt)
+	observation, err := e.driver.config.Runner.Launch(ctx, runner.LaunchRequest{
+		AttemptRef: attempt, Command: program.Command,
 		ExecutableDigest: program.ExecutableDigest, Args: program.Args, Env: program.Env,
 		Directory: program.Directory, Configuration: setup.Binding().Configuration,
 		CredentialRevision: program.CredentialRevision,
@@ -211,10 +234,10 @@ func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 	if err != nil {
 		return nil, err
 	}
-	if observation.Reference() != runnerAttempt(attempt) || observation.State != runner.Running {
+	if observation.Reference() != attempt || observation.State != runner.Running {
 		return nil, runner.ErrUnknown
 	}
-	attached, err := d.config.Runner.Attach(ownedCtx, runnerAttempt(attempt))
+	attached, err := e.driver.config.Runner.Attach(ctx, attempt)
 	if err != nil {
 		return nil, err
 	}
@@ -222,9 +245,9 @@ func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 	e.mu.Lock()
 	e.channel, e.session = channel, connection
 	e.mu.Unlock()
-	stopInterrupt := context.AfterFunc(ownedCtx, func() { _ = channel.Close() })
+	stopInterrupt := context.AfterFunc(ctx, func() { _ = channel.Close() })
 	defer stopInterrupt()
-	return connection.Connect(ownedCtx, channel)
+	return connection.Connect(ctx, channel)
 }
 
 func (e *execution) close(ctx context.Context) (frame.ReleaseState, error) {
@@ -356,7 +379,7 @@ func (d *Driver) Recover(ctx context.Context) error {
 
 func (d *Driver) recoverAttempt(ctx context.Context, identity runner.Identity, record sqlite.AttemptRecord) error {
 	attempt := record.Attempt
-	if record.PendingHandoff {
+	if record.State == sqlite.AttemptHandoff {
 		return d.acknowledgeExit(ctx, attempt, *record.Proof)
 	}
 	if attempt.Epoch >= d.config.Store.Epoch() {

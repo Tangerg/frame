@@ -26,9 +26,11 @@ export interface Bootstrap {
   readonly credentials: Credentials;
 }
 
-export type ContractKind = "service" | "point" | "event";
+export const ContractKindValues = ["service", "point", "event"] as const;
+export type ContractKind = (typeof ContractKindValues)[number];
 
-export type ContractMode = "native" | "portable";
+export const ContractModeValues = ["native", "portable"] as const;
+export type ContractMode = (typeof ContractModeValues)[number];
 
 export interface ContractRef {
   readonly name: string;

@@ -1,7 +1,7 @@
 import type { Awaitable } from "../index.js";
 import type { JSONNumber } from "../json.js";
 import { createHash } from "node:crypto";
-import { cloneJSON, stringifyJSON } from "../json.js";
+import { canonicalJSON, cloneJSON } from "../json.js";
 import { compileSchema, SchemaMismatch } from "./schema.js";
 import profile from "./profile.generated.json" with { type: "json" };
 import { checkDescriptor, exceeded, PORTABLE_LIMITS } from "./limits.js";
@@ -22,9 +22,6 @@ export interface CapabilityDescriptor {
   protocol: string;
   reference: string;
   methods: readonly MethodDescriptor[];
-}
-export function canonicalJSON(value: unknown): string {
-  return stringifyJSON(value, true);
 }
 export function digestJSON(value: unknown): string {
   return createHash("sha256").update(canonicalJSON(value)).digest("hex");
@@ -58,10 +55,24 @@ export function compareTokens(left: string, right: string): number {
   // Go orders protocol tokens by UTF-8 bytes, independently of JSON key order.
   return Buffer.compare(Buffer.from(left), Buffer.from(right));
 }
+/** The member set of a Go-owned wire type, projected by its owner. */
+export interface Shape {
+  readonly required: readonly string[];
+  readonly optional: readonly string[];
+}
+
+/** Admits an object carrying exactly the shape's members. */
+export function admitShape(
+  value: unknown,
+  shape: Shape,
+): asserts value is Record<string, unknown> {
+  exactFields(value, shape.required, shape.optional);
+}
+
 export function exactFields(
   value: unknown,
-  required: string[],
-  optional: string[] = [],
+  required: readonly string[],
+  optional: readonly string[] = [],
 ): asserts value is Record<string, unknown> {
   if (
     value === null ||
@@ -84,15 +95,11 @@ export class Method {
 
   constructor(descriptor: MethodDescriptor) {
     checkDescriptor(descriptor);
-    exactFields(
-      descriptor,
-      ["name", "kind", "description", "input", "output"],
-      ["target", "stream"],
-    );
+    admitShape(descriptor, profile.descriptors.method);
     if (
       !validToken(descriptor.name) ||
       (descriptor.target !== undefined && !validToken(descriptor.target)) ||
-      !["query", "command"].includes(descriptor.kind) ||
+      !profile.descriptors.methodKinds.includes(descriptor.kind) ||
       typeof descriptor.description !== "string"
     )
       throw new Error("plugin: invalid method contract");
@@ -214,7 +221,7 @@ export class Capability<
   readonly #methods: ReadonlyMap<string, Method>;
 
   constructor(descriptor: D) {
-    exactFields(descriptor, ["protocol", "reference", "methods"]);
+    admitShape(descriptor, profile.descriptors.capability);
     if (
       descriptor.protocol !== PROTOCOL ||
       !validToken(descriptor.reference) ||

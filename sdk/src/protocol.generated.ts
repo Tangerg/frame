@@ -4,6 +4,8 @@ export const PROTOCOL = "io.github.tangerg.frame/control/1" as const;
 
 export const MAX_NAME_BYTES = 256 as const;
 
+export const DIGEST_PATTERN = "^[0-9a-f]{64}$" as const;
+
 export interface ControlInputs {
   readonly admitPlan: LocalPlan;
   readonly ready: ReadyReport;
@@ -97,14 +99,21 @@ export interface CloseProof {
   readonly useId?: string;
   readonly publicationId?: string;
   readonly instances: readonly string[];
-  readonly status: ReleaseStatus;
+  readonly status: ReleaseState;
 }
 
-export type CloseScopeKind = "execution" | "use" | "publication";
+export const CloseScopeKindValues = [
+  "execution",
+  "use",
+  "publication",
+] as const;
+export type CloseScopeKind = (typeof CloseScopeKindValues)[number];
 
-export type ContractKind = "service" | "point" | "event";
+export const ContractKindValues = ["service", "point", "event"] as const;
+export type ContractKind = (typeof ContractKindValues)[number];
 
-export type ContractMode = "native" | "portable";
+export const ContractModeValues = ["native", "portable"] as const;
+export type ContractMode = (typeof ContractModeValues)[number];
 
 export interface ContractRef {
   readonly name: string;
@@ -114,7 +123,8 @@ export interface ContractRef {
   readonly mode: ContractMode;
 }
 
-export type Decision = "accepted" | "rejected" | "unknown";
+export const DecisionValues = ["accepted", "rejected", "unknown"] as const;
+export type Decision = (typeof DecisionValues)[number];
 
 export type Digest = string;
 
@@ -149,7 +159,8 @@ export interface Import {
   readonly remote?: RemoteImport;
 }
 
-export type ImportKind = "local" | "remote" | "absent";
+export const ImportKindValues = ["local", "remote", "absent"] as const;
+export type ImportKind = (typeof ImportKindValues)[number];
 
 export type InstallationID = string;
 
@@ -189,8 +200,14 @@ export interface PlanAdmission {
   readonly decision: PlanAdmissionDecision;
 }
 
+export const PlanAdmissionDecisionValues = [
+  "admitted",
+  "cleanupRequired",
+  "notAdmitted",
+  "settled",
+] as const;
 export type PlanAdmissionDecision =
-  "admitted" | "cleanupRequired" | "notAdmitted" | "settled";
+  (typeof PlanAdmissionDecisionValues)[number];
 
 export interface PlannedUnit {
   readonly instance: Instance;
@@ -265,7 +282,8 @@ export interface Realm {
   readonly epoch: string;
 }
 
-export type ReconnectMode = "revalidated" | "cleanupOnly";
+export const ReconnectModeValues = ["revalidated", "cleanupOnly"] as const;
+export type ReconnectMode = (typeof ReconnectModeValues)[number];
 
 export interface ReconnectRequest {
   readonly authority: Authority;
@@ -280,7 +298,8 @@ export interface ReconnectResult {
   readonly executions: readonly RevalidatedExecution[];
 }
 
-export type ReleaseStatus = "released" | "unconfirmed";
+export const ReleaseStateValues = ["released", "unconfirmed"] as const;
+export type ReleaseState = (typeof ReleaseStateValues)[number];
 
 export interface RemoteImport {
   readonly source: ExportRef;

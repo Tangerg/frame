@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/Tangerg/frame/internal/cancellation"
 )
 
 type txKey struct{ database *sql.DB }
@@ -28,7 +30,7 @@ func Connection(ctx context.Context, db *sql.DB) Executor {
 // Nested writers join the exact database's original transaction. Taking a
 // second connection here could deadlock owners with a single-slot pool.
 func RunInTx(ctx context.Context, db *sql.DB, fn func(context.Context) error) error {
-	if err := cancellationError(ctx); err != nil {
+	if err := cancellation.Err(ctx); err != nil {
 		return err
 	}
 	if owned, ok := ctx.Value(txKey{database: db}).(transaction); ok {
@@ -39,7 +41,7 @@ func RunInTx(ctx context.Context, db *sql.DB, fn func(context.Context) error) er
 			return errors.New("sqlite: write transaction cannot enter a read snapshot")
 		}
 		if err := fn(ctx); err != nil {
-			return errors.Join(err, cancellationError(ctx))
+			return errors.Join(err, cancellation.Err(ctx))
 		}
 		return nil
 	}
@@ -50,7 +52,7 @@ func RunInTx(ctx context.Context, db *sql.DB, fn func(context.Context) error) er
 // Reads join an ambient transaction for the same database. The callback must not
 // mutate; RunInTx refuses to promote this snapshot to a write-set.
 func RunReadSnapshot(ctx context.Context, db *sql.DB, read func(context.Context) error) error {
-	if err := cancellationError(ctx); err != nil {
+	if err := cancellation.Err(ctx); err != nil {
 		return err
 	}
 	if owned, ok := ctx.Value(txKey{database: db}).(transaction); ok {
@@ -59,7 +61,7 @@ func RunReadSnapshot(ctx context.Context, db *sql.DB, read func(context.Context)
 			access := newTransactionAccess(scope)
 			owned.tx = access
 			return access.run(func() error {
-				return errors.Join(read(context.WithValue(ctx, txKey{database: db}, owned)), cancellationError(ctx))
+				return errors.Join(read(context.WithValue(ctx, txKey{database: db}, owned)), cancellation.Err(ctx))
 			})
 		})
 	}
@@ -73,27 +75,27 @@ func RunIndependentTx(ctx context.Context, db *sql.DB, fn func(context.Context) 
 }
 
 func runIndependentTx(ctx context.Context, db *sql.DB, options *sql.TxOptions, fn func(context.Context) error) (err error) {
-	if err := cancellationError(ctx); err != nil {
+	if err := cancellation.Err(ctx); err != nil {
 		return err
 	}
 	if _, active := ctx.Value(txKey{database: db}).(transaction); active {
-		return errors.Join(errors.New("sqlite: independent transaction cannot enter an active database transaction"), cancellationError(ctx))
+		return errors.Join(errors.New("sqlite: independent transaction cannot enter an active database transaction"), cancellation.Err(ctx))
 	}
 	connection, err := db.Conn(ctx)
 	if err != nil {
-		return errors.Join(err, cancellationError(ctx))
+		return errors.Join(err, cancellation.Err(ctx))
 	}
 	defer func() {
 		if closeErr := connection.Close(); !errors.Is(closeErr, sql.ErrConnDone) {
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	if err := cancellationError(ctx); err != nil {
+	if err := cancellation.Err(ctx); err != nil {
 		return err
 	}
 	tx, err := beginTransaction(ctx, connection, options)
 	if err != nil {
-		return errors.Join(err, discardConnection(connection), cancellationError(ctx))
+		return errors.Join(err, discardConnection(connection), cancellation.Err(ctx))
 	}
 	scope := newConnectionScope(connection, tx)
 	defer func() {
@@ -106,7 +108,7 @@ func runIndependentTx(ctx context.Context, db *sql.DB, options *sql.TxOptions, f
 		rollbackErr = scope.include(rollbackErr)
 		if recovered != nil {
 			if rollbackErr != nil {
-				panic(errors.Join(panicError(recovered), rollbackErr, cancellationError(ctx)))
+				panic(errors.Join(panicError(recovered), rollbackErr, cancellation.Err(ctx)))
 			}
 			panic(recovered)
 		}
@@ -115,7 +117,7 @@ func runIndependentTx(ctx context.Context, db *sql.DB, options *sql.TxOptions, f
 	if err := scope.enter(); err != nil {
 		return err
 	}
-	if err = cancellationError(ctx); err == nil {
+	if err = cancellation.Err(ctx); err == nil {
 		readOnly := options != nil && options.ReadOnly
 		access := newTransactionAccess(scope)
 		scoped := context.WithValue(ctx, txKey{database: db}, transaction{tx: access, readOnly: readOnly})
@@ -127,12 +129,12 @@ func runIndependentTx(ctx context.Context, db *sql.DB, options *sql.TxOptions, f
 		}
 	}
 	scope.seal()
-	err = scope.include(errors.Join(err, cancellationError(ctx)))
+	err = scope.include(errors.Join(err, cancellation.Err(ctx)))
 	if err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
-		return errors.Join(err, discardConnection(connection), cancellationError(ctx))
+		return errors.Join(err, discardConnection(connection), cancellation.Err(ctx))
 	}
 	return nil
 }

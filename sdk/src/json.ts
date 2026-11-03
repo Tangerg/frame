@@ -252,24 +252,58 @@ export function parseJSON(text: string): unknown {
   return read(parseTree(text)!);
 }
 
-export function stringifyJSON(value: unknown, sortKeys = false): string {
-  const ancestors = new Set<object>();
-  function write(value: unknown): string | undefined {
+/** Encodes value exactly, keeping each object's own key order. */
+export function stringifyJSON(value: unknown): string {
+  return new JSONWriter(insertionOrder).encode(value);
+}
+
+/** Encodes value exactly with sorted keys: equal documents encode equally. */
+export function canonicalJSON(value: unknown): string {
+  return new JSONWriter(sortedOrder).encode(value);
+}
+
+type EntryOrder = (entries: [string, unknown][]) => [string, unknown][];
+
+const insertionOrder: EntryOrder = (entries) => entries;
+const sortedOrder: EntryOrder = (entries) =>
+  entries.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+
+class JSONWriter {
+  readonly #order: EntryOrder;
+  readonly #ancestors = new Set<object>();
+
+  constructor(order: EntryOrder) {
+    this.#order = order;
+  }
+
+  encode(value: unknown): string {
+    const text = this.#write(value);
+    if (text === undefined)
+      throw new TypeError("value is not JSON serializable");
+    validateJSON(text);
+    return text;
+  }
+
+  /** Returns undefined for a value that JSON omits from an object. */
+  #write(value: unknown): string | undefined {
     if (value === null) return "null";
-    if (typeof value === "string" || typeof value === "boolean")
-      return JSON.stringify(value);
-    if (typeof value === "bigint") return value.toString();
-    if (typeof value === "number") {
-      if (
-        !Number.isFinite(value) ||
-        (Number.isInteger(value) && !Number.isSafeInteger(value))
-      )
-        throw new TypeError("unsafe JSON number; use bigint or ExactNumber");
-      return JSON.stringify(value);
-    }
     if (value === undefined) return undefined;
-    if (typeof value !== "object")
-      throw new TypeError("unsupported JSON value");
+    switch (typeof value) {
+      case "string":
+      case "boolean":
+        return JSON.stringify(value);
+      case "bigint":
+        return value.toString();
+      case "number":
+        return writeNumber(value);
+      case "object":
+        return this.#writeObject(value);
+      default:
+        throw new TypeError("unsupported JSON value");
+    }
+  }
+
+  #writeObject(value: object): string {
     if (value instanceof ExactNumber) return value.text;
     if (value instanceof Date) return JSON.stringify(value.toJSON());
     if (
@@ -278,31 +312,35 @@ export function stringifyJSON(value: unknown, sortKeys = false): string {
       Object.getPrototypeOf(value) !== null
     )
       throw new TypeError("JSON object must be a plain record");
-    if (ancestors.has(value)) throw new TypeError("cyclic JSON value");
-    ancestors.add(value);
+    if (this.#ancestors.has(value)) throw new TypeError("cyclic JSON value");
+    this.#ancestors.add(value);
     try {
-      if (Array.isArray(value))
-        return `[${Array.from(value, (item) => write(item) ?? "null").join(",")}]`;
-      const fields: string[] = [];
-      const entries = Object.entries(value);
-      if (sortKeys)
-        entries.sort(([left], [right]) =>
-          left < right ? -1 : left > right ? 1 : 0,
-        );
-      for (const [key, field] of entries) {
-        const encoded = write(field);
-        if (encoded !== undefined)
-          fields.push(`${JSON.stringify(key)}:${encoded}`);
-      }
-      return `{${fields.join(",")}}`;
+      return Array.isArray(value)
+        ? `[${Array.from(value, (item) => this.#write(item) ?? "null").join(",")}]`
+        : this.#writeRecord(value as Record<string, unknown>);
     } finally {
-      ancestors.delete(value);
+      this.#ancestors.delete(value);
     }
   }
-  const text = write(value);
-  if (text === undefined) throw new TypeError("value is not JSON serializable");
-  validateJSON(text);
-  return text;
+
+  #writeRecord(value: Record<string, unknown>): string {
+    const fields: string[] = [];
+    for (const [key, field] of this.#order(Object.entries(value))) {
+      const encoded = this.#write(field);
+      if (encoded !== undefined)
+        fields.push(`${JSON.stringify(key)}:${encoded}`);
+    }
+    return `{${fields.join(",")}}`;
+  }
+}
+
+function writeNumber(value: number): string {
+  if (
+    !Number.isFinite(value) ||
+    (Number.isInteger(value) && !Number.isSafeInteger(value))
+  )
+    throw new TypeError("unsafe JSON number; use bigint or ExactNumber");
+  return JSON.stringify(value);
 }
 
 export function prettyJSON(value: unknown): string {

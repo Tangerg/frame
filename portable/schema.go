@@ -63,7 +63,7 @@ func (s Schema) Validate(raw []byte) error {
 	if s.compiled == nil || len(s.work) == 0 {
 		return errors.New("portable: schema is not admitted")
 	}
-	size, err := checkJSON(raw, 0)
+	size, err := checkJSON(raw, valueBudget())
 	if err != nil {
 		return err
 	}
@@ -157,25 +157,25 @@ func (g *schemaGraph) visitKeyword(index int, key string, field any, path string
 		return g.sizeConstraint(key, field)
 	}
 	switch key {
-	case "$ref":
+	case KeywordRef:
 		return g.reference(index, field)
-	case "$schema":
+	case KeywordSchema:
 		if field != g.profile.Dialect {
 			return errors.New("portable: unsupported schema dialect")
 		}
-	case "pattern":
+	case KeywordPattern:
 		pattern, ok := field.(string)
 		if !ok {
 			return errors.New("portable: schema pattern must be a string")
 		}
 		return checkPattern(pattern)
-	case "format":
+	case KeywordFormat:
 		return checkFormat(field)
-	case "enum":
+	case KeywordEnum:
 		return g.enum(index, field)
-	case "const":
+	case KeywordConst:
 		g.nodes[index].local += int(equalityWeight(field))
-	case "uniqueItems":
+	case KeywordUniqueItems:
 		g.nodes[index].unique, _ = field.(bool)
 	}
 	return nil
@@ -254,7 +254,7 @@ func (g *schemaGraph) visitMap(index int, key string, field any, path string, ed
 		return errors.New("portable: schema map must be an object")
 	}
 	for name, child := range children {
-		if key == "patternProperties" {
+		if key == KeywordPatternProperties {
 			if err := checkPattern(name); err != nil {
 				return err
 			}

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/Tangerg/frame/internal/cancellation"
+
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/process"
@@ -96,7 +98,7 @@ func (d *managedDelivery) receive(wait context.Context, sequence uint64, chunk v
 	stop := context.AfterFunc(wait, func() { cancel(context.Cause(wait)) })
 	defer stop()
 	defer cancel(nil)
-	return errors.Join(d.emit(ctx, chunk), context.Cause(ctx))
+	return errors.Join(d.emit(ctx, chunk), cancellation.Err(ctx))
 }
 
 func (d *managedDelivery) checkBytes(size int) error {

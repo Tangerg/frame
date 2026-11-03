@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/nilness"
 	"github.com/Tangerg/frame/portable"
 )
 
@@ -60,15 +61,15 @@ type hostSession struct {
 }
 
 func (s *hostSession) dispatch(ctx context.Context, method string, raw jsontext.Value) (jsontext.Value, error) {
-	if method == profile.Methods.Chunk {
+	if method == wire.Methods.Chunk {
 		return s.deliveries.receive(ctx, raw)
 	}
-	if method != profile.Methods.Call || !s.active.Load() {
-		return nil, &Problem{profile.Errors.Closed, "instance is not active"}
+	if method != wire.Methods.Call || !s.active.Load() {
+		return nil, &Problem{wire.Errors.Closed, "instance is not active"}
 	}
 	work, err := s.lifetime.Enter(ctx)
 	if err != nil {
-		return nil, &Problem{profile.Errors.Closed, "instance is retiring"}
+		return nil, &Problem{wire.Errors.Closed, "instance is retiring"}
 	}
 	defer work.Finish()
 	return dispatchCall(work.Context(), s.peer, s.grants, raw)
@@ -91,7 +92,7 @@ func (localProtocol) Prepare(setup *frame.Setup, metadata ExportMetadata, maximu
 	s.peer = newPeer(nil, maximum, s.dispatch)
 	s.grants = map[string]binding{}
 	s.lifetime = setup.Lifetime()
-	expected := description{Version: profile.Version, MaxFrameBytes: maximum, Unit: string(setup.Unit().ID), Exports: map[string]string{}, Imports: map[string]string{}}
+	expected := description{Version: wire.Version, MaxFrameBytes: maximum, Unit: string(setup.Unit().ID), Exports: map[string]string{}, Imports: map[string]string{}}
 	prepared := preparation{Imports: map[string][]offered{}}
 	values := make([]frame.ExportValue, 0, len(setup.Unit().Exports))
 	for _, export := range setup.Unit().Exports {
@@ -117,7 +118,7 @@ func (localProtocol) Prepare(setup *frame.Setup, metadata ExportMetadata, maximu
 			svc, ok := provider.Value.(Service)
 			if provider.Local {
 				svc = &remote{s.peer, provider.Source.Export, contract, &s.deliveries}
-			} else if !ok || nilDependency(svc) {
+			} else if !ok || nilness.Is(svc) {
 				return nil, fmt.Errorf("%w: slot %s requires a portable service", frame.ErrContractMismatch, slot.Slot)
 			}
 			handle := rand.Text()
@@ -142,7 +143,7 @@ func (a *assembly) Connect(ctx context.Context, ch io.ReadWriteCloser) ([]frame.
 	s.peer.transport = ch
 	s.peer.start()
 	var actual description
-	if err := s.peer.request(ctx, profile.Methods.Hello, hello{profile.Version, expected.MaxFrameBytes}, &actual); err != nil {
+	if err := s.peer.request(ctx, wire.Methods.Hello, hello{wire.Version, expected.MaxFrameBytes}, &actual); err != nil {
 		return nil, err
 	}
 	if actual.Version != expected.Version || actual.Unit != expected.Unit || actual.Exports == nil || actual.Imports == nil || !maps.Equal(actual.Exports, expected.Exports) || !maps.Equal(actual.Imports, expected.Imports) {
@@ -151,12 +152,12 @@ func (a *assembly) Connect(ctx context.Context, ch io.ReadWriteCloser) ([]frame.
 	if err := s.peer.reduceFrame(actual.MaxFrameBytes); err != nil {
 		return nil, err
 	}
-	if err := s.peer.acknowledge(ctx, profile.Methods.Prepare, a.grants); err != nil {
+	if err := s.peer.acknowledge(ctx, wire.Methods.Prepare, a.grants); err != nil {
 		return nil, err
 	}
 	if err := a.setup.OnActivate(func(ctx context.Context) error {
 		s.active.Store(true)
-		err := s.peer.acknowledge(ctx, profile.Methods.Activate, struct{}{})
+		err := s.peer.acknowledge(ctx, wire.Methods.Activate, struct{}{})
 		if err != nil {
 			s.active.Store(false)
 		}
@@ -173,7 +174,7 @@ func (s *hostSession) close(ctx context.Context) error {
 	wasActive := s.active.Swap(false)
 	var err error
 	if wasActive && s.peer.ctx.Err() == nil {
-		err = s.peer.acknowledge(ctx, profile.Methods.Close, struct{}{})
+		err = s.peer.acknowledge(ctx, wire.Methods.Close, struct{}{})
 	}
 	s.peer.end(io.EOF)
 	<-s.peer.joined

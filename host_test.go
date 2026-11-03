@@ -404,9 +404,11 @@ func TestReleaseDeclarationsAreImmutableAcrossInstallationTransitions(t *testing
 	if _, err := h.Install(t.Context(), frame.InstallationConfig{ID: "second", Plugin: changed}); !errors.Is(err, frame.ErrContractMismatch) {
 		t.Fatalf("same release declared by another installation: %v", err)
 	}
-	revision := h.Admission().Revision()
-	if err := h.Replace(t.Context(), before.ID, plugin, before.Configuration); err != nil || revision != h.Admission().Revision() {
-		t.Fatalf("equivalent replacement advanced release: %v", err)
+	if err := h.Replace(t.Context(), before.ID, plugin, before.Configuration); err != nil {
+		t.Fatalf("equivalent replacement was refused: %v", err)
+	}
+	if after, _ := h.Installation(before.ID); after.Release != before.Release {
+		t.Fatalf("equivalent replacement advanced release: %s", after.Release)
 	}
 }
 

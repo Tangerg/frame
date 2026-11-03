@@ -118,48 +118,63 @@ type publisherPolicy struct {
 }
 
 func runInspect(args []string, output io.Writer) error {
-	return inspectCommand(args, output, false)
-}
-
-func runVerify(args []string, output io.Writer) error {
-	return inspectCommand(args, output, true)
-}
-
-func inspectCommand(args []string, output io.Writer, verify bool) error {
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return errors.New("provide an archive path followed by options")
-	}
-	archive := args[0]
-	flags := flag.NewFlagSet("archive", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	format := flags.String("format", "json", "report format (json)")
-	expected, policyPath := "", ""
-	if verify {
-		flags.StringVar(&expected, "digest", "", "expected archive digest")
-		flags.StringVar(&policyPath, "policy", "", "publisher policy containing trusted archive digests")
-	}
-	if err := flags.Parse(args[1:]); err != nil {
-		return err
-	}
-	if flags.NArg() != 0 || *format != "json" {
-		return errors.New("expected --format json and no extra arguments")
-	}
-	limits := distribution.DefaultLimits()
-	file, err := localfile.OpenRegular(archive)
+	options, err := parseArchiveOptions(args, nil)
 	if err != nil {
 		return err
 	}
-	hash := sha256.New()
-	size, err := io.Copy(hash, io.LimitReader(file, limits.ArchiveBytes+1))
-	if err = errors.Join(err, file.Close()); err != nil {
+	return inspectArchive(output, options)
+}
+
+// runVerify additionally pins the archive digest or checks it against a
+// publisher policy.
+func runVerify(args []string, output io.Writer) error {
+	options, err := parseArchiveOptions(args, func(flags *flag.FlagSet, options *archiveOptions) {
+		flags.StringVar(&options.expected, "digest", "", "expected archive digest")
+		flags.StringVar(&options.policy, "policy", "", "publisher policy containing trusted archive digests")
+	})
+	if err != nil {
 		return err
 	}
-	if size > limits.ArchiveBytes {
-		return distribution.ErrCapacity
+	return inspectArchive(output, options)
+}
+
+type archiveOptions struct {
+	archive  string
+	expected string
+	policy   string
+}
+
+func parseArchiveOptions(args []string, register func(*flag.FlagSet, *archiveOptions)) (archiveOptions, error) {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return archiveOptions{}, errors.New("provide an archive path followed by options")
 	}
-	digest := value.DigestOf([sha256.Size]byte(hash.Sum(nil)))
-	if expected != "" {
-		pin, err := value.ParseDigest(expected)
+	options := archiveOptions{archive: args[0]}
+	flags := flag.NewFlagSet("archive", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	format := flags.String("format", jsonFormat, "report format (json)")
+	if register != nil {
+		register(flags, &options)
+	}
+	if err := flags.Parse(args[1:]); err != nil {
+		return archiveOptions{}, err
+	}
+	if flags.NArg() != 0 || *format != jsonFormat {
+		return archiveOptions{}, errors.New("expected --format json and no extra arguments")
+	}
+	return options, nil
+}
+
+// jsonFormat is the only report format.
+const jsonFormat = "json"
+
+func inspectArchive(output io.Writer, options archiveOptions) error {
+	limits := distribution.DefaultLimits()
+	digest, err := archiveDigest(options.archive, limits)
+	if err != nil {
+		return err
+	}
+	if options.expected != "" {
+		pin, err := value.ParseDigest(options.expected)
 		if err != nil {
 			return err
 		}
@@ -167,26 +182,49 @@ func inspectCommand(args []string, output io.Writer, verify bool) error {
 			return distribution.ErrIntegrity
 		}
 	}
-	release, err := distribution.VerifyArchive(context.Background(), archive, digest, limits)
+	release, err := distribution.VerifyArchive(context.Background(), options.archive, digest, limits)
 	if err != nil {
 		return err
 	}
 	result := inspection{ArchiveDigest: digest, ReleaseDigest: release.Digest, Manifest: release.Manifest, Integrity: integrityVerified, PublisherTrust: publisherNotAssessed, HostSupport: hostSupportNotAssessed, Execution: executionNotAuthorized}
-	if policyPath != "" {
-		data, err := boundedFile(policyPath, limits.ManifestBytes)
-		if err != nil {
+	if options.policy != "" {
+		if err := checkPublisherPolicy(options.policy, digest, limits); err != nil {
 			return err
-		}
-		var policy publisherPolicy
-		if err = json.Unmarshal(data, &policy, json.RejectUnknownMembers(true)); err != nil {
-			return err
-		}
-		if !slices.Contains(policy.Archives, digest) {
-			return fmt.Errorf("%w: archive digest is not approved", distribution.ErrUntrusted)
 		}
 		result.PublisherTrust = publisherPinnedArchive
 	}
 	return json.MarshalWrite(output, result)
+}
+
+func archiveDigest(archive string, limits distribution.Limits) (value.Digest, error) {
+	file, err := localfile.OpenRegular(archive)
+	if err != nil {
+		return value.Digest{}, err
+	}
+	hash := sha256.New()
+	size, err := io.Copy(hash, io.LimitReader(file, limits.ArchiveBytes+1))
+	if err = errors.Join(err, file.Close()); err != nil {
+		return value.Digest{}, err
+	}
+	if size > limits.ArchiveBytes {
+		return value.Digest{}, distribution.ErrCapacity
+	}
+	return value.DigestOf([sha256.Size]byte(hash.Sum(nil))), nil
+}
+
+func checkPublisherPolicy(path string, digest value.Digest, limits distribution.Limits) error {
+	data, err := boundedFile(path, limits.ManifestBytes)
+	if err != nil {
+		return err
+	}
+	var policy publisherPolicy
+	if err = json.Unmarshal(data, &policy, json.RejectUnknownMembers(true)); err != nil {
+		return err
+	}
+	if !slices.Contains(policy.Archives, digest) {
+		return fmt.Errorf("%w: archive digest is not approved", distribution.ErrUntrusted)
+	}
+	return nil
 }
 
 func classifyDiagnostic(err error) diagnosticCode {

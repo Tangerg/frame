@@ -17,7 +17,6 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/examples/document"
-	"github.com/Tangerg/frame/sqlite"
 )
 
 func application(t *testing.T) (*document.App, document.Config, context.Context) {
@@ -66,7 +65,7 @@ func TestQueuedBusinessBindingBlocksReplaceAndOriginalResultIsStable(t *testing.
 		t.Fatal(err)
 	}
 	settlement, err := app.CommitTask(ctx, prepared)
-	if err != nil || settlement.State != sqlite.Committed {
+	if err != nil || settlement.State != frame.CommitSucceeded {
 		t.Fatalf("admission: %+v %v", settlement, err)
 	}
 	if _, err := app.CommitTask(ctx, prepared); err != nil {
@@ -93,7 +92,7 @@ func TestQueuedBusinessBindingBlocksReplaceAndOriginalResultIsStable(t *testing.
 		t.Fatalf("original task was replayed: %+v %v", again, err)
 	}
 	observed, err := app.ObserveSubmission(ctx, prepared)
-	if err != nil || observed.State != sqlite.Committed {
+	if err != nil || observed.State != frame.CommitSucceeded {
 		t.Fatalf("admission history changed with current references: %+v %v", observed, err)
 	}
 	theme, err := app.Theme(ctx)
@@ -116,7 +115,7 @@ func TestPreparedCaptureIsRejectedAfterConcurrentDisable(t *testing.T) {
 		t.Fatal(err)
 	}
 	settlement, err := app.CommitTask(ctx, prepared)
-	if !errors.Is(err, frame.ErrStaleBinding) || settlement.State != sqlite.NotCommitted {
+	if !errors.Is(err, frame.ErrStaleBinding) || settlement.State != frame.CommitRejected {
 		t.Fatalf("stale capture committed: %+v %v", settlement, err)
 	}
 	if _, err := app.Task(ctx, "stale"); !errors.Is(err, sql.ErrNoRows) {

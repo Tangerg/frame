@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/nilness"
 	"github.com/Tangerg/frame/portable"
 	framevalue "github.com/Tangerg/frame/value"
 )
@@ -72,7 +73,7 @@ func (m Member[Input, Output]) Command(ctx context.Context, service Service, com
 
 func (m Member[Input, Output]) invoke(ctx context.Context, service Service, kind portable.MethodKind, commandID string, input Input) (Output, error) {
 	var output Output
-	if m.method == nil || nilDependency(service) {
+	if m.method == nil || nilness.Is(service) {
 		return output, frame.ErrInvalid
 	}
 	raw, err := framevalue.EncodeJSON(input)

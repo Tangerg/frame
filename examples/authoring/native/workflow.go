@@ -94,7 +94,7 @@ func (w *Workbench) Prepare(ctx context.Context) (*Prepared, error) {
 	}
 	converter, err := frame.SelectOne(snapshot, w.Contracts.Converters, "authoring.text-priority/1", func(values []frame.Candidate[document.ConverterMetadata, document.Converter]) (frame.Candidate[document.ConverterMetadata, document.Converter], error) {
 		values = slices.DeleteFunc(values, func(value frame.Candidate[document.ConverterMetadata, document.Converter]) bool {
-			return value.Metadata().Format != "text"
+			return value.Metadata().Format != textFormat
 		})
 		slices.SortFunc(values, func(a, b frame.Candidate[document.ConverterMetadata, document.Converter]) int {
 			return cmp.Or(cmp.Compare(b.Metadata().Priority, a.Metadata().Priority), cmp.Compare(a.ID(), b.ID()))

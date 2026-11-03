@@ -19,7 +19,7 @@ import (
 
 func callbackTestMethod(t *testing.T) *portable.Method {
 	t.Helper()
-	method, err := portable.AdmitMethod(portable.MethodDescriptor{Name: "document.read", Kind: portable.Mutation, Input: []byte(`{"type":"string"}`), Output: []byte(`{"type":"string"}`)})
+	method, err := portable.AdmitMethod(portable.MethodDescriptor{Name: "document.read", Kind: portable.Command, Input: []byte(`{"type":"string"}`), Output: []byte(`{"type":"string"}`)})
 	if err != nil {
 		t.Fatal(err)
 	}

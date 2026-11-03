@@ -52,7 +52,6 @@ func InstallationConclusion(err error) CommitState {
 	return CommitRejected
 }
 
-// Driver returns the registered implementation whose profile is to admit an archive entry.
 func (h *Host) Driver(profile Profile) (Driver, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

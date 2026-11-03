@@ -2,11 +2,12 @@ import type { Awaitable } from "../index.js";
 import type { JSONNumber } from "../json.js";
 import { createHash } from "node:crypto";
 import { cloneJSON, stringifyJSON } from "../json.js";
-import { compileSchema } from "./schema.js";
+import { compileSchema, SchemaMismatch } from "./schema.js";
 import profile from "./profile.generated.json" with { type: "json" };
 import { checkDescriptor, exceeded, PORTABLE_LIMITS } from "./limits.js";
 
 export const PROTOCOL = profile.protocol;
+const maximumUTF16CodeUnitsPerCodePoint = 2;
 
 export interface MethodDescriptor {
   name: string;
@@ -100,7 +101,8 @@ export class Method {
     let admitsNull = true;
     try {
       this.validateInput(null);
-    } catch {
+    } catch (cause) {
+      if (!(cause instanceof SchemaMismatch)) throw cause;
       admitsNull = false;
     }
     if (admitsNull) throw new Error("plugin: method input must exclude null");
@@ -109,6 +111,24 @@ export class Method {
       this.validateChunk = compileSchema(descriptor.stream);
     this.identity = digestJSON({ ...descriptor, description: "" });
     Object.freeze(this);
+  }
+
+  validateInvocation(input: unknown, commandID: unknown): void {
+    if (this.descriptor.kind === "command") {
+      if (
+        typeof commandID !== "string" ||
+        commandID.length === 0 ||
+        commandID.length >
+          maximumUTF16CodeUnitsPerCodePoint *
+            PORTABLE_LIMITS.maxCommandIDCharacters ||
+        /\p{Surrogate}/u.test(commandID) ||
+        [...commandID].length > PORTABLE_LIMITS.maxCommandIDCharacters
+      )
+        throw new TypeError("plugin: bounded command identity required");
+    } else if (commandID !== undefined) {
+      throw new TypeError("plugin: query must not carry a command identity");
+    }
+    this.validateInput(input);
   }
 }
 
@@ -152,27 +172,37 @@ export interface ServiceContract {
   method(name: string): Method;
 }
 type Described<C extends ServiceContract> = C["descriptor"]["methods"][number];
-export interface CallOptions<C = unknown> {
+export interface RequestOptions<C = unknown> {
   signal?: AbortSignal;
   onChunk?: (value: C) => Awaitable<void>;
+  commandID?: string;
 }
-export interface CallContext<C> {
+export interface CallContext<
+  C,
+  K extends MethodDescriptor["kind"] = MethodDescriptor["kind"],
+> {
   readonly signal: AbortSignal;
+  readonly commandID: K extends "command" ? string : undefined;
   emit(value: C): Promise<void>;
 }
 type Chunk<M extends MethodDescriptor> = M extends { stream: infer S }
   ? SchemaValue<S>
   : never;
+type RequestArguments<M extends MethodDescriptor> = M["kind"] extends "command"
+  ? [options: RequestOptions<Chunk<M>> & { commandID: string }]
+  : M["kind"] extends "query"
+    ? [options?: RequestOptions<Chunk<M>> & { commandID?: never }]
+    : [options?: RequestOptions<Chunk<M>>];
 export type Client<C extends ServiceContract> = {
   readonly [M in Described<C> as M["name"]]: (
     input: SchemaValue<M["input"]>,
-    options?: CallOptions<Chunk<M>>,
+    ...request: RequestArguments<M>
   ) => Promise<SchemaValue<M["output"]>>;
 };
 export type Handlers<C extends ServiceContract> = {
   [M in Described<C> as M["name"]]: (
     input: SchemaValue<M["input"]>,
-    context: CallContext<Chunk<M>>,
+    context: CallContext<Chunk<M>, M["kind"]>,
   ) => Awaitable<SchemaValue<M["output"]>>;
 };
 

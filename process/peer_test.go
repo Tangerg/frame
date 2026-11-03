@@ -53,7 +53,7 @@ func TestDuplexStreamingAllowsNestedCallsWithAcknowledgedChunks(t *testing.T) {
 	defer right.end(context.Canceled)
 	svc := &remote{left, "one", contract, delivery}
 	in, _ := framevalue.EncodeJSON("value")
-	got, err := svc.Stream(ctx, "read", in, func(_ context.Context, value framevalue.JSON) error {
+	got, err := svc.Stream(ctx, queryInvocation(t, "read", in), func(_ context.Context, value framevalue.JSON) error {
 		if value != in {
 			t.Error("changed chunk")
 		}
@@ -69,11 +69,11 @@ type testStream struct {
 	emit func(context.Context, framevalue.JSON, Emit) (framevalue.JSON, error)
 }
 
-func (testStream) Call(context.Context, string, framevalue.JSON) (framevalue.JSON, error) {
+func (testStream) Invoke(context.Context, portable.Invocation) (framevalue.JSON, error) {
 	return framevalue.JSON{}, mismatch()
 }
-func (s testStream) Stream(ctx context.Context, _ string, input framevalue.JSON, emit Emit) (framevalue.JSON, error) {
-	return s.emit(ctx, input, emit)
+func (s testStream) Stream(ctx context.Context, invocation portable.Invocation, emit Emit) (framevalue.JSON, error) {
+	return s.emit(ctx, invocation.Input(), emit)
 }
 
 func TestCancellationTargetsOriginalCall(t *testing.T) {

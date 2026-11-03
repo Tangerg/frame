@@ -21,6 +21,8 @@ type Protocol interface {
 
 // Connection is private to one execution. Close follows every Connect, including
 // failed handshakes. The driver interrupts blocked setup and closes the stream.
+// Close must join its host-side work before returning; cancellation alone cannot
+// establish release, and callers can stop waiting without replacing this owner.
 type Connection interface {
 	Connect(context.Context, io.ReadWriteCloser) ([]frame.ExportValue, error)
 	Close(context.Context) error

@@ -19,11 +19,29 @@ import (
 // connection boundary is decorated; every successful SQL statement still runs
 // against the real SQLite file, including commits whose acknowledgement is lost.
 type transactionFault struct {
-	opened      func()
-	beforeExec  func(string) error
-	afterExec   func(string) error
-	beforeClose func() error
-	afterClose  func()
+	opened          func()
+	beforeExec      func(string) error
+	afterExec       func(string) error
+	beforeAuthorize func(modernc.AuthorizerFn) error
+	afterAuthorize  func(modernc.AuthorizerFn) error
+	queryRows       func(context.Context, string, driver.Rows) driver.Rows
+	beforeClose     func() error
+	afterClose      func()
+}
+
+func (c *faultConnection) RegisterAuthorizer(authorizer modernc.AuthorizerFn) error {
+	if c.fault.beforeAuthorize != nil {
+		if err := c.fault.beforeAuthorize(authorizer); err != nil {
+			return err
+		}
+	}
+	if err := c.Conn.(modernc.AuthorizerRegisterer).RegisterAuthorizer(authorizer); err != nil {
+		return err
+	}
+	if c.fault.afterAuthorize != nil {
+		return c.fault.afterAuthorize(authorizer)
+	}
+	return nil
 }
 
 type faultConnector struct {
@@ -65,7 +83,11 @@ func (c *faultConnection) ExecContext(ctx context.Context, query string, argumen
 }
 
 func (c *faultConnection) QueryContext(ctx context.Context, query string, arguments []driver.NamedValue) (driver.Rows, error) {
-	return c.Conn.(driver.QueryerContext).QueryContext(ctx, query, arguments)
+	rows, err := c.Conn.(driver.QueryerContext).QueryContext(ctx, query, arguments)
+	if err == nil && c.fault.queryRows != nil {
+		rows = c.fault.queryRows(ctx, query, rows)
+	}
+	return rows, err
 }
 
 func (c *faultConnection) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {

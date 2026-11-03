@@ -127,3 +127,59 @@ func TestTerminalUseDoesNotRetainHostOrNativeObject(t *testing.T) {
 	}
 	runtime.KeepAlive(use)
 }
+
+func stoppedRunningUnit(t *testing.T) (*frame.RunningUnit, weak.Pointer[frame.Host], weak.Pointer[retainedPayload]) {
+	t.Helper()
+	host, err := frame.NewHost(context.Background(), frame.HostConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := new(retainedPayload)
+	value.bytes[0] = 1
+	unit, err := frame.DefineUnit(frame.UnitSpec{ID: "worker", Prepare: func(*frame.Setup) error {
+		if value.bytes[0] != 1 {
+			return errors.New("retained payload changed")
+		}
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plugin, err := frame.Define(frame.Definition{Revision: framevalue.Hash([]byte("running retention")), Units: []frame.Unit{unit}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed, err := host.Install(t.Context(), frame.InstallationConfig{ID: "worker", Plugin: plugin, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := host.Admission().OpenScope(t.Context(), "running-retention")
+	if err != nil {
+		t.Fatal(err)
+	}
+	running, err := host.StartUnit(t.Context(), grant, installed.Unit("worker"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := running.Stop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := host.Close(t.Context()); err != nil || !outcome.Released {
+		t.Fatalf("host close: %+v, %v", outcome, err)
+	}
+	return running, weak.Make(host), weak.Make(value)
+}
+
+func TestStoppedRunningUnitDoesNotRetainHostOrPlugin(t *testing.T) {
+	running, host, value := stoppedRunningUnit(t)
+	id := running.ID()
+	awaitCollected(t, host)
+	awaitCollected(t, value)
+	if err := running.Stop(t.Context()); err != nil {
+		t.Fatalf("original retirement: %v", err)
+	}
+	if id == "" || running.ID() != id {
+		t.Fatal("stopped handle lost its original instance identity")
+	}
+	runtime.KeepAlive(running)
+}

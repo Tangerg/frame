@@ -13,7 +13,7 @@ import (
 
 func TestGoProjectionPreservesPublishedStringEnumOwnership(t *testing.T) {
 	method := portable.MethodDescriptor{
-		Name: "acme/review.v2", Kind: portable.Mutation, Target: "installation", Description: "Review a record.",
+		Name: "acme/review.v2", Kind: portable.Command, Target: "installation", Description: "Review a record.",
 		Input:  []byte(`{"type":"object","properties":{"decision":{"type":"string","allOf":[{"enum":["approve","reject"]}]}},"required":["decision"],"additionalProperties":false}`),
 		Output: []byte(`{"type":"boolean"}`),
 	}
@@ -54,7 +54,7 @@ func TestGoProjectionPreservesPublishedStringEnumOwnership(t *testing.T) {
 
 func TestGoProjectionPreservesCollidingEnumValues(t *testing.T) {
 	method := portable.MethodDescriptor{
-		Name: "acme/review", Kind: portable.Mutation, Target: "installation", Description: "Review a record.",
+		Name: "acme/review", Kind: portable.Command, Target: "installation", Description: "Review a record.",
 		Input:  []byte(`{"type":"object","properties":{"decision":{"type":"string","enum":["a-b","a_b"]}},"required":["decision"],"additionalProperties":false}`),
 		Output: []byte(`{"type":"boolean"}`),
 	}

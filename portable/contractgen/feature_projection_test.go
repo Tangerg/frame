@@ -27,7 +27,7 @@ func featureNode(raw jsontext.Value) (*projectionNode, error) {
 }
 
 func TestStreamingFeatureProjectsChunkAndFinalContracts(t *testing.T) {
-	method, err := portable.NewStreamingMethod[struct{}, string, bool](portable.MethodConfig{Name: "model.stream", Kind: portable.Mutation, Target: "call", Description: "Stream a model call."})
+	method, err := portable.NewStreamingMethod[struct{}, string, bool](portable.MethodConfig{Name: "model.stream", Kind: portable.Command, Target: "call", Description: "Stream a model call."})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestFeatureGenerationPreservesGenericOwnerReferences(t *testing.T) {
 }
 
 func TestFeatureGenerationReusesTheAdmittedSchemas(t *testing.T) {
-	method, err := portable.NewMethod[featureInput, featureOutput](portable.MethodConfig{Name: "acme/reviews.update", Kind: portable.Mutation, Target: "installation", Description: "Update review."})
+	method, err := portable.NewMethod[featureInput, featureOutput](portable.MethodConfig{Name: "acme/reviews.update", Kind: portable.Command, Target: "installation", Description: "Update review."})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,24 +357,30 @@ func TestFeatureDefinitionsAreNamedByTheirGoTypes(t *testing.T) {
 		}
 		return []byte(`{"$defs":{` + strings.Join(defs, ",") + `}}`)
 	}
-	_, renamed, err := featureNames([]portable.MethodDescriptor{
+	roots, renamed, err := featureNames([]portable.MethodDescriptor{
 		{Name: "feature/read.v1", Input: schema("domain.Snapshot", "model.selection_JSON[string]"), Output: schema("wire.Snapshot")},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if renamed["domain.Snapshot"] != "DomainSnapshot" || renamed["wire.Snapshot"] != "WireSnapshot" || renamed["model.selection_JSON[string]"] != "SelectionJSONString" {
+	root := roots["feature/read.v1"]
+	if renamed[schemaDefinition{root + "Input", "domain.Snapshot"}] != "DomainSnapshot" || renamed[schemaDefinition{root + "Output", "wire.Snapshot"}] != "WireSnapshot" || renamed[schemaDefinition{root + "Input", "model.selection_JSON[string]"}] != "SelectionJSONString" {
 		t.Fatalf("definition names = %v", renamed)
 	}
 }
 
-func TestFeatureDefinitionsRefuseOneNameForTwoBodies(t *testing.T) {
-	_, _, err := featureNames([]portable.MethodDescriptor{
+func TestFeatureDefinitionsKeepIndependentDocumentNames(t *testing.T) {
+	roots, renamed, err := featureNames([]portable.MethodDescriptor{
 		{Name: "feature/read.v1", Input: []byte(`{"$defs":{"domain.Item":{"type":"string"}}}`)},
 		{Name: "feature/write.v1", Input: []byte(`{"$defs":{"domain.Item":{"type":"integer"}}}`)},
 	})
-	if err == nil {
-		t.Fatal("two methods published different domain.Item definitions and were accepted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := renamed[schemaDefinition{roots["feature/read.v1"] + "Input", "domain.Item"}]
+	second := renamed[schemaDefinition{roots["feature/write.v1"] + "Input", "domain.Item"}]
+	if first != "ReadV1InputDomainItem" || second != "WriteV1InputDomainItem" {
+		t.Fatalf("local definitions lost their document identities: first=%s second=%s", first, second)
 	}
 }
 

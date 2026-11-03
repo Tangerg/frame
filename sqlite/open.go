@@ -124,11 +124,6 @@ func (s *Store) openDatabase(ctx context.Context, path string) error {
 		return err
 	}
 	s.db = database
-	// database/sql exposes a single-row error via Scan only. A canceled pool
-	// query produces a detached immutable error row without opening a connection.
-	expired, cancel := context.WithCancel(context.Background())
-	cancel()
-	s.expiredTransactionRow = s.db.QueryRowContext(expired, "")
 	s.db.SetMaxOpenConns(1)
 	s.db.SetMaxIdleConns(1)
 	var journal string

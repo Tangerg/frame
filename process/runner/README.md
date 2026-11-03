@@ -84,6 +84,13 @@ a new creation epoch. Shutdown retains directory authority until pending termina
 observations are durable. If the Runner itself crashes first, its uncommitted
 memory cannot establish exit after restart.
 
+An interrupt or termination signal starts the executable's shutdown. If shutdown
+remains unconfirmed, the executable reports the failure and keeps that same Server
+and directory lock alive. Restore the failed resource, then send another interrupt
+or termination signal to advance the original shutdown. The executable exits only
+after the original authority can be released; a nonzero exit code cannot preserve
+an uncommitted Wait observation.
+
 `ProveAbsent` covers a Host attempt whose creation request never reached this
 original runner. It checks the exact runner identity, a synchronized fence beyond
 the attempt's epoch and ledger absence under the same lock. An earlier identity

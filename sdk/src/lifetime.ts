@@ -1,4 +1,4 @@
-import { nonempty, FrameError } from "./errors.js";
+import { FrameError } from "./errors.js";
 
 export type Awaitable<T> = T | PromiseLike<T>;
 
@@ -39,11 +39,22 @@ const DEFAULT_LIMITS: LifetimeLimits = Object.freeze({
   children: 256,
 });
 const FAILURE_LIMIT = 32;
+const maximumLifetimeTextCodeUnits = 1024;
 // An AbortSignal keeps its reason after release. A fresh Error at Close would
 // also keep engine-specific call sites and their receivers alive indefinitely.
 const CLOSED_REASON = Object.freeze(
   new FrameError("closed", "lifetime is closing"),
 );
+
+function boundedLifetimeText(value: string, label: string): string {
+  if (
+    typeof value !== "string" ||
+    !value.trim() ||
+    value.length > maximumLifetimeTextCodeUnits
+  )
+    throw new TypeError(`${label} must be a nonempty bounded string`);
+  return value;
+}
 
 function failure(phase: Failure["phase"], error: unknown): Failure {
   // Long-lived reports never retain thrown values, messages, or plugin closures.
@@ -79,7 +90,7 @@ class ExitRecord {
   #observers = new Set<(outcome: CloseOutcome) => void>();
 
   constructor(id: string) {
-    this.id = nonempty(id, "close identity");
+    this.id = boundedLifetimeText(id, "close identity");
     this.#outcome = Object.freeze({
       closeId: id,
       status: "unconfirmed",
@@ -187,7 +198,7 @@ export class Lifetime {
   #exitObservers = new Set<(outcome: CloseOutcome) => void>();
 
   constructor(label: string, limits: LifetimeLimits = DEFAULT_LIMITS) {
-    this.label = nonempty(label, "lifetime label");
+    this.label = boundedLifetimeText(label, "lifetime label");
     for (const value of [limits.tasks, limits.resources, limits.children]) {
       if (!Number.isSafeInteger(value) || value < 1)
         throw new TypeError("lifetime limits must be positive safe integers");
@@ -258,7 +269,7 @@ export class Lifetime {
     if (typeof cleanup !== "function")
       throw new TypeError("cleanup must be a function");
     const resource: Resource = {
-      label: nonempty(label, "resource label"),
+      label: boundedLifetimeText(label, "resource label"),
       cleanup,
       attempted: false,
       released: false,
@@ -269,7 +280,7 @@ export class Lifetime {
     this.#resources.push(resource);
     return Object.freeze({
       confirmReleased(evidence: string) {
-        nonempty(evidence, "release evidence");
+        boundedLifetimeText(evidence, "release evidence");
         if (resource.released) return;
         if (!resource.attempted)
           throw new FrameError("invalid_plan", "resource exit has not started");

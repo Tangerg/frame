@@ -159,16 +159,9 @@ func (d *managedDelivery) finish(raw jsontext.Value, err error) error {
 	return err
 }
 
-func (s *ManagedService) Stream(ctx context.Context, member string, input value.JSON, emit process.Emit) (value.JSON, error) {
+func (s *ManagedService) Stream(ctx context.Context, invocation portable.Invocation, emit process.Emit) (value.JSON, error) {
 	if emit == nil {
 		return value.JSON{}, frame.ErrInvalid
 	}
-	return s.invoke(ctx, portable.Query, "", member, input, emit)
-}
-
-func (s *ManagedService) StreamCommand(ctx context.Context, id, member string, input value.JSON, emit process.Emit) (value.JSON, error) {
-	if !validCommandID(id) || emit == nil {
-		return value.JSON{}, frame.ErrInvalid
-	}
-	return s.invoke(ctx, portable.Mutation, id, member, input, emit)
+	return s.invoke(ctx, invocation, emit)
 }

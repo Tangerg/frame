@@ -3,9 +3,14 @@
 package mcp
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"sync"
+	"unicode/utf8"
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/go-sdk/jsonrpc"
@@ -27,14 +32,95 @@ type attachedTransport struct {
 	maximum int
 }
 
+const sdkFrameLimitDisabled = -1
+
 func (t attachedTransport) Connect(ctx context.Context) (sdk.Connection, error) {
 	writer := &frameWriter{channel: t.channel, maximum: t.maximum}
-	transport := &sdk.IOTransport{Reader: t.channel, Writer: writer, MaxLineLength: t.maximum}
+	reader := &frameReader{channel: t.channel, scanner: bufio.NewScanner(t.channel), maximum: t.maximum}
+	reader.scanner.Buffer(make([]byte, min(t.maximum, bufio.MaxScanTokenSize)), t.maximum)
+	reader.scanner.Split(reader.splitFrame)
+	transport := &sdk.IOTransport{Reader: reader, Writer: writer, MaxLineLength: sdkFrameLimitDisabled}
 	conn, err := transport.Connect(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return &interruptibleConnection{Connection: conn, writer: writer, sending: make(chan struct{}, 1)}, nil
+}
+
+// Admit the complete newline-delimited frame before the SDK can decode a prefix.
+// The adapter owns byte admission; the SDK alone owns JSON-RPC interpretation.
+type frameReader struct {
+	mu      sync.Mutex
+	channel io.ReadCloser
+	scanner *bufio.Scanner
+	maximum int
+	pending []byte
+	err     error
+}
+
+func (r *frameReader) Read(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if len(r.pending) == 0 && r.err == nil {
+		r.pending, r.err = r.readFrame()
+	}
+	if r.err != nil {
+		r.pending, r.scanner = nil, nil
+		return 0, r.err
+	}
+	n := copy(p, r.pending)
+	r.pending = r.pending[n:]
+	if len(r.pending) == 0 {
+		r.pending = nil
+	}
+	return n, nil
+}
+
+func (r *frameReader) readFrame() ([]byte, error) {
+	if r.scanner.Scan() {
+		return r.scanner.Bytes(), nil
+	}
+	if err := r.scanner.Err(); err != nil {
+		return nil, err
+	}
+	return nil, io.EOF
+}
+
+func (r *frameReader) splitFrame(data []byte, atEOF bool) (int, []byte, error) {
+	if end := bytes.IndexByte(data, '\n'); end >= 0 {
+		size := end + 1
+		if size > r.maximum {
+			return 0, nil, frameSizeError(r.maximum)
+		}
+		// Decoder prefetch must not combine individually bounded lines into one value.
+		if !utf8.Valid(data[:size]) || !json.Valid(data[:size]) {
+			return 0, nil, fmt.Errorf("%w: MCP frame must contain one complete JSON value", frame.ErrContractMismatch)
+		}
+		return size, data[:size], nil
+	}
+	if len(data) >= r.maximum {
+		return 0, nil, frameSizeError(r.maximum)
+	}
+	if atEOF && len(data) > 0 {
+		return 0, nil, io.ErrUnexpectedEOF
+	}
+	return 0, nil, nil
+}
+
+func (r *frameReader) Close() error {
+	// Interrupt the blocked read before joining its access to the frame buffer.
+	err := r.channel.Close()
+	r.mu.Lock()
+	r.pending, r.scanner, r.err = nil, nil, io.EOF
+	r.mu.Unlock()
+	return err
+}
+
+func frameSizeError(maximum int) error {
+	return fmt.Errorf("%w: MCP frame exceeds %d bytes", frame.ErrCapacity, maximum)
 }
 
 type interruptibleConnection struct {
@@ -70,7 +156,7 @@ type frameWriter struct {
 
 func (w *frameWriter) Write(frameBytes []byte) (int, error) {
 	if len(frameBytes) > w.maximum {
-		return 0, fmt.Errorf("%w: MCP frame exceeds %d bytes", frame.ErrCapacity, w.maximum)
+		return 0, frameSizeError(w.maximum)
 	}
 	if err := context.Cause(w.ctx); err != nil {
 		return 0, err

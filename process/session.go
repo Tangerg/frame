@@ -176,11 +176,7 @@ func (s *hostSession) close(ctx context.Context) error {
 		err = s.peer.acknowledge(ctx, profile.Methods.Close, struct{}{})
 	}
 	s.peer.end(io.EOF)
-	select {
-	case <-s.peer.joined:
-	case <-ctx.Done():
-		return errors.Join(err, context.Cause(ctx))
-	}
+	<-s.peer.joined
 	if errors.Is(err, io.EOF) {
 		return nil
 	}

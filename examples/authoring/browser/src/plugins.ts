@@ -4,12 +4,20 @@ import {
   files,
   converters,
   validators,
+  markdownFormat,
   sha256,
   type Converter,
   type FileReader,
   type Validator,
 } from "./contracts";
 import type { AuthorPackage, SourceConfiguration } from "./contracts.generated";
+
+const maximumDocumentBytes = 4 << 20;
+const markdownConverter = Object.freeze({
+  format: markdownFormat,
+  priority: 10,
+});
+const titleRule = Object.freeze({ name: "title", order: 10 });
 
 function source(value: unknown): SourceConfiguration {
   if (
@@ -45,7 +53,7 @@ export const fileReader = defineUnit({
       );
       if (!response.ok)
         throw new Error(`document source returned ${response.status}`);
-      const bytes = await readResponseBytes(response, 4 << 20);
+      const bytes = await readResponseBytes(response, maximumDocumentBytes);
       signal.throwIfAborted();
       if ((await sha256(bytes)) !== reference.revision)
         throw new Error("document source revision changed");
@@ -61,7 +69,7 @@ export const fileReader = defineUnit({
 export const converter = defineUnit({
   id: "converter",
   imports: { files },
-  exports: { markdown: converters },
+  exports: { [markdownConverter.format]: converters },
   setup(context) {
     const read = context.imports.files;
     const convert: Converter = async (reference, signal) => {
@@ -94,7 +102,7 @@ export const converter = defineUnit({
       };
     };
     return {
-      markdown: contribution({ format: "markdown", priority: 10 }, convert),
+      [markdownConverter.format]: contribution(markdownConverter, convert),
     };
   },
 });
@@ -102,15 +110,15 @@ export const converter = defineUnit({
 export const validator = defineUnit({
   id: "validator",
   imports: {},
-  exports: { title: validators },
+  exports: { [titleRule.name]: validators },
   setup() {
     const validate: Validator = async (document, signal) => {
       signal.throwIfAborted();
       return document.title
         ? []
-        : [{ rule: "title", message: "A document title is required." }];
+        : [{ rule: titleRule.name, message: "A document title is required." }];
     };
-    return { title: contribution({ name: "title", order: 10 }, validate) };
+    return { [titleRule.name]: contribution(titleRule, validate) };
   },
 });
 

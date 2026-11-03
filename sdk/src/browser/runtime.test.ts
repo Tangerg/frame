@@ -1826,3 +1826,161 @@ it("returns each confirmed refusal's reservation without closing the execution",
   expect((await unknown.observe()).decision).toBe("rejected");
   await runtime.close();
 });
+
+it.each([null, undefined])(
+  "rejects a missing Point implementation at every staging entrance: %s",
+  async (missing) => {
+    const makeUnit = (value: { value: string }) =>
+      defineUnit({
+        id: "contributor",
+        imports: {},
+        exports: { additions },
+        setup: () => ({ additions: contribution({ title: "base" }, value) }),
+      });
+    const approved = plan("a", [
+      unit("contributor", "contributor", [
+        { name: "additions", contract: additions.ref },
+      ]),
+    ]);
+    const incomplete = fixture({
+      contributor: makeUnit(missing as unknown as { value: string }),
+    });
+    await expect(incomplete.runtime.prepare(approved)).rejects.toMatchObject({
+      code: "contract_mismatch",
+    });
+    expect(incomplete.control.ready).not.toHaveBeenCalled();
+    await incomplete.runtime.close();
+
+    const f = fixture({ contributor: makeUnit({ value: "base" }) }, 2);
+    await f.runtime.prepare(approved);
+    await expect(
+      f.runtime.publish(
+        approved.execution,
+        "contributor",
+        additions,
+        "dynamic",
+        { title: "dynamic" },
+        missing as unknown as { value: string },
+      ),
+    ).rejects.toMatchObject({ code: "contract_mismatch" });
+    expect(f.control.publish).not.toHaveBeenCalled();
+    const publication = await f.runtime.publish(
+      approved.execution,
+      "contributor",
+      additions,
+      "dynamic",
+      { title: "dynamic" },
+      { value: "present" },
+    );
+    expect(publication.outcome.decision).toBe("accepted");
+    await f.runtime.close();
+  },
+);
+
+it("retains the original publication and withdrawal identities through later observations", async () => {
+  const contributor = defineUnit({
+    id: "contributor",
+    imports: {},
+    exports: { additions },
+    setup: () => ({
+      additions: contribution({ title: "base" }, { value: "base" }),
+    }),
+  });
+  const f = fixture({ contributor });
+  const approved = plan("a", [
+    unit("contributor", "contributor", [
+      { name: "additions", contract: additions.ref },
+    ]),
+  ]);
+  await f.runtime.prepare(approved);
+  const publication = await f.runtime.publish(
+    approved.execution,
+    "contributor",
+    additions,
+    "dynamic",
+    { title: "dynamic" },
+    { value: "present" },
+  );
+  const original = publication.outcome;
+  for (const changed of [{ id: "replacement" }, { revision: "next" }]) {
+    vi.mocked(f.control.publication).mockResolvedValue({
+      ...original,
+      publication: { ...original.publication!, ...changed },
+    });
+    await expect(publication.observe()).rejects.toMatchObject({
+      code: "permission_denied",
+    });
+    expect(publication.outcome).toBe(original);
+  }
+  vi.mocked(f.control.publication).mockResolvedValue({ decision: "unknown" });
+  expect(await publication.observe()).toBe(original);
+  vi.mocked(f.control.withdraw).mockResolvedValueOnce({ decision: "unknown" });
+  expect((await publication.withdraw()).decision).toBe("unknown");
+  expect((await publication.withdraw()).decision).toBe("accepted");
+  const calls = vi.mocked(f.control.withdraw).mock.calls;
+  expect(calls[0]![0]).toEqual(calls[1]![0]);
+  expect(calls[0]![0].publicationId).toBe(original.publication!.id);
+  expect(
+    f.runtime.pendingProofs.find((proof) => proof.scopeKind === "publication")
+      ?.publicationId,
+  ).toBe(original.publication!.id);
+  await f.runtime.close();
+});
+
+it.each(["accepted", "unknown"] as const)(
+  "preserves a rejected publication after an older observation returns %s",
+  async (lateDecision) => {
+    const contributor = defineUnit({
+      id: "contributor",
+      imports: {},
+      exports: { additions },
+      setup: () => ({
+        additions: contribution({ title: "base" }, { value: "base" }),
+      }),
+    });
+    const f = fixture({ contributor });
+    const approved = plan("a", [
+      unit("contributor", "contributor", [
+        { name: "additions", contract: additions.ref },
+      ]),
+    ]);
+    await f.runtime.prepare(approved);
+    vi.mocked(f.control.publish).mockResolvedValueOnce({ decision: "unknown" });
+    const publication = await f.runtime.publish(
+      approved.execution,
+      "contributor",
+      additions,
+      "dynamic",
+      { title: "dynamic" },
+      { value: "present" },
+    );
+    const lateReply = Promise.withResolvers<PublicationResult>();
+    vi.mocked(f.control.publication)
+      .mockReturnValueOnce(lateReply.promise)
+      .mockResolvedValueOnce({ decision: "rejected" });
+    const earlierObservation = publication.observe();
+    const rejected = await publication.observe();
+    expect(rejected.decision).toBe("rejected");
+    lateReply.resolve(
+      lateDecision === "unknown"
+        ? { decision: "unknown" }
+        : {
+            decision: "accepted",
+            publication: {
+              id: "unexpected-publication",
+              operationId: publication.operationId,
+              revision: "1",
+              object: publication.object,
+            },
+          },
+    );
+    if (lateDecision === "accepted")
+      await expect(earlierObservation).rejects.toMatchObject({
+        code: "invalid_plan",
+      });
+    else expect(await earlierObservation).toBe(rejected);
+    expect(publication.outcome).toBe(rejected);
+    expect(f.control.withdraw).not.toHaveBeenCalled();
+    await f.runtime.close();
+  },
+);

@@ -111,7 +111,7 @@ func TestFlameTrajectoryInterop(t *testing.T) {
 			t.Fatal(err)
 		}
 		var markdown strings.Builder
-		out, err := borrowed.(process.StreamingService).Stream(ctx, methodName, in, func(_ context.Context, chunk value.JSON) error {
+		out, err := borrowed.(process.StreamingService).Stream(ctx, queryInvocation(t, methodName, in), func(_ context.Context, chunk value.JSON) error {
 			var text string
 			if err := value.DecodeValue(chunk.Bytes(), &text, "markdown"); err != nil {
 				return err

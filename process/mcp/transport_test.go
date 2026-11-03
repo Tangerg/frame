@@ -6,12 +6,98 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"time"
 
+	"github.com/Tangerg/frame"
 	"github.com/Tangerg/go-sdk/jsonrpc"
 )
+
+type inputStream struct{ io.Reader }
+
+func (inputStream) Write(data []byte) (int, error) { return len(data), nil }
+func (inputStream) Close() error                   { return nil }
+
+func TestInboundFrameBudgetIsIndependentOfEarlierFramesAndReadBoundaries(t *testing.T) {
+	const maximum = 256
+	small := `{"jsonrpc":"2.0","id":1,"method":"ping"}` + "\n"
+	message := func(size int) string {
+		prefix := `{"jsonrpc":"2.0","id":2,"method":"ping","params":{"value":"`
+		suffix := `"}}` + "\n"
+		return prefix + strings.Repeat("x", size-len(prefix)-len(suffix)) + suffix
+	}
+	for _, test := range []struct {
+		name     string
+		input    string
+		accepted int
+		failure  error
+	}{
+		{name: "exact budget", input: message(maximum), accepted: 1, failure: io.EOF},
+		{name: "consecutive exact budgets", input: message(maximum) + message(maximum), accepted: 2, failure: io.EOF},
+		{name: "oversized alone", input: message(maximum + 1), failure: frame.ErrCapacity},
+		{name: "small then oversized", input: small + message(maximum+21), accepted: 1, failure: frame.ErrCapacity},
+		{name: "oversized whitespace suffix", input: strings.TrimSuffix(small, "\n") + strings.Repeat(" ", maximum) + "\n", failure: frame.ErrCapacity},
+		{name: "unterminated frame", input: strings.TrimSuffix(small, "\n"), failure: io.ErrUnexpectedEOF},
+		{name: "oversized unterminated frame", input: strings.TrimSuffix(message(maximum+2), "\n"), failure: frame.ErrCapacity},
+		{name: "multiline value", input: "{\n" + strings.TrimPrefix(small, "{"), failure: frame.ErrContractMismatch},
+		{name: "multiline whitespace cannot extend a value", input: "{\n" + strings.Repeat(" \n", maximum) + strings.TrimPrefix(small, "{"), failure: frame.ErrContractMismatch},
+		{name: "blank frames cannot aggregate", input: strings.Repeat(" \n", maximum) + small, failure: frame.ErrContractMismatch},
+		{name: "one line cannot contain multiple values", input: "{}{}\n", failure: frame.ErrContractMismatch},
+		{name: "invalid UTF-8", input: "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"\xff\"}\n", failure: frame.ErrContractMismatch},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, chunks := range []struct {
+				name string
+				read func(io.Reader) io.Reader
+			}{
+				{name: "together", read: func(r io.Reader) io.Reader { return r }},
+				{name: "one byte", read: iotest.OneByteReader},
+				{name: "short reads", read: iotest.HalfReader},
+			} {
+				t.Run(chunks.name, func(t *testing.T) {
+					channel := inputStream{chunks.read(strings.NewReader(test.input))}
+					connection, err := (attachedTransport{channel: channel, maximum: maximum}).Connect(t.Context())
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer connection.Close()
+					for index := range test.accepted {
+						if _, err := connection.Read(t.Context()); err != nil {
+							t.Fatalf("accepted frame %d: %v", index, err)
+						}
+					}
+					if _, err := connection.Read(t.Context()); !errors.Is(err, test.failure) {
+						t.Fatalf("frame admission: got %v, want %v", err, test.failure)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestUnterminatedInboundFrameFailsAtBudgetWithoutWaitingForEOF(t *testing.T) {
+	const maximum = 256
+	from, to := net.Pipe()
+	defer to.Close()
+	connection, err := (attachedTransport{channel: from, maximum: maximum}).Connect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	written := make(chan error, 1)
+	go func() { _, err := io.WriteString(to, strings.Repeat(" ", maximum)); written <- err }()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if _, err := connection.Read(ctx); !errors.Is(err, frame.ErrCapacity) {
+		t.Fatalf("unterminated frame admission: %v", err)
+	}
+	if err := <-written; err != nil {
+		t.Fatal(err)
+	}
+}
 
 type blockedWriter struct {
 	net.Conn

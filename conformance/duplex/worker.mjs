@@ -12,8 +12,15 @@ const unit = defineProcessUnit({
         read(input, { signal, emit }) {
           return imports.upstream.read(input, { signal, onChunk: emit });
         },
-        wait(input, { signal }) { return imports.upstream.wait(input, { signal }); },
-        probe(input, { signal }) { return imports.upstream.probe(input, { signal }); },
+        replace(input, { signal, commandID }) {
+          return imports.upstream.replace(input, { signal, commandID });
+        },
+        wait(input, { signal }) {
+          return imports.upstream.wait(input, { signal });
+        },
+        probe(input, { signal }) {
+          return imports.upstream.probe(input, { signal });
+        },
       },
     };
   },

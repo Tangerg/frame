@@ -33,6 +33,20 @@ type featureArtifacts struct {
 	projection  *projection
 }
 
+// Local definition names identify nodes only within their original method frame.
+// Equal spellings or bodies cannot establish identity across reference scopes.
+type schemaDefinition struct {
+	root string
+	name string
+}
+
+func (d schemaDefinition) compare(other schemaDefinition) int {
+	if order := strings.Compare(d.root, other.root); order != 0 {
+		return order
+	}
+	return strings.Compare(d.name, other.name)
+}
+
 func buildFeature(data []byte) (*featureArtifacts, error) {
 	contract, err := portable.ParseCapability(data)
 	if err != nil {
@@ -125,35 +139,36 @@ func buildFeature(data []byte) (*featureArtifacts, error) {
 	return artifacts, nil
 }
 
-func sharedDefinitions(descriptors []portable.MethodDescriptor) (map[string]jsontext.Value, error) {
-	keys := make(map[string]jsontext.Value)
+func scopedDefinitions(descriptors []portable.MethodDescriptor, roots map[string]string) (map[schemaDefinition]jsontext.Value, error) {
+	definitions := make(map[schemaDefinition]jsontext.Value)
 	for _, descriptor := range descriptors {
-		for _, raw := range []jsontext.Value{descriptor.Input, descriptor.Output, descriptor.Stream} {
-			if len(raw) == 0 || raw.Kind() == 't' || raw.Kind() == 'f' {
+		root := roots[descriptor.Name]
+		for _, frame := range []struct {
+			name string
+			raw  jsontext.Value
+		}{{root + "Input", descriptor.Input}, {root + "Output", descriptor.Output}, {root + "Chunk", descriptor.Stream}} {
+			if len(frame.raw) == 0 || frame.raw.Kind() == 't' || frame.raw.Kind() == 'f' {
 				continue
 			}
 			var document struct {
 				Defs map[string]jsontext.Value `json:"$defs"`
 			}
-			if err := json.Unmarshal(raw, &document); err != nil {
+			if err := json.Unmarshal(frame.raw, &document); err != nil {
 				return nil, err
 			}
-			for key, body := range document.Defs {
+			for name, body := range document.Defs {
 				canonical, err := framevalue.ParseJSON(body)
 				if err != nil {
 					return nil, err
 				}
-				if known, found := keys[key]; found && string(known) != canonical.String() {
-					return nil, fmt.Errorf("feature contracts: methods publish different %s definitions", key)
-				}
-				keys[key] = canonical.Bytes()
+				definitions[schemaDefinition{root: frame.name, name: name}] = canonical.Bytes()
 			}
 		}
 	}
-	return keys, nil
+	return definitions, nil
 }
 
-func featureNames(descriptors []portable.MethodDescriptor) (map[string]string, map[string]string, error) {
+func featureNames(descriptors []portable.MethodDescriptor) (map[string]string, map[schemaDefinition]string, error) {
 	roots := make(map[string]string, len(descriptors))
 	symbols := newSymbolTable()
 	descriptors = slices.Clone(descriptors)
@@ -162,7 +177,7 @@ func featureNames(descriptors []portable.MethodDescriptor) (map[string]string, m
 		root := goFeatureIdentifier(descriptor.Name[strings.LastIndex(descriptor.Name, "/")+1:])
 		roots[descriptor.Name] = symbols.claimFamily(root, "Input", "Output", "Chunk")
 	}
-	keys, err := sharedDefinitions(descriptors)
+	keys, err := scopedDefinitions(descriptors, roots)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -170,23 +185,26 @@ func featureNames(descriptors []portable.MethodDescriptor) (map[string]string, m
 	if err != nil {
 		return nil, nil, err
 	}
-	// A contract names a definition <package>.<type>; a projection drops the
-	// package unless another definition shares the type name.
 	typeName := func(key string) string { return key[strings.IndexByte(key, '.')+1:] }
 	sharing := make(map[string]int, len(keys))
+	qualified := make(map[string]int, len(keys))
 	for key, owner := range owners {
 		if owner == key {
-			sharing[typeName(key)]++
+			sharing[typeName(key.name)]++
+			qualified[key.name]++
 		}
 	}
-	renamed := make(map[string]string, len(keys))
-	for _, key := range slices.Sorted(maps.Keys(keys)) {
+	renamed := make(map[schemaDefinition]string, len(keys))
+	for _, key := range slices.SortedFunc(maps.Keys(keys), schemaDefinition.compare) {
 		if owners[key] != key {
 			continue
 		}
-		name := goFeatureIdentifier(typeName(key))
-		if sharing[typeName(key)] > 1 {
-			name = goFeatureIdentifier(key)
+		name := goFeatureIdentifier(typeName(key.name))
+		if sharing[typeName(key.name)] > 1 {
+			name = goFeatureIdentifier(key.name)
+		}
+		if qualified[key.name] > 1 {
+			name = key.root + name
 		}
 		renamed[key] = symbols.claim(name)
 	}
@@ -199,33 +217,34 @@ func featureNames(descriptors []portable.MethodDescriptor) (map[string]string, m
 // An unexported encoding with one referring definition belongs to that
 // definition's ultimate owner. Resolve ownership before allocating symbols so
 // an intermediate alias cannot acquire a name through map iteration order.
-func definitionOwners(definitions map[string]jsontext.Value) (map[string]string, error) {
-	encodedBy := make(map[string][]string)
+func definitionOwners(definitions map[schemaDefinition]jsontext.Value) (map[schemaDefinition]schemaDefinition, error) {
+	encodedBy := make(map[schemaDefinition][]schemaDefinition)
 	for key, body := range definitions {
-		target, referenced, err := pureDefinitionReference(body)
+		name, referenced, err := pureDefinitionReference(body)
 		if err != nil {
 			return nil, err
 		}
 		if referenced {
+			target := schemaDefinition{root: key.root, name: name}
 			encodedBy[target] = append(encodedBy[target], key)
 		}
 	}
-	parents := make(map[string]string)
+	parents := make(map[schemaDefinition]schemaDefinition)
 	for target, encoders := range encodedBy {
-		initial, _ := utf8.DecodeRuneInString(target[strings.IndexByte(target, '.')+1:])
+		initial, _ := utf8.DecodeRuneInString(target.name[strings.IndexByte(target.name, '.')+1:])
 		if len(encoders) == 1 && definitions[target] != nil && unicode.IsLower(initial) {
 			parents[target] = encoders[0]
 		}
 	}
-	owners := make(map[string]string, len(definitions))
-	active := make(map[string]bool)
-	var resolve func(string) (string, error)
-	resolve = func(key string) (string, error) {
+	owners := make(map[schemaDefinition]schemaDefinition, len(definitions))
+	active := make(map[schemaDefinition]bool)
+	var resolve func(schemaDefinition) (schemaDefinition, error)
+	resolve = func(key schemaDefinition) (schemaDefinition, error) {
 		if owner, resolved := owners[key]; resolved {
 			return owner, nil
 		}
 		if active[key] {
-			return "", fmt.Errorf("feature contracts: definition ownership cycle at %q", key)
+			return schemaDefinition{}, fmt.Errorf("feature contracts: definition ownership cycle at %q in %s", key.name, key.root)
 		}
 		active[key] = true
 		owner := key
@@ -233,14 +252,14 @@ func definitionOwners(definitions map[string]jsontext.Value) (map[string]string,
 			var err error
 			owner, err = resolve(parent)
 			if err != nil {
-				return "", err
+				return schemaDefinition{}, err
 			}
 		}
 		delete(active, key)
 		owners[key] = owner
 		return owner, nil
 	}
-	for _, key := range slices.Sorted(maps.Keys(definitions)) {
+	for _, key := range slices.SortedFunc(maps.Keys(definitions), schemaDefinition.compare) {
 		if _, err := resolve(key); err != nil {
 			return nil, err
 		}
@@ -277,7 +296,7 @@ func pureDefinitionReference(raw jsontext.Value) (string, bool, error) {
 	return "", false, nil
 }
 
-func addFeatureSchema(artifacts *featureArtifacts, root string, raw jsontext.Value, renamed map[string]string) error {
+func addFeatureSchema(artifacts *featureArtifacts, root string, raw jsontext.Value, names map[schemaDefinition]string) error {
 	canonical, err := framevalue.ParseJSON(raw)
 	if err != nil {
 		return err
@@ -299,6 +318,10 @@ func addFeatureSchema(artifacts *featureArtifacts, root string, raw jsontext.Val
 	}
 	delete(document, "$defs")
 	delete(document, "$schema")
+	renamed := make(map[string]string, len(definitions))
+	for name := range definitions {
+		renamed[name] = names[schemaDefinition{root: root, name: name}]
+	}
 	for name, body := range definitions {
 		updated, err := rewriteFeatureRefs(body, renamed, root)
 		if err != nil {

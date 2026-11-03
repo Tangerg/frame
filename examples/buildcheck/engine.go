@@ -32,17 +32,16 @@ func New(ctx context.Context, source *Source) (*Engine, error) {
 	if err := host.Register(contracts.Passes, contracts.Analyzers, contracts.Formatters, contracts.Around); err != nil {
 		return nil, err
 	}
-	plugins, err := StandardPlugins(contracts)
+	installations, err := StandardInstallations(contracts)
 	if err != nil {
 		return nil, err
 	}
-	ids := []frame.InstallationID{"compiler", "analysis", "format", "trace"}
 	var roots []frame.ExportRef
-	for i, plugin := range plugins {
-		if _, err := host.Install(ctx, frame.InstallationConfig{ID: ids[i], Plugin: plugin, Enabled: true}); err != nil {
+	for _, installation := range installations {
+		if _, err := host.Install(ctx, installation); err != nil {
 			return nil, err
 		}
-		roots = append(roots, definitionExports(ids[i], plugin)...)
+		roots = append(roots, definitionExports(installation.ID, installation.Plugin)...)
 	}
 	if _, err := host.Activate(ctx, roots...); err != nil {
 		return nil, err

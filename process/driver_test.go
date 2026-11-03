@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -54,11 +55,11 @@ func TestLocalProcessHelper(t *testing.T) {
 					<-ctx.Done()
 					return process.Prepared{}, context.Cause(ctx)
 				}
-				echo := process.Handler(func(ctx context.Context, member string, input value.JSON) (value.JSON, error) {
+				echo := process.Handler(func(ctx context.Context, invocation portable.Invocation) (value.JSON, error) {
 					if _, err := os.Stat(filepath.Join(directory, "activated")); err != nil {
 						return value.JSON{}, errors.New("business executed before activation")
 					}
-					return input, nil
+					return invocation.Input(), nil
 				})
 				return process.Prepared{Exports: map[string]process.Service{"echo": echo},
 					Activate: func(context.Context) error {
@@ -89,6 +90,7 @@ type environment struct {
 	ctx       context.Context
 	store     *sqlite.Store
 	runner    *runner.Client
+	driver    *process.Driver
 	host      *frame.Host
 	source    *source
 	ref       frame.ExportRef
@@ -96,6 +98,10 @@ type environment struct {
 }
 
 func newEnvironment(t *testing.T, wait bool) *environment {
+	return newConfiguredEnvironment(t, wait, nil, nil)
+}
+
+func newConfiguredEnvironment(t *testing.T, wait bool, protocol process.Protocol, closeDiagnostic error) *environment {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancel)
@@ -157,7 +163,7 @@ func newEnvironment(t *testing.T, wait bool) *environment {
 	if wait {
 		source.program.Env = append(source.program.Env, "FRAME_PROCESS_WAIT=1")
 	}
-	driver, err := process.New(process.Config{Runner: client, Store: store, Source: source, CloseTimeout: 3 * time.Second, MaxFrameBytes: 1 << 20})
+	driver, err := process.New(process.Config{Runner: client, Store: store, Source: source, CloseTimeout: 3 * time.Second, MaxFrameBytes: 1 << 20, Protocol: protocol})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,8 +174,19 @@ func newEnvironment(t *testing.T, wait bool) *environment {
 	t.Cleanup(func() {
 		closeCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 		defer stop()
-		if outcome, err := host.Close(closeCtx); err != nil || !outcome.Released {
+		outcome, err := host.Close(closeCtx)
+		if !outcome.Released || err != nil && closeDiagnostic == nil {
 			t.Errorf("host release: %+v %v", outcome, err)
+		}
+		if closeDiagnostic != nil {
+			if len(outcome.Failures) == 0 {
+				t.Error("original close diagnostic was lost")
+			}
+			for _, failure := range outcome.Failures {
+				if !strings.Contains(failure.Detail, closeDiagnostic.Error()) {
+					t.Errorf("unexpected close diagnostic: %+v", failure)
+				}
+			}
 		}
 	})
 	if err := host.Register(contract); err != nil {
@@ -182,7 +199,7 @@ func newEnvironment(t *testing.T, wait bool) *environment {
 	if _, err := host.Install(ctx, frame.InstallationConfig{ID: "echo", Plugin: plugin, Configuration: []byte(`{}`), Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	return &environment{ctx: ctx, store: store, runner: client, host: host, source: source, ref: frame.ExportRef{InstallationID: "echo", Release: plugin.Revision(), UnitID: "backend", Export: "echo", Contract: ref}, directory: directory}
+	return &environment{ctx: ctx, store: store, runner: client, driver: driver, host: host, source: source, ref: frame.ExportRef{InstallationID: "echo", Release: plugin.Revision(), UnitID: "backend", Export: "echo", Contract: ref}, directory: directory}
 }
 
 func TestApprovedProcessUsesPublicContractAndReleasesOriginalAttempt(t *testing.T) {
@@ -205,7 +222,11 @@ func TestApprovedProcessUsesPublicContractAndReleasesOriginalAttempt(t *testing.
 		t.Fatal(err)
 	}
 	err = frame.BorrowExport[process.Service](e.ctx, use, e.ref, func(ctx context.Context, capability process.Service) error {
-		result, err := capability.Call(ctx, "document.echo", input)
+		invocation, err := portable.NewQueryInvocation("document.echo", input)
+		if err != nil {
+			return err
+		}
+		result, err := capability.Invoke(ctx, invocation)
 		if err == nil && result != input {
 			return fmt.Errorf("reply changed: %s", result.String())
 		}

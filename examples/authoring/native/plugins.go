@@ -7,12 +7,14 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/examples/document"
@@ -20,7 +22,15 @@ import (
 	framevalue "github.com/Tangerg/frame/value"
 )
 
-const maxSourceBytes = 1 << 20
+const (
+	maxSourceBytes             = 1 << 20
+	minimumTitleRunes          = 8
+	nonemptyValidationOrder    = 10
+	titleValidationOrder       = 20
+	uppercaseConverterPriority = 50
+	textFormat                 = "text"
+	contentSlot                = "{{content}}"
+)
 
 //go:embed plugins.go
 var pluginSource []byte
@@ -85,7 +95,7 @@ func Plugin(contracts document.Contracts) (*frame.Plugin, error) {
 		if err != nil {
 			return err
 		}
-		if strings.Count(template.Text, "{{content}}") != 1 {
+		if strings.Count(template.Text, contentSlot) != 1 {
 			return errors.New("authoring: template requires one content slot")
 		}
 		preparedTemplate := filepath.Join(workspace, "template.html")
@@ -102,48 +112,56 @@ func Plugin(contracts document.Contracts) (*frame.Plugin, error) {
 				return document.Converted{}, err
 			}
 			content := html.EscapeString(strings.ToUpper(source.Text))
-			output := strings.Replace(string(compiled), "{{content}}", content, 1)
+			output := strings.Replace(string(compiled), contentSlot, content, 1)
 			if err := context.Cause(ctx); err != nil {
 				return document.Converted{}, err
 			}
 			return document.Converted{Source: ref, HTML: output, Title: strings.TrimSpace(strings.SplitN(source.Text, "\n", 2)[0])}, nil
 		})
-		return upper.Bind(setup, document.ConverterMetadata{Format: "text", Priority: 50}, convert)
+		return upper.Bind(setup, document.ConverterMetadata{Format: textFormat, Priority: uppercaseConverterPriority}, convert)
 	}})
 	if err != nil {
 		return nil, err
 	}
 
-	nonemptyOut := frame.Offer("nonempty", contracts.Validators)
-	titleOut := frame.Offer("title", contracts.Validators)
+	nonempty := validationRule{
+		metadata:   document.ValidatorMetadata{Name: "nonempty", Order: nonemptyValidationOrder},
+		message:    "conversion produced no output",
+		violatedBy: func(value document.Converted) bool { return strings.TrimSpace(value.HTML) == "" },
+	}
+	title := validationRule{
+		metadata:   document.ValidatorMetadata{Name: "title", Order: titleValidationOrder},
+		message:    fmt.Sprintf("title is shorter than %d characters", minimumTitleRunes),
+		violatedBy: func(value document.Converted) bool { return utf8.RuneCountInString(value.Title) < minimumTitleRunes },
+	}
+	nonemptyOut := frame.Offer(nonempty.metadata.Name, contracts.Validators)
+	titleOut := frame.Offer(title.metadata.Name, contracts.Validators)
 	validatorUnit, err := frame.DefineUnit(frame.UnitSpec{ID: "validation", Exports: frame.Exports(nonemptyOut, titleOut), Prepare: func(setup *frame.Setup) error {
-		nonempty := document.Validator(func(ctx context.Context, value document.Converted) ([]document.Diagnostic, error) {
-			if err := context.Cause(ctx); err != nil {
-				return nil, err
-			}
-			if strings.TrimSpace(value.HTML) == "" {
-				return []document.Diagnostic{{Rule: "nonempty", Message: "conversion produced no output"}}, nil
-			}
-			return nil, nil
-		})
-		title := document.Validator(func(ctx context.Context, value document.Converted) ([]document.Diagnostic, error) {
-			if err := context.Cause(ctx); err != nil {
-				return nil, err
-			}
-			if len([]rune(value.Title)) < 8 {
-				return []document.Diagnostic{{Rule: "title", Message: "title is shorter than eight characters"}}, nil
-			}
-			return nil, nil
-		})
-		if err := nonemptyOut.Bind(setup, document.ValidatorMetadata{Name: "nonempty", Order: 10}, nonempty); err != nil {
+		if err := nonemptyOut.Bind(setup, nonempty.metadata, document.Validator(nonempty.validate)); err != nil {
 			return err
 		}
-		return titleOut.Bind(setup, document.ValidatorMetadata{Name: "title", Order: 20}, title)
+		return titleOut.Bind(setup, title.metadata, document.Validator(title.validate))
 	}})
 	if err != nil {
 		return nil, err
 	}
 	return frame.Define(frame.Definition{Revision: framevalue.Hash(pluginSource), Units: []frame.Unit{fileUnit, converterUnit, validatorUnit}})
+}
+
+type validationRule struct {
+	metadata   document.ValidatorMetadata
+	message    string
+	violatedBy func(document.Converted) bool
+}
+
+func (r validationRule) validate(ctx context.Context, value document.Converted) ([]document.Diagnostic, error) {
+	if err := context.Cause(ctx); err != nil {
+		return nil, err
+	}
+	if r.violatedBy(value) {
+		return []document.Diagnostic{{Rule: r.metadata.Name, Message: r.message}}, nil
+	}
+	return nil, nil
 }
 
 func readSource(ctx context.Context, root *os.Root, ref document.DocumentRef) (_ document.Document, err error) {

@@ -22,26 +22,51 @@ func (m Member[Input, Output]) Descriptor() portable.MethodDescriptor { return m
 
 type Implementation struct {
 	method *portable.Method
-	call   func(context.Context, framevalue.JSON) (framevalue.JSON, error)
+	invoke func(context.Context, portable.Invocation) (framevalue.JSON, error)
 }
 
-func (m Member[Input, Output]) Implement(handler func(context.Context, Input) (Output, error)) Implementation {
-	if m.method == nil || handler == nil {
-		return Implementation{}
+func (m Member[Input, Output]) ImplementQuery(handler func(context.Context, Input) (Output, error)) (Implementation, error) {
+	if handler == nil {
+		return Implementation{}, frame.ErrInvalid
 	}
-	return Implementation{m.method, func(ctx context.Context, raw framevalue.JSON) (framevalue.JSON, error) {
+	return m.implement(portable.Query, func(ctx context.Context, _ string, input Input) (Output, error) {
+		return handler(ctx, input)
+	})
+}
+
+func (m Member[Input, Output]) ImplementCommand(handler func(context.Context, string, Input) (Output, error)) (Implementation, error) {
+	return m.implement(portable.Command, handler)
+}
+
+func (m Member[Input, Output]) implement(kind portable.MethodKind, handler func(context.Context, string, Input) (Output, error)) (Implementation, error) {
+	if m.method == nil || handler == nil {
+		return Implementation{}, frame.ErrInvalid
+	}
+	if m.method.Kind() != kind {
+		return Implementation{}, frame.ErrContractMismatch
+	}
+	return Implementation{m.method, func(ctx context.Context, invocation portable.Invocation) (framevalue.JSON, error) {
 		var input Input
-		if err := framevalue.DecodeValue(raw.Bytes(), &input, m.method.Name()); err != nil {
+		if err := framevalue.DecodeValue(invocation.Input().Bytes(), &input, m.method.Name()); err != nil {
 			return framevalue.JSON{}, err
 		}
-		output, err := handler(ctx, input)
+		output, err := handler(ctx, invocation.CommandID(), input)
 		if err != nil {
 			return framevalue.JSON{}, err
 		}
 		return framevalue.EncodeJSON(output)
-	}}
+	}}, nil
 }
-func (m Member[Input, Output]) Call(ctx context.Context, service Service, input Input) (Output, error) {
+
+func (m Member[Input, Output]) Query(ctx context.Context, service Service, input Input) (Output, error) {
+	return m.invoke(ctx, service, portable.Query, "", input)
+}
+
+func (m Member[Input, Output]) Command(ctx context.Context, service Service, commandID string, input Input) (Output, error) {
+	return m.invoke(ctx, service, portable.Command, commandID, input)
+}
+
+func (m Member[Input, Output]) invoke(ctx context.Context, service Service, kind portable.MethodKind, commandID string, input Input) (Output, error) {
 	var output Output
 	if m.method == nil || nilDependency(service) {
 		return output, frame.ErrInvalid
@@ -50,10 +75,19 @@ func (m Member[Input, Output]) Call(ctx context.Context, service Service, input 
 	if err != nil {
 		return output, err
 	}
-	if err = m.method.ValidateInput(raw); err != nil {
-		return output, err
+	var invocation portable.Invocation
+	if kind == portable.Query {
+		invocation, err = portable.NewQueryInvocation(m.method.Name(), raw)
+	} else {
+		invocation, err = portable.NewCommandInvocation(commandID, m.method.Name(), raw)
 	}
-	reply, err := service.Call(ctx, m.method.Name(), raw)
+	if err != nil {
+		return output, errors.Join(frame.ErrInvalid, err)
+	}
+	if err := m.method.ValidateInvocation(invocation); err != nil {
+		return output, errors.Join(frame.ErrContractMismatch, err)
+	}
+	reply, err := service.Invoke(ctx, invocation)
 	if err != nil {
 		return output, err
 	}
@@ -71,7 +105,7 @@ func Implement(contract *portable.Capability, members ...Implementation) (Servic
 	}
 	methods := make(map[string]Implementation, len(members))
 	for _, member := range members {
-		if member.method == nil || member.call == nil {
+		if member.method == nil || member.invoke == nil {
 			return nil, frame.ErrInvalid
 		}
 		name := member.method.Name()
@@ -81,15 +115,15 @@ func Implement(contract *portable.Capability, members ...Implementation) (Servic
 		}
 		methods[name] = member
 	}
-	return Handler(func(ctx context.Context, name string, input framevalue.JSON) (framevalue.JSON, error) {
-		m, ok := methods[name]
+	return Handler(func(ctx context.Context, invocation portable.Invocation) (framevalue.JSON, error) {
+		m, ok := methods[invocation.Member()]
 		if !ok {
 			return framevalue.JSON{}, frame.ErrContractMismatch
 		}
-		if err := m.method.ValidateInput(input); err != nil {
-			return framevalue.JSON{}, err
+		if err := m.method.ValidateInvocation(invocation); err != nil {
+			return framevalue.JSON{}, errors.Join(frame.ErrContractMismatch, err)
 		}
-		value, err := m.call(ctx, input)
+		value, err := m.invoke(ctx, invocation)
 		if err != nil {
 			return framevalue.JSON{}, err
 		}

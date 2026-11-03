@@ -35,13 +35,23 @@ entry from the callback. Plugin effects and network calls run after Commit retur
 For a later transition identified by the original business row, `Owner.Update`
 admits the row's compare-and-set in its own transaction. When its commit cannot
 be proved, recovery reads the original row before any new admission.
-`Store.Read` exposes only a scoped `Reader`; its queries run with SQLite query-only
-mode, including queries that try to execute DML. Owner callbacks receive a scoped
-`Executor`, and every issued capability and cursor expires when its callback ends.
+`Store.Read` exposes only a scoped `Reader`; a SQLite authorizer on the original
+physical connection rejects writes, including DML expressed through query APIs.
+Owner callbacks receive a scoped `Executor`, and every issued capability and
+cursor expires when its callback ends. `QueryRowContext` returns `*Row`, which
+projects a cursor held by that same scope. The scope closes and joins all its
+cursors before restoring connection authority; canceling a query alone cannot
+prove that a later `Rows.Next` or `Row.Scan` has stopped.
 The Store never exposes its pool, so pool closure, independent writers and
 connection settings remain with its original lifecycle owner. Application adapters
 compose by passing the issued capability explicitly. The standalone transaction
 helpers apply only to separately owned databases returned by `OpenSchema`.
+Both read and write callbacks reject transaction control, attachments and
+configurable PRAGMAs. Metadata-only PRAGMAs may inspect databases, tables, columns,
+indexes, foreign keys and the SQLite runtime. Changing or removing an authorizer
+expires prepared statements, so a previously compiled statement cannot bypass a
+later read scope. Standalone nested readers receive their own expiring capability;
+the original writer regains its authority only after the final reader returns.
 
 The mutation returns bounded evidence locating its committed change. This is
 submission evidence, not a plugin's business receipt. Actual business results stay
@@ -51,21 +61,21 @@ preserves Committed and raises the recovery barrier.
 
 Committed and NotCommitted are terminal. Repeating the same identity returns its
 original conclusion; changing its request is a conflict. Context cancellation is
-checked before COMMIT. Cleanup responsibility starts before BEGIN or a connection
-mode change is attempted, since a failed acknowledgement does not prove that the
+checked before COMMIT. Cleanup responsibility starts before BEGIN or an authorizer
+change is attempted, since a failed acknowledgement does not prove that the
 change failed. Transaction rollback or connection disposal is joined
 before the owner releases admission. An unresolved connection or storage error
 raises RecoveryRequired instead of authorizing a retry.
 
-Read-mode restoration failures belong to that original connection owner, including
-nested standalone read scopes. Catching a callback panic or ignoring its returned
+Statement-policy restoration failures belong to that original connection owner,
+including nested standalone read scopes. Catching a callback panic or ignoring its returned
 error cannot clear this cleanup obligation: the owner refuses COMMIT and discards
 the uncertain connection after rollback. Propagated panics retain both their
-original cause and any mode-restoration diagnostics.
+original cause and any policy-restoration diagnostics.
 
-Overlapping `RunReadSnapshot` callbacks share read-mode leases on their original
+Overlapping `RunReadSnapshot` callbacks share read leases on their original
 connection, including scopes entered with an already read-only context. Only the
-last lease restores the previous mode; a sibling or nested reader cannot regain
+last lease restores the transaction policy; a sibling or nested reader cannot regain
 write access because another reader returned first. Callbacks run without holding
 the lease mutex, so nested scopes do not deadlock. Once the transaction callback
 returns, its owner refuses new read leases and joins those already admitted before
@@ -100,6 +110,11 @@ all necessary owners and execution scopes; recovery does not replay mutations.
 continuous terminal, synchronized, unreferenced sequence prefix. Deletion and the
 watermark commit in one transaction. Old queries return `ErrEvidenceExpired`;
 expiration never authorizes recreating an old identity.
+
+Installation control receipts have no external recovery holder. A rejected or
+panicking projection releases its private receipt only after the original
+submission has settled and synchronized; an unresolved or committed receipt
+remains available for its original recovery and confirmation.
 
 ## Execution protection
 

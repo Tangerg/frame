@@ -44,7 +44,7 @@ func TestFlameHooksInterop(t *testing.T) {
 		if err := service.ValidateInput(ctx, discover, query); err != nil {
 			t.Fatal(err)
 		}
-		output, err := service.Call(ctx, discover, query)
+		output, err := service.Invoke(ctx, queryInvocation(t, discover, query))
 		if err != nil || output.String() != "[]" {
 			t.Fatalf("discover %s, %v", output, err)
 		}
@@ -54,17 +54,17 @@ func TestFlameHooksInterop(t *testing.T) {
 		}
 		const evaluate = "flame.hooks/evaluate.v1"
 		const id = "frame-interop-command"
-		if _, err := service.Call(ctx, evaluate, input); !errors.Is(err, frame.ErrContractMismatch) {
+		if _, err := service.Invoke(ctx, queryInvocation(t, evaluate, input)); !errors.Is(err, frame.ErrContractMismatch) {
 			t.Fatalf("unkeyed command: %v", err)
 		}
-		if _, found, err := service.ReadReceipt(ctx, id, evaluate, input); err != nil || found {
+		if _, found, err := service.ReadReceipt(ctx, commandInvocation(t, id, evaluate, input)); err != nil || found {
 			t.Fatalf("absent receipt: found=%v err=%v", found, err)
 		}
-		output, err = service.Command(ctx, id, evaluate, input)
+		output, err = service.Invoke(ctx, commandInvocation(t, id, evaluate, input))
 		if err != nil {
 			t.Fatal(err)
 		}
-		receipt, found, err := service.ReadReceipt(ctx, id, evaluate, input)
+		receipt, found, err := service.ReadReceipt(ctx, commandInvocation(t, id, evaluate, input))
 		if err != nil || !found || receipt != output {
 			t.Fatalf("receipt %s, result %s, found=%v err=%v", receipt, output, found, err)
 		}

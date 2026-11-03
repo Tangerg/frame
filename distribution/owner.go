@@ -15,8 +15,12 @@ import (
 	"github.com/Tangerg/frame/value"
 )
 
-const directoryReadBatch = 256
-const privateDirectoryAttempts = 32
+const (
+	directoryReadBatch       = 256
+	privateDirectoryAttempts = 32
+	stagingDirectoryPrefix   = ".stage-"
+	retiringDirectoryPrefix  = ".retiring-"
+)
 
 func (s *Store) openOwner() (err error) {
 	s.root, err = os.OpenRoot(s.directory)
@@ -56,7 +60,7 @@ func (s *Store) openOwner() (err error) {
 			return readErr
 		}
 		for _, entry := range entries {
-			if !strings.HasPrefix(entry.Name(), ".stage-") && !strings.HasPrefix(entry.Name(), ".retiring-") {
+			if !strings.HasPrefix(entry.Name(), stagingDirectoryPrefix) && !strings.HasPrefix(entry.Name(), retiringDirectoryPrefix) {
 				continue
 			}
 			info, err := s.root.Lstat(entry.Name())

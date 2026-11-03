@@ -25,12 +25,12 @@ and `$`, instead of JavaScript's different defaults.
 validated result. The error `code` still identifies its protocol category, and
 `cause` preserves a locally observed failure or cancellation reason.
 
-| Observation | `code` | `outcomeUnknown` |
-| --- | --- | --- |
-| Cancelled before Peer attempts the write | `cancelled` | `false` |
-| Local frame/capacity rejection, or the remote framework rejects before entering the handler | rejection category | `false` |
-| Cancelled while awaiting an already dispatched request, or a remote cancelled reply | `cancelled` | `true` |
-| Handler error, invalid reply, interrupted write, or lost response | `outcome_unknown` | `true` |
+| Observation                                                                                 | `code`             | `outcomeUnknown` |
+| ------------------------------------------------------------------------------------------- | ------------------ | ---------------- |
+| Cancelled before Peer attempts the write                                                    | `cancelled`        | `false`          |
+| Local frame/capacity rejection, or the remote framework rejects before entering the handler | rejection category | `false`          |
+| Cancelled while awaiting an already dispatched request, or a remote cancelled reply         | `cancelled`        | `true`           |
+| Handler error, invalid reply, interrupted write, or lost response                           | `outcome_unknown`  | `true`           |
 
 A handler cannot turn a post-dispatch error into a pre-dispatch refusal by throwing
 one of the framework's error codes. Cancellation is an intent to stop waiting or
@@ -44,5 +44,21 @@ call, even when the producer catches an emit rejection. Call completion joins an
 accepted consumer before releasing its stream handle. Emitting after completion
 is rejected. An ignored emit promise cannot create an unhandled rejection outside
 the original call's failure path.
+
+## Query and command identity
+
+The frozen method descriptor determines whether a request is a query or a
+command. A command requires the business caller's original `commandID` in
+`RequestOptions`; queries reject command identities. The SDK forwards that exact
+identity to the handler's `CallContext.commandID`, including streaming calls.
+It never substitutes the transport request sequence or generates a replacement
+after an uncertain response. A known command method also requires its identity
+in the TypeScript call signature.
+
+Command identities must be nonempty valid Unicode strings within the character
+limit exported by `portable.ProfileLimits`. The SDK counts Unicode code points,
+not UTF-16 code units or UTF-8 bytes. The business owner retains the command ID
+and decides whether a repeated request observes an existing operation; the SDK
+does not deduplicate business effects.
 
 See `examples/document-indexer` for a runnable process with two imports and no exports.

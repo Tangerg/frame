@@ -621,9 +621,14 @@ func (h *Host) Publish(ctx context.Context, instanceID, operationID string, valu
 	}
 	h.mu.Lock()
 	instance := h.allInstances[instanceID]
-	h.mu.Unlock()
 	if instance == nil {
+		h.mu.Unlock()
 		return Publication{}, ErrUnavailable
+	}
+	err := instance.validatePublicationLocked()
+	h.mu.Unlock()
+	if err != nil {
+		return Publication{}, err
 	}
 	// Dynamic membership is permitted only for an explicitly declared Point.
 	// It cannot replace a Service or acquire a durable reconstruction identity.
@@ -646,13 +651,10 @@ func (h *Host) Publish(ctx context.Context, instanceID, operationID string, valu
 	fingerprint := framevalue.Hash(append([]byte(value.Name+"\x00"+value.Contract.Digest.String()+"\x00"), metadata...))
 	var result Publication
 	err = h.admission.Admit(ctx, func(context.Context) error {
-		if err := h.admission.ValidateScope(instance.scope); err != nil {
-			return err
-		}
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		if h.closed || instance.retiring || !instance.readyDone || instance.readyErr != nil {
-			return ErrUnavailable
+		if err := instance.validatePublicationLocked(); err != nil {
+			return err
 		}
 		if original := instance.publicationOperations[operationID]; original != nil {
 			if original.request != fingerprint || !original.publication.visible {
@@ -676,6 +678,13 @@ func (h *Host) Publish(ctx context.Context, instanceID, operationID string, valu
 		return nil
 	})
 	return result, err
+}
+
+func (i *Instance) validatePublicationLocked() error {
+	if !i.readyDone || i.readyErr != nil {
+		return ErrUnavailable
+	}
+	return i.validateCurrentLocked()
 }
 
 func (i *Instance) hasVisiblePublicationLocked(name string) bool {

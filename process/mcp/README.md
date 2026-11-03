@@ -38,14 +38,25 @@ input, err := value.ParseJSON([]byte(`{"id":"invoice-37"}`))
 if err != nil {
     return err
 }
+invocation, err := portable.NewQueryInvocation("lookup", input)
+if err != nil {
+    return err
+}
 return frame.BorrowExport[process.Service](ctx, use, export, func(ctx context.Context, service process.Service) error {
-    reply, err := service.Call(ctx, "lookup", input)
+    reply, err := service.Invoke(ctx, invocation)
     if err != nil {
         return err
     }
     return consume(reply)
 })
 ```
+
+Commands use `portable.NewCommandInvocation` with the business caller's original
+identity. The adapter carries it unchanged in the standard MCP request metadata
+at `_meta["io.github.tangerg.frame/commandID"]`; queries omit that entry. This
+metadata identifies the invocation. It does not add receipt storage or idempotent
+execution to a third-party server. Those guarantees belong to the service's
+business contract; the managed profile exposes receipts where supported.
 
 By default the host expects `structuredContent`. The tool must advertise the declared output schema, and its actual return value must validate against it. For an unstructured result, configure the output projection when registering the driver. Declare the Frame output as the MCP result object, with a `content` array and any other fields the consumer needs. This lets applications handle text, images and resource links.
 
@@ -66,5 +77,11 @@ cannot establish whether the peer received it. An explicit ToolError preserves
 the tool's reported failure; it does not prove rollback or non-execution.
 
 Canceling a request queued for stdio leaves the active sender and other readers alone. After a request is written, the SDK can notify the peer that the call was canceled. Cancellation while bytes are being written closes the shared stream because the peer may already have received part of a frame. Other in-flight calls on that stream can then lose their replies. The process still requires its original exit proof.
+
+The adapter admits each complete newline-delimited inbound frame within
+`MaxFrameBytes`, including its terminator, before the SDK interprets JSON-RPC.
+Missing terminators, oversized frames, blank lines and values split across lines
+fail the stream. Each line must contain one complete JSON value. The same budget applies
+to each outgoing frame. SDK decoder prefetch cannot move bytes between budgets.
 
 The standard tools profile supports unary calls. Frame streaming methods and reverse imports require another protocol. MCP prompts, resource browsing, multi-round elicitation and network transports are outside this profile. List-change notifications do not grant methods or change an approved Frame binding. See the [MCP tools specification](https://modelcontextprotocol.io/specification/2025-11-25/server/tools) and the [executable integration test](tools_test.go).

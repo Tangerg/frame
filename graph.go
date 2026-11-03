@@ -132,8 +132,6 @@ func (h *Host) resolveLocked(roots []ExportRef, unitRoots []UnitRef, realm Realm
 	return &BindingPlan{owner: h.identity, binding: result, realm: realm, durable: true, preparation: resolution.preparation}, nil
 }
 
-// indexChoicesLocked admits the caller's explicit provider choices and refusals,
-// one per declared import slot.
 func (h *Host) indexChoicesLocked(choices []BindingChoice) (map[choiceKey][]ExportRef, map[choiceKey]error, error) {
 	selected := make(map[choiceKey][]ExportRef, len(choices))
 	refused := make(map[choiceKey]error)

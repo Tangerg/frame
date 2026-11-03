@@ -60,7 +60,7 @@ func TestCapabilityOwnsAnImmutableCanonicalContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	write, err := portable.AdmitMethod(testMethod("acme/write", portable.Mutation))
+	write, err := portable.AdmitMethod(testMethod("acme/write", portable.Command))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestCapabilityOwnsAnImmutableCanonicalContract(t *testing.T) {
 	}{
 		{"reference", func(d *portable.CapabilityDescriptor) { d.Reference = "acme/other" }},
 		{"target", func(d *portable.CapabilityDescriptor) { d.Methods[0].Target = "installation" }},
-		{"kind", func(d *portable.CapabilityDescriptor) { d.Methods[0].Kind = portable.Mutation }},
+		{"kind", func(d *portable.CapabilityDescriptor) { d.Methods[0].Kind = portable.Command }},
 		{"required set", func(d *portable.CapabilityDescriptor) { d.Methods = d.Methods[:1] }},
 	} {
 		t.Run(change.name, func(t *testing.T) {

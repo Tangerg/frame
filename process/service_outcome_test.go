@@ -60,7 +60,7 @@ func TestStreamFailureCannotBeErasedByProducerSuccess(t *testing.T) {
 			service := connectedService(t, method.Descriptor(), implementation)
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
-			result, err := service.Stream(ctx, "stream", input, func(context.Context, value.JSON) error {
+			result, err := service.Stream(ctx, queryInvocation(t, "stream", input), func(context.Context, value.JSON) error {
 				switch failure {
 				case "consumer-error":
 					return consumerFailure
@@ -98,7 +98,7 @@ func TestStreamFinalResultJoinsPendingConsumer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	input, _ := value.EncodeJSON("content")
-	_, err = service.Stream(ctx, "stream", input, func(ctx context.Context, _ value.JSON) error {
+	_, err = service.Stream(ctx, queryInvocation(t, "stream", input), func(ctx context.Context, _ value.JSON) error {
 		close(entered)
 		<-ctx.Done()
 		close(consumed)
@@ -130,7 +130,7 @@ func TestEscapedEmitterCannotPublishAfterFinalResult(t *testing.T) {
 		return in, nil
 	}})
 	input, _ := value.EncodeJSON("content")
-	result, err := service.Stream(t.Context(), "stream", input, func(context.Context, value.JSON) error {
+	result, err := service.Stream(t.Context(), queryInvocation(t, "stream", input), func(context.Context, value.JSON) error {
 		t.Error("escaped emitter delivered a chunk")
 		return nil
 	})
@@ -143,19 +143,19 @@ func TestEscapedEmitterCannotPublishAfterFinalResult(t *testing.T) {
 }
 
 func TestHandlerFailureCannotClaimNonDispatchAfterAnEffect(t *testing.T) {
-	method, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "mutate", Kind: portable.Mutation})
+	method, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "mutate", Kind: portable.Command})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, failure := range []error{context.Canceled, &Problem{profile.Errors.Contract, "handler failed after its effect"}} {
 		t.Run(failure.Error(), func(t *testing.T) {
 			var effects atomic.Int32
-			service := connectedService(t, method.Descriptor(), Handler(func(context.Context, string, value.JSON) (value.JSON, error) {
+			service := connectedService(t, method.Descriptor(), Handler(func(context.Context, portable.Invocation) (value.JSON, error) {
 				effects.Add(1)
 				return value.JSON{}, failure
 			}))
 			input, _ := value.EncodeJSON("content")
-			_, err := service.Call(t.Context(), "mutate", input)
+			_, err := service.Invoke(t.Context(), commandInvocation(t, "original-effect", "mutate", input))
 			if effects.Load() != 1 || !errors.Is(err, ErrOutcomeUnknown) {
 				t.Fatalf("effect was classified as a pre-dispatch refusal: effects=%d error=%v", effects.Load(), err)
 			}
@@ -167,18 +167,18 @@ func TestHandlerFailureCannotClaimNonDispatchAfterAnEffect(t *testing.T) {
 }
 
 func TestRejectionBeforeHandlerDoesNotClaimAnUnknownEffect(t *testing.T) {
-	method, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "mutate", Kind: portable.Mutation})
+	method, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "mutate", Kind: portable.Command})
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := connectedService(t, method.Descriptor(), Handler(func(context.Context, string, value.JSON) (value.JSON, error) {
+	service := connectedService(t, method.Descriptor(), Handler(func(context.Context, portable.Invocation) (value.JSON, error) {
 		t.Error("rejected invocation entered the handler")
 		return value.JSON{}, nil
 	}))
 	input, _ := value.EncodeJSON("content")
 	cancelled, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := service.Call(cancelled, "mutate", input); !errors.Is(err, context.Canceled) || errors.Is(err, ErrOutcomeUnknown) {
+	if _, err := service.Invoke(cancelled, commandInvocation(t, "original-effect", "mutate", input)); !errors.Is(err, context.Canceled) || errors.Is(err, ErrOutcomeUnknown) {
 		t.Fatalf("local pre-dispatch cancellation: %v", err)
 	}
 	var result value.JSON

@@ -71,7 +71,7 @@ func TestQimuStreamInterop(t *testing.T) {
 			t.Fatal(err)
 		}
 		var chunks []string
-		result, err := svc.(*ManagedService).StreamCommand(ctx, "original-stream", "records.read", input, func(_ context.Context, chunk value.JSON) error {
+		result, err := svc.(process.StreamingService).Stream(ctx, commandInvocation(t, "original-stream", "records.read", input), func(_ context.Context, chunk value.JSON) error {
 			chunks = append(chunks, chunk.String())
 			return nil
 		})

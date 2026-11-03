@@ -22,7 +22,7 @@ func (c admissionObservedContext) Err() error {
 }
 
 func TestCancellationWhileWaitingForAdmissionDoesNotDispatch(t *testing.T) {
-	method, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "write", Kind: portable.Mutation})
+	method, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "write", Kind: portable.Command})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,10 @@ func TestCancellationWhileWaitingForAdmissionDoesNotDispatch(t *testing.T) {
 	service := &remote{peer: p, handle: "writer", contract: contract}
 	p.mu.Lock()
 	finished := make(chan error, 1)
-	go func() { _, err := service.Call(ctx, "write", input); finished <- err }()
+	go func() {
+		_, err := service.Invoke(ctx, commandInvocation(t, "original-effect", "write", input))
+		finished <- err
+	}()
 	<-observed
 	cancel()
 	p.mu.Unlock()

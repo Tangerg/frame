@@ -7,10 +7,12 @@ import {
   serve,
   ProcessError,
   type Client,
+  type RequestOptions,
   type ProcessUnit,
 } from "./index.js";
 import { PROTOCOL, exactFields, type ServiceContract } from "./contract.js";
 import { Peer } from "./peer.js";
+import { PORTABLE_LIMITS } from "./limits.js";
 import wire from "./wire.json" with { type: "json" };
 
 const numbers = new Capability({
@@ -241,20 +243,20 @@ async function connectUnit<
   return host;
 }
 
-function numberBinding() {
+function serviceBinding(slot: string, contract: ServiceContract) {
   return {
-    numbers: [
+    [slot]: [
       {
-        handle: "host-numbers",
+        handle: `host-${slot}`,
         source: {
           installationId: "host",
           release: "a".repeat(64),
           unitId: "host-unit",
-          export: "numbers",
+          export: slot,
           contract: {
-            name: numbers.descriptor.reference,
+            name: contract.descriptor.reference,
             version: "1",
-            digest: numbers.identity,
+            digest: contract.identity,
             mode: "portable",
             kind: "service",
           },
@@ -263,6 +265,191 @@ function numberBinding() {
     ],
   };
 }
+
+describe("query and command invocation identity", () => {
+  const operations = new Capability({
+    protocol: PROTOCOL,
+    reference: "operations",
+    methods: [
+      {
+        name: "read",
+        kind: "query",
+        description: "",
+        input: { type: "integer" },
+        output: { type: "integer" },
+      },
+      {
+        name: "change",
+        kind: "command",
+        description: "",
+        input: { type: "integer" },
+        output: { type: "integer" },
+      },
+      {
+        name: "changeStream",
+        kind: "command",
+        description: "",
+        input: { type: "integer" },
+        output: { type: "integer" },
+        stream: { type: "integer" },
+      },
+    ],
+  });
+  const identities = [
+    " original / operation ",
+    "😀".repeat(PORTABLE_LIMITS.maxCommandIDCharacters),
+  ];
+
+  it("forwards caller identities through imported unary and streaming commands", async () => {
+    let client!: Client<typeof operations>;
+    const requests: Record<string, unknown>[] = [];
+    await connectUnit(
+      defineProcessUnit({
+        id: "caller",
+        imports: { operations },
+        exports: {},
+        setup({ imports }) {
+          client = imports.operations;
+          return {};
+        },
+      }),
+      serviceBinding("operations", operations),
+      async (peer, method, params, signal) => {
+        expect(method).toBe(wire.methods.call);
+        exactFields(
+          params,
+          ["handle", "member", "input"],
+          ["stream", "commandID"],
+        );
+        requests.push(params);
+        if (params.stream)
+          await peer.request(
+            wire.methods.chunk,
+            { stream: params.stream, value: params.input },
+            signal,
+          );
+        return params.input;
+      },
+    );
+    const unchecked = client as unknown as Record<
+      string,
+      (input: unknown, options?: RequestOptions) => Promise<unknown>
+    >;
+    for (const commandID of [
+      undefined,
+      null,
+      "",
+      "a".repeat(PORTABLE_LIMITS.maxCommandIDCharacters + 1),
+      "\ud800",
+    ]) {
+      await expect(
+        unchecked.change!(1, { commandID: commandID as string }),
+      ).rejects.toThrow("command identity");
+    }
+    for (const commandID of [null, "", "not-a-query"]) {
+      await expect(
+        unchecked.read!(1, { commandID: commandID as string }),
+      ).rejects.toThrow("query must not carry");
+    }
+    expect(requests).toEqual([]);
+    expect(await client.read(1)).toBe(1);
+    expect(Object.hasOwn(requests[0]!, "commandID")).toBe(false);
+    const chunks: number[] = [];
+    for (const commandID of identities) {
+      expect(await client.change(2, { commandID })).toBe(2);
+      expect(
+        await client.changeStream(3, {
+          commandID,
+          onChunk(value) {
+            chunks.push(value as number);
+          },
+        }),
+      ).toBe(3);
+    }
+    expect(requests.slice(1).map((request) => request.commandID)).toEqual(
+      identities.flatMap((identity) => [identity, identity]),
+    );
+    expect(chunks).toEqual([3, 3]);
+  });
+
+  it("validates invocation kind before entering handlers and preserves original identity", async () => {
+    const received: (string | undefined)[] = [];
+    const chunks: unknown[] = [];
+    const host = await connectUnit(
+      defineProcessUnit({
+        id: "receiver",
+        imports: {},
+        exports: { operations },
+        setup: () => ({
+          operations: operations.implement({
+            read(input, context) {
+              received.push(context.commandID);
+              return input;
+            },
+            change(input, context) {
+              received.push(context.commandID);
+              return input;
+            },
+            async changeStream(input, context) {
+              received.push(context.commandID);
+              await context.emit(input);
+              return input;
+            },
+          }),
+        }),
+      }),
+      {},
+      async (_peer, method, params) => {
+        expect(method).toBe(wire.methods.chunk);
+        exactFields(params, ["stream", "value"]);
+        chunks.push(params.value);
+        return true;
+      },
+    );
+    const invoke = (member: string, commandID: unknown, stream?: string) =>
+      host.request(
+        wire.methods.call,
+        {
+          handle: "operations",
+          member,
+          input: 1,
+          commandID,
+          stream,
+        },
+        new AbortController().signal,
+      );
+    for (const commandID of [
+      undefined,
+      null,
+      "",
+      "a".repeat(PORTABLE_LIMITS.maxCommandIDCharacters + 1),
+    ]) {
+      await expect(invoke("change", commandID)).rejects.toMatchObject({
+        code: wire.errors.contract,
+        outcomeUnknown: false,
+      });
+    }
+    for (const commandID of [null, "", "not-a-query"]) {
+      await expect(invoke("read", commandID)).rejects.toMatchObject({
+        code: wire.errors.contract,
+        outcomeUnknown: false,
+      });
+    }
+    expect(received).toEqual([]);
+    expect(await invoke("read", undefined)).toBe(1);
+    for (const commandID of identities) {
+      expect(await invoke("change", commandID)).toBe(1);
+      expect(await invoke("changeStream", commandID, "original-stream")).toBe(
+        1,
+      );
+    }
+    expect(received).toEqual([
+      undefined,
+      ...identities.flatMap((identity) => [identity, identity]),
+    ]);
+    expect(chunks).toEqual([1, 1]);
+  });
+});
 
 describe("stream delivery ownership", () => {
   it("retains consumer rejection when the remote producer ignores the failed acknowledgement", async () => {
@@ -278,7 +465,7 @@ describe("stream delivery ownership", () => {
           return {};
         },
       }),
-      numberBinding(),
+      serviceBinding("numbers", numbers),
       async (peer, method, params, signal) => {
         expect(method).toBe(wire.methods.call);
         exactFields(params, ["handle", "member", "input", "stream"]);
@@ -323,7 +510,7 @@ describe("stream delivery ownership", () => {
           return {};
         },
       }),
-      numberBinding(),
+      serviceBinding("numbers", numbers),
       async (peer, _method, params, signal) => {
         exactFields(params, ["handle", "member", "input", "stream"]);
         void peer
@@ -513,6 +700,7 @@ describe("post-dispatch failure evidence", () => {
           {
             handle: "commands",
             member: "change",
+            commandID: "original-change",
             input: 1,
           },
           new AbortController().signal,
@@ -528,6 +716,7 @@ describe("post-dispatch failure evidence", () => {
           {
             handle: "commands",
             member: "change",
+            commandID: "original-change",
             input: "invalid",
           },
           new AbortController().signal,

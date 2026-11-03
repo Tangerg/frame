@@ -15,21 +15,22 @@ import (
 // Limits describes the fixed portable profile, not consumer configuration.
 // Transport and application owners continue to choose their payload byte limits.
 type Limits struct {
-	MaxDescriptorBytes int `json:"maxDescriptorBytes"`
-	MaxJSONDepth       int `json:"maxJSONDepth"`
-	MaxDescriptorNodes int `json:"maxDescriptorNodes"`
-	MaxValueNodes      int `json:"maxValueNodes"`
-	MaxMethods         int `json:"maxMethods"`
-	MaxTokenBytes      int `json:"maxTokenBytes"`
-	MaxReferences      int `json:"maxReferences"`
-	MaxReferenceDepth  int `json:"maxReferenceDepth"`
-	MaxReferenceWork   int `json:"maxReferenceWork"`
-	MaxValidationWork  int `json:"maxValidationWork"`
-	MaxEqualityWork    int `json:"maxEqualityWork"`
-	MaxNumberBytes     int `json:"maxNumberBytes"`
-	MaxAbsExponent     int `json:"maxAbsExponent"`
-	MaxPatternBytes    int `json:"maxPatternBytes"`
-	MaxPatternRepeat   int `json:"maxPatternRepeat"`
+	MaxDescriptorBytes     int `json:"maxDescriptorBytes"`
+	MaxJSONDepth           int `json:"maxJSONDepth"`
+	MaxDescriptorNodes     int `json:"maxDescriptorNodes"`
+	MaxValueNodes          int `json:"maxValueNodes"`
+	MaxMethods             int `json:"maxMethods"`
+	MaxTokenBytes          int `json:"maxTokenBytes"`
+	MaxCommandIDCharacters int `json:"maxCommandIDCharacters"`
+	MaxReferences          int `json:"maxReferences"`
+	MaxReferenceDepth      int `json:"maxReferenceDepth"`
+	MaxReferenceWork       int `json:"maxReferenceWork"`
+	MaxValidationWork      int `json:"maxValidationWork"`
+	MaxEqualityWork        int `json:"maxEqualityWork"`
+	MaxNumberBytes         int `json:"maxNumberBytes"`
+	MaxAbsExponent         int `json:"maxAbsExponent"`
+	MaxPatternBytes        int `json:"maxPatternBytes"`
+	MaxPatternRepeat       int `json:"maxPatternRepeat"`
 
 	// Portable runtimes must compare each length and count without rounding.
 	MaxSizeConstraint int64 `json:"maxSizeConstraint"`
@@ -39,22 +40,23 @@ type Limits struct {
 // Returning a value prevents a caller from changing another contract's budget.
 func ProfileLimits() Limits {
 	return Limits{
-		MaxDescriptorBytes: 1 << 20,
-		MaxJSONDepth:       64,
-		MaxDescriptorNodes: 16_384,
-		MaxValueNodes:      32 << 20,
-		MaxMethods:         256,
-		MaxTokenBytes:      256,
-		MaxReferences:      1_024,
-		MaxReferenceDepth:  64,
-		MaxReferenceWork:   16_384,
-		MaxValidationWork:  256 << 20,
-		MaxEqualityWork:    1 << 20,
-		MaxNumberBytes:     1_024,
-		MaxAbsExponent:     4_096,
-		MaxPatternBytes:    512,
-		MaxPatternRepeat:   256,
-		MaxSizeConstraint:  1<<53 - 1,
+		MaxDescriptorBytes:     1 << 20,
+		MaxJSONDepth:           64,
+		MaxDescriptorNodes:     16_384,
+		MaxValueNodes:          32 << 20,
+		MaxMethods:             256,
+		MaxTokenBytes:          256,
+		MaxCommandIDCharacters: 256,
+		MaxReferences:          1_024,
+		MaxReferenceDepth:      64,
+		MaxReferenceWork:       16_384,
+		MaxValidationWork:      256 << 20,
+		MaxEqualityWork:        1 << 20,
+		MaxNumberBytes:         1_024,
+		MaxAbsExponent:         4_096,
+		MaxPatternBytes:        512,
+		MaxPatternRepeat:       256,
+		MaxSizeConstraint:      1<<53 - 1,
 	}
 }
 

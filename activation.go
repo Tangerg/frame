@@ -266,8 +266,6 @@ func (h *Host) registerInstanceLocked(instance *Instance, key instanceKey, resou
 	return nil
 }
 
-// awaitReady waits for every selected instance to finish setup and refuses one
-// that failed or began retiring meanwhile.
 func (h *Host) awaitReady(ctx context.Context, selected []*Instance) error {
 	for _, instance := range selected {
 		select {

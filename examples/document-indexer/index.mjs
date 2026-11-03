@@ -13,7 +13,8 @@ const unit = defineProcessUnit({
       work.start(async (signal) => {
         const path = "guide.md";
         const { text } = await imports.files.read({ path }, { signal });
-        await imports.index.replace({ path, text }, { signal });
+        const commandID = crypto.randomUUID();
+        await imports.index.replace({ path, text }, { signal, commandID });
       });
     });
     return {};

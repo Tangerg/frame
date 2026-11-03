@@ -47,9 +47,9 @@ const documentText = "Frame indexes this document without an agent."
 
 type documents struct{ indexed chan document }
 
-func (d *documents) read(_ context.Context, _ string, input value.JSON) (value.JSON, error) {
+func (d *documents) read(_ context.Context, invocation portable.Invocation) (value.JSON, error) {
 	var request fileRead
-	if err := value.DecodeValue(input.Bytes(), &request, "read"); err != nil {
+	if err := value.DecodeValue(invocation.Input().Bytes(), &request, invocation.Member()); err != nil {
 		return value.JSON{}, err
 	}
 	if request.Path != allowedDocument {
@@ -58,9 +58,9 @@ func (d *documents) read(_ context.Context, _ string, input value.JSON) (value.J
 	return value.EncodeJSON(textResult{documentText})
 }
 
-func (d *documents) replace(ctx context.Context, _ string, input value.JSON) (value.JSON, error) {
+func (d *documents) replace(ctx context.Context, invocation portable.Invocation) (value.JSON, error) {
 	var request document
-	if err := value.DecodeValue(input.Bytes(), &request, "replace"); err != nil {
+	if err := value.DecodeValue(invocation.Input().Bytes(), &request, invocation.Member()); err != nil {
 		return value.JSON{}, err
 	}
 	if request.Path != allowedDocument {
@@ -92,10 +92,20 @@ func (d *documents) install(ctx context.Context, h *frame.Host, pluginRevision v
 	host := frame.Unit{Declaration: frame.UnitDeclaration{ID: "services", Profile: frame.NativeGo}}
 	child := frame.Unit{Declaration: frame.UnitDeclaration{ID: "document-indexer", Profile: frame.LocalProcess}}
 	hostRevision := value.Hash(domain)
-	services := map[string]process.Service{"files": process.Handler(d.read), "index": process.Handler(d.replace)}
+	services := []struct {
+		slot           string
+		implementation process.Service
+	}{
+		{"files", process.Handler(d.read)},
+		{"index", process.Handler(d.replace)},
+	}
 	values := []frame.ExportValue{}
-	for _, slot := range []string{"files", "index"} {
-		spec := definitions[slot]
+	for _, service := range services {
+		slot := service.slot
+		spec, exists := definitions[slot]
+		if !exists {
+			return frame.UnitRef{}, fmt.Errorf("missing contract for service %q", slot)
+		}
 		c, err := portable.AdmitCapability(spec.Descriptor)
 		if err != nil {
 			return frame.UnitRef{}, err
@@ -109,7 +119,7 @@ func (d *documents) install(ctx context.Context, h *frame.Host, pluginRevision v
 			return frame.UnitRef{}, err
 		}
 		host.Declaration.Exports = append(host.Declaration.Exports, frame.ExportDeclaration{Name: slot, Contract: ref})
-		values = append(values, frame.Provide(slot, contract, services[slot]))
+		values = append(values, frame.Provide(slot, contract, service.implementation))
 		provider := frame.ExportRef{InstallationID: hostID, Release: hostRevision, UnitID: host.Declaration.ID, Export: slot, Contract: ref}
 		child.Declaration.Imports = append(child.Declaration.Imports, frame.ImportDeclaration{Slot: slot, Contract: ref, Providers: []frame.ExportRef{provider}})
 	}

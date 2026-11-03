@@ -71,12 +71,21 @@ type execution struct {
 	attempt  sqlite.Attempt
 	ready    chan struct{}
 	mu       sync.Mutex
+	cleanup  cleanupPhase
 	session  Connection
 	channel  *attachment
 	started  bool
 	resource *frame.ResourceHandle
 	cancel   context.CancelCauseFunc
 }
+
+type cleanupPhase uint8
+
+const (
+	cleanupNotStarted cleanupPhase = iota
+	cleanupInProgress
+	cleanupFinished
+)
 
 func New(config Config) (*Driver, error) {
 	if nilDependency(config.Runner) || config.Store == nil || nilDependency(config.Source) || config.CloseTimeout <= 0 || config.MaxFrameBytes <= 0 {
@@ -220,13 +229,12 @@ func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 
 func (e *execution) close(ctx context.Context) (frame.ReleaseState, error) {
 	e.cancel(frame.ErrClosed)
+	e.mu.Lock()
+	e.cleanup = cleanupInProgress
+	e.mu.Unlock()
+	<-e.ready
 	ctx, cancel := context.WithTimeout(ctx, e.driver.config.CloseTimeout)
 	defer cancel()
-	select {
-	case <-e.ready:
-	case <-ctx.Done():
-		return frame.ResourceUnconfirmed, context.Cause(ctx)
-	}
 	e.mu.Lock()
 	session, channel, started := e.session, e.channel, e.started
 	e.session, e.channel = nil, nil
@@ -240,6 +248,9 @@ func (e *execution) close(ctx context.Context) (frame.ReleaseState, error) {
 	if channel != nil {
 		transportErr = errors.Join(transportErr, channel.Close())
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.cleanup = cleanupFinished
 	if !started {
 		proof := undispatchedProof(e.attempt)
 		if err := e.driver.config.Store.ReleaseAttempt(ctx, e.attempt.ID, proof); err != nil {
@@ -288,14 +299,19 @@ func (d *Driver) acknowledgeExit(ctx context.Context, attempt sqlite.Attempt, pr
 	return d.config.Store.ReleaseAttempt(ctx, attempt.ID, proof)
 }
 
-// Reconcile consumes late evidence for the original resource. It never repeats
-// cleanup or launches a replacement under that attempt identity.
+// A child's exit cannot prove that its protocol's host-side work has stopped.
+// Reconcile accepts late evidence only after the original local cleanup completes.
 func (d *Driver) Reconcile(ctx context.Context, id string) error {
 	d.mu.Lock()
 	e := d.live[id]
 	d.mu.Unlock()
 	if e == nil {
 		return frame.ErrUnavailable
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.cleanup != cleanupFinished {
+		return fmt.Errorf("%w: process reconciliation requires completed local cleanup", frame.ErrInvalid)
 	}
 	observed, err := d.config.Runner.Inspect(ctx, id)
 	if err != nil {

@@ -15,7 +15,7 @@ import (
 var _ frame.InstallationStore = (*Store)(nil)
 var _ frame.ExecutionProtection = (*Store)(nil)
 
-func (s *Store) CommitInstallation(ctx context.Context, change frame.InstallationChange) (frame.CommitState, error) {
+func (s *Store) CommitInstallation(ctx context.Context, change frame.InstallationChange) (state frame.CommitState, err error) {
 	if err := s.admission.CheckAdmitted(ctx); err != nil {
 		return frame.CommitRejected, err
 	}
@@ -43,6 +43,22 @@ func (s *Store) CommitInstallation(ctx context.Context, change frame.Installatio
 		}
 		return frame.CommitRejected, err
 	}
+	defer func() {
+		cause := recover()
+		if cause == nil && state != frame.CommitRejected {
+			return
+		}
+		// The private control receipt has no external holder to release it after
+		// rejection or panic. Compaction still requires terminal synchronization.
+		cleanupErr := s.control.compactSettled(context.WithoutCancel(ctx))
+		if cause != nil {
+			if cleanupErr != nil {
+				panic(errors.Join(panicError(cause), cleanupErr))
+			}
+			panic(cause)
+		}
+		err = errors.Join(err, cleanupErr)
+	}()
 	settlement, err := s.control.commit(ctx, submission, request, func(ctx context.Context, tx Executor) ([]byte, error) {
 		var stored []byte
 		readErr := tx.QueryRowContext(ctx, `SELECT record FROM frame_installations WHERE id=?`, id).Scan(&stored)
@@ -98,8 +114,7 @@ func (s *Store) CommitInstallation(ctx context.Context, change frame.Installatio
 	case Committed:
 		return frame.CommitSucceeded, err
 	case NotCommitted:
-		// The private control owner has no caller to release a rejected receipt.
-		return frame.CommitRejected, errors.Join(err, s.control.compactSettled(context.WithoutCancel(ctx)))
+		return frame.CommitRejected, err
 	default:
 		return frame.CommitIndeterminate, err
 	}

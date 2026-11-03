@@ -15,7 +15,9 @@ Each creation is protected by a durable attempt before runner dispatch. The
 actual process, handshake, setup and exports belong to the instance Lifetime.
 Failed setup, stale publication and cancellation close that same resource. A
 timeout or lost runner remains unconfirmed and retains its dependency closure.
-`Reconcile` consumes late Wait evidence without launching or cleaning up again.
+`Reconcile` consumes late Wait evidence only after the original protocol and
+attachment cleanup has completed. It refuses earlier calls before changing the
+attempt or acknowledging its exit. It never launches or cleans up again.
 
 On Host restart, call `Recover` behind the recovery barrier before admitting any
 new work. It fences older creation epochs and retires old attempts. An absent
@@ -29,4 +31,17 @@ The runner's release proof covers its directly owned child. An application that
 allows plugins to start additional processes must provide a stronger execution
 profile with evidence for that larger resource set.
 
-Go plugins call `ServeStdio` with a `process.Unit`. Setup receives exact imported services and a structured Lifetime. `NewMember` derives a unary method from its Go input/output types and binds its handler through `Implement`. Hosts can provide any implementation of `Service` or `StreamingService` matching the published descriptor.
+Go plugins call `ServeStdio` with a `process.Unit`. Setup receives exact imported
+services and a structured Lifetime. `Service.Invoke` and `StreamingService.Stream`
+accept a `portable.Invocation`. Construct queries with `NewQueryInvocation` and
+commands with `NewCommandInvocation`; the business caller supplies the original
+command identity. Every relay carries that same value to the final handler.
+The admitted method owns kind and schema validation. Queries cannot carry command
+identity, and commands cannot execute without it. Transport request IDs remain
+separate from business command identity and never authorize replay.
+
+`NewMember` derives a unary method from its Go input/output types. Bind its typed
+handler with `ImplementQuery` or `ImplementCommand`, then assemble the complete
+service with `Implement`. The command handler receives the original command ID.
+Typed callers use `Member.Query` or `Member.Command`. Hosts can provide any
+implementation of `Service` or `StreamingService` matching the published descriptor.

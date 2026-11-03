@@ -16,10 +16,3 @@ export class FrameError extends Error {
     this.code = code;
   }
 }
-
-export function nonempty(value: string, label: string): string {
-  if (typeof value !== "string" || !value.trim() || value.length > 1024) {
-    throw new TypeError(`${label} must be a nonempty bounded string`);
-  }
-  return value;
-}

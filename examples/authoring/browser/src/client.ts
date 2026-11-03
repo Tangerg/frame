@@ -23,9 +23,11 @@ import type {
   Diagnostic,
   DocumentRef,
 } from "./contracts.generated";
-import { converters, validators, sha256 } from "./contracts";
+import { converters, validators, sha256, markdownFormat } from "./contracts";
 
 export { converters, validators, sha256 } from "./contracts";
+
+const maximumModuleBytes = 16 << 20;
 
 export interface RenderedDocument {
   readonly document: Converted;
@@ -54,7 +56,7 @@ export function connect(bootstrap: Bootstrap) {
       credentials: "omit",
     });
     if (!response.ok) throw new Error("approved module is unavailable");
-    const bytes = await readResponseBytes(response, 16 << 20);
+    const bytes = await readResponseBytes(response, maximumModuleBytes);
     const digest = await sha256(bytes);
     // Node's native ESM loader does not import HTTP. This local test loader
     // imports only the verified original bytes; actual browser evidence lives
@@ -139,7 +141,7 @@ export function connect(bootstrap: Bootstrap) {
           "author.markdown/1",
           (choices) =>
             choices
-              .filter((entry) => entry.metadata.format === "markdown")
+              .filter((entry) => entry.metadata.format === markdownFormat)
               .slice(0, 1),
           (value) => {
             const metadata = value as { format?: unknown; priority?: unknown };

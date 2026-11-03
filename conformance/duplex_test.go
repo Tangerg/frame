@@ -26,15 +26,22 @@ import (
 var descriptor []byte
 
 type upstream struct {
-	started   chan struct{}
-	stopped   chan struct{}
-	waitCalls atomic.Int32
+	started      chan struct{}
+	stopped      chan struct{}
+	waitCalls    atomic.Int32
+	commandCalls atomic.Int32
 }
 
-func (u *upstream) Call(ctx context.Context, member string, input framevalue.JSON) (framevalue.JSON, error) {
-	switch member {
+func (u *upstream) Invoke(ctx context.Context, invocation portable.Invocation) (framevalue.JSON, error) {
+	switch invocation.Member() {
 	case "probe":
-		return input, nil
+		return invocation.Input(), nil
+	case "replace":
+		if invocation.CommandID() != "original-command" || invocation.Kind() != portable.Command {
+			return framevalue.JSON{}, errors.New("relay lost original command identity")
+		}
+		u.commandCalls.Add(1)
+		return invocation.Input(), nil
 	case "wait":
 		if u.waitCalls.Add(1) != 1 {
 			return framevalue.JSON{}, errors.New("duplicate wait")
@@ -47,8 +54,8 @@ func (u *upstream) Call(ctx context.Context, member string, input framevalue.JSO
 		return framevalue.JSON{}, frame.ErrContractMismatch
 	}
 }
-func (u *upstream) Stream(ctx context.Context, member string, input framevalue.JSON, emit process.Emit) (framevalue.JSON, error) {
-	if member != "read" {
+func (u *upstream) Stream(ctx context.Context, invocation portable.Invocation, emit process.Emit) (framevalue.JSON, error) {
+	if invocation.Member() != "read" {
 		return framevalue.JSON{}, frame.ErrContractMismatch
 	}
 	for _, value := range []string{"first", "second"} {
@@ -60,7 +67,7 @@ func (u *upstream) Stream(ctx context.Context, member string, input framevalue.J
 			return framevalue.JSON{}, err
 		}
 	}
-	return input, nil
+	return invocation.Input(), nil
 }
 
 type program struct{ p process.Program }
@@ -180,7 +187,7 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 		return frame.BorrowExport[process.Service](ctx, use, export, func(ctx context.Context, relay process.Service) error {
 			input, _ := framevalue.EncodeJSON("done")
 			var seen []string
-			final, err := relay.(process.StreamingService).Stream(ctx, "read", input, func(_ context.Context, chunk framevalue.JSON) error {
+			final, err := relay.(process.StreamingService).Stream(ctx, queryInvocation(t, "read", input), func(_ context.Context, chunk framevalue.JSON) error {
 				seen = append(seen, chunk.String())
 				return nil
 			})
@@ -190,10 +197,18 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 			if final != input || !slices.Equal(seen, []string{`"first"`, `"second"`}) {
 				return errors.New("nested stream altered chunk order or final value")
 			}
+			command, err := portable.NewCommandInvocation("original-command", "replace", input)
+			if err != nil {
+				return err
+			}
+			result, err := relay.Invoke(ctx, command)
+			if err != nil || result != input || original.commandCalls.Load() != 1 {
+				return errors.Join(errors.New("command relay changed its identity or outcome"), err)
+			}
 			child, cancel := context.WithCancel(ctx)
 			defer cancel()
 			response := make(chan error, 1)
-			go func() { _, err := relay.Call(child, "wait", input); response <- err }()
+			go func() { _, err := relay.Invoke(child, queryInvocation(t, "wait", input)); response <- err }()
 			select {
 			case <-original.started:
 			case <-ctx.Done():
@@ -213,7 +228,7 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 			case <-ctx.Done():
 				return context.Cause(ctx)
 			}
-			value, err := relay.Call(ctx, "probe", input)
+			value, err := relay.Invoke(ctx, queryInvocation(t, "probe", input))
 			if err != nil {
 				return err
 			}
@@ -236,4 +251,13 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 	if err != nil || len(attempts) != 1 || !attempts[0].Released || attempts[0].PendingHandoff {
 		t.Fatalf("unsettled original execution: %v %v", attempts, err)
 	}
+}
+
+func queryInvocation(t *testing.T, member string, input framevalue.JSON) portable.Invocation {
+	t.Helper()
+	invocation, err := portable.NewQueryInvocation(member, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return invocation
 }

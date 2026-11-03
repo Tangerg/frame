@@ -31,6 +31,7 @@ export const converters = new Point<ConverterMetadata, Converter>(
 export const validators = new Point<ValidatorMetadata, Validator>(
   documentContracts.validators,
 );
+export const markdownFormat = "markdown";
 
 export async function sha256(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
   return Array.from(

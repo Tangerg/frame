@@ -10,12 +10,13 @@ func (r InstallationRecord) Unit(id UnitID) UnitRef {
 	return UnitRef{InstallationID: r.ID, Release: r.Release, UnitID: id}
 }
 
-// RunningUnit holds the original instance. Only its final start handle requests
-// retirement, so independent clients of the same grant cannot stop each other.
+// Only the final start handle requests retirement, so independent clients of
+// the same grant cannot stop each other. Stopped handles retain only its completion.
 type RunningUnit struct {
+	id       string
 	instance *Instance
 	once     sync.Once
-	last     bool
+	retired  <-chan struct{}
 }
 
 func (h *Host) StartUnit(ctx context.Context, grant ScopeGrant, root UnitRef) (*RunningUnit, error) {
@@ -40,26 +41,26 @@ func (h *Host) StartUnit(ctx context.Context, grant ScopeGrant, root UnitRef) (*
 	if err != nil {
 		return nil, errors.Join(err, closeErr)
 	}
-	handle := &RunningUnit{instance: instance}
+	handle := &RunningUnit{id: instance.id, instance: instance}
 	if closeErr != nil {
 		return nil, errors.Join(closeErr, handle.Stop(ctx))
 	}
 	return handle, nil
 }
 
-func (r *RunningUnit) ID() string { return r.instance.id }
+func (r *RunningUnit) ID() string { return r.id }
 
 func (r *RunningUnit) Stop(ctx context.Context) error {
 	if ctx == nil {
 		return ErrInvalid
 	}
-	i := r.instance
-	h := i.host
 	r.once.Do(func() {
+		i := r.instance
+		h := i.host
 		h.mu.Lock()
 		i.starts--
-		r.last = i.starts == 0
-		if r.last {
+		if i.starts == 0 {
+			r.retired = i.closed
 			i.retiring = true
 			h.withdrawInstanceLocked(i)
 			if h.instances[i.key()] == i {
@@ -67,12 +68,23 @@ func (r *RunningUnit) Stop(ctx context.Context) error {
 			}
 		}
 		h.mu.Unlock()
-		if r.last {
+		if r.retired != nil {
 			i.beginRetire()
 		}
+		r.instance = nil
 	})
-	if r.last {
-		return h.WaitInstanceRetired(ctx, i.id)
+	if r.retired == nil {
+		return nil
 	}
-	return nil
+	select {
+	case <-r.retired:
+		return nil
+	default:
+	}
+	select {
+	case <-r.retired:
+		return nil
+	case <-ctx.Done():
+		return contextError(ctx)
+	}
 }

@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { Validator } from "jsonschema";
 import { parseJSON } from "../json.js";
 import { digestJSON, freezeJSON, Method } from "./contract.js";
-import { compileSchema } from "./schema.js";
+import { compileSchema, SchemaMismatch } from "./schema.js";
 
 interface ProfileCase {
   name: string;
@@ -74,6 +75,62 @@ describe("shared Go and Node schema profile", () => {
       "hasOwnProperty",
     ]) {
       expect(() => method.validateInput(parseJSON(`{"${name}":7}`))).toThrow();
+    }
+  });
+
+  it("applies not to method inputs, outputs, and streamed values", () => {
+    const excludesNull = { not: { type: "null" } };
+    const method = new Method({
+      name: "read",
+      kind: "query",
+      description: "Read non-null values.",
+      input: excludesNull,
+      output: excludesNull,
+      stream: excludesNull,
+    });
+    for (const validate of [
+      method.validateInput,
+      method.validateOutput,
+      method.validateChunk!,
+    ]) {
+      for (const value of [{}, 1, "ok"])
+        expect(() => validate(value)).not.toThrow();
+      expect(() => validate(null)).toThrow(SchemaMismatch);
+    }
+    expect(
+      () =>
+        new Method({
+          name: "read",
+          kind: "query",
+          description: "Read nullable values.",
+          input: { not: { type: "string" } },
+          output: true,
+        }),
+    ).toThrow("method input must exclude null");
+  });
+
+  it("does not treat an engine failure as evidence that input excludes null", () => {
+    const failure = new Error("schema engine failed");
+    const validate = Validator.prototype.validate;
+    const engine = vi
+      .spyOn(Validator.prototype, "validate")
+      .mockImplementation(function (this: Validator, value, ...arguments_) {
+        if (value === null) throw failure;
+        return validate.call(this, value, ...arguments_);
+      });
+    try {
+      expect(
+        () =>
+          new Method({
+            name: "read",
+            kind: "query",
+            description: "Read an object.",
+            input: { type: "object" },
+            output: true,
+          }),
+      ).toThrow(failure);
+    } finally {
+      engine.mockRestore();
     }
   });
 });

@@ -5,7 +5,6 @@ import (
 	"encoding/json/jsontext"
 	"errors"
 	"fmt"
-	"unicode/utf8"
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/portable"
@@ -75,48 +74,36 @@ func (s *ManagedService) ValidateInput(ctx context.Context, member string, input
 	return nil
 }
 
-const maxCommandIDCharacters = 256
-
-func validCommandID(id string) bool {
-	return id != "" && utf8.ValidString(id) && utf8.RuneCountInString(id) <= maxCommandIDCharacters
+func (s *ManagedService) Invoke(ctx context.Context, invocation portable.Invocation) (framevalue.JSON, error) {
+	return s.invoke(ctx, invocation, nil)
 }
 
-// Queries need no durable command identity. Mutations must use Command so that
-// the original business owner can reconcile a missing response without replay.
-func (s *ManagedService) Call(ctx context.Context, member string, input framevalue.JSON) (framevalue.JSON, error) {
-	return s.invoke(ctx, portable.Query, "", member, input, nil)
-}
-
-func (s *ManagedService) Command(ctx context.Context, id, member string, input framevalue.JSON) (framevalue.JSON, error) {
-	if !validCommandID(id) {
-		return framevalue.JSON{}, fmt.Errorf("%w: bounded command ID required", frame.ErrInvalid)
-	}
-	return s.invoke(ctx, portable.Mutation, id, member, input, nil)
-}
-
-func (s *ManagedService) invoke(ctx context.Context, kind portable.MethodKind, id, member string, input framevalue.JSON, emit process.Emit) (output framevalue.JSON, returned error) {
+func (s *ManagedService) invoke(ctx context.Context, invocation portable.Invocation, emit process.Emit) (output framevalue.JSON, returned error) {
 	if ctx == nil {
 		return framevalue.JSON{}, frame.ErrInvalid
 	}
 	if err := context.Cause(ctx); err != nil {
 		return framevalue.JSON{}, err
 	}
-	method, ok := s.contract.capability.Method(member)
-	if !ok || method.Kind() != kind || (len(method.Descriptor().Stream) != 0) != (emit != nil) || (emit != nil && s.openStream == nil) {
-		return framevalue.JSON{}, fmt.Errorf("%w: managed member %q does not support this invocation", frame.ErrContractMismatch, member)
+	method, ok := s.contract.capability.Method(invocation.Member())
+	if !ok || (len(method.Descriptor().Stream) != 0) != (emit != nil) || (emit != nil && s.openStream == nil) {
+		return framevalue.JSON{}, fmt.Errorf("%w: managed member %q does not support this invocation", frame.ErrContractMismatch, invocation.Member())
 	}
-	params, err := s.params(ctx, method, input)
+	if err := method.ValidateInvocation(invocation); err != nil {
+		return framevalue.JSON{}, errors.Join(frame.ErrContractMismatch, err)
+	}
+	params, err := s.params(ctx, method, invocation.Input())
 	if err != nil {
 		return framevalue.JSON{}, err
 	}
-	params.CommandID = id
+	params.CommandID = invocation.CommandID()
 	if s.openCall != nil {
 		lease, err := reserveManagedLease(s.lifetime)
 		if err != nil {
 			return framevalue.JSON{}, err
 		}
 		grant, err := lease.issue(func() (*ManagedCallback, error) {
-			return s.openCall(ctx, s.session, ManagedCall{Source: s.source, Method: method, Input: input, CommandID: id})
+			return s.openCall(ctx, s.session, ManagedCall{Source: s.source, Method: method, Input: invocation.Input(), CommandID: invocation.CommandID()})
 		})
 		defer func() { returned = errors.Join(returned, lease.finish(ctx)) }()
 		if err != nil {
@@ -161,16 +148,16 @@ func managedDispatchError(err error) error {
 
 // ReadReceipt observes the backend's durable reply for the original admitted
 // input. Missing evidence never authorizes a new command.
-func (s *ManagedService) ReadReceipt(ctx context.Context, id, member string, input framevalue.JSON) (framevalue.JSON, bool, error) {
-	method, ok := s.contract.capability.Method(member)
-	if !ok || method.Kind() != portable.Mutation || !validCommandID(id) || input.Validate() != nil || s.receipt == nil {
+func (s *ManagedService) ReadReceipt(ctx context.Context, invocation portable.Invocation) (framevalue.JSON, bool, error) {
+	method, ok := s.contract.capability.Method(invocation.Member())
+	if !ok || invocation.Kind() != portable.Command || method.ValidateInvocation(invocation) != nil || s.receipt == nil {
 		return framevalue.JSON{}, false, fmt.Errorf("%w: exact receipt query and command evidence required", frame.ErrContractMismatch)
 	}
 	request, err := framevalue.EncodeJSON(struct {
 		ID          string            `json:"id"`
 		Method      string            `json:"method"`
 		InputDigest framevalue.Digest `json:"inputDigest"`
-	}{id, member, input.Digest()})
+	}{invocation.CommandID(), invocation.Member(), invocation.Input().Digest()})
 	if err != nil {
 		return framevalue.JSON{}, false, err
 	}

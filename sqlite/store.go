@@ -36,7 +36,7 @@ const (
 
 type Reader interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-	QueryRowContext(context.Context, string, ...any) *sql.Row
+	QueryRowContext(context.Context, string, ...any) *Row
 }
 
 type Executor interface {
@@ -65,27 +65,26 @@ type Config struct {
 }
 
 type Store struct {
-	db                    *sql.DB
-	expiredTransactionRow *sql.Row
-	lock                  *os.File
-	admission             *frame.Admission
-	id                    string
-	epoch                 uint64
-	owners                map[string]*Owner
-	control               *Owner
-	maxRequestBytes       int
-	maxSubmissions        int
-	lifecycleMu           sync.Mutex
-	transactions          sync.WaitGroup
-	closing               bool
-	databaseSealed        bool
-	databaseCloseErr      error
-	unconfirmed           []*sql.Conn
-	closeOnce             sync.Once
-	closeRequests         chan chan error
-	closeDone             chan struct{}
-	closeErr              error
-	projectInstallation   func(context.Context, Executor, frame.InstallationChange) error
+	db                  *sql.DB
+	lock                *os.File
+	admission           *frame.Admission
+	id                  string
+	epoch               uint64
+	owners              map[string]*Owner
+	control             *Owner
+	maxRequestBytes     int
+	maxSubmissions      int
+	lifecycleMu         sync.Mutex
+	transactions        sync.WaitGroup
+	closing             bool
+	databaseSealed      bool
+	databaseCloseErr    error
+	unconfirmed         []*sql.Conn
+	closeOnce           sync.Once
+	closeRequests       chan chan error
+	closeDone           chan struct{}
+	closeErr            error
+	projectInstallation func(context.Context, Executor, frame.InstallationChange) error
 }
 
 type Owner struct {
@@ -124,7 +123,9 @@ func schemaShape(ctx context.Context, statements []string) (framevalue.Digest, e
 	return readSchemaShape(ctx, database)
 }
 
-func readSchemaShape(ctx context.Context, executor Reader) (framevalue.Digest, error) {
+func readSchemaShape(ctx context.Context, executor interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}) (framevalue.Digest, error) {
 	rows, err := executor.QueryContext(ctx, `SELECT type,name,tbl_name,sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*' ORDER BY type,name`)
 	if err != nil {
 		return framevalue.Digest{}, err
@@ -226,7 +227,7 @@ func (s *Store) transact(ctx context.Context, mode transactionMode, apply func(E
 	}()
 	settled := false
 	commitIssued := false
-	scope := newConnectionScope(connection)
+	scope := newConnectionScope(connection, connection)
 	defer func() {
 		recovered := recover()
 		scope.seal()
@@ -266,13 +267,13 @@ func (s *Store) transact(ctx context.Context, mode transactionMode, apply func(E
 	if _, err := connection.ExecContext(ctx, begin); err != nil {
 		return err
 	}
-	access := newTransactionAccess(s, connection)
-	body := func() error {
-		defer access.seal()
-		return apply(access)
+	if err := scope.enter(); err != nil {
+		return err
 	}
+	access := newTransactionAccess(scope)
+	body := func() error { return access.run(func() error { return apply(access) }) }
 	if mode == readTransaction {
-		err = scope.read(ctx, body)
+		err = access.read(ctx, func(*connectionScope) error { return body() })
 	} else {
 		err = body()
 	}

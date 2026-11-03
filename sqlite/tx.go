@@ -12,9 +12,8 @@ import (
 type txKey struct{ database *sql.DB }
 
 type transaction struct {
-	tx       Executor
+	tx       *transactionAccess
 	readOnly bool
-	scope    *connectionScope
 }
 
 // Standalone database adapters use this exact database identity to join their
@@ -23,7 +22,7 @@ func Connection(ctx context.Context, db *sql.DB) Executor {
 	if owned, ok := ctx.Value(txKey{database: db}).(transaction); ok {
 		return owned.tx
 	}
-	return db
+	return databaseAccess{sqlExecutor: db}
 }
 
 // Nested writers join the exact database's original transaction. Taking a
@@ -33,6 +32,9 @@ func RunInTx(ctx context.Context, db *sql.DB, fn func(context.Context) error) er
 		return err
 	}
 	if owned, ok := ctx.Value(txKey{database: db}).(transaction); ok {
+		if err := owned.tx.validate(); err != nil {
+			return err
+		}
 		if owned.readOnly {
 			return errors.New("sqlite: write transaction cannot enter a read snapshot")
 		}
@@ -53,8 +55,12 @@ func RunReadSnapshot(ctx context.Context, db *sql.DB, read func(context.Context)
 	}
 	if owned, ok := ctx.Value(txKey{database: db}).(transaction); ok {
 		owned.readOnly = true
-		return owned.scope.read(ctx, func() error {
-			return errors.Join(read(context.WithValue(ctx, txKey{database: db}, owned)), cancellationError(ctx))
+		return owned.tx.read(ctx, func(scope *connectionScope) error {
+			access := newTransactionAccess(scope)
+			owned.tx = access
+			return access.run(func() error {
+				return errors.Join(read(context.WithValue(ctx, txKey{database: db}, owned)), cancellationError(ctx))
+			})
 		})
 	}
 	return runIndependentTx(ctx, db, &sql.TxOptions{ReadOnly: true}, read)
@@ -89,7 +95,7 @@ func runIndependentTx(ctx context.Context, db *sql.DB, options *sql.TxOptions, f
 	if err != nil {
 		return errors.Join(err, discardConnection(connection), cancellationError(ctx))
 	}
-	scope := newConnectionScope(tx)
+	scope := newConnectionScope(connection, tx)
 	defer func() {
 		recovered := recover()
 		scope.seal()
@@ -106,13 +112,18 @@ func runIndependentTx(ctx context.Context, db *sql.DB, options *sql.TxOptions, f
 		}
 		err = errors.Join(err, rollbackErr)
 	}()
+	if err := scope.enter(); err != nil {
+		return err
+	}
 	if err = cancellationError(ctx); err == nil {
 		readOnly := options != nil && options.ReadOnly
-		scoped := context.WithValue(ctx, txKey{database: db}, transaction{tx: tx, readOnly: readOnly, scope: scope})
+		access := newTransactionAccess(scope)
+		scoped := context.WithValue(ctx, txKey{database: db}, transaction{tx: access, readOnly: readOnly})
+		body := func() error { return access.run(func() error { return fn(scoped) }) }
 		if readOnly {
-			err = scope.read(scoped, func() error { return fn(scoped) })
+			err = access.read(scoped, func(*connectionScope) error { return body() })
 		} else {
-			err = fn(scoped)
+			err = body()
 		}
 	}
 	scope.seal()
@@ -149,7 +160,7 @@ func beginTransaction(ctx context.Context, conn *sql.Conn, options *sql.TxOption
 		tx, err = conn.BeginTx(context.WithoutCancel(ctx), options)
 		return err
 	})
-	var executor Executor = conn
+	var executor sqlExecutor = conn
 	if tx != nil {
 		executor = tx
 	}

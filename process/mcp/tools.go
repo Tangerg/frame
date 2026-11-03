@@ -177,30 +177,39 @@ type toolService struct {
 	members    map[string]*toolMember
 }
 
+const commandIDMetadataKey = "io.github.tangerg.frame/commandID"
+
 // ToolError is an MCP tool's explicit failure. Result includes its content and metadata.
 type ToolError struct{ Result value.JSON }
 
 func (*ToolError) Error() string { return "mcp tool reported an error" }
 
-func (s *toolService) Call(ctx context.Context, name string, input value.JSON) (value.JSON, error) {
+func (s *toolService) Invoke(ctx context.Context, invocation portable.Invocation) (value.JSON, error) {
 	if ctx == nil {
 		return value.JSON{}, frame.ErrInvalid
 	}
+	name := invocation.Member()
 	member := s.members[name]
 	if member == nil {
 		return value.JSON{}, fmt.Errorf("%w: undeclared MCP member %q", frame.ErrContractMismatch, name)
 	}
-	if err := member.method.ValidateInput(input); err != nil {
+	if err := member.method.ValidateInvocation(invocation); err != nil {
 		return value.JSON{}, errors.Join(frame.ErrContractMismatch, err)
 	}
-	raw := input.Bytes()
+	raw := invocation.Input().Bytes()
 	if len(raw) == 0 || raw[0] != '{' {
 		return value.JSON{}, fmt.Errorf("%w: MCP tool arguments must be an object", frame.ErrContractMismatch)
 	}
 	if err := context.Cause(ctx); err != nil {
 		return value.JSON{}, err
 	}
-	result, err := s.connection.session.CallTool(ctx, &sdk.CallToolParams{Name: name, Arguments: json.RawMessage(raw)})
+	params := &sdk.CallToolParams{Name: name, Arguments: json.RawMessage(raw)}
+	if invocation.Kind() == portable.Command {
+		if err := params.Meta.Set(commandIDMetadataKey, invocation.CommandID()); err != nil {
+			return value.JSON{}, err
+		}
+	}
+	result, err := s.connection.session.CallTool(ctx, params)
 	if err != nil {
 		return value.JSON{}, errors.Join(process.ErrOutcomeUnknown, err, context.Cause(ctx))
 	}

@@ -203,7 +203,7 @@ func TestManagedLeaseKeepsUnprovenBrokerFailuresPending(t *testing.T) {
 }
 
 func TestManagedCallGrantDistinguishesAliasesOfOnePhysicalExport(t *testing.T) {
-	member, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "read", Kind: portable.Mutation, Target: "document", Description: "Read an entry."})
+	member, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "read", Kind: portable.Command, Target: "document", Description: "Read an entry."})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,17 +252,17 @@ func TestManagedCallGrantDistinguishesAliasesOfOnePhysicalExport(t *testing.T) {
 		}
 		cancelled, cancel := context.WithCancel(t.Context())
 		cancel()
-		if _, err := service.Command(cancelled, id, member.Name(), input); !errors.Is(err, context.Canceled) || errors.Is(err, process.ErrOutcomeUnknown) {
+		if _, err := service.Invoke(cancelled, commandInvocation(t, id, member.Name(), input)); !errors.Is(err, context.Canceled) || errors.Is(err, process.ErrOutcomeUnknown) {
 			t.Fatalf("cancelled invocation reached the broker or SDK: %v", err)
 		}
-		_, err := service.Command(t.Context(), id, member.Name(), input)
+		_, err := service.Invoke(t.Context(), commandInvocation(t, id, member.Name(), input))
 		if !errors.Is(err, []error{denied, recognized}[i]) {
 			t.Fatalf("grant for %s: %v", exported.Name, err)
 		}
 	}
 	unit.InstallationID = "another"
 	exported := c.bindExports(unit, lifetime, nil)[1]
-	if _, err := exported.Value.(*ManagedService).Command(t.Context(), id, member.Name(), input); !errors.Is(err, denied) {
+	if _, err := exported.Value.(*ManagedService).Invoke(t.Context(), commandInvocation(t, id, member.Name(), input)); !errors.Is(err, denied) {
 		t.Fatalf("other installation inherited permission: %v", err)
 	}
 	if out, err := lifetime.Close(t.Context()); err != nil || !out.Released {

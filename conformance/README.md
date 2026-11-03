@@ -13,6 +13,7 @@ Frame's executable checks live beside their semantic owners. Each case below nam
 | Independent ESM/type entry points and resource ownership | One SDK tarball tested with a minimal install and with Node/React dependencies | `npm run check` |
 
 After building the SDK, run `go test -tags frame_interop -count=1 ./conformance`.
-The Node relay streams a Go import back through the original Go export call. A separate
+The Node relay streams a Go import back through the original Go export call and
+forwards a command with its unchanged business identity. A separate
 request propagates cancellation across both directions, then probes the still-live session
 and checks exactly one durable execution with its original exit handoff settled.

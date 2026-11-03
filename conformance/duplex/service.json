@@ -4,6 +4,7 @@
   "methods": [
     {"name":"read","kind":"query","description":"","input":{"type":"string"},"output":{"type":"string"},"stream":{"type":"string"}},
     {"name":"wait","kind":"query","description":"","input":{"type":"string"},"output":{"type":"string"}},
-    {"name":"probe","kind":"query","description":"","input":{"type":"string"},"output":{"type":"string"}}
+    {"name":"probe","kind":"query","description":"","input":{"type":"string"},"output":{"type":"string"}},
+    {"name":"replace","kind":"command","description":"","input":{"type":"string"},"output":{"type":"string"}}
   ]
 }

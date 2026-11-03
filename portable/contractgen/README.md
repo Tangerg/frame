@@ -9,9 +9,12 @@ inputs, stream chunks and outputs with their admitted method contract.
 The generator resolves local JSON Pointer references, including escaped names,
 nested subschemas and structural recursion, into one projection graph shared by
 both renderers. Object openness, required fields, composition and reference
-targets are interpreted once. Missing `additionalProperties` is open. Object key
-order does not create a different shared definition; numeric lexemes still
-follow `value.JSON` identity.
+targets are interpreted once. Each method input, output and stream schema retains
+its own document scope. Equal local definition names or bodies in different
+documents do not merge their reference targets. Ambiguous projected type names
+include their method frame; local aliases remain within that frame. Missing
+`additionalProperties` is open. Object key order does not change JSON identity;
+numeric lexemes still follow `value.JSON` identity.
 
 Go projections depend on `github.com/Tangerg/frame/value` when a shape needs
 exact numeric or opaque JSON storage. Every JSON `number` and `integer` uses

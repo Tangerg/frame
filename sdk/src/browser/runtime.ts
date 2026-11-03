@@ -78,22 +78,131 @@ export interface EventRoute<T> {
 }
 
 interface PublicationState {
-  readonly operationId: string;
-  readonly object: ObjectRef;
-  outcome: PublicationResult;
+  readonly receipt: PublicationReceipt;
   observe?: () => Promise<PublicationResult>;
   withdraw?: () => Promise<PublicationResult>;
 }
 
+class PublicationReceipt {
+  #outcome: PublicationResult = Object.freeze({ decision: "unknown" });
+  #withdrawal?: { operationId: string; acknowledged: boolean };
+
+  constructor(
+    readonly operationId: string,
+    readonly object: ObjectRef,
+  ) {}
+
+  get outcome(): PublicationResult {
+    return this.#outcome;
+  }
+
+  get acceptedPublication(): PublicationResult["publication"] {
+    return this.#outcome.decision === "accepted"
+      ? this.#outcome.publication
+      : undefined;
+  }
+
+  receive(result: PublicationResult): PublicationResult {
+    if (
+      !result ||
+      !["unknown", "accepted", "rejected"].includes(result.decision)
+    )
+      throw new FrameError("invalid_plan", "invalid publication decision");
+    if (
+      result.publication &&
+      (!sameObject(result.publication.object, this.object) ||
+        result.publication.operationId !== this.operationId)
+    )
+      throw new FrameError(
+        "permission_denied",
+        "publication response changed the original object or operation",
+      );
+    if (result.decision === "accepted" && !result.publication)
+      throw new FrameError(
+        "invalid_plan",
+        "accepted publication has no exact publication identity",
+      );
+    const currentDecision = this.#outcome.decision;
+    if (
+      currentDecision !== "unknown" &&
+      result.decision !== "unknown" &&
+      result.decision !== currentDecision
+    )
+      throw new FrameError(
+        "invalid_plan",
+        "a confirmed publication decision cannot change",
+      );
+    const accepted = this.acceptedPublication;
+    if (accepted) {
+      if (
+        result.publication &&
+        (result.publication.id !== accepted.id ||
+          result.publication.revision !== accepted.revision)
+      )
+        throw new FrameError(
+          "permission_denied",
+          "publication response changed the original publication identity",
+        );
+    }
+    if (result.decision !== "unknown" || currentDecision === "unknown")
+      this.#outcome = immutable(result);
+    return this.#outcome;
+  }
+
+  uncertain(cause: unknown): void {
+    if (this.#outcome.decision !== "unknown") return;
+    this.#outcome = Object.freeze({
+      decision: "unknown",
+      problem:
+        cause instanceof FrameError
+          ? cause.message
+          : "invalid publication acknowledgement",
+    });
+  }
+
+  get withdrawalOperationId(): string | undefined {
+    return this.#withdrawal?.operationId;
+  }
+
+  requestWithdrawal(operationId: string): void {
+    if (this.#outcome.decision !== "accepted")
+      throw new FrameError(
+        "invalid_plan",
+        "publication must be accepted before withdrawal",
+      );
+    if (this.#withdrawal && this.#withdrawal.operationId !== operationId)
+      throw new FrameError(
+        "invalid_plan",
+        "publication withdrawal identity cannot change",
+      );
+    this.#withdrawal ??= { operationId, acknowledged: false };
+  }
+
+  acknowledgeWithdrawal(): void {
+    if (!this.#withdrawal)
+      throw new FrameError(
+        "invalid_plan",
+        "publication withdrawal was not requested",
+      );
+    this.#withdrawal.acknowledged = true;
+  }
+
+  get withdrawnPublicationId(): string | undefined {
+    return this.#withdrawal?.acknowledged
+      ? this.acceptedPublication?.id
+      : undefined;
+  }
+}
+
 function publicationView(state: PublicationState): PublicationHandle {
   return Object.freeze({
-    operationId: state.operationId,
-    object: state.object,
+    operationId: state.receipt.operationId,
+    object: state.receipt.object,
     get outcome() {
-      return state.outcome;
+      return state.receipt.outcome;
     },
     observe: () =>
-      state.observe ? state.observe() : Promise.resolve(state.outcome),
+      state.observe ? state.observe() : Promise.resolve(state.receipt.outcome),
     withdraw: () =>
       state.withdraw
         ? state.withdraw()
@@ -642,11 +751,6 @@ export class Runtime {
                 metadata: unknown;
                 value: unknown;
               };
-              if (value == null)
-                throw new FrameError(
-                  "contract_mismatch",
-                  "point implementation is missing",
-                );
               const object = this.#stage(
                 entry,
                 unit.instance.id,
@@ -753,6 +857,11 @@ export class Runtime {
     owner: Lifetime,
   ): ObjectEntry {
     owner.assertOpen();
+    if (value == null)
+      throw new FrameError(
+        "contract_mismatch",
+        "point implementation is missing",
+      );
     const unit = entry.units.get(instanceId)?.unit;
     if (
       !unit ||
@@ -1017,62 +1126,33 @@ export class Runtime {
       object: object.reference,
       metadataJson,
     });
-    const state: PublicationState = {
-      operationId,
-      object: object.reference,
-      outcome: Object.freeze({ decision: "unknown" }),
-    };
-    let accepted: PublicationResult["publication"];
-    let withdrawing: string | undefined;
-    let withdrawalAcknowledged = false;
+    const receipt = new PublicationReceipt(operationId, object.reference);
+    const state: PublicationState = { receipt };
     const receive = (result: PublicationResult): PublicationResult => {
-      if (
-        !result ||
-        !["unknown", "accepted", "rejected"].includes(result.decision)
-      )
-        throw new FrameError("invalid_plan", "invalid publication decision");
-      if (
-        result.publication &&
-        (!sameObject(result.publication.object, object.reference) ||
-          result.publication.operationId !== operationId)
-      )
-        throw new FrameError(
-          "permission_denied",
-          "publication response changed the original object or operation",
-        );
-      if (result.decision === "accepted" && !result.publication)
-        throw new FrameError(
-          "invalid_plan",
-          "accepted publication has no exact publication identity",
-        );
-      if (accepted && result.decision === "rejected")
-        throw new FrameError(
-          "invalid_plan",
-          "an accepted publication cannot become rejected",
-        );
-      if (result.decision !== "unknown" || !accepted)
-        state.outcome = immutable(result);
-      if (result.decision === "accepted") accepted = state.outcome.publication;
-      else if (result.decision === "rejected") owner.beginClose();
-      return state.outcome;
+      const observed = receipt.receive(result);
+      if (observed.decision === "rejected") owner.beginClose();
+      return observed;
     };
     state.observe = async () => {
-      if (this.#connection === "cleanupOnly") return state.outcome;
+      if (this.#connection === "cleanupOnly") return receipt.outcome;
       this.#assertConnected();
       return receive(await this.#control.publication(operationId));
     };
     state.withdraw = async () => {
       this.#assertConnected();
-      if (!accepted) receive(await this.#control.publication(operationId));
+      if (receipt.outcome.decision !== "accepted")
+        receive(await this.#control.publication(operationId));
+      const accepted = receipt.acceptedPublication;
       if (!accepted) return { decision: "unknown" };
-      withdrawing ??= crypto.randomUUID();
+      if (!receipt.withdrawalOperationId)
+        receipt.requestWithdrawal(crypto.randomUUID());
       const result = await this.#control.withdraw({
-        operationId: withdrawing,
+        operationId: receipt.withdrawalOperationId!,
         authority: this.#authority,
         publicationId: accepted.id,
       });
       if (result.decision === "accepted") {
-        withdrawalAcknowledged = true;
+        receipt.acknowledgeWithdrawal();
         await owner.close();
       }
       return result;
@@ -1084,7 +1164,8 @@ export class Runtime {
       object.value = undefined;
       state.observe = undefined;
       state.withdraw = undefined;
-      if (accepted && withdrawalAcknowledged) {
+      const publicationId = receipt.withdrawnPublicationId;
+      if (publicationId) {
         this.#outbox.record(
           reservation,
           immutable({
@@ -1096,7 +1177,7 @@ export class Runtime {
             scopeId: entry.plan.scopeId,
             scopeGeneration: entry.plan.scopeGeneration,
             scopeKind: "publication",
-            publicationId: accepted.id,
+            publicationId,
             instances: [object.reference.export.instanceId],
             status: "released",
           }),
@@ -1125,15 +1206,9 @@ export class Runtime {
       receive(result);
     } catch (cause) {
       // A malformed acknowledgement leaves the original operation observable.
-      state.outcome = Object.freeze({
-        decision: "unknown",
-        problem:
-          cause instanceof FrameError
-            ? cause.message
-            : "invalid publication acknowledgement",
-      });
+      receipt.uncertain(cause);
     }
-    if (state.outcome.decision === "rejected") await owner.close();
+    if (receipt.outcome.decision === "rejected") await owner.close();
     return handle;
   }
 

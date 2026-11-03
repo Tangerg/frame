@@ -37,7 +37,12 @@ After MCP initialization the adapter calls `operations.describe`. It compares th
 
 ## Call semantics
 
-Borrow the registered `process.Service` through Frame. Its `Call` method executes a managed query. Inside the borrow, use the concrete `*mcp.ManagedService` for protocol-specific operations.
+Borrow the registered `process.Service` through Frame. `Invoke` accepts the same
+immutable `portable.Invocation` used by native and neutral process services.
+`NewQueryInvocation` constructs a query; `NewCommandInvocation` requires the
+business caller's original identity. A managed command can pass through a neutral
+process relay without a concrete MCP type assertion or a replacement identity.
+Inside the borrow, use `*mcp.ManagedService` for backend input admission and receipts.
 
 Cancellation before handing an invocation to the SDK returns its local cause.
 After that handoff, cancellation, transport failure and invalid results retain
@@ -51,10 +56,9 @@ Only the original command's business owner and receipt can settle its effects.
 | Operation | Calling contract |
 | --- | --- |
 | `ValidateInput(ctx, member, input)` | Asks the exact backend to admit its typed input after local schema checks. No command identity or business dispatch. |
-| `Call(ctx, member, input)` | Unary query. |
-| `Command(ctx, commandID, member, input)` | Unary command. Supply the stable identity of the logical effect. |
-| `Stream` and `StreamCommand` | Synchronous chunk delivery through a per-call grant. Acknowledge a chunk only after its consumer accepts it. The separately validated final result completes the stream. |
-| `ReadReceipt(ctx, commandID, member, originalInput)` | Queries the backend's exact `commands.get` contract using the original input digest and the same export. A found receipt can represent a successful reply or a typed business refusal. |
+| `Invoke(ctx, invocation)` | Unary query or command, checked against the frozen method. Commands retain the caller's original identity. |
+| `Stream(ctx, invocation, emit)` | Query or command with synchronous chunk delivery through a per-call grant. Acknowledge a chunk only after its consumer accepts it. The separately validated final result completes the stream. |
+| `ReadReceipt(ctx, originalInvocation)` | Queries the backend's exact `commands.get` contract using the original command identity, input digest and the same export. A found receipt can represent a successful reply or a typed business refusal. |
 
 Use `mcp.WithInvocation` when the caller owns invocation and target evidence. Invocation ID and command ID have separate meanings. A transport failure after command dispatch can leave an unknown effect. Inspect the original receipt where supported. Missing evidence never authorizes replay. Keep borrowed services and their grants within their owning lifetime.
 

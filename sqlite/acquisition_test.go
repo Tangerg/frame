@@ -5,21 +5,42 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+
+	modernc "modernc.org/sqlite"
 )
 
+type acquisitionBoundary string
+
+const (
+	beginAcquisition  acquisitionBoundary = "begin"
+	policyAcquisition acquisitionBoundary = "read-policy"
+)
+
+func (b acquisitionBoundary) loseAcknowledgement(injected *atomic.Bool) transactionFault {
+	if b == beginAcquisition {
+		return transactionFault{afterExec: func(query string) error {
+			if query == "BEGIN IMMEDIATE" && injected.CompareAndSwap(false, true) {
+				return context.Canceled
+			}
+			return nil
+		}}
+	}
+	return transactionFault{afterAuthorize: func(authorizer modernc.AuthorizerFn) error {
+		if authorizer != nil && authorizer(modernc.AuthInsert, "", "", "", "") == modernc.AuthorizerDeny && injected.CompareAndSwap(false, true) {
+			return context.Canceled
+		}
+		return nil
+	}}
+}
+
 func TestAcquisitionAcknowledgementLossSettlesOriginalConnection(t *testing.T) {
-	for _, boundary := range []string{"BEGIN IMMEDIATE", "PRAGMA query_only=ON"} {
-		t.Run(boundary, func(t *testing.T) {
+	for _, boundary := range []acquisitionBoundary{beginAcquisition, policyAcquisition} {
+		t.Run(string(boundary), func(t *testing.T) {
 			store, owner, admission := testStore(t)
 			var injected atomic.Bool
-			installTransactionFault(t, store, transactionFault{afterExec: func(query string) error {
-				if query == boundary && injected.CompareAndSwap(false, true) {
-					return context.Canceled
-				}
-				return nil
-			}})
+			installTransactionFault(t, store, boundary.loseAcknowledgement(&injected))
 			var err error
-			if boundary == "BEGIN IMMEDIATE" {
+			if boundary == beginAcquisition {
 				_, err = owner.Prepare(t.Context(), []byte("interrupted acquisition"))
 			} else {
 				err = store.Read(t.Context(), func(Reader) error {
@@ -39,36 +60,36 @@ func TestAcquisitionAcknowledgementLossSettlesOriginalConnection(t *testing.T) {
 }
 
 func TestUnconfirmedAcquisitionCleanupRetainsOriginalAuthority(t *testing.T) {
-	for _, boundary := range []string{"BEGIN IMMEDIATE", "PRAGMA query_only=ON"} {
-		t.Run(boundary, func(t *testing.T) {
+	for _, boundary := range []acquisitionBoundary{beginAcquisition, policyAcquisition} {
+		t.Run(string(boundary), func(t *testing.T) {
 			store, owner, admission := testStore(t)
 			var injected, disposalAllowed atomic.Bool
 			var opens, releases atomic.Int64
-			path := installTransactionFault(t, store, transactionFault{
-				opened: func() { opens.Add(1) },
-				afterExec: func(query string) error {
-					if query == boundary && injected.CompareAndSwap(false, true) {
-						return context.Canceled
-					}
-					return nil
-				},
-				beforeExec: func(query string) error {
-					if query == "ROLLBACK" || query == "PRAGMA query_only=OFF" {
-						return errors.New("original acquisition cleanup unconfirmed")
-					}
-					return nil
-				},
-				beforeClose: func() error {
-					if !disposalAllowed.Load() {
-						return errors.New("original connection is still open")
-					}
-					return nil
-				},
-				afterClose: func() { releases.Add(1) },
-			})
+			fault := boundary.loseAcknowledgement(&injected)
+			fault.opened = func() { opens.Add(1) }
+			fault.beforeExec = func(query string) error {
+				if query == "ROLLBACK" {
+					return errors.New("original acquisition cleanup unconfirmed")
+				}
+				return nil
+			}
+			fault.beforeAuthorize = func(modernc.AuthorizerFn) error {
+				if injected.Load() {
+					return errors.New("original policy cleanup unconfirmed")
+				}
+				return nil
+			}
+			fault.beforeClose = func() error {
+				if !disposalAllowed.Load() {
+					return errors.New("original connection is still open")
+				}
+				return nil
+			}
+			fault.afterClose = func() { releases.Add(1) }
+			path := installTransactionFault(t, store, fault)
 			defer disposalAllowed.Store(true)
 			var err error
-			if boundary == "BEGIN IMMEDIATE" {
+			if boundary == beginAcquisition {
 				_, err = owner.Prepare(t.Context(), []byte("unconfirmed acquisition"))
 			} else {
 				err = store.Read(t.Context(), func(Reader) error { t.Fatal("read callback entered"); return nil })

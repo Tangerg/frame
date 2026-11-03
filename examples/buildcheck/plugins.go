@@ -3,95 +3,146 @@ package buildcheck
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/value"
 )
 
-func StandardPlugins(contracts Contracts) ([]*frame.Plugin, error) {
-	definitions := []frame.Definition{
-		{Revision: value.Hash([]byte("buildcheck/compiler/1")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "compiler", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "normalize", Contract: contracts.Passes.Ref()}, {Name: "emit", Contract: contracts.Passes.Ref()}}}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
-			return []frame.ExportValue{
-				frame.Contribute("normalize", contracts.Passes, PassMetadata{Stage: "normalize", Order: 10}, CompilerPass(func(ctx context.Context, input string) (string, error) {
-					if err := ctx.Err(); err != nil {
-						return "", err
-					}
-					return strings.TrimSpace(input), nil
-				})),
-				frame.Contribute("emit", contracts.Passes, PassMetadata{Stage: "emit", Order: 20}, CompilerPass(func(ctx context.Context, input string) (string, error) {
-					if err := ctx.Err(); err != nil {
-						return "", err
-					}
-					return "compiled(" + input + ")", nil
-				})),
-			}, nil
-		}}}},
-		{Revision: value.Hash([]byte("buildcheck/analysis/1")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "analysis", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "todo", Contract: contracts.Analyzers.Ref()}, {Name: "long-line", Contract: contracts.Analyzers.Ref()}}}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
-			return []frame.ExportValue{
-				frame.Contribute("todo", contracts.Analyzers, AnalyzerMetadata{Name: "todo", Required: true}, Analyzer(func(ctx context.Context, input SourceRevision) ([]Diagnostic, error) {
-					var found []Diagnostic
-					for line, text := range strings.Split(input.Text, "\n") {
-						if err := ctx.Err(); err != nil {
-							return nil, err
-						}
-						if strings.Contains(text, "TODO") {
-							found = append(found, Diagnostic{Analyzer: "todo", Line: line + 1, Message: "unfinished work"})
-						}
-					}
-					return found, nil
-				})),
-				frame.Contribute("long-line", contracts.Analyzers, AnalyzerMetadata{Name: "long-line"}, Analyzer(func(ctx context.Context, input SourceRevision) ([]Diagnostic, error) {
-					var found []Diagnostic
-					for line, text := range strings.Split(input.Text, "\n") {
-						if err := ctx.Err(); err != nil {
-							return nil, err
-						}
-						if len(text) > 80 {
-							found = append(found, Diagnostic{Analyzer: "long-line", Line: line + 1, Message: "line exceeds 80 bytes"})
-						}
-					}
-					return found, nil
-				})),
-			}, nil
-		}}}},
-		{Revision: value.Hash([]byte("buildcheck/format/1")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "format", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "trim", Contract: contracts.Formatters.Ref()}, {Name: "identity", Contract: contracts.Formatters.Ref()}}}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
-			return []frame.ExportValue{
-				frame.Contribute("trim", contracts.Formatters, FormatterMetadata{Name: "trim", Priority: 10}, Formatter(func(ctx context.Context, input SourceRevision) (Patch, error) {
-					if err := ctx.Err(); err != nil {
-						return Patch{}, err
-					}
-					return Patch{ExpectedRevision: input.Revision, Text: strings.TrimSpace(input.Text) + "\n"}, nil
-				})),
-				frame.Contribute("identity", contracts.Formatters, FormatterMetadata{Name: "identity", Priority: 1}, Formatter(func(ctx context.Context, input SourceRevision) (Patch, error) {
-					if err := ctx.Err(); err != nil {
-						return Patch{}, err
-					}
-					return Patch{ExpectedRevision: input.Revision, Text: input.Text}, nil
-				})),
-			}, nil
-		}}}},
-		{Revision: value.Hash([]byte("buildcheck/trace/1")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "trace", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "trace", Contract: contracts.Around.Ref()}}}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
-			return []frame.ExportValue{
-				frame.Contribute("trace", contracts.Around, AroundMetadata{Name: "trace", Order: 1}, Around(func(ctx context.Context, input SourceRevision, next Next) (Result, error) {
-					if next == nil {
-						return Result{}, errors.New("buildcheck: continuation is required")
-					}
-					result, err := next(ctx, input)
-					result.Trace = append([]string{"trace:enter"}, result.Trace...)
-					result.Trace = append(result.Trace, "trace:leave")
-					return result, err
-				})),
-			}, nil
-		}}}},
+const (
+	normalizePassOrder        = 10
+	emitPassOrder             = 20
+	trimFormatterPriority     = 10
+	identityFormatterPriority = 1
+	traceAroundOrder          = 1
+	maximumLineBytes          = 80
+)
+
+func StandardInstallations(contracts Contracts) ([]frame.InstallationConfig, error) {
+	definitions := []struct {
+		installation frame.InstallationID
+		revision     string
+		unit         frame.UnitSpec
+	}{
+		{"compiler", "buildcheck/compiler/1", compilerUnit(contracts.Passes)},
+		{"analysis", "buildcheck/analysis/1", analysisUnit(contracts.Analyzers)},
+		{"format", "buildcheck/format/1", formatterUnit(contracts.Formatters)},
+		{"trace", "buildcheck/trace/1", tracingUnit(contracts.Around)},
 	}
-	plugins := make([]*frame.Plugin, 0, len(definitions))
+	installations := make([]frame.InstallationConfig, 0, len(definitions))
 	for _, definition := range definitions {
-		plugin, err := frame.Define(definition)
+		unit, err := frame.DefineUnit(definition.unit)
 		if err != nil {
 			return nil, err
 		}
-		plugins = append(plugins, plugin)
+		plugin, err := frame.Define(frame.Definition{Revision: value.Hash([]byte(definition.revision)), Units: []frame.Unit{unit}})
+		if err != nil {
+			return nil, err
+		}
+		installations = append(installations, frame.InstallationConfig{ID: definition.installation, Plugin: plugin, Enabled: true})
 	}
-	return plugins, nil
+	return installations, nil
+}
+
+func compilerUnit(point frame.Point[PassMetadata, CompilerPass]) frame.UnitSpec {
+	normalization := PassMetadata{Stage: "normalize", Order: normalizePassOrder}
+	emission := PassMetadata{Stage: "emit", Order: emitPassOrder}
+	normalize := frame.Offer(normalization.Stage, point)
+	emit := frame.Offer(emission.Stage, point)
+	return frame.UnitSpec{ID: "compiler", Exports: frame.Exports(normalize, emit), Prepare: func(setup *frame.Setup) error {
+		if err := normalize.Bind(setup, normalization, CompilerPass(func(ctx context.Context, input string) (string, error) {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			return strings.TrimSpace(input), nil
+		})); err != nil {
+			return err
+		}
+		return emit.Bind(setup, emission, CompilerPass(func(ctx context.Context, input string) (string, error) {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			return "compiled(" + input + ")", nil
+		}))
+	}}
+}
+
+type lineAnalyzer struct {
+	metadata   AnalyzerMetadata
+	message    string
+	violatedBy func(string) bool
+}
+
+func (a lineAnalyzer) analyze(ctx context.Context, input SourceRevision) ([]Diagnostic, error) {
+	var found []Diagnostic
+	for line, text := range strings.Split(input.Text, "\n") {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if a.violatedBy(text) {
+			found = append(found, Diagnostic{Analyzer: a.metadata.Name, Line: line + 1, Message: a.message})
+		}
+	}
+	return found, nil
+}
+
+func analysisUnit(point frame.Point[AnalyzerMetadata, Analyzer]) frame.UnitSpec {
+	unfinished := lineAnalyzer{
+		metadata:   AnalyzerMetadata{Name: "todo", Required: true},
+		message:    "unfinished work",
+		violatedBy: func(text string) bool { return strings.Contains(text, "TODO") },
+	}
+	longLine := lineAnalyzer{
+		metadata:   AnalyzerMetadata{Name: "long-line"},
+		message:    fmt.Sprintf("line exceeds %d bytes", maximumLineBytes),
+		violatedBy: func(text string) bool { return len(text) > maximumLineBytes },
+	}
+	todo := frame.Offer(unfinished.metadata.Name, point)
+	length := frame.Offer(longLine.metadata.Name, point)
+	return frame.UnitSpec{ID: "analysis", Exports: frame.Exports(todo, length), Prepare: func(setup *frame.Setup) error {
+		if err := todo.Bind(setup, unfinished.metadata, Analyzer(unfinished.analyze)); err != nil {
+			return err
+		}
+		return length.Bind(setup, longLine.metadata, Analyzer(longLine.analyze))
+	}}
+}
+
+func formatterUnit(point frame.Point[FormatterMetadata, Formatter]) frame.UnitSpec {
+	trimmed := FormatterMetadata{Name: "trim", Priority: trimFormatterPriority}
+	unchanged := FormatterMetadata{Name: "identity", Priority: identityFormatterPriority}
+	trim := frame.Offer(trimmed.Name, point)
+	identity := frame.Offer(unchanged.Name, point)
+	return frame.UnitSpec{ID: "format", Exports: frame.Exports(trim, identity), Prepare: func(setup *frame.Setup) error {
+		if err := trim.Bind(setup, trimmed, Formatter(func(ctx context.Context, input SourceRevision) (Patch, error) {
+			if err := ctx.Err(); err != nil {
+				return Patch{}, err
+			}
+			return Patch{ExpectedRevision: input.Revision, Text: strings.TrimSpace(input.Text) + "\n"}, nil
+		})); err != nil {
+			return err
+		}
+		return identity.Bind(setup, unchanged, Formatter(func(ctx context.Context, input SourceRevision) (Patch, error) {
+			if err := ctx.Err(); err != nil {
+				return Patch{}, err
+			}
+			return Patch{ExpectedRevision: input.Revision, Text: input.Text}, nil
+		}))
+	}}
+}
+
+func tracingUnit(point frame.Point[AroundMetadata, Around]) frame.UnitSpec {
+	metadata := AroundMetadata{Name: "trace", Order: traceAroundOrder}
+	trace := frame.Offer(metadata.Name, point)
+	return frame.UnitSpec{ID: "trace", Exports: frame.Exports(trace), Prepare: func(setup *frame.Setup) error {
+		return trace.Bind(setup, metadata, Around(func(ctx context.Context, input SourceRevision, next Next) (Result, error) {
+			if next == nil {
+				return Result{}, errors.New("buildcheck: continuation is required")
+			}
+			result, err := next(ctx, input)
+			result.Trace = append([]string{metadata.Name + ":enter"}, result.Trace...)
+			result.Trace = append(result.Trace, metadata.Name+":leave")
+			return result, err
+		}))
+	}}
 }

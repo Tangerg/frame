@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"errors"
 	"sync"
 
@@ -15,26 +16,39 @@ import (
 // Service is one already bound export. Only the member names in that export's
 // published contract can be invoked; equal member names across exports are independent.
 type Service interface {
-	Call(context.Context, string, value.JSON) (value.JSON, error)
+	Invoke(context.Context, portable.Invocation) (value.JSON, error)
 }
-type Handler func(context.Context, string, value.JSON) (value.JSON, error)
+type Handler func(context.Context, portable.Invocation) (value.JSON, error)
 
-func (f Handler) Call(ctx context.Context, name string, input value.JSON) (value.JSON, error) {
-	return f(ctx, name, input)
+func (f Handler) Invoke(ctx context.Context, invocation portable.Invocation) (value.JSON, error) {
+	return f(ctx, invocation)
 }
 
 type Emit func(context.Context, value.JSON) error
 type StreamingService interface {
 	Service
-	Stream(context.Context, string, value.JSON, Emit) (value.JSON, error)
+	Stream(context.Context, portable.Invocation, Emit) (value.JSON, error)
 }
 
 type callParams struct {
-	Handle string     `json:"handle"`
-	Member string     `json:"member"`
-	Input  value.JSON `json:"input"`
-	Stream string     `json:"stream,omitzero"`
+	Handle    string         `json:"handle"`
+	Member    string         `json:"member"`
+	Input     value.JSON     `json:"input"`
+	CommandID jsontext.Value `json:"commandID,omitzero"`
+	Stream    string         `json:"stream,omitzero"`
 }
+
+func (p callParams) invocation() (portable.Invocation, error) {
+	if len(p.CommandID) != 0 {
+		var id string
+		if p.CommandID.Kind() != '"' || json.Unmarshal(p.CommandID, &id) != nil {
+			return portable.Invocation{}, mismatch()
+		}
+		return portable.NewCommandInvocation(id, p.Member, p.Input)
+	}
+	return portable.NewQueryInvocation(p.Member, p.Input)
+}
+
 type chunkParams struct {
 	Stream string     `json:"stream"`
 	Value  value.JSON `json:"value"`
@@ -100,24 +114,30 @@ type remote struct {
 	deliveries *deliveries
 }
 
-func (r *remote) Call(ctx context.Context, member string, input value.JSON) (value.JSON, error) {
-	return r.invoke(ctx, member, input, nil)
+func (r *remote) Invoke(ctx context.Context, invocation portable.Invocation) (value.JSON, error) {
+	return r.invoke(ctx, invocation, nil)
 }
-func (r *remote) Stream(ctx context.Context, member string, input value.JSON, emit Emit) (value.JSON, error) {
+func (r *remote) Stream(ctx context.Context, invocation portable.Invocation, emit Emit) (value.JSON, error) {
 	if emit == nil {
 		return value.JSON{}, frame.ErrInvalid
 	}
-	return r.invoke(ctx, member, input, emit)
+	return r.invoke(ctx, invocation, emit)
 }
-func (r *remote) invoke(ctx context.Context, member string, input value.JSON, emit Emit) (result value.JSON, err error) {
-	method, ok := r.contract.Method(member)
+func (r *remote) invoke(ctx context.Context, invocation portable.Invocation, emit Emit) (result value.JSON, err error) {
+	method, ok := r.contract.Method(invocation.Member())
 	if !ok || (len(method.Descriptor().Stream) > 0) != (emit != nil) {
 		return value.JSON{}, mismatch()
 	}
-	if err := method.ValidateInput(input); err != nil {
+	if err := method.ValidateInvocation(invocation); err != nil {
 		return value.JSON{}, errors.Join(frame.ErrContractMismatch, err)
 	}
-	params := callParams{Handle: r.handle, Member: member, Input: input}
+	params := callParams{Handle: r.handle, Member: invocation.Member(), Input: invocation.Input()}
+	if invocation.Kind() == portable.Command {
+		params.CommandID, err = json.Marshal(invocation.CommandID())
+		if err != nil {
+			return value.JSON{}, err
+		}
+	}
 	if emit != nil {
 		call := newStreamCall(ctx)
 		token, closeSink := r.deliveries.open(call, method, emit)
@@ -150,19 +170,19 @@ func dispatchCall(ctx context.Context, conn *peer, services map[string]binding, 
 		return nil, mismatch()
 	}
 	method, ok := selected.contract.Method(params.Member)
-	if !ok || method.ValidateInput(params.Input) != nil || (len(method.Descriptor().Stream) > 0) != (params.Stream != "") {
+	invocation, err := params.invocation()
+	if err != nil || !ok || method.ValidateInvocation(invocation) != nil || (len(method.Descriptor().Stream) > 0) != (params.Stream != "") {
 		return nil, mismatch()
 	}
 	var result value.JSON
-	var err error
 	if params.Stream != "" {
 		implementation, ok := selected.service.(StreamingService)
 		if !ok {
 			return nil, mismatch()
 		}
-		result, err = sendStream(ctx, conn, implementation, method, params)
+		result, err = sendStream(ctx, conn, implementation, method, params, invocation)
 	} else {
-		result, err = selected.service.Call(ctx, params.Member, params.Input)
+		result, err = selected.service.Invoke(ctx, invocation)
 	}
 	if err != nil {
 		// Handler errors cannot prove that an admitted effect did not occur.
@@ -175,10 +195,10 @@ func dispatchCall(ctx context.Context, conn *peer, services map[string]binding, 
 	return result.Bytes(), nil
 }
 
-func sendStream(ctx context.Context, conn *peer, source StreamingService, method *portable.Method, params callParams) (result value.JSON, err error) {
+func sendStream(ctx context.Context, conn *peer, source StreamingService, method *portable.Method, params callParams, invocation portable.Invocation) (result value.JSON, err error) {
 	call := newStreamCall(ctx)
 	defer func() { err = call.finish(err) }()
-	return source.Stream(call.ctx, params.Member, params.Input, func(wait context.Context, chunk value.JSON) error {
+	return source.Stream(call.ctx, invocation, func(wait context.Context, chunk value.JSON) error {
 		return call.deliver(wait, func(delivery context.Context) error {
 			if err := method.ValidateChunk(chunk.Bytes()); err != nil {
 				return err

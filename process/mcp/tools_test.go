@@ -82,7 +82,7 @@ func TestToolsOnApprovedRunner(t *testing.T) {
 		{"call", 4, false, nil}, {"catalog-budget", 1, false, frame.ErrCapacity}, {"schema-drift", 4, true, frame.ErrContractMismatch},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			capability, err := portable.NewCapability("thirdparty", portable.MethodDescriptor{Name: "read", Kind: portable.Query, Input: []byte(inputSchema), Output: []byte(outputSchema)}, portable.MethodDescriptor{Name: "text", Kind: portable.Mutation, Input: []byte(inputSchema), Output: []byte(`{"type":"object","required":["content"]}`)})
+			capability, err := portable.NewCapability("thirdparty", portable.MethodDescriptor{Name: "read", Kind: portable.Query, Input: []byte(inputSchema), Output: []byte(outputSchema)}, portable.MethodDescriptor{Name: "text", Kind: portable.Command, Input: []byte(inputSchema), Output: []byte(`{"type":"object","required":["content"]}`)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -113,7 +113,7 @@ func verifyCalls(t *testing.T, ctx context.Context, svc process.Service, dir str
 		if err != nil {
 			t.Fatal(err)
 		}
-		return svc.Call(ctx, name, in)
+		return svc.Invoke(ctx, queryInvocation(t, name, in))
 	}
 	reply, err := call(ctx, "read", "{}")
 	if err != nil || reply.String() != exactResult {

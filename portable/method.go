@@ -18,8 +18,8 @@ const Protocol = "io.github.tangerg.frame/portable/1"
 type MethodKind string
 
 const (
-	Query    MethodKind = "query"
-	Mutation MethodKind = "command"
+	Query   MethodKind = "query"
+	Command MethodKind = "command"
 )
 
 type MethodDescriptor struct {
@@ -55,7 +55,7 @@ func AdmitMethod(descriptor MethodDescriptor) (*Method, error) {
 	if !ValidToken(descriptor.Name) || (descriptor.Target != "" && !ValidToken(descriptor.Target)) {
 		return nil, errors.New("capability: method name and declared target must be bounded tokens")
 	}
-	if descriptor.Kind != Query && descriptor.Kind != Mutation {
+	if descriptor.Kind != Query && descriptor.Kind != Command {
 		return nil, errors.New("capability: method kind must be query or command")
 	}
 	if err := checkMethodDescriptor(descriptor); err != nil {

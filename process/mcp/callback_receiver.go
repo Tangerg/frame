@@ -92,7 +92,7 @@ func (r *CallbackReceiver) Stream(ctx context.Context, session *sdk.ClientSessio
 	if int64(len(envelope)) > r.limits.MaxResponseBytes {
 		return ManagedCallback{}, frame.ErrCapacity
 	}
-	return r.open(ctx, callbackRoute{streamDeliveryName, streamDeliveryFingerprint, portable.Mutation, func(call context.Context, _ string, input value.JSON) (value.JSON, error) {
+	return r.open(ctx, callbackRoute{streamDeliveryName, streamDeliveryFingerprint, portable.Command, func(call context.Context, _ string, input value.JSON) (value.JSON, error) {
 		var part struct {
 			Sequence uint64     `json:"sequence"`
 			Value    value.JSON `json:"value"`
@@ -118,7 +118,7 @@ func credentialMatches(header http.Header, name, expected string) bool {
 func (route callbackRoute) admits(p *managedParams) bool {
 	return p.Protocol == managedVersion && p.Method == route.name && p.Contract.String() == route.fingerprint &&
 		p.Contributions == nil && p.Export == "" && p.Capability.String() == "" && p.Meta == nil &&
-		(route.kind == portable.Mutation && validCommandID(p.CommandID) || route.kind == portable.Query && p.CommandID == "")
+		(route.kind == portable.Command && portable.ValidCommandID(p.CommandID) || route.kind == portable.Query && p.CommandID == "")
 }
 
 func (route callbackRoute) serve(w http.ResponseWriter, req *http.Request, ref ManagedCallback, limits CallbackReceiverLimits) {

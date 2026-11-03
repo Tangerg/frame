@@ -361,7 +361,7 @@ func (s *Store) Remove(ctx context.Context, digest value.Digest) (err error) {
 	if digest.Validate() != nil {
 		return ErrInvalid
 	}
-	retiring, temporary, identity, err := s.privateDirectory(".retiring-")
+	retiring, temporary, identity, err := s.privateDirectory(retiringDirectoryPrefix)
 	if err != nil {
 		return err
 	}
@@ -654,7 +654,7 @@ type staging struct {
 }
 
 func (s *Store) stage() (*staging, error) {
-	name, root, identity, err := s.privateDirectory(".stage-")
+	name, root, identity, err := s.privateDirectory(stagingDirectoryPrefix)
 	if err != nil {
 		return nil, err
 	}

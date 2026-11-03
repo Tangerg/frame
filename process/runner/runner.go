@@ -106,6 +106,7 @@ type storedAttempt struct {
 
 const (
 	journalVersion            = 2
+	journalFilename           = "attempts.json"
 	defaultMaxAttempts        = 4096
 	defaultMaxExecutableBytes = 512 << 20
 	maxIdentityBytes          = 256
@@ -192,7 +193,7 @@ func Open(config Config) (_ *Server, err error) {
 			err = errors.Join(err, unlockDirectory(lock))
 		}
 	}()
-	data, readErr := os.ReadFile(filepath.Join(config.Directory, "attempts.json"))
+	data, readErr := os.ReadFile(filepath.Join(config.Directory, journalFilename))
 	if readErr == nil {
 		if err := jsonv2.Unmarshal(data, &server.journal, jsonv2.RejectUnknownMembers(true)); err != nil {
 			return nil, fmt.Errorf("runner: invalid journal: %w", err)
@@ -289,6 +290,7 @@ func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ Observati
 			err = errors.Join(err, releaseExecutable(path))
 		}
 	}()
+	// A stderr copy pipe would make Wait depend on descriptors inherited by descendants.
 	command := exec.Command(path, request.Args...)
 	command.Env = append([]string{}, request.Env...)
 	command.Dir = request.Directory
@@ -304,7 +306,6 @@ func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ Observati
 	command.Stdout = stdoutWriter
 	// Diagnostics must not fill a pipe and stall a process before Attach. The
 	// host may explicitly provide structured logging through its plugin contract.
-	command.Stderr = io.Discard
 	if err := command.Start(); err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
@@ -533,7 +534,7 @@ func (s *Server) persist() error {
 			projection.Attempts[id] = item
 		}
 	}
-	if err := storeRecord(filepath.Join(s.config.Directory, "attempts.json"), projection); err != nil {
+	if err := storeRecord(filepath.Join(s.config.Directory, journalFilename), projection); err != nil {
 		return err
 	}
 	s.journal = projection

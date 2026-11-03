@@ -216,6 +216,50 @@ func TestRejectedInstallationReclaimsItsPrivateSubmissionCapacity(t *testing.T) 
 	}
 }
 
+func TestInstallationProjectionPanicReleasesItsSettledPrivateReceipt(t *testing.T) {
+	admission := frame.NewAdmission()
+	config := testConfig(filepath.Join(t.TempDir(), "private-receipts.db"), admission)
+	config.MaxSubmissionsPerOwner = 1
+	cause := errors.New("installation projection panicked")
+	panics := true
+	config.ProjectInstallation = func(context.Context, Executor, frame.InstallationChange) error {
+		if panics {
+			panic(cause)
+		}
+		return nil
+	}
+	store, err := Open(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	host, err := frame.NewHost(t.Context(), frame.HostConfig{Admission: admission, Installations: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close(context.Background())
+	plugin, err := frame.Define(frame.Definition{Revision: value.Hash(nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation := frame.InstallationConfig{ID: "example", Plugin: plugin}
+	for range 3 {
+		recovered := capturePanic(func() { _, _ = host.Install(t.Context(), installation) })
+		failure, ok := recovered.(error)
+		if !ok || !errors.Is(failure, cause) {
+			t.Fatalf("projection panic lost its original cause: %v", recovered)
+		}
+		records, err := store.Installations(t.Context())
+		if err != nil || len(records) != 0 || admission.RecoveryError() != nil {
+			t.Fatalf("settled panic left installation facts or recovery debt: records=%v error=%v recovery=%v", records, err, admission.RecoveryError())
+		}
+	}
+	panics = false
+	if _, err := host.Install(t.Context(), installation); err != nil {
+		t.Fatalf("settled panic still occupies the private receipt budget: %v", err)
+	}
+}
+
 func TestApplicationCapabilitiesExpireWithTheirOwnerCallback(t *testing.T) {
 	store, owner, _ := testStore(t)
 	var issuedRead Reader

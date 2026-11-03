@@ -1482,5 +1482,176 @@
         "valid": false
       }
     ]
+  },
+  {
+    "admitted": true,
+    "digest": "3fa2a1785cf376e24af85ddf0cbe1ba4fc64fbeb75bb2fb742bd28afbf7dbac2",
+    "name": "not excludes null",
+    "schema": {
+      "not": {
+        "type": "null"
+      }
+    },
+    "values": [
+      {
+        "value": null,
+        "valid": false
+      },
+      {
+        "value": {},
+        "valid": true
+      },
+      {
+        "value": 1,
+        "valid": true
+      },
+      {
+        "value": "ok",
+        "valid": true
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "06e7796272d6c62aa236bb7d22502fe546cd539054343faecffdc45e9e19f720",
+    "name": "not forbids an own member",
+    "schema": {
+      "type": "object",
+      "not": {
+        "required": [
+          "secret"
+        ]
+      }
+    },
+    "values": [
+      {
+        "value": {},
+        "valid": true
+      },
+      {
+        "value": {
+          "secret": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "constructor": "ok"
+        },
+        "valid": true
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "a2c76c5398fe402968a51ec39d17b85aeb86d9b667d41d07a988c7a50409a080",
+    "name": "not true excludes every instance",
+    "schema": {
+      "not": true
+    },
+    "values": [
+      {
+        "value": null,
+        "valid": false
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": 1,
+        "valid": false
+      },
+      {
+        "value": "ok",
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "b703e8cbc9f60258e1a66e92f8d324c08f5b1a3d60e842a2b410f0c9ba000e68",
+    "name": "not false permits every instance",
+    "schema": {
+      "not": false
+    },
+    "values": [
+      {
+        "value": null,
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": true
+      },
+      {
+        "value": 1,
+        "valid": true
+      },
+      {
+        "value": "ok",
+        "valid": true
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "50c801af39b18259f97d9d171823c25fd2d8546b6133bf4e3322516313e7071c",
+    "name": "nested not preserves integer semantics",
+    "schema": {
+      "not": {
+        "not": {
+          "type": "integer"
+        }
+      }
+    },
+    "values": [
+      {
+        "value": 1,
+        "valid": true
+      },
+      {
+        "value": 1.5,
+        "valid": false
+      },
+      {
+        "value": null,
+        "valid": false
+      },
+      {
+        "value": {},
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "113f8d45471717bf0bb9369fbf0a9bdbb1346d13c280e3e584af0550504c1e58",
+    "name": "not resolves the original local schema",
+    "schema": {
+      "$defs": {
+        "reserved": {
+          "const": "reserved"
+        }
+      },
+      "type": "string",
+      "not": {
+        "$ref": "#/$defs/reserved"
+      }
+    },
+    "values": [
+      {
+        "value": "reserved",
+        "valid": false
+      },
+      {
+        "value": "available",
+        "valid": true
+      },
+      {
+        "value": null,
+        "valid": false
+      }
+    ]
   }
 ]

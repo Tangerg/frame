@@ -11,26 +11,35 @@ import (
 	modernc "modernc.org/sqlite"
 )
 
-func readModeRestoreFault(after bool, failure error) transactionFault {
-	reject := func(query string) error {
-		if query == "PRAGMA query_only=OFF" {
+func statementPolicyRestoreFault(after bool, failure error) transactionFault {
+	reading := false
+	reject := func(authorizer modernc.AuthorizerFn) error {
+		if authorizer == nil {
+			return nil
+		}
+		if authorizer(modernc.AuthInsert, "", "", "", "") == modernc.AuthorizerDeny {
+			reading = true
+			return nil
+		}
+		if reading {
+			reading = false
 			return failure
 		}
 		return nil
 	}
 	if after {
-		return transactionFault{afterExec: reject}
+		return transactionFault{afterAuthorize: reject}
 	}
-	return transactionFault{beforeExec: reject}
+	return transactionFault{beforeAuthorize: reject}
 }
 
-func catchReadPanic(read func()) (recovered any) {
+func capturePanic(read func()) (recovered any) {
 	defer func() { recovered = recover() }()
 	read()
 	return nil
 }
 
-func TestStoreReadPanicPreservesUnconfirmedModeCleanup(t *testing.T) {
+func TestStoreReadPanicPreservesUnconfirmedPolicyCleanup(t *testing.T) {
 	for _, after := range []bool{false, true} {
 		name := "restore-failed"
 		if after {
@@ -39,16 +48,16 @@ func TestStoreReadPanicPreservesUnconfirmedModeCleanup(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			store, owner, _ := testStore(t)
 			panicCause := errors.New("reader panicked")
-			restoreCause := errors.New("read mode restoration is unconfirmed")
+			restoreCause := errors.New("statement policy restoration is unconfirmed")
 			var closed atomic.Int32
-			fault := readModeRestoreFault(after, restoreCause)
+			fault := statementPolicyRestoreFault(after, restoreCause)
 			fault.afterClose = func() { closed.Add(1) }
 			installTransactionFault(t, store, fault)
-			recovered := catchReadPanic(func() {
+			recovered := capturePanic(func() {
 				_ = store.Read(t.Context(), func(Reader) error { panic(panicCause) })
 			})
 			failure, ok := recovered.(error)
-			if !ok || !errors.Is(failure, panicCause) || !errors.Is(failure, restoreCause) || !errors.Is(failure, errReadModeUnconfirmed) {
+			if !ok || !errors.Is(failure, panicCause) || !errors.Is(failure, restoreCause) || !errors.Is(failure, errStatementPolicyUnconfirmed) {
 				t.Fatalf("panic lost its connection cleanup evidence: %v", recovered)
 			}
 			if closed.Load() != 1 {
@@ -77,9 +86,9 @@ func TestNestedReadPanicCannotEraseOriginalDiscardObligation(t *testing.T) {
 				t.Fatal(err)
 			}
 			panicCause := errors.New("nested reader panicked")
-			restoreCause := errors.New("nested read mode restoration is unconfirmed")
+			restoreCause := errors.New("nested statement policy restoration is unconfirmed")
 			var closed atomic.Int32
-			fault := readModeRestoreFault(after, restoreCause)
+			fault := statementPolicyRestoreFault(after, restoreCause)
 			fault.afterClose = func() { closed.Add(1) }
 			database := sql.OpenDB(&faultConnector{driver: &modernc.Driver{}, dsn: storeDataSource(path), fault: fault})
 			database.SetMaxOpenConns(1)
@@ -90,7 +99,7 @@ func TestNestedReadPanicCannotEraseOriginalDiscardObligation(t *testing.T) {
 				if _, err := Connection(ctx, database).ExecContext(ctx, `INSERT INTO facts VALUES('must rollback')`); err != nil {
 					return err
 				}
-				recovered = catchReadPanic(func() {
+				recovered = capturePanic(func() {
 					_ = RunReadSnapshot(ctx, database, func(context.Context) error { panic(panicCause) })
 				})
 				return nil
@@ -99,7 +108,7 @@ func TestNestedReadPanicCannotEraseOriginalDiscardObligation(t *testing.T) {
 			if !ok || !errors.Is(failure, panicCause) || !errors.Is(failure, restoreCause) {
 				t.Fatalf("nested panic lost its original evidence: %v", recovered)
 			}
-			if !errors.Is(err, errReadModeUnconfirmed) || !errors.Is(err, restoreCause) || closed.Load() != 1 {
+			if !errors.Is(err, errStatementPolicyUnconfirmed) || !errors.Is(err, restoreCause) || closed.Load() != 1 {
 				t.Fatalf("caught panic erased the original owner's cleanup obligation: error=%v closes=%d", err, closed.Load())
 			}
 			var count int

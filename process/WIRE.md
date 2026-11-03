@@ -38,7 +38,7 @@ cancellation racing after admission retains the original unknown-outcome rules.
 | Host → child | hello | version, maxFrameBytes | version, unit, maxFrameBytes, imports and exports (name → contract digest) |
 | Host → child | prepare | imports: slot → ordered array of {handle,source} | true |
 | Host → child | activate | empty object | true |
-| Either | call | handle, member, input; streaming calls include a stream token | final value |
+| Either | call | handle, member, input; commands require commandID; streaming calls include a stream token | final value |
 | Either | chunk | stream, value | true once consumed |
 | Host → child | close | empty object | true after owned work joins |
 
@@ -48,6 +48,14 @@ scoped to this execution and its contract. The host rejects service calls before
 or after retirement begins. Each sender waits for a chunk acknowledgement before sending
 the next one. Reader loops must continue processing messages during nested calls. Peers
 refuse excess frames and work rather than buffering without bounds.
+
+The declared method determines query or command semantics. Queries must omit
+`commandID`; even an explicit empty string or null is refused. Commands require
+the business caller's nonempty, valid Unicode identity within the portable
+profile's `maxCommandIDCharacters` limit. Relays carry that identity unchanged.
+The `call` request ID identifies a transport exchange and cannot replace it.
+This contract is protocol version 2; peers using the earlier command-less format
+are refused during the handshake.
 
 Each stream endpoint retains its first delivery failure for the whole call.
 Consumer rejection, invalid chunks, panic, overlapping deliveries or a final result

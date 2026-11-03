@@ -25,6 +25,14 @@ import {
 } from "./limits.js";
 
 type RecordValue = Record<string, unknown>;
+
+export class SchemaMismatch extends Error {
+  constructor() {
+    super("plugin: value does not satisfy its schema");
+    this.name = "SchemaMismatch";
+  }
+}
+
 const maximumNumberMagnitude =
   PORTABLE_LIMITS.maxAbsExponent + PORTABLE_LIMITS.maxNumberBytes;
 // The admitted profile bounds every coefficient and exponent before arithmetic.
@@ -226,6 +234,14 @@ export function compileSchema(source: unknown): (value: unknown) => void {
     typeof value === "object" &&
     !Array.isArray(value) &&
     !numeric(value);
+  // The engine's legacy not handler coerces subschemas to property keys.
+  // Same-instance validation preserves prototype-free schemas and local refs.
+  validator.attributes.not = ((value, schema, options, ctx) => {
+    if (value === undefined) return "";
+    return validator.validate(value, schema.not!, options, ctx).valid
+      ? "not constraint failed"
+      : "";
+  }) as CustomProperty;
   const patterns = new Map<string, RegExp>();
   validator.attributes.format = ((value: unknown, schema: Schema) =>
     validateFormat(schema.format!, value)
@@ -361,7 +377,7 @@ export function compileSchema(source: unknown): (value: unknown) => void {
         allowUnknownAttributes: false,
       }).valid
     )
-      throw new Error("plugin: value does not satisfy its schema");
+      throw new SchemaMismatch();
   };
   validator.validate(undefined, schema, {
     base,

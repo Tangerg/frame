@@ -9,7 +9,7 @@ import {
   type ServiceContract,
   type Handlers,
   type Client,
-  type CallOptions,
+  type RequestOptions,
   type CallContext,
 } from "./contract.js";
 import { Peer, ProcessError } from "./peer.js";
@@ -20,7 +20,12 @@ export {
   type CapabilityDescriptor,
   type MethodDescriptor,
 } from "./contract.js";
-export type { Client, CallOptions, Handlers } from "./contract.js";
+export type {
+  Client,
+  RequestOptions,
+  CallContext,
+  Handlers,
+} from "./contract.js";
 export { ProcessError } from "./peer.js";
 
 export const optional = <C extends ServiceContract>(contract: C) =>
@@ -232,9 +237,10 @@ class Instance<I extends Imports, E extends Exports> {
           const method = service.method(descriptor.name);
           return [
             descriptor.name,
-            async (input: unknown, options: CallOptions = {}) => {
+            async (input: unknown, options: RequestOptions = {}) => {
               this.#expect("active");
-              method.validateInput(input);
+              const commandID = options.commandID;
+              method.validateInvocation(input, commandID);
               const signal = options.signal
                 ? AbortSignal.any([this.lifetime.signal, options.signal])
                 : this.lifetime.signal;
@@ -255,7 +261,7 @@ class Instance<I extends Imports, E extends Exports> {
               const invoke = async (active: AbortSignal) => {
                 const result = await this.peer.request(
                   wire.methods.call,
-                  { handle, member: descriptor.name, input, stream },
+                  { handle, member: descriptor.name, input, stream, commandID },
                   active,
                 );
                 try {
@@ -484,7 +490,11 @@ class Instance<I extends Imports, E extends Exports> {
   #boundCall(params: unknown) {
     this.#expect("active");
     try {
-      exactFields(params, ["handle", "member", "input"], ["stream"]);
+      exactFields(
+        params,
+        ["handle", "member", "input"],
+        ["stream", "commandID"],
+      );
       if (
         !validToken(params.handle) ||
         !validToken(params.member) ||
@@ -494,14 +504,20 @@ class Instance<I extends Imports, E extends Exports> {
       const service = this.unit.exports[params.handle]!;
       const operation = service.method(params.member);
       const handler = this.#exports[params.handle]![params.member]!;
-      operation.validateInput(params.input);
+      operation.validateInvocation(params.input, params.commandID);
       if (
         operation.validateChunk
           ? !validToken(params.stream)
           : params.stream !== undefined
       )
         throw new TypeError("stream mode mismatch");
-      return { operation, handler, input: params.input, stream: params.stream };
+      return {
+        operation,
+        handler,
+        input: params.input,
+        stream: params.stream,
+        commandID: params.commandID as string | undefined,
+      };
     } catch (cause) {
       throw new ProcessError(
         wire.errors.contract,
@@ -512,7 +528,8 @@ class Instance<I extends Imports, E extends Exports> {
   }
 
   async #call(params: unknown, signal: AbortSignal): Promise<unknown> {
-    const { operation, handler, input, stream } = this.#boundCall(params);
+    const { operation, handler, input, stream, commandID } =
+      this.#boundCall(params);
     return this.lifetime.run(async (lifetimeSignal) => {
       const active = AbortSignal.any([lifetimeSignal, signal]);
       const call = operation.validateChunk ? new StreamCall(active) : undefined;
@@ -521,6 +538,7 @@ class Instance<I extends Imports, E extends Exports> {
         try {
           const result = await handler(input, {
             signal: running,
+            commandID,
             emit: (chunk) => {
               if (!call || !operation.validateChunk)
                 return Promise.reject(

@@ -66,3 +66,83 @@ func TestTypedCommandDecodeFailureKeepsUnknownOutcome(t *testing.T) {
 		t.Fatalf("post-dispatch evidence was lost: effects=%d, result=%q, error=%v", effects.Load(), result, err)
 	}
 }
+
+var errReplyEncode = errors.New("reply cannot be encoded")
+
+type unencodableReply string
+
+func (r *unencodableReply) UnmarshalJSON(raw []byte) error {
+	var decoded string
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return err
+	}
+	*r = unencodableReply(decoded)
+	return nil
+}
+func (unencodableReply) MarshalJSON() ([]byte, error) { return nil, errReplyEncode }
+func (unencodableReply) JSONSchemaModel() any         { return "" }
+
+func TestTypedLocalCommandKeepsPostDispatchFailureUnknown(t *testing.T) {
+	for _, failure := range []error{context.Canceled, mismatch(), nil} {
+		name := "output encoding"
+		if failure != nil {
+			name = failure.Error()
+		}
+		t.Run(name, func(t *testing.T) {
+			member, err := NewMember[string, unencodableReply](portable.MethodConfig{Name: "mutate", Kind: portable.Command})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var effects int
+			implementation, err := member.ImplementCommand(func(context.Context, string, string) (unencodableReply, error) {
+				effects++
+				return "completed", failure
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			contract, err := portable.NewCapability("typed.local-outcome", member.Descriptor())
+			if err != nil {
+				t.Fatal(err)
+			}
+			service, err := Implement(contract, implementation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = member.Command(t.Context(), service, "original-effect", "input")
+			cause := failure
+			if cause == nil {
+				cause = errReplyEncode
+			}
+			if effects != 1 || !errors.Is(err, ErrOutcomeUnknown) || !errors.Is(err, cause) {
+				t.Fatalf("local dispatch lost outcome evidence: effects=%d, error=%v", effects, err)
+			}
+		})
+	}
+}
+
+func TestTypedInputDecodeFailureRemainsBeforeDispatch(t *testing.T) {
+	member, err := NewMember[undecodableReply, string](portable.MethodConfig{Name: "mutate", Kind: portable.Command})
+	if err != nil {
+		t.Fatal(err)
+	}
+	implementation, err := member.ImplementCommand(func(context.Context, string, undecodableReply) (string, error) {
+		t.Error("undecodable request reached its handler")
+		return "", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract, err := portable.NewCapability("typed.input-decode", member.Descriptor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := Implement(contract, implementation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = member.Command(t.Context(), service, "original-effect", "input")
+	if !errors.Is(err, errReplyDecode) || errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("input decoding was classified after dispatch: %v", err)
+	}
+}

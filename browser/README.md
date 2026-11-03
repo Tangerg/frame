@@ -36,7 +36,10 @@ observe the original Host's durable settlement and let an unstarted Runtime
 release its temporary reservation. A transport or authentication error provides
 no such observation. The same LocalPlan resolves a lost admission reply without
 inventing another execution. `Ready` observes preparation; only the Core Host
-publishes exports. Point acquisition retains the original
+publishes exports. Each prepared object identity names exactly one export;
+metadata must reference that complete prepared Point identity. Duplicate object
+identities, relabelled metadata owners and orphan metadata are rejected before
+the batch can be published. Point acquisition retains the original
 multi-Point Snapshot and candidate provenance. Trusted consumers use
 `AcquirePlan` for a fresh declaration plan created in the target Realm; its
 candidate and setup premises remain subject to the Core's final admission.

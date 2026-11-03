@@ -272,7 +272,9 @@ class Instance<I extends Imports, E extends Exports> {
                 return result;
               };
               try {
-                return await (call ? call.run(invoke) : invoke(signal));
+                return await this.lifetime.run(() =>
+                  call ? call.run(invoke) : invoke(signal),
+                );
               } finally {
                 if (stream) this.#streams.delete(stream);
               }

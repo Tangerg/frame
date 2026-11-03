@@ -89,6 +89,9 @@ The plan's exact slots may
 reference existing instances in another plan of the same Realm. The consuming
 Lifetime protects that original provider; the new plan never owns or resolves
 it again. The module must declare the approved import and export set.
+Module loading, remote import preparation and unit setup run under that unit's
+Lifetime. Closing an execution joins those callbacks before releasing the unit's
+resources, including a late result that arrives after cancellation.
 
 `accept(grant)` validates a Use obtained from the Host. `acquire(request)` requests
 one using a captured snapshot and consumer selections. Retrying an unknown

@@ -273,7 +273,7 @@ func (h *Host) CheckSource(ctx context.Context, source ExportRef) error {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.closed {
+	if h.lifetime.isClosing() {
 		return ErrClosed
 	}
 	return h.exportLocked(source)
@@ -294,7 +294,7 @@ func (h *Host) PlanWith(ctx context.Context, realm RealmID, choices []BindingCho
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.closed {
+	if h.lifetime.isClosing() {
 		return nil, ErrClosed
 	}
 	return h.resolveLocked(roots, nil, realm, choices)
@@ -308,7 +308,7 @@ func (h *Host) PlanUnit(ctx context.Context, realm RealmID, root UnitRef, choice
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.closed {
+	if h.lifetime.isClosing() {
 		return nil, ErrClosed
 	}
 	return h.resolveLocked(nil, []UnitRef{root}, realm, choices)
@@ -378,7 +378,7 @@ func (h *Host) validateBindingLocked(binding BindingSnapshot) error {
 	if err := binding.Validate(); err != nil {
 		return err
 	}
-	if h.closed {
+	if h.lifetime.isClosing() {
 		return ErrClosed
 	}
 	for _, unit := range binding.Units {
@@ -444,7 +444,7 @@ func (h *Host) Restore(ctx context.Context, records []InstallationRecord, plugin
 	return h.admission.Maintenance(ctx, func() error {
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		if h.closed {
+		if h.lifetime.isClosing() {
 			return ErrClosed
 		}
 		if len(h.allInstances) != 0 || len(h.uses) != 0 {

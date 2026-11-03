@@ -278,7 +278,7 @@ func (h *Host) SnapshotIn(ctx context.Context, realm RealmID, points ...Contract
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.closed {
+	if h.lifetime.isClosing() {
 		return nil, ErrClosed
 	}
 	return h.snapshotLocked(realm, points)
@@ -398,7 +398,7 @@ func (h *Host) validatePlanLocked(plan *BindingPlan) error {
 	if plan == nil || plan.owner != h.identity {
 		return ErrStaleBinding
 	}
-	if h.closed {
+	if h.lifetime.isClosing() {
 		return ErrClosed
 	}
 	if plan.preparation != nil {

@@ -322,18 +322,9 @@ func addFeatureSchema(artifacts *featureArtifacts, root string, raw jsontext.Val
 	for name := range definitions {
 		renamed[name] = names[schemaDefinition{root: root, name: name}]
 	}
-	for name, body := range definitions {
-		updated, err := rewriteFeatureRefs(body, renamed, root)
-		if err != nil {
-			return err
-		}
-		if string(updated) == `{"$ref":"`+RefPrefix+renamed[name]+`"}` {
-			continue
-		}
-		if previous, exists := artifacts.definitions[renamed[name]]; exists && string(previous) != string(updated) {
-			return fmt.Errorf("feature contracts: definition %q has competing schemas", name)
-		}
-		artifacts.definitions[renamed[name]] = updated
+	projected, err := projectFeatureDefinitions(definitions, renamed, root)
+	if err != nil {
+		return err
 	}
 	body, err := json.Marshal(document, json.Deterministic(true))
 	if err != nil {
@@ -343,22 +334,51 @@ func addFeatureSchema(artifacts *featureArtifacts, root string, raw jsontext.Val
 	if err != nil {
 		return err
 	}
-	// Scope expands the root while retaining its named definition. Publish one
-	// data shape when that definition is unambiguous; method identities remain distinct.
+	// An expanded root can share its named definition only if references to its
+	// original descendants move with it. A $ref is not a JSON Pointer path alias.
 	var matching []string
-	for name := range definitions {
-		if string(artifacts.definitions[renamed[name]]) == string(updated) {
-			matching = append(matching, renamed[name])
+	for name, body := range projected {
+		if string(body) == string(updated) {
+			matching = append(matching, name)
 		}
 	}
 	if len(matching) == 1 {
+		projected, err = projectFeatureDefinitions(definitions, renamed, matching[0])
+		if err != nil {
+			return err
+		}
 		updated, err = json.Marshal(map[string]string{"$ref": RefPrefix + matching[0]})
 		if err != nil {
 			return err
 		}
 	}
+	for name, body := range projected {
+		if previous, exists := artifacts.definitions[name]; exists && string(previous) != string(body) {
+			return fmt.Errorf("feature contracts: definition %q has competing schemas", name)
+		}
+		artifacts.definitions[name] = body
+	}
 	artifacts.definitions[root] = updated
 	return nil
+}
+
+func projectFeatureDefinitions(definitions map[string]jsontext.Value, renamed map[string]string, root string) (map[string]jsontext.Value, error) {
+	projected := make(map[string]jsontext.Value, len(definitions))
+	for name, body := range definitions {
+		updated, err := rewriteFeatureRefs(body, renamed, root)
+		if err != nil {
+			return nil, err
+		}
+		target := renamed[name]
+		if string(updated) == `{"$ref":"`+RefPrefix+target+`"}` {
+			continue
+		}
+		if previous, exists := projected[target]; exists && string(previous) != string(updated) {
+			return nil, fmt.Errorf("feature contracts: definition %q has competing schemas", name)
+		}
+		projected[target] = updated
+	}
+	return projected, nil
 }
 
 func rewriteFeatureRefs(raw jsontext.Value, renamed map[string]string, root string) (jsontext.Value, error) {

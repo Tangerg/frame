@@ -62,3 +62,24 @@ func TestReadableDefinitionsLeavesLiteralReferencesAlone(t *testing.T) {
 		t.Fatal(string(output))
 	}
 }
+
+func TestReadableDefinitionsPreserveEncodedPointerFragments(t *testing.T) {
+	key := reflectorKey("example.org/model", "Item")
+	for _, reference := range []string{"#/%24defs/" + key, "#/$defs/%67" + key[1:]} {
+		schema := []byte(`{"$defs":{"` + key + `":{"type":"object","properties":{"value":{"type":"string"}}}},"$ref":"` + reference + `/properties/value"}`)
+		if _, err := AdmitSchema(schema); err != nil {
+			t.Fatalf("original pointer %q: %v", reference, err)
+		}
+		readable, err := ReadableDefinitions(schema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		projected, err := AdmitSchema(readable)
+		if err != nil {
+			t.Fatalf("renamed pointer %q lost its original target: %s, %v", reference, readable, err)
+		}
+		if projected.Validate([]byte(`"kept"`)) != nil || projected.Validate([]byte(`42`)) == nil {
+			t.Fatalf("renamed pointer %q changed its target predicate", reference)
+		}
+	}
+}

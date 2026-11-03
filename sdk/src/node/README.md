@@ -48,6 +48,9 @@ call, even when the producer catches an emit rejection. Call completion joins an
 accepted consumer before releasing its stream handle. Emitting after completion
 is rejected. An ignored emit promise cannot create an unhandled rejection outside
 the original call's failure path.
+Imported client calls belong to the unit's Lifetime, including their local chunk
+consumers. Shutdown joins those consumers before running unit cleanup even when
+the caller has already stopped waiting for the remote result.
 
 ## Query and command identity
 

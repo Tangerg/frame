@@ -266,6 +266,65 @@ function serviceBinding(slot: string, contract: ServiceContract) {
   };
 }
 
+it("joins an imported stream's local consumer before unit cleanup", async () => {
+  const started = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  let client!: Client<typeof numbers>;
+  let cleaned = false;
+  const peer = await connectUnit(
+    defineProcessUnit({
+      id: "consumer",
+      imports: { numbers },
+      exports: {},
+      setup({ imports, lifetime }) {
+        client = imports.numbers;
+        lifetime.cleanup(() => {
+          cleaned = true;
+        });
+        return {};
+      },
+    }),
+    serviceBinding("numbers", numbers),
+    async (host, method, params, signal) => {
+      expect(method).toBe(wire.methods.call);
+      exactFields(params, ["handle", "member", "input", "stream"]);
+      await host.request(
+        wire.methods.chunk,
+        { stream: params.stream, value: params.input },
+        signal,
+      );
+      return params.input;
+    },
+  );
+  const calling = client.count(1, {
+    onChunk: async () => {
+      started.resolve();
+      await finish.promise;
+    },
+  });
+  const cancelled = expect(calling).rejects.toMatchObject({
+    outcomeUnknown: true,
+  });
+  await started.promise;
+  let closed = false;
+  const closing = peer
+    .request(wire.methods.close, {}, new AbortController().signal)
+    .then((result) => {
+      closed = true;
+      return result;
+    });
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(cleaned).toBe(false);
+    expect(closed).toBe(false);
+  } finally {
+    finish.resolve();
+    await cancelled;
+    expect(await closing).toBe(true);
+  }
+  expect(cleaned).toBe(true);
+});
+
 describe("query and command invocation identity", () => {
   const operations = new Capability({
     protocol: PROTOCOL,

@@ -32,7 +32,9 @@ allows plugins to start additional processes must provide a stronger execution
 profile with evidence for that larger resource set.
 
 Go plugins call `ServeStdio` with a `process.Unit`. Setup receives exact imported
-services and a structured Lifetime. `Service.Invoke` and `StreamingService.Stream`
+services and a structured Lifetime. Preparation, activation and accepted calls
+belong to that Lifetime; retirement joins them before cleaning up their resources.
+`Service.Invoke` and `StreamingService.Stream`
 accept a `portable.Invocation`. Construct queries with `NewQueryInvocation` and
 commands with `NewCommandInvocation`; the business caller supplies the original
 command identity. Every relay carries that same value to the final handler.
@@ -45,6 +47,9 @@ handler with `ImplementQuery` or `ImplementCommand`, then assemble the complete
 service with `Implement`. The command handler receives the original command ID.
 Typed callers use `Member.Query` or `Member.Command`. Hosts can provide any
 implementation of `Service` or `StreamingService` matching the published descriptor.
+Typed implementations retain `ErrOutcomeUnknown` when their handler fails or its
+result cannot be encoded, including direct calls within the same process. Input
+decoding failures occur before dispatch and retain only their original cause.
 
 Typed schema derivation and decoding share `value.ValidateType` admission.
 JSON field declarations own presence and representation; schema tags can narrow

@@ -195,6 +195,85 @@ function fixture(definitions: Record<string, Unit>, proofCapacity = 128) {
   return { runtime, control, ready, grants, grant, publications, proofs };
 }
 
+it.each(["load", "remote"] as const)(
+  "joins the unit's pending %s callback before releasing its resources",
+  async (phase) => {
+    const started = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const released = vi.fn();
+    const dependency = new Service({ ...files.ref, mode: "portable" });
+    const definition = defineUnit({
+      id: "consumer",
+      imports: { dependency },
+      exports: {},
+      setup: vi.fn(() => ({})),
+    });
+    const { control } = fixture({});
+    const prepareResource = async (owner: Lifetime) => {
+      owner.cleanup(released, "preparing resource");
+      started.resolve();
+      await finish.promise;
+    };
+    const runtime = new Runtime({
+      authority,
+      realm,
+      control,
+      proofCapacity: 2,
+      load: async (_unit, owner) => {
+        if (phase === "load") await prepareResource(owner);
+        return definition;
+      },
+      remote: async (_binding, owner) => {
+        if (phase === "remote") await prepareResource(owner);
+        return {};
+      },
+    });
+    const preparing = runtime.prepare(
+      plan("original", [
+        unit(
+          "consumer",
+          "consumer",
+          [],
+          [
+            {
+              slot: "dependency",
+              kind: "remote",
+              contract: dependency.ref,
+              remote: {
+                token: "approved",
+                source: {
+                  installationId: "provider",
+                  release: digest,
+                  unitId: "provider",
+                  export: "dependency",
+                  contract: dependency.ref,
+                },
+              },
+            },
+          ],
+        ),
+      ]),
+    );
+    const rejected = expect(preparing).rejects.toMatchObject({
+      code: "unavailable",
+    });
+    await started.promise;
+    const closing = runtime.close();
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(released).not.toHaveBeenCalled();
+      expect(control.prove).not.toHaveBeenCalled();
+    } finally {
+      finish.resolve();
+      await rejected;
+      await closing;
+    }
+    expect(released).toHaveBeenCalledOnce();
+    expect(definition.setup).not.toHaveBeenCalled();
+    expect(control.prove).toHaveBeenCalledOnce();
+  },
+);
+
 const reader = defineUnit({
   id: "reader",
   imports: {},

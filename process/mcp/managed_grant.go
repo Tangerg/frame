@@ -15,7 +15,10 @@ import (
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
 
-const managedCallback = managedNamespace + "callback.v1"
+const (
+	managedCallback           = managedNamespace + "callback.v1"
+	managedCallbackTokenBytes = 32
+)
 
 // ManagedCallback is a host-issued lease on one authenticated loopback route.
 // Revoke must invalidate that exact credential and call token, including in-flight users.
@@ -34,7 +37,7 @@ func (g ManagedCallback) attach(metadata *sdk.ParamsBase, key string) error {
 		return errors.New("mcp: invalid managed callback lease")
 	}
 	for _, token := range []string{g.Credential, g.Call} {
-		if len(token) != 64 {
+		if len(token) != hex.EncodedLen(managedCallbackTokenBytes) {
 			return errors.New("mcp: invalid managed callback credential")
 		}
 		if _, err := hex.DecodeString(token); err != nil {

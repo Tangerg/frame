@@ -274,6 +274,14 @@ func (a *App) readQueuedBinding(ctx context.Context, id string, grant frame.Scop
 }
 
 func (a *App) Run(ctx context.Context, id string) (returned Task, returnErr error) {
+	// Settlement outlives the last Borrow; shutdown must retain the Store until
+	// the original run has persisted its business result and released its Use.
+	work, err := a.lifetime.Enter(ctx)
+	if err != nil {
+		return Task{}, err
+	}
+	defer work.Finish()
+	ctx = work.Context()
 	a.mu.Lock()
 	if a.running[id] {
 		a.mu.Unlock()

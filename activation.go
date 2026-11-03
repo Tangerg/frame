@@ -74,7 +74,7 @@ func (h *Host) activate(ctx context.Context, realm RealmID, recordID string, pla
 		}
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		if h.closed {
+		if h.lifetime.isClosing() {
 			return ErrClosed
 		}
 		var reads []bindingRead
@@ -412,7 +412,7 @@ func (i *Instance) validateScopes() error {
 
 func (i *Instance) validateCurrentLocked() error {
 	h := i.host
-	if h.closed || i.retiring || h.instances[i.key()] != i || i.lifetime.Context().Err() != nil {
+	if h.lifetime.isClosing() || i.retiring || h.instances[i.key()] != i || i.lifetime.Context().Err() != nil {
 		return ErrStaleBinding
 	}
 	if err := i.validateScopes(); err != nil {

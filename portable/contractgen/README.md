@@ -15,6 +15,8 @@ documents do not merge their reference targets. Ambiguous projected type names
 include their method frame; local aliases remain within that frame. Missing
 `additionalProperties` is open. Object key order does not change JSON identity;
 numeric lexemes still follow `value.JSON` identity.
+An expanded root shares its named projection only after every reference to its
+original descendants has moved to that same definition.
 
 Go projections depend on `github.com/Tangerg/frame/value` when a shape needs
 exact numeric or opaque JSON storage. Every JSON `number` and `integer` uses

@@ -792,12 +792,21 @@ func readBounded(ctx context.Context, reader io.Reader, limit int64) ([]byte, er
 	if limit < 0 {
 		return nil, ErrCapacity
 	}
-	data, err := io.ReadAll(io.LimitReader(contextReader{ctx, reader}, limit+1))
+	reader = contextReader{ctx, reader}
+	data, err := io.ReadAll(io.LimitReader(reader, limit))
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(data)) > limit {
+	if int64(len(data)) < limit {
+		return data, nil
+	}
+	// Probe separately so the full positive int64 range cannot overflow into
+	// a negative LimitedReader bound and silently discard the original bytes.
+	var extra [1]byte
+	if n, err := io.ReadFull(reader, extra[:]); n != 0 {
 		return nil, ErrCapacity
+	} else if !errors.Is(err, io.EOF) {
+		return nil, err
 	}
 	return data, nil
 }

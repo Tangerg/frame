@@ -13,7 +13,9 @@ its complete binding while queued or running, so replacement is refused even
 when no callback is executing. Starting and finishing update the original task row under admission and never allocate a second submission. The owner compacts synchronized, unretained submission evidence when its admission budget fills. The task row remains observable by its original ID.
 
 Completion removes the business reference while
-preserving the original task and its submission conclusion.
+preserving the original task and its submission conclusion. Each original run
+belongs to the application Lifetime through result persistence and Use release,
+so shutdown cannot close SQLite after the final callback but before settlement.
 
 The same application installs a neutral ZIP release containing a browser preview
 Unit and a static-resource theme Unit. Browser modules are verified against their

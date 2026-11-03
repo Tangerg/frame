@@ -9,6 +9,7 @@ A service defines behavior. A point describes a collection of contributions to w
 | Exact approved providers and accepted optional absence | Original binding | Reacquisition cannot silently switch provider |
 | Approval of a use | Host admission | Withdrawal fences new approvals |
 | Reachability of a borrowed object | Original use lifetime | Holds its accepted providers until admitted work has drained |
+| Host admission and subscription lifetime | Original Host Lifetime | Its closure fences new Host work and closes registered Watches before release is confirmed |
 | Process exit | Runner holding the direct child | Its original wait result; a disconnected connection proves no exit |
 | Business result, pending task and command receipt | Original business owner | A lost response may require observing that same operation |
 
@@ -89,6 +90,14 @@ before their providers retire.
 The live execution path admits the original plan. A durable host can configure ReadAcceptedBinding once at composition. Its loader receives the record identity and the request's scope grant, authorizes that record, then reads the binding accepted by the original business transaction. Host.AcquireRecord consumes that evidence. A diagnostic BindingSnapshot on its own cannot be presented to the Host as a newly authorized operation. The document queue is a working example in examples/document/tasks.go.
 
 ## Local causes and terminal close reports
+
+The Host reads closing state from its original Lifetime. Closing an injected
+Lifetime or cancelling its parent fences the same operations as `Host.Close`;
+there is no independently advanced Host close flag. Each Watch is a resource
+of that Lifetime, so a live subscription consumes both `HostConfig.MaxWatches`
+and one `LifetimeLimits.MaxResources` entry. Closing the Watch closes its
+channel and then returns both capacities. A Host with no Watches reserves no
+subscription resource.
 
 `CloseOutcome` is bounded evidence, with at most 32 diagnostic failures and
 2,048 UTF-8 bytes per detail. `Close.Wait` and `Close.WaitReleased` report stable

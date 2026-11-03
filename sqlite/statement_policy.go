@@ -1,6 +1,11 @@
 package sqlite
 
-import modernc "modernc.org/sqlite"
+import (
+	"strings"
+	"unicode"
+
+	modernc "modernc.org/sqlite"
+)
 
 type statementPolicy uint8
 
@@ -50,7 +55,14 @@ func (p statementPolicy) authorize(action modernc.AuthorizerActionCode, first, _
 }
 
 func (name pragmaName) inspectionOnly() bool {
-	switch name {
+	// SQLite reports caller spelling but folds only ASCII command names.
+	// Unicode case aliases must not enter the closed inspection vocabulary.
+	for _, character := range name {
+		if character > unicode.MaxASCII {
+			return false
+		}
+	}
+	switch pragmaName(strings.ToLower(string(name))) {
 	case pragmaDatabaseList, pragmaTableList, pragmaTableInfo, pragmaTableExtendedInfo,
 		pragmaIndexList, pragmaIndexInfo, pragmaIndexExtendedInfo, pragmaForeignKeyList,
 		pragmaCollationList, pragmaCompileOptions, pragmaFunctionList, pragmaModuleList, pragmaPragmaList:

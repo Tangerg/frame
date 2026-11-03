@@ -7,6 +7,7 @@ import (
 	jsonv2 "encoding/json/v2"
 	"fmt"
 	"maps"
+	"net/url"
 	"path"
 	"reflect"
 	"slices"
@@ -17,7 +18,7 @@ import (
 	"github.com/Tangerg/scope/core/jsonschema"
 )
 
-const definitionRef = "#/$defs/"
+const definitionPointer = "/$defs/"
 
 // ReadableDefinitions projects unambiguous reflector names; colliding declarations
 // retain their original identities so cosmetic aliases cannot change a contract.
@@ -55,16 +56,8 @@ func rewriteSchemaReferences(value any, names map[string]string, profile SchemaP
 		switch key {
 		case "$ref":
 			ref, ok := child.(string)
-			if !ok || !strings.HasPrefix(ref, definitionRef) {
-				continue
-			}
-			root, suffix, nested := strings.Cut(strings.TrimPrefix(ref, definitionRef), "/")
-			if name, found := names[root]; found {
-				ref = definitionRef + name
-				if nested {
-					ref += "/" + suffix
-				}
-				object[key] = ref
+			if ok {
+				object[key] = readableReference(ref, names)
 			}
 		default:
 			switch profile.Keywords[key].Children {
@@ -83,6 +76,31 @@ func rewriteSchemaReferences(value any, names map[string]string, profile SchemaP
 			}
 		}
 	}
+}
+
+func readableReference(ref string, names map[string]string) string {
+	if !strings.HasPrefix(ref, "#") {
+		return ref
+	}
+	fragment, err := url.PathUnescape(ref[1:])
+	if err != nil {
+		return ref
+	}
+	definition, rooted := strings.CutPrefix(fragment, definitionPointer)
+	if !rooted {
+		return ref
+	}
+	root, suffix, nested := strings.Cut(definition, "/")
+	root = strings.NewReplacer("~1", "/", "~0", "~").Replace(root)
+	name, found := names[root]
+	if !found || name == root {
+		return ref
+	}
+	fragment = definitionPointer + pointerToken(name)
+	if nested {
+		fragment += "/" + suffix
+	}
+	return (&url.URL{Fragment: fragment}).String()
 }
 
 func readableNames(keys []string) map[string]string {

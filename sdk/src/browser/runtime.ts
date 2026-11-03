@@ -611,7 +611,9 @@ export class Runtime {
           const owner = entry.units.get(unit.instance.id)!.lifetime;
           owner.assertOpen();
           this.#assertRevision(revision);
-          const definition = await this.#load(unit, owner, entry.plan);
+          const definition = await owner.run(() =>
+            this.#load(unit, owner, entry.plan),
+          );
           this.#assertRevision(revision);
           owner.assertOpen();
           if (definition.id !== unit.instance.source.unitId)
@@ -659,7 +661,9 @@ export class Runtime {
                 );
               imports[binding.slot] = local.value;
             } else {
-              imports[binding.slot] = await this.#remote(binding, owner);
+              imports[binding.slot] = await owner.run(() =>
+                this.#remote(binding, owner),
+              );
               this.#assertRevision(revision);
               owner.assertOpen();
             }

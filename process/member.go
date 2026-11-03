@@ -52,9 +52,13 @@ func (m Member[Input, Output]) implement(kind portable.MethodKind, handler func(
 		}
 		output, err := handler(ctx, invocation.CommandID(), input)
 		if err != nil {
-			return framevalue.JSON{}, err
+			return framevalue.JSON{}, errors.Join(ErrOutcomeUnknown, err)
 		}
-		return framevalue.EncodeJSON(output)
+		encoded, err := framevalue.EncodeJSON(output)
+		if err != nil {
+			return framevalue.JSON{}, errors.Join(ErrOutcomeUnknown, err)
+		}
+		return encoded, nil
 	}}, nil
 }
 

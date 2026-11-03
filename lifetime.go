@@ -146,6 +146,12 @@ func NewLifetimeWithLimits(parent context.Context, limits LifetimeLimits) (*Life
 
 func (l *Lifetime) Context() context.Context { l.mu.Lock(); defer l.mu.Unlock(); return l.ctx }
 
+func (l *Lifetime) isClosing() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.closing != nil || l.released || l.ctx.Err() != nil
+}
+
 func (l *Lifetime) cancel(cause error) {
 	l.mu.Lock()
 	cancel := l.cancelContext

@@ -55,7 +55,7 @@ func (h *Host) NewEventRoute(ctx context.Context, sourceUse, receiverUse *Use, s
 	err = h.admission.Admit(ctx, func(context.Context) error {
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		if h.closed || h.uses[sourceUse.id] != sourceUse || h.uses[receiverUse.id] != receiverUse {
+		if h.lifetime.isClosing() || h.uses[sourceUse.id] != sourceUse || h.uses[receiverUse.id] != receiverUse {
 			return ErrClosed
 		}
 		if err := h.admission.ValidateScope(sourceUse.scope); err != nil {
@@ -122,7 +122,7 @@ func (h *Host) eventRouteLocked(route *EventRoute) (*eventRoute, error) {
 	if record == nil || record.token != route || record.source == nil || record.receiver == nil {
 		return nil, ErrClosed
 	}
-	if h.closed || h.uses[route.sourceUseID] != record.source || h.uses[route.receiverUseID] != record.receiver {
+	if h.lifetime.isClosing() || h.uses[route.sourceUseID] != record.source || h.uses[route.receiverUseID] != record.receiver {
 		return nil, ErrClosed
 	}
 	return record, nil

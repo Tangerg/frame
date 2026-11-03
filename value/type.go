@@ -135,6 +135,10 @@ func declaredFields(owner reflect.Type, visiting map[reflect.Type]bool) ([]Field
 		if options.embedded {
 			embedded := field.Type
 			if embedded.Kind() == reflect.Pointer {
+				// Fresh decoding cannot allocate through an unexported pointer field.
+				if !field.IsExported() {
+					return nil, fmt.Errorf("json field %s.%s: embedded pointer must be exported", owner, field.Name)
+				}
 				embedded = embedded.Elem()
 			}
 			if embedded.Kind() != reflect.Struct || customEncoder(embedded) || customDecoder(embedded) {

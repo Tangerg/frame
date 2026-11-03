@@ -213,11 +213,11 @@ func (r *CallbackReceiver) open(ctx context.Context, route callbackRoute) (Manag
 		<-r.calls
 		return ManagedCallback{}, err
 	}
-	var tokens [64]byte
+	var tokens [2 * managedCallbackTokenBytes]byte
 	rand.Read(tokens[:])
 	ref := ManagedCallback{
 		Endpoint: "http://" + conn.Addr().String() + "/",
-		Call:     hex.EncodeToString(tokens[:32]), Credential: hex.EncodeToString(tokens[32:]),
+		Call:     hex.EncodeToString(tokens[:managedCallbackTokenBytes]), Credential: hex.EncodeToString(tokens[managedCallbackTokenBytes:]),
 		MaxResponseBytes: r.limits.MaxResponseBytes,
 	}
 	life, cancel := context.WithCancel(ctx)

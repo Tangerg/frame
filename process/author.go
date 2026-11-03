@@ -163,6 +163,11 @@ func (s *server) prepare(ctx context.Context, raw jsontext.Value) (jsontext.Valu
 	if request.Imports == nil || len(request.Imports) != len(s.unit.Imports) {
 		return nil, mismatch()
 	}
+	work, err := s.life.Enter(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer work.Finish()
 	if err := s.transition(described, preparing); err != nil {
 		return nil, err
 	}
@@ -181,7 +186,7 @@ func (s *server) prepare(ctx context.Context, raw jsontext.Value) (jsontext.Valu
 		}
 		setup.Imports[name] = imports
 	}
-	p, err := s.unit.Prepare(ctx, setup)
+	p, err := s.unit.Prepare(work.Context(), setup)
 	if err != nil {
 		return nil, err
 	}

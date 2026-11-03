@@ -184,7 +184,6 @@ type Host struct {
 	lifetime                 *Lifetime
 	epoch                    uint64
 	identity                 *authorityIdentity
-	closed                   bool
 	drivers                  map[Profile]registeredDriver
 	contracts                map[ContractRef]*declaration
 	contractNames            map[nominalContract]ContractRef
@@ -207,9 +206,12 @@ type Host struct {
 	maxEventRoutes           int
 }
 
-func NewHost(ctx context.Context, config HostConfig) (*Host, error) {
+func NewHost(ctx context.Context, config HostConfig) (_ *Host, err error) {
 	if ctx == nil || config.Installations != nil && nilValue(config.Installations) || config.ExecutionProtection != nil && nilValue(config.ExecutionProtection) {
 		return nil, ErrInvalid
+	}
+	if err := contextError(ctx); err != nil {
+		return nil, err
 	}
 	if config.Admission == nil {
 		config.Admission = NewAdmission()
@@ -241,12 +243,23 @@ func NewHost(ctx context.Context, config HostConfig) (*Host, error) {
 	if config.MaxInstallations < 1 || config.MaxPublications < 1 || config.MaxPublicationOperations < 1 || config.WatchCapacity < 1 || config.MaxWatches < 1 || config.MaxUses < 1 || config.MaxEventRoutes < 1 {
 		return nil, ErrInvalid
 	}
+	if config.Lifetime == nil {
+		config.Lifetime = NewLifetime(ctx)
+		defer func() {
+			if err != nil {
+				config.Lifetime.BeginClose(err)
+			}
+		}()
+	}
 	h := &Host{readAcceptedBinding: config.ReadAcceptedBinding, admission: config.Admission, lifetime: config.Lifetime, epoch: config.Epoch, identity: &authorityIdentity{}, drivers: make(map[Profile]registeredDriver), contracts: make(map[ContractRef]*declaration), contractNames: make(map[nominalContract]ContractRef), installations: make(map[InstallationID]*installed), instances: make(map[instanceKey]*Instance), allInstances: make(map[string]*Instance), catalog: make(map[ContractRef]*pointStore), uses: make(map[string]*Use), watches: make(map[*Watch]struct{}), store: config.Installations, protection: config.ExecutionProtection, maxPublications: config.MaxPublications, maxPublicationOperations: config.MaxPublicationOperations, watchCapacity: config.WatchCapacity}
 	h.routes = make(map[string]*eventRoute)
 	h.maxEventRoutes = config.MaxEventRoutes
 	h.maxInstallations = config.MaxInstallations
 	h.maxWatches = config.MaxWatches
 	h.maxUses = config.MaxUses
+	if h.lifetime.isClosing() {
+		return nil, ErrClosed
+	}
 	for _, driver := range config.Drivers {
 		if err := h.RegisterDriver(driver); err != nil {
 			return nil, err
@@ -254,9 +267,6 @@ func NewHost(ctx context.Context, config HostConfig) (*Host, error) {
 	}
 	if err := h.admission.registerUseOwners(config.UseOwners); err != nil {
 		return nil, err
-	}
-	if h.lifetime == nil {
-		h.lifetime = NewLifetime(ctx)
 	}
 	return h, nil
 }
@@ -289,7 +299,7 @@ func (h *Host) RegisterDriver(driver Driver) error {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.closed {
+	if h.lifetime.isClosing() {
 		return ErrClosed
 	}
 	if _, exists := h.drivers[profile]; exists {
@@ -302,7 +312,7 @@ func (h *Host) RegisterDriver(driver Driver) error {
 func (h *Host) Register(declarations ...Declaration) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.closed {
+	if h.lifetime.isClosing() {
 		return ErrClosed
 	}
 	names := make(map[nominalContract]ContractRef, len(declarations))
@@ -356,7 +366,7 @@ func (h *Host) RegisterDescriptor(ref ContractRef, descriptor []byte) error {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.closed {
+	if h.lifetime.isClosing() {
 		return ErrClosed
 	}
 	name := contractName(ref)
@@ -487,7 +497,7 @@ func (h *Host) Install(ctx context.Context, config InstallationConfig) (Installa
 	state := CommitRejected
 	err = h.admitInstallation(ctx, func(admitted context.Context) error {
 		h.mu.Lock()
-		if h.closed {
+		if h.lifetime.isClosing() {
 			h.mu.Unlock()
 			return ErrClosed
 		}
@@ -681,7 +691,7 @@ func (h *Host) changeInstallation(ctx context.Context, id InstallationID, prepar
 func (h *Host) planInstallationTransition(id InstallationID, prepare func(*installed) (*installed, error)) (*installationTransition, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.closed {
+	if h.lifetime.isClosing() {
 		return nil, ErrClosed
 	}
 	current := h.installations[id]
@@ -778,18 +788,16 @@ func (h *Host) Observations() []InstanceObservation {
 
 func (h *Host) Close(ctx context.Context) (CloseOutcome, error) {
 	causes := h.lifetime.ObserveCloseCauses()
+	operation := h.lifetime.BeginClose(ErrClosed)
 	h.mu.Lock()
-	if !h.closed {
-		h.closed = true
-		for _, instance := range h.allInstances {
-			instance.retiring = true
-			h.withdrawInstanceLocked(instance)
-		}
-		for watch := range h.watches {
-			watch.closeLocked(ErrClosed)
-		}
+	for _, instance := range h.allInstances {
+		instance.retiring = true
+		h.withdrawInstanceLocked(instance)
+	}
+	for watch := range h.watches {
+		watch.closeLocked(ErrClosed)
 	}
 	h.mu.Unlock()
-	outcome, err := h.lifetime.BeginClose(ErrClosed).Wait(ctx)
+	outcome, err := operation.Wait(ctx)
 	return outcome, causes.join(err)
 }

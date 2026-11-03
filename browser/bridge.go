@@ -596,13 +596,7 @@ func (b *Bridge) Ready(ctx context.Context, token string, report ReadyReport) (P
 	}
 	unit := entry.plan.Units[0]
 	objects := map[string]ObjectRef{}
-	metadata := map[string]string{}
-	for _, contribution := range report.Contributions {
-		if _, exists := metadata[contribution.Object.ObjectID]; exists {
-			return PublicationResult{Decision: Rejected, Problem: "duplicate prepared object"}, nil
-		}
-		metadata[contribution.Object.ObjectID] = contribution.MetadataJSON
-	}
+	identities := map[string]ObjectRef{}
 	for _, reference := range report.Objects {
 		if reference.ObjectID == "" || reference.Export.InstanceID != unit.Instance.ID {
 			return PublicationResult{Decision: Rejected, Problem: "invalid object source"}, nil
@@ -610,7 +604,22 @@ func (b *Bridge) Ready(ctx context.Context, token string, report ReadyReport) (P
 		if _, exists := objects[reference.Export.Name]; exists {
 			return PublicationResult{Decision: Rejected, Problem: "duplicate export name"}, nil
 		}
+		if _, exists := identities[reference.ObjectID]; exists {
+			return PublicationResult{Decision: Rejected, Problem: "duplicate prepared object"}, nil
+		}
 		objects[reference.Export.Name] = reference
+		identities[reference.ObjectID] = reference
+	}
+	metadata := map[string]string{}
+	for _, contribution := range report.Contributions {
+		reference, exists := identities[contribution.Object.ObjectID]
+		if !exists || reference != contribution.Object || reference.Export.Contract.Kind != frame.PointKind {
+			return PublicationResult{Decision: Rejected, Problem: "metadata does not identify an exact prepared point"}, nil
+		}
+		if _, exists := metadata[reference.ObjectID]; exists {
+			return PublicationResult{Decision: Rejected, Problem: "duplicate prepared metadata"}, nil
+		}
+		metadata[reference.ObjectID] = contribution.MetadataJSON
 	}
 	exports := make([]frame.ExportValue, 0, len(report.Objects))
 	for _, declaration := range unit.Exports {

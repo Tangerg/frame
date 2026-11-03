@@ -74,7 +74,7 @@ func (h *Host) ValidateUse(ctx context.Context, use *Use) error {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.closed || h.uses[use.id] != use {
+	if h.lifetime.isClosing() || h.uses[use.id] != use {
 		return ErrClosed
 	}
 	if err := h.admission.ValidateScope(use.scope); err != nil {
@@ -175,7 +175,7 @@ func (h *Host) inheritParent(config UseConfig) (UseConfig, error) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.closed || h.uses[parent.id] != parent {
+	if h.lifetime.isClosing() || h.uses[parent.id] != parent {
 		return config, ErrClosed
 	}
 	if config.Scope.owner == nil {

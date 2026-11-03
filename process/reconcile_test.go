@@ -102,8 +102,15 @@ func TestCloseDeadlineAndReconcileCannotReplaceRunningProtocolCleanup(t *testing
 	ref := originalAttempt(t, e)
 	wait, cancel := context.WithTimeout(e.ctx, 100*time.Millisecond)
 	defer cancel()
-	closed := make(chan error, 1)
-	go func() { _, err := e.host.Close(wait); closed <- err }()
+	type closeResult struct {
+		outcome frame.CloseOutcome
+		err     error
+	}
+	closed := make(chan closeResult, 1)
+	go func() {
+		outcome, err := e.host.Close(wait)
+		closed <- closeResult{outcome, err}
+	}()
 	select {
 	case <-connection.started:
 	case <-e.ctx.Done():
@@ -115,8 +122,9 @@ func TestCloseDeadlineAndReconcileCannotReplaceRunningProtocolCleanup(t *testing
 	if err := e.driver.Reconcile(e.ctx, ref.AttemptID); !errors.Is(err, frame.ErrInvalid) {
 		t.Fatalf("running cleanup accepted child-only proof: %v", err)
 	}
-	if err := <-closed; !errors.Is(err, frame.ErrUnconfirmedRelease) {
-		t.Fatalf("unfinished cleanup became released: %v", err)
+	result := <-closed
+	if result.outcome.Released || len(result.outcome.Pending) == 0 || !errors.Is(result.err, context.DeadlineExceeded) {
+		t.Fatalf("unfinished cleanup lost its owner: %+v %v", result.outcome, result.err)
 	}
 	release()
 	if outcome, err := e.host.Close(e.ctx); err != nil || !outcome.Released {
@@ -128,16 +136,18 @@ func TestCloseDeadlineAndReconcileCannotReplaceRunningProtocolCleanup(t *testing
 }
 
 func TestReconcileAcceptsLateExitAfterOriginalLocalCleanup(t *testing.T) {
-	connection := &cleanupConnection{finishClose: func(ctx context.Context) error { <-ctx.Done(); return nil }}
-	e := newConfiguredEnvironment(t, false, cleanupProtocol{connection}, context.DeadlineExceeded)
+	closeDiagnostic := errors.New("original protocol close deadline")
+	connection := &cleanupConnection{finishClose: func(ctx context.Context) error { <-ctx.Done(); return closeDiagnostic }}
+	e := newConfiguredEnvironment(t, false, cleanupProtocol{connection}, closeDiagnostic)
 	if _, err := e.host.Activate(e.ctx, e.ref); err != nil {
 		t.Fatal(err)
 	}
 	ref := originalAttempt(t, e)
 	wait, cancel := context.WithTimeout(e.ctx, 4*time.Second)
 	defer cancel()
-	if outcome, err := e.host.Close(wait); outcome.Released || !errors.Is(err, frame.ErrUnconfirmedRelease) {
-		t.Fatalf("missing child evidence was released: %+v %v", outcome, err)
+	closed, err := e.host.Close(wait)
+	if closed.Released || !errors.Is(err, frame.ErrUnconfirmedRelease) {
+		t.Fatalf("missing child evidence was released: %+v %v", closed, err)
 	}
 	if _, err := e.runner.CloseAttempt(e.ctx, ref); err != nil {
 		t.Fatal(err)
@@ -145,8 +155,21 @@ func TestReconcileAcceptsLateExitAfterOriginalLocalCleanup(t *testing.T) {
 	if err := e.driver.Reconcile(e.ctx, ref.AttemptID); err != nil {
 		t.Fatalf("late original exit: %v", err)
 	}
-	if outcome, _ := e.host.Close(e.ctx); !outcome.Released {
-		t.Fatalf("original release did not complete: %+v", outcome)
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		outcome, _ := e.host.Close(e.ctx)
+		if outcome.ID != closed.ID {
+			t.Fatalf("reconciliation replaced original close: %+v", outcome)
+		}
+		if outcome.Released {
+			break
+		}
+		select {
+		case <-tick.C:
+		case <-e.ctx.Done():
+			t.Fatalf("original release did not complete: %+v %v", outcome, context.Cause(e.ctx))
+		}
 	}
 	if connection.closes.Load() != 1 {
 		t.Fatal("late evidence repeated protocol cleanup")
@@ -172,7 +195,7 @@ func TestCloseDeadlineKeepsOwnershipOfLateProtocolPreparation(t *testing.T) {
 	}
 	wait, cancel := context.WithTimeout(e.ctx, 100*time.Millisecond)
 	defer cancel()
-	if outcome, err := e.host.Close(wait); outcome.Released || !errors.Is(err, frame.ErrUnconfirmedRelease) {
+	if outcome, err := e.host.Close(wait); outcome.Released || len(outcome.Pending) == 0 || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("unfinished preparation lost its owner: %+v %v", outcome, err)
 	}
 	if connection.closes.Load() != 0 {

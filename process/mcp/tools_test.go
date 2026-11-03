@@ -119,7 +119,11 @@ func verifyCalls(t *testing.T, ctx context.Context, svc process.Service, dir str
 	if err != nil || reply.String() != exactResult {
 		t.Fatalf("large integer: %s %v", reply, err)
 	}
-	reply, err = call(ctx, "text", "{}")
+	input, err := value.ParseJSON([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, err = svc.Invoke(ctx, commandInvocation(t, "original-text", "text", input))
 	if err != nil || !strings.Contains(reply.String(), `"text":"text"`) {
 		t.Fatalf("text result: %s %v", reply, err)
 	}

@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/scope/core/jsonschema"
@@ -284,7 +283,7 @@ func TestFeatureGoProjectionPreservesTypedFramesAndIntegerBounds(t *testing.T) {
 	}
 	type Output struct {
 		Revision uint64
-		At       time.Time
+		At       string `jsonschema:"format=date-time"`
 		Labels   map[string]string
 	}
 	method, err := portable.NewMethod[Input, Output](portable.MethodConfig{Name: "acme/read.v1", Kind: portable.Query, Target: "installation", Description: "Read a typed frame."})

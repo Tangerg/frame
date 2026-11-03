@@ -20,9 +20,11 @@ supplies the native JavaScript function signatures. All functions remain in the
 same JS Realm; this is not a claim that Go and JavaScript native function values
 are interchangeable across a protocol.
 
-`src/client.ts` is the example application's composition layer. It captures the
-Converters and Validators Points in one snapshot, applies named selection rules,
-and acquires one original Use. It converts and validates through that Use, then
+`src/client.ts` is the example application's composition layer.
+`client.createConversion(reference)` returns a `ConversionTask` before any
+dispatch. The task owns its original Snapshot and acquisition identities.
+`task.run()` captures the Converters and Validators Points in one snapshot,
+applies named selection rules, and acquires one original Use. It converts and validates through that Use, then
 returns a resource-valued `Acquired<RenderedDocument>` backed by an actual Blob
 URL. The SDK reserves the resource cleanup before creation. The convenience
 handle's `close` and `wait` target the original approved Use, which also owns the
@@ -30,6 +32,14 @@ result resource. It does not mirror the resource lifecycle in application state.
 Abandoned selection closes its original Snapshot through the authenticated
 control port, including missing Converter or Validator candidates. The original
 selection error remains visible if cleanup also fails.
+If a Snapshot or acquisition acknowledgement is lost, call `run()` again on that
+same task. It retries the original request, shares an in-flight admission, and
+starts conversion only once. `task.close()` stops further conversion, closes its
+Snapshot, and resolves any uncertain acquisition before closing the original Use.
+A failed close remains retryable on that task. Closing an uncertain admission
+does not run the Converter. Do not create another task to retry an unknown one.
+The application retains unsettled tasks and closes them before stopping its
+control pump, so dropping a UI handle cannot discard an uncertain request.
 Closing removes the Blob URL, invalidates subsequent access, cancels active work
 and joins it before the Use's proof can release protection.
 
@@ -71,7 +81,8 @@ The workflow is a mandatory real Go-process, SQLite, loopback HTTP and native
 JavaScript test. It has no mock Host or LocalPlan. It verifies successful
 conversion, a Validator's nonempty diagnostic, one multi-Point acquisition,
 resource access after the initial callback, actual Blob revocation, cancellation
-of a pending HTTP body, and failed setup without publication. Native JavaScript
+of a pending HTTP body, lost Snapshot and acquisition acknowledgements, closure
+of an uncertain acquisition, and failed setup without publication. Native JavaScript
 executes in Node in this exercise. Actual Chrome/DOM execution is tested by the
 separate document workbench browser workflow; the two environments must not be
 reported as equivalent.

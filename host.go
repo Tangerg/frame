@@ -173,7 +173,7 @@ type Instance struct {
 }
 
 type publicationOperation struct {
-	request     framevalue.Digest
+	request     publicationRequestID
 	publication *publication
 }
 
@@ -777,6 +777,7 @@ func (h *Host) Observations() []InstanceObservation {
 }
 
 func (h *Host) Close(ctx context.Context) (CloseOutcome, error) {
+	causes := h.lifetime.ObserveCloseCauses()
 	h.mu.Lock()
 	if !h.closed {
 		h.closed = true
@@ -789,5 +790,6 @@ func (h *Host) Close(ctx context.Context) (CloseOutcome, error) {
 		}
 	}
 	h.mu.Unlock()
-	return h.lifetime.BeginClose(ErrClosed).Wait(ctx)
+	outcome, err := h.lifetime.BeginClose(ErrClosed).Wait(ctx)
+	return outcome, causes.join(err)
 }

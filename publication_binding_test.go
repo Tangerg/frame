@@ -105,7 +105,7 @@ func TestDynamicPublicationCannotReplaceDeclaredSetup(t *testing.T) {
 			if err := host.Withdraw(ctx, candidates[0].ID()); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := host.Publish(ctx, providerID, "replacement", frame.Contribute("input", point, "dynamic", "dynamic-value")); err != nil {
+			if _, err := host.Publish(ctx, "replacement", preparePublication(t, host, providerID, frame.Contribute("input", point, "dynamic", "dynamic-value"))); err != nil {
 				t.Fatal(err)
 			}
 			err = host.Admission().Admit(ctx, func(admitted context.Context) error {
@@ -234,7 +234,7 @@ func TestSetupRechecksOriginalExportAfterSlowPreparation(t *testing.T) {
 	if err := host.Withdraw(ctx, candidates[0].ID()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.Publish(ctx, providerID, "replacement", frame.Contribute("input", point, "dynamic", "dynamic-value")); err != nil {
+	if _, err := host.Publish(ctx, "replacement", preparePublication(t, host, providerID, frame.Contribute("input", point, "dynamic", "dynamic-value"))); err != nil {
 		t.Fatal(err)
 	}
 	unblock()

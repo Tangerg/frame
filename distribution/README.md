@@ -11,9 +11,11 @@ changed canonical parent, symlink or replacement root. Startup reclaims only
 private abandoned staging and retirement directories after obtaining that lock.
 `Close(ctx)` seals new operations and joins accepted I/O and all original Leases
 before releasing the root and lock. Cancelling a caller's wait does not release
-those protections; a later call observes the same close. Consumers close their
-execution owners before the Store. Platforms without the supported directory
-lock fail closed rather than claiming exclusive ownership.
+those protections. The Store continues its original close after that wait ends;
+once accepted I/O and the final Lease have exited, it releases the directory lock
+without another `Close` call. Later callers observe that same close result.
+Consumers close their execution owners before the Store. Platforms without the
+supported directory lock fail closed rather than claiming exclusive ownership.
 
 A release is a single-disk ZIP32 archive with absolute directory offsets and no archive comment. Its physical central directory is bounded before entries are allocated. It contains a schema-version 1 `manifest.json`, `plugin.lock.json` and
 exactly its listed artifacts. `Build` computes artifact sizes and SHA-256 digests

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Lifetime } from "./lifetime";
+import { Lifetime, type Cleanup } from "./lifetime";
 import { FrameError } from "./errors";
 import { acquire, withResource, type AcquiredResource } from "./use";
 
@@ -80,6 +80,27 @@ describe("acquired resource", () => {
     });
     expect((await closing).status).toBe("released");
   });
+
+  it.each(["parent", "handle"] as const)(
+    "releases a late-confirmed payload when %s initiates close",
+    async (initiator) => {
+      const collect = (globalThis as { gc?: () => void }).gc;
+      if (!collect)
+        throw new Error("this required retention test needs Node --expose-gc");
+      const { handle, payload } = await closedAcquired(initiator);
+      for (let attempt = 0; attempt < 50; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        collect();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (!payload.deref()) break;
+      }
+      expect(payload.deref()).toBeUndefined();
+      expect(() => handle.with(() => {})).toThrow("closed");
+      const first = await handle.close();
+      expect(first.status).toBe("released");
+      expect((await handle.wait()).closeId).toBe(first.closeId);
+    },
+  );
 
   it("borrows ordinary results and closes resource before returning", async () => {
     const owner = new Lifetime("owner");
@@ -206,3 +227,26 @@ describe("acquired resource", () => {
     },
   );
 });
+
+async function closedAcquired(initiator: "parent" | "handle") {
+  const owner = new Lifetime("owner");
+  let confirmation!: Cleanup;
+  let payload!: WeakRef<object>;
+  const handle = await acquire(
+    owner,
+    "late-confirmed value",
+    (_signal, cleanup) => {
+      confirmation = cleanup;
+      const value = { bytes: new Uint8Array(1024 * 1024) };
+      payload = new WeakRef(value);
+      return { value, close: () => ({ status: "unconfirmed" as const }) };
+    },
+  );
+  const initial = await (initiator === "parent"
+    ? owner.close()
+    : handle.close());
+  expect(initial.status).toBe("unconfirmed");
+  confirmation.confirmReleased("original adapter observed termination");
+  expect((await owner.wait()).status).toBe("released");
+  return { handle, payload };
+}

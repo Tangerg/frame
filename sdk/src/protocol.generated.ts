@@ -339,7 +339,6 @@ export interface UseGrant {
 }
 
 export interface Withdrawal {
-  readonly operationId: string;
   readonly authority: Authority;
   readonly publicationId: string;
 }

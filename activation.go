@@ -239,9 +239,11 @@ func (i *Instance) holdProvidersLocked(planned map[UnitRef]*Instance) ([]*Resour
 // registerInstanceLocked makes instance a host resource that retires after its
 // dependents, and retires it when a held provider or its own lifetime ends.
 func (h *Host) registerInstanceLocked(instance *Instance, key instanceKey, resourceDependencies []*ResourceHandle) error {
+	causes := instance.lifetime.ObserveCloseCauses()
 	resource, err := h.lifetime.Own(Resource{Name: "unit:" + instance.id, Cancel: func(cause error) { instance.lifetime.cancel(cause) }, Close: func(closeCtx context.Context) (ReleaseState, error) {
 		instance.beginRetire()
 		outcome, err := instance.retire(closeCtx)
+		err = causes.join(err)
 		if outcome.Released {
 			return ResourceReleased, err
 		}
@@ -514,11 +516,12 @@ func (i *Instance) retire(ctx context.Context) (CloseOutcome, error) {
 			return CloseOutcome{}, contextError(ctx)
 		}
 	}
-	return i.lifetime.BeginClose(ErrClosed).Wait(ctx)
+	return i.lifetime.Close(ctx)
 }
 
 func (i *Instance) beginRetire() {
 	i.retireOnce.Do(func() {
+		causes := i.lifetime.ObserveCloseCauses()
 		go func() {
 			_, _ = i.retire(context.Background())
 			outcome, _ := i.lifetime.BeginClose(ErrClosed).WaitReleased(context.Background())
@@ -534,7 +537,7 @@ func (i *Instance) beginRetire() {
 			for _, hold := range i.dependencyHolds {
 				hold.Finish()
 			}
-			_ = i.hostResource.ConfirmReleased(outcomeError(outcome))
+			_ = i.hostResource.ConfirmReleased(causes.join(outcomeError(outcome)))
 			h := i.host
 			h.mu.Lock()
 			for _, dependency := range i.dependencies {

@@ -89,7 +89,8 @@ type realmOpening struct {
 }
 
 type realmSession struct {
-	realm Realm
+	realm       Realm
+	application *frame.Lifetime
 
 	cleanupOnly     bool
 	revision        uint64
@@ -115,16 +116,16 @@ type preparedResult struct {
 	err     error
 }
 type controlOperation struct {
-	kind        string
-	realm       Realm
-	digest      framevalue.Digest
-	execution   string
-	parentID    string
-	publication PublicationResult
-	grant       *UseGrant
-	done        chan struct{}
-	failure     error
-	withdrawn   bool
+	kind               string
+	realm              Realm
+	digest             framevalue.Digest
+	execution          string
+	parentID           string
+	publication        PublicationResult
+	grant              *UseGrant
+	done               chan struct{}
+	failure            error
+	receiptReservation *sqlite.ReceiptReservation
 }
 type browserUse struct {
 	grant     UseGrant
@@ -250,7 +251,7 @@ func (b *Bridge) openRealm(ctx context.Context, operationID, resumeToken string)
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	session := &realmSession{realm: credentials.Realm}
+	session := &realmSession{realm: credentials.Realm, application: frame.NewLifetime(context.Background())}
 	b.sessions[string(RealmID(credentials.Realm))] = session
 
 	return credentials, nil
@@ -591,7 +592,7 @@ func (b *Bridge) Ready(ctx context.Context, token string, report ReadyReport) (P
 	}
 	b.mu.Unlock()
 	if err := b.validateCurrentPlan(ctx, token, entry.plan); err != nil {
-		return PublicationResult{Decision: Rejected, Problem: "plan is no longer current"}, nil
+		return PublicationResult{}, err
 	}
 	unit := entry.plan.Units[0]
 	objects := map[string]ObjectRef{}

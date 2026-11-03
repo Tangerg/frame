@@ -363,12 +363,6 @@ func subsetBindingRoots(source BindingSnapshot, roots []ExportRef, unitRoots []U
 	return result, result.Validate()
 }
 
-func sameUnitBinding(a, b UnitBinding) bool {
-	left, _ := json.Marshal(a)
-	right, _ := json.Marshal(b)
-	return bytes.Equal(left, right)
-}
-
 // ValidateBindingUnder checks an original durable identity against current
 // installation authority. It never chooses a new provider or updates absence.
 func (h *Host) ValidateBindingUnder(ctx context.Context, binding BindingSnapshot) error {

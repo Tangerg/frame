@@ -217,7 +217,6 @@ type PublicationResult struct {
 }
 
 type Withdrawal struct {
-	OperationID   string    `json:"operationId"`
 	Authority     Authority `json:"authority"`
 	PublicationID string    `json:"publicationId"`
 }

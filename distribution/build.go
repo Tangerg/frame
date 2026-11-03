@@ -82,10 +82,10 @@ func Build(ctx context.Context, source string, manifest Manifest, output io.Writ
 		// Stored entries avoid a package tool producing an archive that its own
 		// expansion-ratio policy would reject for highly compressible resources.
 		header := &zip.FileHeader{Name: name, Method: zip.Store, Modified: time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)}
-		mode := os.FileMode(0600)
+		mode := privateFileMode
 		for _, artifact := range manifest.Artifacts {
 			if artifact.Path == name && artifact.Executable {
-				mode = 0700
+				mode |= ownerExecuteBit
 				break
 			}
 		}

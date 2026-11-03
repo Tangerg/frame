@@ -124,38 +124,35 @@ func (s *Store) notifyLocked() {
 	s.changed = make(chan struct{})
 }
 
-// Close seals new work and waits for original I/O and leases. A cancelled wait
-// leaves that close in progress; it neither unlocks the directory nor abandons
-// claims. The original descriptors are released once, without retrying errors.
+// The Store owns shutdown independently of every caller waiting for it. A
+// cancelled wait must not strand the original directory lock after leases exit.
 func (s *Store) Close(ctx context.Context) error {
 	if ctx == nil {
 		return frame.ErrInvalid
 	}
+	s.mu.Lock()
+	if !s.closing {
+		s.closing = true
+		go s.closeOriginal()
+	}
+	done := s.closeDone
+	s.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	case <-done:
+		return s.closeErr
+	}
+}
+
+func (s *Store) closeOriginal() {
 	for {
 		s.mu.Lock()
-		s.closing = true
-		if s.closeAttempted {
-			done := s.closeDone
-			s.mu.Unlock()
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-done:
-				s.mu.Lock()
-				err := s.closeErr
-				s.mu.Unlock()
-				return err
-			}
-		}
 		if s.operations != 0 || len(s.leases) != 0 {
 			changed := s.changed
 			s.mu.Unlock()
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-changed:
-				continue
-			}
+			<-changed
+			continue
 		}
 		s.closeAttempted = true
 		s.mu.Unlock()
@@ -168,7 +165,7 @@ func (s *Store) Close(ctx context.Context) error {
 		close(s.closeDone)
 		s.notifyLocked()
 		s.mu.Unlock()
-		return err
+		return
 	}
 }
 
@@ -178,7 +175,7 @@ func (s *Store) openRelease(digest value.Digest) (*os.Root, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.IsDir() || info.Mode()&fs.ModeSymlink != 0 || info.Mode().Perm() != 0500 {
+	if !info.IsDir() || info.Mode()&fs.ModeSymlink != 0 || info.Mode().Perm() != sealedDirectoryMode {
 		return nil, ErrIntegrity
 	}
 	root, err := s.root.OpenRoot(name)
@@ -186,7 +183,7 @@ func (s *Store) openRelease(digest value.Digest) (*os.Root, error) {
 		return nil, err
 	}
 	opened, err := root.Stat(".")
-	if err != nil || !os.SameFile(info, opened) || opened.Mode().Perm() != 0500 {
+	if err != nil || !os.SameFile(info, opened) || opened.Mode().Perm() != sealedDirectoryMode {
 		return nil, errors.Join(ErrIntegrity, err, root.Close())
 	}
 	return root, nil
@@ -199,7 +196,7 @@ func (s *Store) privateDirectory(prefix string) (string, *os.Root, fs.FileInfo, 
 			return "", nil, nil, err
 		}
 		name := prefix + hex.EncodeToString(entropy[:])
-		if err := s.root.Mkdir(name, 0700); errors.Is(err, os.ErrExist) {
+		if err := s.root.Mkdir(name, privateDirectoryMode); errors.Is(err, os.ErrExist) {
 			continue
 		} else if err != nil {
 			return "", nil, nil, err
@@ -245,7 +242,7 @@ func (s *Store) removePrivate(name string, original fs.FileInfo) error {
 			return err
 		}
 		if entry.IsDir() {
-			return root.Chmod(path, 0700)
+			return root.Chmod(path, privateDirectoryMode)
 		}
 		return nil
 	})

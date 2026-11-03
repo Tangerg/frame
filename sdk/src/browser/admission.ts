@@ -6,6 +6,7 @@ import type {
   UseGrant,
 } from "../protocol.generated.js";
 import type { Use } from "./runtime.js";
+import { isControlRefusal, type HostControl } from "./control.js";
 
 // Both acquisition entrances observe one original operation. A terminal owner
 // remains here until its proof is acknowledged; historical receipts alone never
@@ -17,6 +18,7 @@ export class UseAdmission {
   readonly lifetime: Lifetime;
   readonly reservation: string;
   #request?: AcquireRequest;
+  #requestDispatched = false;
   #grant?: UseGrant;
   #use?: Use;
   #pending?: Promise<Use>;
@@ -71,6 +73,21 @@ export class UseAdmission {
         "admission operation cannot be relabeled",
       );
     this.#request = request;
+  }
+
+  async requestGrant(control: HostControl): Promise<UseGrant> {
+    if (!this.#request)
+      throw new FrameError("invalid_plan", "acquisition request is required");
+    const previouslyDispatched = this.#requestDispatched;
+    this.#requestDispatched = true;
+    try {
+      return await control.acquire(this.#request);
+    } catch (error) {
+      // A later refusal cannot disprove an earlier acceptance whose ACK was lost.
+      if (!previouslyDispatched && isControlRefusal(error))
+        this.lifetime.beginClose();
+      throw error;
+    }
   }
 
   verifyGrant(grant: UseGrant): void {

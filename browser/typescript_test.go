@@ -119,17 +119,17 @@ func TestTypeScriptProjectionRejectsInvalidOrUnsupportedRoots(t *testing.T) {
 }
 
 type nestedWireDTO struct {
-	Rows  [][]string `json:"rows"`
-	Bytes []byte     `json:"bytes"`
-	Title *string    `json:"title"`
+	Rows    [][]string `json:"rows"`
+	Content string     `json:"content"`
+	Title   *string    `json:"title"`
 }
 
-func TestProjectionMatchesNestedArraysBytesAndNull(t *testing.T) {
+func TestProjectionMatchesNestedArraysStringsAndNull(t *testing.T) {
 	var out strings.Builder
 	if err := WriteTypeScriptTypes(&out, reflect.TypeFor[nestedWireDTO]()); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{"readonly rows: readonly (readonly string[])[];", "readonly bytes: string;", "readonly title: string | null;"} {
+	for _, f := range []string{"readonly rows: readonly (readonly string[])[];", "readonly content: string;", "readonly title: string | null;"} {
 		if !strings.Contains(out.String(), f) {
 			t.Fatalf("missing %q in %s", f, out.String())
 		}

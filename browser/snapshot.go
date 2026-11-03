@@ -116,6 +116,9 @@ func (b *Bridge) Snapshot(ctx context.Context, token string, request SnapshotReq
 		b.mu.Unlock()
 		returned = errors.Join(returned, b.complete(ctx, request.OperationID, operation))
 	}()
+	if err := b.reserveReceipt(ctx, request.OperationID, operation); err != nil {
+		return Snapshot{}, err
+	}
 	points, err := b.snapshotPoints(request.Points)
 	if err != nil {
 		return Snapshot{}, err
@@ -219,6 +222,10 @@ func (b *Bridge) CloseSnapshot(ctx context.Context, token, snapshotID string) er
 		operation = &controlOperation{kind: closeSnapshotOperation, realm: session.realm, failure: frame.ErrClosed, done: make(chan struct{})}
 		b.operations[snapshotID] = operation
 		b.mu.Unlock()
+		if err := b.reserveReceipt(ctx, snapshotID, operation); err != nil {
+			operation.failure = err
+			return errors.Join(err, b.complete(ctx, snapshotID, operation))
+		}
 		return b.complete(ctx, snapshotID, operation)
 	}
 	b.mu.Unlock()

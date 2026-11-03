@@ -15,7 +15,11 @@ names and validation leaves the caller's descriptor and values unchanged.
 
 Format admission follows the fixed list generated from the Go portable profile:
 `date`, `time`, `date-time`, `uuid`, `json-pointer`, and `relative-json-pointer`.
-Unknown formats are rejected. Pattern validation uses the character classes and
+Unknown formats are rejected. Go and Node use the portable predicates and their
+shared conformance corpus; schema engine defaults do not define these formats.
+Date and time fields follow RFC 3339: clock and offset components require two
+unsigned decimal digits, and leap seconds are checked at the end of the UTC day.
+Pattern validation uses the character classes and
 end-of-input semantics exported by Go, including its definitions of `\s`, `.`,
 and `$`, instead of JavaScript's different defaults.
 

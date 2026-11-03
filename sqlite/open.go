@@ -37,7 +37,7 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 	if err != nil {
 		return nil, err
 	}
-	store := &Store{lock: lock, admission: config.Admission, owners: make(map[string]*Owner), maxRequestBytes: config.MaxRequestBytes, maxSubmissions: config.MaxSubmissionsPerOwner, projectInstallation: config.ProjectInstallation}
+	store := &Store{lock: lock, admission: config.Admission, owners: make(map[string]*Owner), maxRequestBytes: config.MaxRequestBytes, maxSubmissions: config.MaxSubmissionsPerOwner, maxRealmHistoryBytes: config.MaxRealmHistoryBytes, projectInstallation: config.ProjectInstallation}
 	store.control = &Owner{store: store, id: "frame.installations"}
 	defer func() {
 		if err != nil {
@@ -60,6 +60,12 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 	}
 	if store.maxSubmissions < 1 {
 		return nil, errors.New("sqlite: submission capacity must be positive")
+	}
+	if store.maxRealmHistoryBytes == 0 {
+		store.maxRealmHistoryBytes = defaultMaxRealmHistoryBytes
+	}
+	if store.maxRealmHistoryBytes < 1 {
+		return nil, errors.New("sqlite: realm history byte limit must be positive")
 	}
 	owners := slices.Clone(config.Owners)
 	slices.SortFunc(owners, func(a, b OwnerSchema) int { return strings.Compare(a.ID, b.ID) })

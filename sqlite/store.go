@@ -26,12 +26,13 @@ var (
 )
 
 const (
-	defaultMaxRequestBytes = 1 << 20
-	defaultMaxSubmissions  = 4096
-	maxIdentifierBytes     = 256
-	synchronousFull        = 2
-	pragmaEnabled          = 1
-	pragmaDisabled         = 0
+	defaultMaxRequestBytes      = 1 << 20
+	defaultMaxSubmissions       = 4096
+	defaultMaxRealmHistoryBytes = 256 << 20
+	maxIdentifierBytes          = 256
+	synchronousFull             = 2
+	pragmaEnabled               = 1
+	pragmaDisabled              = 0
 )
 
 type Reader interface {
@@ -59,32 +60,34 @@ type Config struct {
 	Owners                 []OwnerSchema
 	MaxRequestBytes        int
 	MaxSubmissionsPerOwner int
+	MaxRealmHistoryBytes   int64
 	// ProjectInstallation encodes application-owned indexes or foreign-key
 	// projections in the same commit. It cannot originate an installation change.
 	ProjectInstallation func(context.Context, Executor, frame.InstallationChange) error
 }
 
 type Store struct {
-	db                  *sql.DB
-	lock                *os.File
-	admission           *frame.Admission
-	id                  string
-	epoch               uint64
-	owners              map[string]*Owner
-	control             *Owner
-	maxRequestBytes     int
-	maxSubmissions      int
-	lifecycleMu         sync.Mutex
-	transactions        sync.WaitGroup
-	closing             bool
-	databaseSealed      bool
-	databaseCloseErr    error
-	unconfirmed         []*sql.Conn
-	closeOnce           sync.Once
-	closeRequests       chan chan error
-	closeDone           chan struct{}
-	closeErr            error
-	projectInstallation func(context.Context, Executor, frame.InstallationChange) error
+	db                   *sql.DB
+	lock                 *os.File
+	admission            *frame.Admission
+	id                   string
+	epoch                uint64
+	owners               map[string]*Owner
+	control              *Owner
+	maxRequestBytes      int
+	maxSubmissions       int
+	maxRealmHistoryBytes int64
+	lifecycleMu          sync.Mutex
+	transactions         sync.WaitGroup
+	closing              bool
+	databaseSealed       bool
+	databaseCloseErr     error
+	unconfirmed          []*sql.Conn
+	closeOnce            sync.Once
+	closeRequests        chan chan error
+	closeDone            chan struct{}
+	closeErr             error
+	projectInstallation  func(context.Context, Executor, frame.InstallationChange) error
 }
 
 type Owner struct {
@@ -104,7 +107,7 @@ CREATE TABLE frame_installations (id TEXT PRIMARY KEY,record BLOB NOT NULL);
 CREATE TABLE frame_use_approvals (id TEXT PRIMARY KEY,request BLOB NOT NULL,execution_id TEXT GENERATED ALWAYS AS (json_extract(CAST(request AS TEXT),'$.ExecutionID')) VIRTUAL,request_digest TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('` + string(useApproved) + `','` + string(useReleased) + `')),proof BLOB);
 CREATE INDEX frame_use_approvals_by_state ON frame_use_approvals(state,id);
 CREATE INDEX frame_uses_by_execution ON frame_use_approvals(execution_id,id);
-CREATE TABLE frame_realms (id TEXT NOT NULL,epoch TEXT NOT NULL,operation_id TEXT NOT NULL UNIQUE,resume_verifier TEXT NOT NULL,PRIMARY KEY(id,epoch));
+CREATE TABLE frame_realms (id TEXT NOT NULL,epoch TEXT NOT NULL,operation_id TEXT NOT NULL UNIQUE,resume_verifier TEXT NOT NULL,history_bytes INTEGER GENERATED ALWAYS AS (length(CAST(id AS BLOB))+length(CAST(epoch AS BLOB))+length(CAST(operation_id AS BLOB))+length(CAST(resume_verifier AS BLOB))) VIRTUAL,PRIMARY KEY(id,epoch));
 CREATE TABLE frame_exit_proofs (attempt_id TEXT NOT NULL REFERENCES frame_attempts(id),scope TEXT NOT NULL,proof_id TEXT NOT NULL,evidence BLOB NOT NULL,PRIMARY KEY(attempt_id,proof_id),UNIQUE(attempt_id,scope));
 ` + realmReceiptSchema
 

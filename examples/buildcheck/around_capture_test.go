@@ -85,7 +85,11 @@ func TestAroundContinuationKeepsItsOriginalRemainderAfterPointChanges(t *testing
 	if err := e.Host.Withdraw(ctx, originalID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.Host.Publish(ctx, instanceID, "replace-tail", frame.Contribute("tail", e.Contracts.Around, buildcheck.AroundMetadata{Name: "tail", Order: 20}, marked("new remainder"))); err != nil {
+	request, err := e.Host.PreparePublication(ctx, instanceID, frame.Contribute("tail", e.Contracts.Around, buildcheck.AroundMetadata{Name: "tail", Order: 20}, marked("new remainder")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Host.Publish(ctx, "replace-tail", request); err != nil {
 		t.Fatal(err)
 	}
 	release()

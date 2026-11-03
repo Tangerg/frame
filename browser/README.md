@@ -80,6 +80,15 @@ including an unknown child acknowledgement. An execution proof releases only
 that original execution's Uses. Proof acknowledgement waits for durable release;
 repeating it never starts cleanup again or substitutes a new exit identity.
 
+The Realm application's Lifetime owns root Uses. A provider execution cannot own
+an application borrow of its own exports: that would create a release cycle.
+Delegated Uses remain children of their original parent Use. Each Use retains its
+exact execution and scope identity for proof validation; changing its application
+owner does not widen the resources an execution proof can release. The Realm
+Lifetime survives the request that opened it. Sealing begins its close and retains
+its actual Uses until their original proofs arrive. A cleanup-only reconstructed
+session creates no new application owner.
+
 A Bridge admits only Setup values from its original Host. A plan returned by Poll
 remains unstarted until `AdmitPlan` transfers responsibility to its reserved
 Runtime owner. The Host settles an unadmitted plan with its original
@@ -91,6 +100,12 @@ MaxRealms bounds resident Realms and MaxPending bounds active operations. On
 seal, an empty Realm relinquishes its slot. Its credential can still submit
 idempotent cleanup observations. Completed control replies live in the original
 authority epoch's SQLite receipt journal and do not consume active capacity.
+`sqlite.Config.MaxRealmHistoryBytes` separately bounds retained Realm credentials
+and control receipts, including unfinished receipt reservations. Each new control
+operation reserves its maximum receipt before capture, selection consumption,
+activation or publication. Completion replaces the reservation with the actual
+encoded reply. Exhaustion returns `ErrCapacity` before responsibility is accepted;
+original observations, accepted snapshot cleanup, withdrawal and exit proofs still progress.
 Rebuilding the Host rotates the epoch and its signing key; use ResumeRealm to
 submit the old execution's proofs on the new cleanup-only channel.
 

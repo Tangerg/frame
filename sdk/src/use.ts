@@ -33,14 +33,16 @@ export async function acquire<T>(
   ) => Awaitable<AcquiredResource<T>>,
 ): Promise<Acquired<T>> {
   const use = owner.branch(label);
+  let live: Lifetime | undefined = use;
+  let exit: Exit | undefined;
   let resource: AcquiredResource<T> | undefined;
-  const cleanup = use.cleanup(async () => {
-    if (!resource) return;
-    const result = await resource.close();
-    if (result === undefined || result.status === "released")
-      resource = undefined;
-    return result;
-  }, label);
+  use.observeExit((outcome) => {
+    if (outcome.status !== "released") return;
+    exit = live!.exit;
+    live = undefined;
+    resource = undefined;
+  });
+  const cleanup = use.cleanup(() => resource?.close(), label);
   try {
     await use.run(async (signal) => {
       resource = await create(signal, cleanup);
@@ -57,22 +59,7 @@ export async function acquire<T>(
       );
     throw error;
   }
-  let live: Lifetime | undefined = use;
-  let exit: Exit | undefined;
-  const close = (): Exit => {
-    if (!exit) {
-      exit = live!.beginClose();
-      const release = (outcome: CloseOutcome) => {
-        if (outcome.status === "released") {
-          live = undefined;
-          resource = undefined;
-        }
-      };
-      exit.subscribe(release);
-      release(exit.outcome);
-    }
-    return exit;
-  };
+  const close = (): Exit => (exit ??= live!.beginClose());
   return Object.freeze({
     with<R>(work: (value: T, signal: AbortSignal) => Awaitable<R>): Promise<R> {
       if (!live || !resource)

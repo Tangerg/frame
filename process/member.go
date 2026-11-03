@@ -94,8 +94,10 @@ func (m Member[Input, Output]) invoke(ctx context.Context, service Service, kind
 	if err = m.method.ValidateOutput(reply.Bytes()); err != nil {
 		return output, errors.Join(ErrOutcomeUnknown, err)
 	}
-	err = framevalue.DecodeValue(reply.Bytes(), &output, m.method.Name())
-	return output, err
+	if err := framevalue.DecodeValue(reply.Bytes(), &output, m.method.Name()); err != nil {
+		return output, errors.Join(ErrOutcomeUnknown, err)
+	}
+	return output, nil
 }
 
 // Partial implementations cannot publish a usable handle for the full contract.

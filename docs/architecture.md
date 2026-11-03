@@ -67,7 +67,47 @@ declaration-root use from acquiring the original export; already accepted uses
 and dependent instances retain the object they originally received. Slow setup
 rechecks those original exports before activation and publication.
 
+Native dynamic publication uses `Host.PreparePublication` to freeze metadata
+and retain one implementation in an opaque `PublicationRequest`. Pass that
+request to `Host.Publish` with an operation ID. Retrying an operation requires
+the same request; creating another request identifies another native value even
+when its metadata is equal. A returned Publish error proves that call did not
+publish. A new operation may reuse a prepared request after withdrawal, but
+creates a new membership. No comparison hashes arbitrary Go values or closures.
+
+Import declaration order is not binding identity. `UnitBinding` canonicalizes
+slots for both serialized identity and live admission equality. Provider order
+within a selected slot remains part of the accepted binding.
+
+A Use's owner must be outside the retirement path of its protected instances.
+Admission follows the original resource-owner handles and provider graph, and
+rejects a direct or nested owner cycle with `ErrDependencyCycle`. An instance
+cannot own a Use of itself or of a consumer that keeps it alive. Application
+consumers own their Uses independently; accepted external Uses can then drain
+before their providers retire.
+
 The live execution path admits the original plan. A durable host can configure ReadAcceptedBinding once at composition. Its loader receives the record identity and the request's scope grant, authorizes that record, then reads the binding accepted by the original business transaction. Host.AcquireRecord consumes that evidence. A diagnostic BindingSnapshot on its own cannot be presented to the Host as a newly authorized operation. The document queue is a working example in examples/document/tasks.go.
+
+## Local causes and terminal close reports
+
+`CloseOutcome` is bounded evidence, with at most 32 diagnostic failures and
+2,048 UTF-8 bytes per detail. `Close.Wait` and `Close.WaitReleased` report stable
+`ErrCloseFailed` and `ErrUnconfirmedRelease` categories from that evidence.
+They do not reconstruct original error chains from diagnostic text.
+
+A first local `Lifetime.Close`, `Use.Close` or `Host.Close` observes cleanup
+causes while it waits and preserves them for `errors.Is` and `errors.As` in the
+returned error. To inspect causes across asynchronous shutdown or late release
+proof, retain `causes := lifetime.ObserveCloseCauses()` before starting closure,
+then inspect `causes.Err()` after observing the original close. The Lifetime is
+the only writer. Concurrent observers share its current local capability.
+
+The caller owns this opt-in retention of original errors and any objects they
+reference. Lifetime retains the capability weakly and terminal handles retain
+only the bounded report. Dropping both the capability and returned local errors
+releases the original payloads; later close observations still report the same
+operation and diagnostic text. An observer created after failures occurred
+cannot recover causes that no caller retained.
 
 ## How a host chooses an execution protocol
 

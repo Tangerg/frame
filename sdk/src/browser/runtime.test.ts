@@ -572,10 +572,12 @@ describe("approved browser execution", () => {
 
   it("accepts an exact Host Use after ready committed but its ACK was lost", async () => {
     const f = fixture({ reader });
-    vi.mocked(f.control.ready).mockImplementationOnce(async (report) => {
-      f.ready.set(report.execution.id, report);
-      throw new Error("ACK lost");
-    });
+    vi.mocked(f.control.ready)
+      .mockImplementationOnce(async (report) => {
+        f.ready.set(report.execution.id, report);
+        throw new Error("ACK lost");
+      })
+      .mockRejectedValueOnce(new FrameError("capacity", "recovery capacity"));
     await expect(
       f.runtime.prepare(
         plan("a", [
@@ -589,13 +591,27 @@ describe("approved browser execution", () => {
       "source",
     );
     const original = f.ready.get("a")!;
+    await expect(
+      f.runtime.prepare(
+        plan("a", [
+          unit("source", "reader", [{ name: "files", contract: files.ref }]),
+        ]),
+      ),
+    ).rejects.toMatchObject({ code: "outcome_unknown" });
+    expect(await use.with(reference, files, (value) => value.read())).toBe(
+      "source",
+    );
     await f.runtime.prepare(
       plan("a", [
         unit("source", "reader", [{ name: "files", contract: files.ref }]),
       ]),
     );
     expect(f.ready.get("a")).toEqual(original);
-    expect(f.control.ready).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(f.control.ready).mock.calls).toEqual([
+      [original],
+      [original],
+      [original],
+    ]);
     await f.runtime.close();
   });
 
@@ -704,6 +720,10 @@ describe("approved browser execution", () => {
     const grant = f.grant("a", live.objects, "one-admission");
     vi.mocked(f.control.acquire)
       .mockRejectedValueOnce(new Error("lost reply"))
+      .mockRejectedValueOnce(new FrameError("capacity", "receipt capacity"))
+      .mockRejectedValueOnce(
+        new FrameError("unavailable", "receipt recovery unavailable"),
+      )
       .mockResolvedValue(grant);
     const request = {
       operationId: "one-admission",
@@ -716,10 +736,18 @@ describe("approved browser execution", () => {
     await expect(
       f.runtime.acquire({ ...request, snapshotId: "changed" }),
     ).rejects.toMatchObject({ code: "invalid_plan" });
+    for (const code of ["capacity", "unavailable"]) {
+      await expect(f.runtime.acquire(request)).rejects.toMatchObject({ code });
+      expect(f.runtime.hasPendingAcquisition(request.operationId)).toBe(true);
+    }
     const use = await f.runtime.acquire(request);
     expect(f.runtime.hasPendingAcquisition(request.operationId)).toBe(false);
     expect(await f.runtime.acquire(request)).toBe(use);
-    expect(f.control.acquire).toHaveBeenCalledTimes(2);
+    expect(await f.runtime.accept(grant)).toBe(use);
+    expect(vi.mocked(f.control.acquire).mock.calls).toEqual(
+      Array.from({ length: 4 }, () => [request]),
+    );
+    expect(f.control.validateUse).toHaveBeenCalledOnce();
     expect(
       await use.with(live.objects[0]!, files, (value) => value.read()),
     ).toBe("source");
@@ -728,6 +756,46 @@ describe("approved browser execution", () => {
       [...f.proofs.values()].filter((proof) => proof.useId === grant.id),
     ).toHaveLength(1);
   });
+
+  it.each(["acquire", "accept"] as const)(
+    "retains an acknowledged acquisition through %s when current authority validation fails",
+    async (entrance) => {
+      const f = fixture({ reader });
+      const live = await f.runtime.prepare(
+        plan("a", [
+          unit("source", "reader", [{ name: "files", contract: files.ref }]),
+        ]),
+      );
+      const grant = f.grant("a", live.objects, "accepted-admission");
+      vi.mocked(f.control.acquire).mockResolvedValue(grant);
+      vi.mocked(f.control.validateUse).mockRejectedValueOnce(
+        new FrameError("capacity", "validation admission unavailable"),
+      );
+      const request = {
+        operationId: grant.operationId,
+        snapshotId: "snapshot",
+        execution: live.identity,
+        selections: [],
+      };
+      const accept = () =>
+        entrance === "acquire"
+          ? f.runtime.acquire(request)
+          : f.runtime.accept(grant);
+      await expect(accept()).rejects.toMatchObject({
+        code: "capacity",
+      });
+      expect(f.runtime.hasPendingAcquisition(request.operationId)).toBe(true);
+      const use = await accept();
+      expect(await f.runtime.accept(grant)).toBe(use);
+      expect(vi.mocked(f.control.acquire).mock.calls).toEqual(
+        entrance === "acquire" ? [[request], [request]] : [],
+      );
+      await f.runtime.close();
+      expect(
+        [...f.proofs.values()].filter((proof) => proof.useId === grant.id),
+      ).toHaveLength(1);
+    },
+  );
 
   it.each(["acquire", "accept"] as const)(
     "joins delegated child work before the parent proof through %s",
@@ -1877,7 +1945,7 @@ it.each([null, undefined])(
   },
 );
 
-it("retains the original publication and withdrawal identities through later observations", async () => {
+it("retains publication identity and retries the same withdrawal after refusal or uncertainty", async () => {
   const contributor = defineUnit({
     id: "contributor",
     imports: {},
@@ -1914,12 +1982,19 @@ it("retains the original publication and withdrawal identities through later obs
   }
   vi.mocked(f.control.publication).mockResolvedValue({ decision: "unknown" });
   expect(await publication.observe()).toBe(original);
-  vi.mocked(f.control.withdraw).mockResolvedValueOnce({ decision: "unknown" });
+  vi.mocked(f.control.withdraw)
+    .mockResolvedValueOnce({ decision: "rejected" })
+    .mockResolvedValueOnce({ decision: "unknown" });
+  expect((await publication.withdraw()).decision).toBe("rejected");
   expect((await publication.withdraw()).decision).toBe("unknown");
   expect((await publication.withdraw()).decision).toBe("accepted");
   const calls = vi.mocked(f.control.withdraw).mock.calls;
   expect(calls[0]![0]).toEqual(calls[1]![0]);
-  expect(calls[0]![0].publicationId).toBe(original.publication!.id);
+  expect(calls[0]![0]).toEqual(calls[2]![0]);
+  expect(calls[0]![0]).toEqual({
+    authority,
+    publicationId: original.publication!.id,
+  });
   expect(
     f.runtime.pendingProofs.find((proof) => proof.scopeKind === "publication")
       ?.publicationId,

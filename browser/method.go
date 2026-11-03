@@ -15,10 +15,11 @@ const (
 	proveMethod            = "prove"
 	reconnectMethod        = "reconnect"
 	acquireOperation       = "acquire"
+	acquirePlanOperation   = "acquirePlan"
 	snapshotOperation      = "snapshot"
 	closeSnapshotOperation = "closeSnapshot"
 	publishOperation       = "publish"
-	withdrawOperation      = "withdraw"
+	withdrawMethod         = "withdraw"
 )
 
 type controlMethod struct {
@@ -55,7 +56,7 @@ var controlMethods = []controlMethod{
 	acknowledgement(closeSnapshotOperation, true, (*Bridge).CloseSnapshot),
 	requestMethod(publishOperation, true, (*Bridge).Publish),
 	requestMethod("publication", false, (*Bridge).Publication),
-	requestMethod(withdrawOperation, true, (*Bridge).Withdraw),
+	requestMethod(withdrawMethod, true, (*Bridge).Withdraw),
 	requestMethod(proveMethod, true, (*Bridge).Prove),
 	requestMethod(reconnectMethod, true, (*Bridge).Reconnect),
 	requestMethod("poll", false, func(b *Bridge, ctx context.Context, token string, _ struct{}) (Poll, error) {

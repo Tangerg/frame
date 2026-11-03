@@ -25,15 +25,18 @@ import type {
   PublicationRequest,
   PublicationResult,
   Realm,
-  ReadyReport,
   RouteGrant,
   UseGrant,
 } from "../protocol.generated.js";
 import { PROTOCOL } from "../protocol.generated.js";
-import { type HostControl, sameAuthority } from "./control.js";
+import {
+  isControlRefusal,
+  type HostControl,
+  sameAuthority,
+} from "./control.js";
 import { ProofOutbox } from "./outbox.js";
 import { UseAdmission } from "./admission.js";
-import { PreparationAdmission } from "./preparation.js";
+import { PreparationAdmission, ReadySubmission } from "./preparation.js";
 
 export interface RuntimeOptions {
   readonly authority: Authority;
@@ -85,7 +88,7 @@ interface PublicationState {
 
 class PublicationReceipt {
   #outcome: PublicationResult = Object.freeze({ decision: "unknown" });
-  #withdrawal?: { operationId: string; acknowledged: boolean };
+  #withdrawalConfirmed = false;
 
   constructor(
     readonly operationId: string,
@@ -160,37 +163,17 @@ class PublicationReceipt {
     });
   }
 
-  get withdrawalOperationId(): string | undefined {
-    return this.#withdrawal?.operationId;
-  }
-
-  requestWithdrawal(operationId: string): void {
+  acknowledgeWithdrawal(): void {
     if (this.#outcome.decision !== "accepted")
       throw new FrameError(
         "invalid_plan",
         "publication must be accepted before withdrawal",
       );
-    if (this.#withdrawal && this.#withdrawal.operationId !== operationId)
-      throw new FrameError(
-        "invalid_plan",
-        "publication withdrawal identity cannot change",
-      );
-    this.#withdrawal ??= { operationId, acknowledged: false };
-  }
-
-  acknowledgeWithdrawal(): void {
-    if (!this.#withdrawal)
-      throw new FrameError(
-        "invalid_plan",
-        "publication withdrawal was not requested",
-      );
-    this.#withdrawal.acknowledged = true;
+    this.#withdrawalConfirmed = true;
   }
 
   get withdrawnPublicationId(): string | undefined {
-    return this.#withdrawal?.acknowledged
-      ? this.acceptedPublication?.id
-      : undefined;
+    return this.#withdrawalConfirmed ? this.acceptedPublication?.id : undefined;
   }
 }
 
@@ -309,22 +292,7 @@ interface ExecutionEntry {
   readonly preparations: PreparedContribution[];
   readonly view: ExecutionHandle;
   prepared?: Promise<ExecutionHandle>;
-  ready?: ReadyReport;
-}
-
-// Only authenticated protocol refusals settle a request that may have been sent.
-function confirmedRefusal(error: unknown): boolean {
-  return (
-    error instanceof FrameError &&
-    [
-      "permission_denied",
-      "invalid_plan",
-      "contract_mismatch",
-      "stale_binding",
-      "capacity",
-      "closed",
-    ].includes(error.code)
-  );
+  ready?: ReadySubmission;
 }
 
 function immutable<T>(value: T): T {
@@ -796,14 +764,17 @@ export class Runtime {
       throw error;
     }
     entry.lifetime.assertOpen();
-    entry.ready = immutable({
-      operationId: crypto.randomUUID(),
-      authority: entry.plan.authority,
-      realm: this.#realm,
-      execution: entry.plan.execution,
-      objects: entry.view.objects,
-      contributions: entry.preparations,
-    });
+    entry.ready = new ReadySubmission(
+      immutable({
+        operationId: crypto.randomUUID(),
+        authority: entry.plan.authority,
+        realm: this.#realm,
+        execution: entry.plan.execution,
+        objects: entry.view.objects,
+        contributions: entry.preparations,
+      }),
+      entry.lifetime,
+    );
     return this.#submitReady(entry, revision);
   }
 
@@ -813,36 +784,7 @@ export class Runtime {
   ): Promise<ExecutionHandle> {
     this.#assertRevision(revision);
     entry.lifetime.assertOpen();
-    let result: PublicationResult;
-    try {
-      result = await entry.lifetime.run(() =>
-        this.#control.ready(entry.ready!),
-      );
-    } catch (cause) {
-      if (confirmedRefusal(cause)) {
-        await entry.lifetime.close();
-        throw cause;
-      }
-      // Publication may have committed. Prepared values remain owned and may be
-      // referenced by an exact Host Use even though this acknowledgement is lost.
-      throw new FrameError(
-        "outcome_unknown",
-        "ready acknowledgement is unknown; prepared execution is retained",
-        { cause },
-      );
-    }
-    if (result.decision === "rejected") {
-      await entry.lifetime.close();
-      throw new FrameError(
-        "stale_binding",
-        "host rejected the prepared execution",
-      );
-    }
-    if (result.decision !== "accepted")
-      throw new FrameError(
-        "outcome_unknown",
-        "prepared acknowledgement remains unknown",
-      );
+    await entry.ready!.submit(this.#control);
     this.#assertRevision(revision);
     entry.lifetime.assertOpen();
     return entry.view;
@@ -911,15 +853,15 @@ export class Runtime {
       );
       admission.verifyGrant(grant);
       admission.bindRequest(request);
-      const use = await this.#resolveAdmission(admission, () =>
+      const use = await admission.resolve(() =>
         this.#materializeGrant(grant, entry, admission, revision),
       );
       admission.verifyGrant(grant);
       return use;
     }
     admission.bindRequest(request);
-    return this.#resolveAdmission(admission, async () => {
-      const grant = await this.#control.acquire(request);
+    return admission.resolve(async () => {
+      const grant = await admission.requestGrant(this.#control);
       return this.#materializeGrant(grant, entry, admission, revision);
     });
   }
@@ -934,25 +876,11 @@ export class Runtime {
     const admission = this.#admission(grant, entry);
     admission.verifyGrant(grant);
     const revision = this.#connectionRevision;
-    const use = await this.#resolveAdmission(admission, () =>
+    const use = await admission.resolve(() =>
       this.#materializeGrant(grant, entry, admission, revision),
     );
     admission.verifyGrant(grant);
     return use;
-  }
-
-  #resolveAdmission(
-    admission: UseAdmission,
-    work: () => Promise<Use>,
-  ): Promise<Use> {
-    return admission.resolve(async () => {
-      try {
-        return await work();
-      } catch (error) {
-        if (confirmedRefusal(error)) admission.lifetime.beginClose();
-        throw error;
-      }
-    });
   }
 
   #useExecution(execution: Execution): ExecutionEntry {
@@ -1144,10 +1072,7 @@ export class Runtime {
         receive(await this.#control.publication(operationId));
       const accepted = receipt.acceptedPublication;
       if (!accepted) return { decision: "unknown" };
-      if (!receipt.withdrawalOperationId)
-        receipt.requestWithdrawal(crypto.randomUUID());
       const result = await this.#control.withdraw({
-        operationId: receipt.withdrawalOperationId!,
         authority: this.#authority,
         publicationId: accepted.id,
       });
@@ -1195,7 +1120,7 @@ export class Runtime {
     try {
       result = await owner.run(() => this.#control.publish(request));
     } catch (cause) {
-      if (confirmedRefusal(cause)) {
+      if (isControlRefusal(cause)) {
         await owner.close();
         throw cause;
       }

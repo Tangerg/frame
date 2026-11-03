@@ -45,3 +45,26 @@ handler with `ImplementQuery` or `ImplementCommand`, then assemble the complete
 service with `Implement`. The command handler receives the original command ID.
 Typed callers use `Member.Query` or `Member.Command`. Hosts can provide any
 implementation of `Service` or `StreamingService` matching the published descriptor.
+
+Typed schema derivation and decoding share `value.ValidateType` admission.
+JSON field declarations own presence and representation; schema tags can narrow
+values, including requiring an otherwise optional field. Tags that replace a
+field's encoding are refused before publication. Pointers represent omission;
+nullable material requires an opaque JSON field. Integer decoding accepts exact
+decimal and exponent spellings such as `1.0` and `1e0` within the Go type's range,
+without rounding through floating-point values. A reply that cannot be decoded
+after dispatch retains `ErrOutcomeUnknown` and the decoding cause.
+
+Ordinary `float32`/`float64`, byte sequences and `time.Time` are outside the
+typed wire model. Machine floats cannot represent every admitted JSON number;
+base64 content annotations do not validate strings; and `time.Time` cannot
+represent the full RFC 3339 date-time vocabulary, including leap seconds.
+Use `value.Number` for exact numbers and strings with semantic schema
+constraints for textual encodings. `value.JSON`, `json.RawMessage`, and
+`any` retain opaque JSON, including null. Other custom encodings require both an
+encoder and decoder plus a value-receiver `JSONSchemaModel`. That domain owner
+must describe exactly the wire values its codec can consume; Frame does not infer
+the contract from private fields or a decoder alone.
+Map keys may be plain or named strings without custom codecs; the schema
+reflector does not project a key codec's constraints onto property names.
+Descriptor-only contracts use `portable.AdmitMethod` with explicit schemas.

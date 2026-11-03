@@ -369,7 +369,7 @@ func Capture(snapshot *Snapshot, selections ...SelectionRef) (*BindingPlan, erro
 			plan.binding.Roots = append(plan.binding.Roots, member.source)
 			plan.durable = plan.durable && member.durable
 			for _, unit := range member.binding.Units {
-				if previous, exists := units[unit.Source]; exists && !sameUnitBinding(previous, unit) {
+				if previous, exists := units[unit.Source]; exists && !previous.equal(unit) {
 					return nil, fmt.Errorf("%w: incompatible setup bindings", ErrInvalid)
 				}
 				units[unit.Source] = unit.Clone()
@@ -415,7 +415,7 @@ func (h *Host) validatePlanLocked(plan *BindingPlan) error {
 				return err
 			}
 			actual := h.instances[instanceKey{source: bound.Source, realm: realm}]
-			if actual != nil && !actual.retiring && !sameUnitBinding(actual.binding, bound) {
+			if actual != nil && !actual.retiring && !actual.binding.equal(bound) {
 				return fmt.Errorf("%w: unit acquired another setup binding", ErrStaleBinding)
 			}
 			if actual == nil || !actual.readyDone {
@@ -615,65 +615,97 @@ func (h *Host) DecodeMetadata(contract ContractRef, data []byte) (any, error) {
 	return decodeMetadata(definition, value)
 }
 
-func (h *Host) Publish(ctx context.Context, instanceID, operationID string, value ExportValue) (Publication, error) {
-	if err := validateName("publication operation", operationID); err != nil {
-		return Publication{}, err
+// PublicationRequest fixes one native implementation and metadata snapshot. A
+// replay must retain this request because arbitrary Go values have no structural
+// identity that can safely distinguish implementations, closures or pointers.
+type PublicationRequest struct {
+	owner      *authorityIdentity
+	identity   publicationRequestID
+	instanceID string
+	source     ExportRef
+	metadata   any
+	value      any
+}
+
+type publicationRequestID string
+
+func (h *Host) PreparePublication(ctx context.Context, instanceID string, value ExportValue) (*PublicationRequest, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
 	}
 	h.mu.Lock()
 	instance := h.allInstances[instanceID]
 	if instance == nil {
 		h.mu.Unlock()
-		return Publication{}, ErrUnavailable
+		return nil, ErrUnavailable
 	}
 	err := instance.validatePublicationLocked()
+	var temporary Instance
+	if err == nil {
+		temporary.unit = instance.unit.Clone()
+		temporary.binding = instance.binding.Clone()
+	}
 	h.mu.Unlock()
 	if err != nil {
-		return Publication{}, err
+		return nil, err
 	}
-	// Dynamic membership is permitted only for an explicitly declared Point.
-	// It cannot replace a Service or acquire a durable reconstruction identity.
-	if !declaresPoint(instance.unit, value.Contract) {
-		return Publication{}, ErrContractMismatch
+	// Dynamic membership cannot replace a Service or acquire durable identity.
+	if !declaresPoint(temporary.unit, value.Contract) {
+		return nil, ErrContractMismatch
 	}
 	value.Durable = false
-	temporary := Instance{unit: instance.unit.Clone(), binding: instance.binding.Clone()}
 	temporary.unit.Exports = []ExportDeclaration{{Name: value.Name, Contract: value.Contract}}
 	prepared, err := h.prepareExports(&temporary, []ExportValue{value})
 	if err != nil {
-		return Publication{}, err
+		return nil, err
+	}
+	if err := contextError(ctx); err != nil {
+		return nil, err
 	}
 	publication := prepared[0]
-	publication.instance = instance
-	metadata, err := json.Marshal(publication.metadata)
-	if err != nil {
+	return &PublicationRequest{owner: h.identity, identity: publicationRequestID(publication.id), instanceID: instanceID, source: publication.source, metadata: publication.metadata, value: publication.value}, nil
+}
+
+// A returned error proves this call did not publish. An earlier successful
+// operation remains authoritative and can only be replayed with its request.
+func (h *Host) Publish(ctx context.Context, operationID string, request *PublicationRequest) (Publication, error) {
+	if request == nil || request.owner != h.identity || request.identity == "" {
+		return Publication{}, ErrInvalid
+	}
+	if err := validateName("publication operation", operationID); err != nil {
 		return Publication{}, err
 	}
-	fingerprint := framevalue.Hash(append([]byte(value.Name+"\x00"+value.Contract.Digest.String()+"\x00"), metadata...))
 	var result Publication
-	err = h.admission.Admit(ctx, func(context.Context) error {
+	err := h.admission.Admit(ctx, func(context.Context) error {
 		h.mu.Lock()
 		defer h.mu.Unlock()
+		instance := h.allInstances[request.instanceID]
+		if instance == nil {
+			return ErrUnavailable
+		}
 		if err := instance.validatePublicationLocked(); err != nil {
 			return err
 		}
 		if original := instance.publicationOperations[operationID]; original != nil {
-			if original.request != fingerprint || !original.publication.visible {
+			if original.request != request.identity || !original.publication.visible {
 				return ErrStaleBinding
 			}
 			result = Publication{ID: original.publication.id, Source: original.publication.source, InstanceID: instance.id, Revision: original.publication.revision}
 			return nil
 		}
-		if len(instance.publicationOperations) >= h.maxPublicationOperations {
+		if len(instance.publicationOperations) >= h.maxPublicationOperations || h.publicationCountLocked() >= h.maxPublications {
 			return ErrCapacity
 		}
-		if h.publicationCountLocked() >= h.maxPublications {
-			return ErrCapacity
-		}
-		if instance.hasVisiblePublicationLocked(value.Name) {
+		if instance.hasVisiblePublicationLocked(request.source.Export) {
 			return fmt.Errorf("%w: export is already published", ErrInvalid)
 		}
+		id, err := randomID()
+		if err != nil {
+			return err
+		}
+		publication := &publication{id: id, source: request.source, metadata: request.metadata, value: request.value, instance: instance}
 		h.publishLocked(publication)
-		instance.publicationOperations[operationID] = &publicationOperation{request: fingerprint, publication: publication}
+		instance.publicationOperations[operationID] = &publicationOperation{request: request.identity, publication: publication}
 		result = Publication{ID: publication.id, Source: publication.source, InstanceID: instance.id, Revision: publication.revision}
 		return nil
 	})

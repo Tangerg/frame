@@ -5,20 +5,27 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/sqlite"
 	"github.com/Tangerg/frame/value"
 )
 
+type controlRequestIdentity struct {
+	Kind   string
+	Realm  Realm
+	Digest value.Digest
+}
+
 type controlReceipt struct {
-	Kind        string
-	Realm       Realm
-	Digest      value.Digest
+	controlRequestIdentity
 	Publication PublicationResult
 	Grant       *UseGrant
 	Failures    []string
 }
+
+const unknownReceiptFailure = "unknown"
 
 func (o *controlOperation) wait(ctx context.Context) error {
 	select {
@@ -40,11 +47,11 @@ var receiptFailures = []struct {
 	{"dependency_cycle", frame.ErrDependencyCycle}, {"contract", frame.ErrContractMismatch},
 	{"recovery", frame.ErrRecoveryRequired}, {"fenced", frame.ErrFenced}, {"capacity", frame.ErrCapacity},
 	{"resync", frame.ErrResyncRequired}, {"unconfirmed", frame.ErrUnconfirmedRelease}, {"conflict", sqlite.ErrConflict},
-	{"cancelled", context.Canceled}, {"deadline", context.DeadlineExceeded}, {"unknown", sqlite.ErrIndeterminate},
+	{"cancelled", context.Canceled}, {"deadline", context.DeadlineExceeded}, {unknownReceiptFailure, sqlite.ErrIndeterminate},
 }
 
 func (o *controlOperation) receipt() controlReceipt {
-	r := controlReceipt{Kind: o.kind, Realm: o.realm, Digest: o.digest, Publication: o.publication, Grant: o.grant}
+	r := controlReceipt{controlRequestIdentity: controlRequestIdentity{Kind: o.kind, Realm: o.realm, Digest: o.digest}, Publication: o.publication, Grant: o.grant}
 	if o.grant != nil {
 		grant := *o.grant
 		grant.ApprovalToken = ""
@@ -57,7 +64,7 @@ func (o *controlOperation) receipt() controlReceipt {
 			}
 		}
 		if len(r.Failures) == 0 {
-			r.Failures = []string{"unknown"}
+			r.Failures = []string{unknownReceiptFailure}
 		}
 	}
 	return r
@@ -161,7 +168,7 @@ func (b *Bridge) archive(ctx context.Context, id string, o *controlOperation) er
 	if err != nil {
 		return err
 	}
-	if err = b.config.Store.RecordRealmReceipt(ctx, id, data); err != nil {
+	if err = o.receiptReservation.Record(ctx, data); err != nil {
 		return err
 	}
 	b.mu.Lock()
@@ -174,8 +181,40 @@ func (b *Bridge) archive(ctx context.Context, id string, o *controlOperation) er
 
 func (b *Bridge) complete(ctx context.Context, id string, o *controlOperation) error {
 	defer close(o.done)
+	if o.receiptReservation == nil {
+		b.mu.Lock()
+		if b.operations[id] == o {
+			delete(b.operations, id)
+		}
+		b.mu.Unlock()
+		return nil
+	}
 	if err := b.archive(context.WithoutCancel(ctx), id, o); err != nil {
 		return errors.Join(sqlite.ErrIndeterminate, err)
 	}
 	return nil
+}
+
+func (b *Bridge) reserveReceipt(ctx context.Context, id string, operation *controlOperation) error {
+	receipt := operation.receipt()
+	identity, err := requestDigest(receipt.controlRequestIdentity)
+	if err != nil {
+		return err
+	}
+	for _, failure := range receiptFailures {
+		receipt.Failures = append(receipt.Failures, failure.code)
+	}
+	maximum, err := encodedSize(receipt)
+	if err != nil {
+		return err
+	}
+	switch operation.kind {
+	case publishOperation, acquireOperation, acquirePlanOperation:
+		if maximum > math.MaxInt64-b.config.MaxMessageBytes {
+			return frame.ErrCapacity
+		}
+		maximum += b.config.MaxMessageBytes
+	}
+	operation.receiptReservation, err = b.config.Store.ReserveRealmReceipt(ctx, id, identity, maximum)
+	return err
 }

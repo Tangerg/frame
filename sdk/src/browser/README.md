@@ -125,6 +125,14 @@ the same grant or refusal. Replaying a consumed or closed Snapshot returns
 `closed`; only an explicitly new capture may select again. Closing the Snapshot
 afterward is idempotent and leaves accepted Uses and release proofs with their
 original owners. Preserve both errors when selection and cleanup fail.
+`isControlRefusal(error)` identifies a call's definitive refusal categories.
+A first-dispatch Snapshot refusal creates no lease to close. After an unavailable
+or unknown response, retain the original identity for retry or explicit close:
+a later refused call cannot rule out acceptance of an earlier dispatch. Runtime
+applies the same rule to each original pending acquisition.
+Both `acquire` and `accept` retain their original admission when validation of an
+acknowledged grant fails. Retry that original request or grant; its parent or
+execution still owns cleanup if validation cannot recover.
 
 `route` accepts an exact Host-approved native Event route. Dispatch preserves the
 actual payload object in the Realm. Changing public subscriptions or acquiring
@@ -137,8 +145,10 @@ Ready acknowledges preparation; it never becomes a local Active or Published
 permission flag. A valid Host Use may access the original staged object when a
 Ready or publication acknowledgement was lost. Ready retries preserve the exact
 report and operation identity without running setup again.
-An explicit Ready refusal, including a complete message capacity refusal, closes
-the prepared execution. Only an unknown outcome retains preparation for retry.
+A first-dispatch Ready refusal, including a complete message capacity refusal,
+closes the prepared execution. After an unknown acknowledgement, later transport
+refusals retain the original report and objects for retry. Only a terminal Ready
+decision or the original execution's close can settle that earlier uncertainty.
 
 `publish` creates a contribution under an existing declared Point contract.
 Unknown acknowledgement retains its original operation and object. `observe`
@@ -148,6 +158,15 @@ publication produces its own proof after that separate withdrawal is confirmed,
 without releasing its parent execution. Closing the execution instead covers
 all of its original objects, including accepted and uncertain dynamic
 publications. It does not manufacture a separate withdrawal acknowledgement.
+
+A complete `rejected` decision proves that its publication or withdrawal call
+made no membership change. Publication refusal releases the staged object.
+Withdrawal addresses the original publication directly; it has no separate
+operation identity or receipt journal. Retrying `withdraw()` observes or performs
+the same idempotent removal at the Host, including after a cancellation or lost
+response. Publication observations cannot reverse a confirmed decision. Request
+cancellation before the Host's synchronous mutation is a known refusal, not a
+permanently unknown command.
 
 Only terminal release enters the bounded bootstrap proof outbox. Proof delivery
 reuses the same immutable proof identity and payload after acknowledgement loss.

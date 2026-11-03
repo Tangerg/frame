@@ -663,11 +663,27 @@
       },
       {
         "value": "+1:00:00Z",
-        "valid": true
+        "valid": false
       },
       {
         "value": "-0:00:00Z",
-        "valid": true
+        "valid": false
+      },
+      {
+        "value": "00:+0:00Z",
+        "valid": false
+      },
+      {
+        "value": "00:00:-0Z",
+        "valid": false
+      },
+      {
+        "value": "00:00:00++0:00",
+        "valid": false
+      },
+      {
+        "value": "00:00:00+00:+0",
+        "valid": false
       },
       {
         "value": "24:00:00Z",
@@ -738,7 +754,11 @@
       },
       {
         "value": "2026-11-02T+1:00:00Z",
-        "valid": true
+        "valid": false
+      },
+      {
+        "value": "2026-11-02T00:00:00++0:00",
+        "valid": false
       },
       {
         "value": "2025-02-29T12:34:56Z",

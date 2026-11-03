@@ -147,7 +147,7 @@ func (h *Host) acquirePrepared(ctx context.Context, plan *BindingPlan, config Us
 				return ErrStaleBinding
 			}
 		}
-		if err := h.attachPlanMembers(ctx, use, plan); err != nil {
+		if err := h.attachPlanMembers(ctx, use, plan, config.Owner); err != nil {
 			return err
 		}
 		if err := h.protectUse(admitted, use, config); err != nil {
@@ -163,8 +163,8 @@ func (h *Host) acquirePrepared(ctx context.Context, plan *BindingPlan, config Us
 	return use, nil
 }
 
-// inheritParent completes a child Use's identity from its parent and refuses one
-// that would escape the parent's execution, realm or scope.
+// A child must remain inside its parent's execution, realm and scope; another
+// owner would detach protected work from the permission that admitted it.
 func (h *Host) inheritParent(config UseConfig) (UseConfig, error) {
 	parent := config.Parent
 	if parent == nil {
@@ -193,9 +193,7 @@ func (h *Host) inheritParent(config UseConfig) (UseConfig, error) {
 	return config, nil
 }
 
-// attachPlanMembers binds use to the plan's members and holds every instance it
-// reaches, under the host lock so the plan cannot go stale in between.
-func (h *Host) attachPlanMembers(ctx context.Context, use *Use, plan *BindingPlan) error {
+func (h *Host) attachPlanMembers(ctx context.Context, use *Use, plan *BindingPlan, owner *Lifetime) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if err := h.validatePlanLocked(plan); err != nil {
@@ -219,6 +217,9 @@ func (h *Host) attachPlanMembers(ctx context.Context, use *Use, plan *BindingPla
 			seen[instance] = true
 			use.instances = append(use.instances, instance)
 		}
+	}
+	if err := h.validateUseOwnerLocked(owner, use.instances); err != nil {
+		return err
 	}
 	for _, selection := range plan.selections {
 		use.selections[selection.id] = []string{}
@@ -256,6 +257,39 @@ func (h *Host) attachPlanMembers(ctx context.Context, use *Use, plan *BindingPla
 	return nil
 }
 
+// An instance drains its consumers before closing owned resources. Accepting a
+// Use owned by that instance, even through another Use, would make both wait for
+// the other. Follow the original resource handles and provider edges only.
+func (h *Host) validateUseOwnerLocked(owner *Lifetime, instances []*Instance) error {
+	owners := make(map[*Lifetime]bool)
+	for owner != nil && !owners[owner] {
+		owners[owner] = true
+		var parent *Lifetime
+		for _, use := range h.uses {
+			if use.lifetime == owner && use.ownerResource != nil {
+				parent = use.ownerResource.lifetime
+				break
+			}
+		}
+		owner = parent
+	}
+	seen := make(map[*Instance]bool)
+	pending := slices.Clone(instances)
+	for len(pending) > 0 {
+		instance := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if seen[instance] {
+			continue
+		}
+		if owners[instance.lifetime] {
+			return fmt.Errorf("%w: use owner protects instance %s", ErrDependencyCycle, instance.id)
+		}
+		seen[instance] = true
+		pending = append(pending, instance.dependencies...)
+	}
+	return nil
+}
+
 // protectUse records a surviving execution's Use approval before it is
 // published, so a restart can still account for it.
 func (h *Host) protectUse(admitted context.Context, use *Use, config UseConfig) error {
@@ -277,11 +311,11 @@ func (h *Host) protectUse(admitted context.Context, use *Use, config UseConfig) 
 	return nil
 }
 
-// publishUse registers use with its owner and the host lifetime, then makes it
-// visible to its instances.
 func (h *Host) publishUse(use *Use, owner *Lifetime) error {
+	causes := use.lifetime.ObserveCloseCauses()
 	resource := Resource{Name: "use:" + use.id, Cancel: func(cause error) { use.BeginClose(cause) }, Close: func(closeCtx context.Context) (ReleaseState, error) {
 		outcome, err := use.Close(closeCtx)
+		err = causes.join(err)
 		if outcome.Released {
 			return ResourceReleased, err
 		}
@@ -315,6 +349,7 @@ func (h *Host) publishUse(use *Use, owner *Lifetime) error {
 }
 
 func (u *Use) BeginClose(cause error) *Close {
+	causes := u.lifetime.ObserveCloseCauses()
 	operation := u.lifetime.BeginClose(cause)
 	u.retireOnce.Do(func() {
 		go func() {
@@ -348,10 +383,10 @@ func (u *Use) BeginClose(cause error) *Close {
 				hold.Finish()
 			}
 			if u.ownerResource != nil {
-				_ = u.ownerResource.ConfirmReleased(outcomeError(outcome))
+				_ = u.ownerResource.ConfirmReleased(causes.join(outcomeError(outcome)))
 			}
 			if u.hostResource != nil {
-				_ = u.hostResource.ConfirmReleased(outcomeError(outcome))
+				_ = u.hostResource.ConfirmReleased(causes.join(outcomeError(outcome)))
 			}
 			h.mu.Lock()
 			if _, exists := h.uses[u.id]; exists {
@@ -384,7 +419,9 @@ func (u *Use) BeginClose(cause error) *Close {
 }
 
 func (u *Use) Close(ctx context.Context) (CloseOutcome, error) {
+	causes := u.lifetime.ObserveCloseCauses()
 	outcome, err := u.BeginClose(ErrClosed).Wait(ctx)
+	err = causes.join(err)
 	if !outcome.Released {
 		return outcome, err
 	}

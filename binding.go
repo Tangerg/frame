@@ -184,6 +184,22 @@ func (b UnitBinding) Clone() UnitBinding {
 	return b
 }
 
+func (b UnitBinding) canonical() UnitBinding {
+	b = b.Clone()
+	if b.Imports == nil {
+		b.Imports = []ImportDeclaration{}
+	}
+	slices.SortFunc(b.Imports, func(a, b ImportDeclaration) int { return cmp.Compare(a.Slot, b.Slot) })
+	return b
+}
+
+func (b UnitBinding) equal(other UnitBinding) bool {
+	left, right := b.canonical(), other.canonical()
+	return left.Source == right.Source && left.Configuration == right.Configuration && slices.EqualFunc(left.Imports, right.Imports, func(a, b ImportDeclaration) bool {
+		return a.Slot == b.Slot && a.Contract == b.Contract && a.Optional == b.Optional && (a.Providers == nil) == (b.Providers == nil) && slices.Equal(a.Providers, b.Providers)
+	})
+}
+
 // BindingSnapshot is immutable routing evidence when retained by its domain
 // owner. It contains no running pointer, publication grant or business outcome.
 type BindingSnapshot struct {
@@ -387,7 +403,7 @@ func (b BindingSnapshot) CanonicalJSON() ([]byte, error) {
 	value := b.Clone()
 	slices.SortFunc(value.Units, func(a, b UnitBinding) int { return compareUnit(a.Source, b.Source) })
 	for i := range value.Units {
-		slices.SortFunc(value.Units[i].Imports, func(a, b ImportDeclaration) int { return cmp.Compare(a.Slot, b.Slot) })
+		value.Units[i] = value.Units[i].canonical()
 	}
 	return json.Marshal(value)
 }

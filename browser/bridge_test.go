@@ -112,7 +112,7 @@ func openConfiguredBridge(t *testing.T, path string, cleanup bool, configure fun
 	return e
 }
 
-func (e *bridgeEnvironment) start(id string) browser.LocalPlan {
+func (e *bridgeEnvironment) beginActivation(id string) (browser.LocalPlan, <-chan error) {
 	e.t.Helper()
 	if e.credentials.Token == "" {
 		credentials, err := e.bridge.OpenRealm(e.ctx, "open-test", "0123456789abcdef0123456789abcdef")
@@ -154,6 +154,12 @@ func (e *bridgeEnvironment) start(id string) browser.LocalPlan {
 		}
 	}
 	e.admit(plan)
+	return plan, done
+}
+
+func (e *bridgeEnvironment) readyReport(plan browser.LocalPlan) browser.ReadyReport {
+	e.t.Helper()
+	id := string(plan.Units[0].Instance.Source.InstallationID)
 	objects := []browser.ObjectRef{}
 	contributions := []browser.PreparedContribution{}
 	for _, declaration := range plan.Units[0].Exports {
@@ -161,8 +167,13 @@ func (e *bridgeEnvironment) start(id string) browser.LocalPlan {
 		objects = append(objects, object)
 		contributions = append(contributions, browser.PreparedContribution{Object: object, MetadataJSON: `{"label":"` + id + `"}`})
 	}
-	report := browser.ReadyReport{OperationID: "ready:" + id, Authority: plan.Authority, Realm: plan.Realm, Execution: plan.Execution, Objects: objects, Contributions: contributions}
-	result, err := e.bridge.Ready(e.ctx, e.credentials.Token, report)
+	return browser.ReadyReport{OperationID: "ready:" + id, Authority: plan.Authority, Realm: plan.Realm, Execution: plan.Execution, Objects: objects, Contributions: contributions}
+}
+
+func (e *bridgeEnvironment) start(id string) browser.LocalPlan {
+	e.t.Helper()
+	plan, done := e.beginActivation(id)
+	result, err := e.bridge.Ready(e.ctx, e.credentials.Token, e.readyReport(plan))
 	if err != nil || result.Decision != browser.Accepted {
 		e.t.Fatalf("ready: %+v %v", result, err)
 	}
@@ -408,7 +419,7 @@ func TestPublicationWithdrawalPreservesAcceptedUse(t *testing.T) {
 	if len(grant.Objects) != 3 {
 		t.Fatalf("dynamic Point was not captured: %+v", grant.Objects)
 	}
-	withdrawn, err := e.bridge.Withdraw(e.ctx, e.credentials.Token, browser.Withdrawal{OperationID: "withdraw-dynamic", Authority: plan.Authority, PublicationID: result.Publication.ID})
+	withdrawn, err := e.bridge.Withdraw(e.ctx, e.credentials.Token, browser.Withdrawal{Authority: plan.Authority, PublicationID: result.Publication.ID})
 	if err != nil || withdrawn.Decision != browser.Accepted {
 		t.Fatalf("withdraw: %+v %v", withdrawn, err)
 	}

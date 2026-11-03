@@ -219,7 +219,7 @@ func TestPointReadSetMetadataAndWithdrawal(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	dynamic, err := host.Publish(ctx, setup.InstanceID(), "publish-2", frame.Contribute("dynamic", point, map[string]string{"label": "two"}, func() string { return "two" }))
+	dynamic, err := host.Publish(ctx, "publish-2", preparePublication(t, host, setup.InstanceID(), frame.Contribute("dynamic", point, map[string]string{"label": "two"}, func() string { return "two" })))
 	if err != nil {
 		t.Fatal(err)
 	}

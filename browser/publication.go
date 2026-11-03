@@ -65,32 +65,44 @@ func (b *Bridge) Publish(ctx context.Context, token string, request PublicationR
 	operation := &controlOperation{kind: publishOperation, realm: session.realm, digest: digest, execution: request.Execution.ID, done: make(chan struct{})}
 	b.operations[request.OperationID] = operation
 	b.mu.Unlock()
-	defer func() { returned = errors.Join(returned, b.complete(ctx, request.OperationID, operation)) }()
-	metadata, err := b.config.Host.DecodeMetadata(request.Object.Export.Contract, []byte(request.MetadataJSON))
-	var result PublicationResult
-	if err == nil {
-		var published frame.Publication
-		published, err = b.config.Host.Publish(ctx, unit.Instance.ID, request.OperationID, frame.ExportValue{Name: request.Object.Export.Name, Contract: request.Object.Export.Contract, Metadata: metadata, Value: Object{Reference: request.Object}})
-		if err == nil {
-			result = PublicationResult{Decision: Accepted, Publication: &Publication{ID: published.ID, OperationID: request.OperationID, Revision: strconv.FormatUint(published.Revision, 10), Object: request.Object}}
-		}
+	defer func() {
+		b.mu.Lock()
+		operation.failure = returned
+		b.mu.Unlock()
+		returned = errors.Join(returned, b.complete(ctx, request.OperationID, operation))
+	}()
+	if err := b.reserveReceipt(ctx, request.OperationID, operation); err != nil {
+		return PublicationResult{}, err
 	}
+	published, err := b.publishObject(ctx, request)
+	result := PublicationResult{Decision: Accepted, Publication: &Publication{ID: published.ID, OperationID: request.OperationID, Revision: strconv.FormatUint(published.Revision, 10), Object: request.Object}}
 	if err != nil {
-		if definitiveRejection(err) {
-			result = PublicationResult{Decision: Rejected, Problem: classifyProblem(err).message}
-			err = nil
-		} else {
-			result = PublicationResult{Decision: Unknown}
-		}
+		// Host publishes synchronously inside admission. Its errors prove that this
+		// command did not publish, even when the transport's context was cancelled.
+		result = PublicationResult{Decision: Rejected, Problem: classifyProblem(err).message}
 	}
 	b.mu.Lock()
 	operation.publication = clone(result)
 	if result.Publication != nil {
 		b.publications[result.Publication.ID] = operation
 	}
-	operation.failure = err
 	b.mu.Unlock()
-	return result, err
+	return result, nil
+}
+
+func (b *Bridge) publishObject(ctx context.Context, request PublicationRequest) (frame.Publication, error) {
+	metadata, err := b.config.Host.DecodeMetadata(request.Object.Export.Contract, []byte(request.MetadataJSON))
+	if err != nil {
+		return frame.Publication{}, err
+	}
+	prepared, err := b.config.Host.PreparePublication(ctx, request.Object.Export.InstanceID, frame.ExportValue{
+		Name: request.Object.Export.Name, Contract: request.Object.Export.Contract,
+		Metadata: metadata, Value: Object{Reference: request.Object},
+	})
+	if err != nil {
+		return frame.Publication{}, err
+	}
+	return b.config.Host.Publish(ctx, request.OperationID, prepared)
 }
 
 func (b *Bridge) waitPublication(ctx context.Context, operation *controlOperation) (PublicationResult, error) {
@@ -123,63 +135,26 @@ func (b *Bridge) Publication(ctx context.Context, token, operationID string) (Pu
 	return b.waitPublication(ctx, operation)
 }
 
-func (b *Bridge) Withdraw(ctx context.Context, token string, request Withdrawal) (out PublicationResult, returned error) {
+func (b *Bridge) Withdraw(ctx context.Context, token string, request Withdrawal) (PublicationResult, error) {
 	session, err := b.session(token, false)
 	if err != nil {
 		return PublicationResult{}, err
 	}
-	if !frame.ValidName(request.OperationID) || request.Authority != b.authority || request.PublicationID == "" {
+	if request.Authority != b.authority || request.PublicationID == "" {
 		return PublicationResult{}, frame.ErrInvalid
 	}
-	digest, err := requestDigest(request)
-	if err != nil {
-		return PublicationResult{}, err
-	}
 	b.mu.Lock()
-	prior, lookupErr := b.operationLocked(ctx, request.OperationID)
-	if lookupErr != nil {
-		b.mu.Unlock()
-		return PublicationResult{}, lookupErr
-	}
-	if prior != nil {
-		if prior.kind != withdrawOperation || prior.realm != session.realm || prior.digest != digest {
-			b.mu.Unlock()
-			return PublicationResult{}, sqlite.ErrConflict
-		}
-		b.mu.Unlock()
-		return b.waitPublication(ctx, prior)
-	}
 	original := b.publications[request.PublicationID]
-	if original == nil || original.realm != session.realm {
-		b.mu.Unlock()
-		return PublicationResult{Decision: Unknown}, nil
-	}
-	if len(b.operations) >= b.config.MaxPending {
-		b.mu.Unlock()
-		return PublicationResult{}, frame.ErrCapacity
-	}
-	operation := &controlOperation{kind: withdrawOperation, realm: session.realm, digest: digest, execution: original.execution, done: make(chan struct{})}
-	b.operations[request.OperationID] = operation
-	alreadyWithdrawn := original.withdrawn
 	b.mu.Unlock()
-	defer func() { returned = errors.Join(returned, b.complete(ctx, request.OperationID, operation)) }()
-	if !alreadyWithdrawn {
-		err = b.config.Host.Withdraw(ctx, request.PublicationID)
+	if original == nil {
+		return PublicationResult{Decision: Accepted}, nil
 	}
-	// An unavailable original publication is already sealed by its Host owner.
-	if errors.Is(err, frame.ErrUnavailable) {
-		err = nil
+	if original.realm != session.realm {
+		return PublicationResult{}, frame.ErrFenced
 	}
-	result := PublicationResult{Decision: Accepted}
-	if err != nil {
-		result.Decision = Unknown
+	err = b.config.Host.Withdraw(ctx, request.PublicationID)
+	if err != nil && !errors.Is(err, frame.ErrUnavailable) {
+		return PublicationResult{Decision: Rejected, Problem: classifyProblem(err).message}, nil
 	}
-	b.mu.Lock()
-	if err == nil {
-		original.withdrawn = true
-	}
-	operation.publication = result
-	operation.failure = err
-	b.mu.Unlock()
-	return result, err
+	return PublicationResult{Decision: Accepted}, nil
 }

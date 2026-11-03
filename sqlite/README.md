@@ -137,3 +137,27 @@ Only the trusted driver that verified the actual owner's evidence may call
 durable acceptance is idempotent, and a different proof cannot replace it. These
 monotonic settlements use `Admission.Maintenance`, which is the same gate and does
 not independently reopen recovery. Native in-memory Hosts do not need this package.
+
+## Browser history capacity
+
+`Config.MaxRealmHistoryBytes` defaults to 256 MiB and must be positive when set.
+It bounds the UTF-8 bytes of retained Realm credential fields and receipt
+identities and request digests, plus completed receipt bytes or the full reserved reply envelope of
+each unfinished control operation. SQLite derives each row's charge from that
+row; no independently mutable memory counter or quota ledger decides admission.
+This is a retained-payload budget, not a limit on SQLite pages, WAL files,
+application tables or execution-protection evidence.
+
+`ReserveRealmReceipt` fixes the original request digest and returns a
+`ReceiptReservation` before a caller starts the operation. Reusing an identity
+for a different request conflicts even before the first reply exists.
+`Record` settles only that reservation and cannot replace a
+completed result. A completed reply releases unused envelope bytes in the same
+transaction. Exhaustion returns `frame.ErrCapacity`; replay and completion of an
+already admitted operation do not need new capacity.
+
+Opening a new authority epoch discards its predecessor's live control replies.
+Realm verifiers remain charged because old execution owners still need their
+original cleanup authentication. No timer or capacity eviction invents proof of
+exit. Configure enough retained history for the deployment, or reopen with a
+larger budget when that retained responsibility fills it.

@@ -87,7 +87,7 @@ func Open(config Config) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(directory, 0700); err != nil {
+	if err := os.MkdirAll(directory, privateDirectoryMode); err != nil {
 		return nil, err
 	}
 	directory, err = filepath.EvalSymlinks(directory)
@@ -408,7 +408,7 @@ func (s *Store) Remove(ctx context.Context, digest value.Digest) (err error) {
 		}
 		// Older macOS filesystems require the renamed directory to be writable.
 		// Admission has excluded leases and retention; its contents stay sealed.
-		if err := releaseRoot.Chmod(".", 0700); err != nil {
+		if err := releaseRoot.Chmod(".", privateDirectoryMode); err != nil {
 			return err
 		}
 		err = s.root.Rename(digest.String(), retiring)
@@ -488,7 +488,7 @@ func (s *Store) publishHeld(ctx context.Context, staged *staging, source Source)
 			}
 			// Seal the renamed root before admission can grant its first lease.
 			// A failed seal leaves a directory that openRelease refuses.
-			if err := staged.root.Chmod(".", 0500); err != nil {
+			if err := staged.root.Chmod(".", sealedDirectoryMode); err != nil {
 				return err
 			}
 			if err := s.lock.Sync(); err != nil {
@@ -518,7 +518,7 @@ func (s *Store) publishHeld(ctx context.Context, staged *staging, source Source)
 // A crash can leave a renamed root writable. The original lease pins that
 // directory while application trust evaluates the exact cached projection.
 func (s *Store) admitCached(ctx context.Context, source Source, digest value.Digest, original fs.FileInfo) (_ Release, err error) {
-	if !original.IsDir() || original.Mode().Perm() != 0500 && original.Mode().Perm() != 0700 {
+	if !original.IsDir() || original.Mode().Perm() != sealedDirectoryMode && original.Mode().Perm() != privateDirectoryMode {
 		return Release{}, ErrIntegrity
 	}
 	root, err := s.root.OpenRoot(digest.String())
@@ -537,7 +537,7 @@ func (s *Store) admitCached(ctx context.Context, source Source, digest value.Dig
 	if err := s.checkTrust(ctx, source, cached); err != nil {
 		return Release{}, errors.Join(ErrUntrusted, err)
 	}
-	if original.Mode().Perm() == 0500 {
+	if original.Mode().Perm() == sealedDirectoryMode {
 		return cached, nil
 	}
 	err = s.admission.Under(ctx, func() error {
@@ -554,7 +554,7 @@ func (s *Store) admitCached(ctx context.Context, source Source, digest value.Dig
 		if err := sealContents(root); err != nil {
 			return err
 		}
-		if err := root.Chmod(".", 0500); err != nil {
+		if err := root.Chmod(".", sealedDirectoryMode); err != nil {
 			return err
 		}
 		return s.lock.Sync()
@@ -621,7 +621,7 @@ func (s *Store) validate(ctx context.Context, root *os.Root) (Release, error) {
 			return nil
 		}
 		artifact, ok := expected[name]
-		if !ok || artifact.Size != info.Size() || (info.Mode().Perm()&0111 != 0) != artifact.Executable {
+		if !ok || artifact.Size != info.Size() || (info.Mode().Perm()&fileExecuteMask != 0) != artifact.Executable {
 			return ErrIntegrity
 		}
 		data, err := readRegular(ctx, root, name, artifact.Size)
@@ -682,7 +682,7 @@ func (s *staging) write(ctx context.Context, name string, mode fs.FileMode, read
 	if err := s.admitPath(name, false); err != nil {
 		return err
 	}
-	if err := s.root.MkdirAll(path.Dir(name), 0700); err != nil {
+	if err := s.root.MkdirAll(path.Dir(name), privateDirectoryMode); err != nil {
 		return err
 	}
 	limit := s.limits.ExpandedBytes - s.bytes
@@ -694,7 +694,7 @@ func (s *staging) write(ctx context.Context, name string, mode fs.FileMode, read
 		return err
 	}
 	s.bytes += int64(len(data))
-	file, err := s.root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600|mode.Perm()&0111)
+	file, err := s.root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, privateFileMode|mode.Perm()&fileExecuteMask)
 	if err != nil {
 		return err
 	}
@@ -710,15 +710,15 @@ func sealContents(root *os.Root) error {
 		if name == "." {
 			return nil
 		}
-		mode := fs.FileMode(0400)
+		mode := sealedFileMode
 		if entry.IsDir() {
-			mode = 0500
+			mode = sealedDirectoryMode
 		} else {
 			info, err := entry.Info()
 			if err != nil {
 				return err
 			}
-			mode |= info.Mode().Perm() & 0111
+			mode |= info.Mode().Perm() & fileExecuteMask
 		}
 		return root.Chmod(name, mode)
 	})
@@ -733,7 +733,7 @@ func removeSealed(directory string) error {
 			return err
 		}
 		if entry.IsDir() {
-			return os.Chmod(name, 0700)
+			return os.Chmod(name, privateDirectoryMode)
 		}
 		return nil
 	})

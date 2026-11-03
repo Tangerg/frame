@@ -35,7 +35,6 @@ func (b *Bridge) AcquirePlan(ctx context.Context, token, operationID string, pla
 	if err != nil {
 		return grant, err
 	}
-	const kind = "acquirePlan"
 	b.mu.Lock()
 	original, lookupErr := b.operationLocked(ctx, operationID)
 	if lookupErr != nil {
@@ -43,7 +42,7 @@ func (b *Bridge) AcquirePlan(ctx context.Context, token, operationID string, pla
 		return grant, lookupErr
 	}
 	if original != nil {
-		if original.kind != kind || original.realm != session.realm || original.digest != digest {
+		if original.kind != acquirePlanOperation || original.realm != session.realm || original.digest != digest {
 			b.mu.Unlock()
 			return grant, sqlite.ErrConflict
 		}
@@ -68,7 +67,7 @@ func (b *Bridge) AcquirePlan(ctx context.Context, token, operationID string, pla
 		b.mu.Unlock()
 		return grant, frame.ErrCapacity
 	}
-	operation := &controlOperation{kind: kind, realm: session.realm, digest: digest, parentID: parentUseID, done: make(chan struct{})}
+	operation := &controlOperation{kind: acquirePlanOperation, realm: session.realm, digest: digest, parentID: parentUseID, done: make(chan struct{})}
 	b.operations[operationID] = operation
 	b.mu.Unlock()
 	defer func() {
@@ -77,6 +76,9 @@ func (b *Bridge) AcquirePlan(ctx context.Context, token, operationID string, pla
 		b.mu.Unlock()
 		returned = errors.Join(returned, b.complete(ctx, operationID, operation))
 	}()
+	if err := b.reserveReceipt(ctx, operationID, operation); err != nil {
+		return grant, err
+	}
 	// A child must enter through its parent's exact grant before any new
 	// provider can execute. A root Realm bootstraps its own trusted execution.
 	if parentUseID == "" {

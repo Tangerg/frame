@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"unicode/utf8"
+	"weak"
 )
 
 type ReleaseState string
@@ -18,7 +19,10 @@ const (
 	ResourceUnconfirmed ReleaseState = "unconfirmed"
 )
 
-var ErrUnconfirmedRelease = errors.New("frame: resource release unconfirmed")
+var (
+	ErrUnconfirmedRelease = errors.New("frame: resource release unconfirmed")
+	ErrCloseFailed        = errors.New("frame: resource cleanup failed")
+)
 
 // Resource describes actual owned work. Cancel must only request cancellation;
 // Close supplies the release conclusion. An error alone never proves release.
@@ -74,6 +78,7 @@ type Lifetime struct {
 	limits          LifetimeLimits
 	closing         *Close
 	released        bool
+	causes          weak.Pointer[CloseCauses]
 	failures        []CloseFailure
 	omittedFailures uint64
 }
@@ -213,7 +218,7 @@ func (w *Work) Own(resource Resource, dependencies ...*ResourceHandle) (*Resourc
 		if cancelErr := invokeCancel(resource.Cancel, cause); cancelErr != nil {
 			detail := closeFailureDetail(cancelErr)
 			l.mu.Lock()
-			l.recordFailureLocked(resource.Name, detail)
+			l.recordFailureLocked(resource.Name, detail, cancelErr)
 			l.mu.Unlock()
 		}
 	}
@@ -327,7 +332,7 @@ func (l *Lifetime) retire(operation *Close, cancellations []func(error), cause e
 		if err := invokeCancel(cancel, cause); err != nil {
 			detail := closeFailureDetail(err)
 			l.mu.Lock()
-			l.recordFailureLocked("cancellation", detail)
+			l.recordFailureLocked("cancellation", detail, err)
 			l.mu.Unlock()
 		}
 	}
@@ -363,6 +368,7 @@ func (l *Lifetime) retire(operation *Close, cancellations []func(error), cause e
 			operation.ready = nil
 			l.resources = nil
 			l.work = nil
+			l.causes = weak.Pointer[CloseCauses]{}
 			stop := l.stopParent
 			l.stopParent = nil
 			terminal, cancel := context.WithCancelCause(context.Background())
@@ -452,7 +458,7 @@ func (l *Lifetime) closeResource(entry *resourceEntry, closeResource func(contex
 		entry.released = true
 	}
 	if err != nil {
-		l.recordFailureLocked(entry.resource.Name, detail)
+		l.recordFailureLocked(entry.resource.Name, detail, err)
 	}
 	if entry.released {
 		l.forgetResourceLocked(entry)
@@ -478,11 +484,15 @@ func boundedDetail(detail string, maxDetailBytes int) string {
 		for !utf8.ValidString(detail) {
 			detail = detail[:len(detail)-1]
 		}
+		return strings.Clone(detail)
 	}
 	return detail
 }
 
-func (l *Lifetime) recordFailureLocked(name, detail string) {
+func (l *Lifetime) recordFailureLocked(name, detail string, cause error) {
+	if observation := l.causes.Value(); observation != nil {
+		observation.record(name, cause)
+	}
 	const maxFailures = 32
 	if len(l.failures) == maxFailures {
 		l.omittedFailures++
@@ -504,7 +514,7 @@ func (h *ResourceHandle) ConfirmReleased(diagnostic error) error {
 	}
 	h.entry.released = true
 	if diagnostic != nil {
-		l.recordFailureLocked(h.entry.resource.Name, detail)
+		l.recordFailureLocked(h.entry.resource.Name, detail, diagnostic)
 	}
 	if !h.entry.running {
 		l.forgetResourceLocked(h.entry)
@@ -527,14 +537,17 @@ func (l *Lifetime) outcomeLocked(id uint64) CloseOutcome {
 }
 
 func outcomeError(outcome CloseOutcome) error {
-	var result error
+	failed := len(outcome.Failures) > 0 || outcome.OmittedFailures > 0
 	if !outcome.Released {
-		result = ErrUnconfirmedRelease
+		if failed {
+			return errors.Join(ErrUnconfirmedRelease, ErrCloseFailed)
+		}
+		return ErrUnconfirmedRelease
 	}
-	for _, failure := range outcome.Failures {
-		result = errors.Join(result, fmt.Errorf("frame: close %s: %s", failure.Resource, failure.Detail))
+	if failed {
+		return ErrCloseFailed
 	}
-	return result
+	return nil
 }
 
 // A parent resource records cleanup failures, not the child's temporary lack
@@ -543,10 +556,18 @@ func withoutUnconfirmedState(err error) error {
 	if err == nil || err == ErrUnconfirmedRelease {
 		return nil
 	}
+	if local, ok := err.(*localCloseError); ok {
+		return &localCloseError{status: withoutUnconfirmedState(local.status), causes: local.causes}
+	}
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
 		var failures []error
 		for _, failure := range joined.Unwrap() {
-			failures = append(failures, withoutUnconfirmedState(failure))
+			if remaining := withoutUnconfirmedState(failure); remaining != nil {
+				failures = append(failures, remaining)
+			}
+		}
+		if len(failures) == 1 {
+			return failures[0]
 		}
 		return errors.Join(failures...)
 	}
@@ -559,6 +580,9 @@ func (c *Close) Outcome() CloseOutcome {
 	return c.lifetime.outcomeLocked(c.id)
 }
 
+// Wait reports bounded evidence from the original close. Resource causes belong
+// to an explicit CloseCauses observation, so retaining this terminal operation
+// cannot retain arbitrary plugin objects through an error chain.
 func (c *Close) Wait(ctx context.Context) (CloseOutcome, error) {
 	if ctx == nil {
 		return CloseOutcome{}, ErrInvalid
@@ -610,5 +634,7 @@ func (c *Close) WaitReleased(ctx context.Context) (CloseOutcome, error) {
 }
 
 func (l *Lifetime) Close(ctx context.Context) (CloseOutcome, error) {
-	return l.BeginClose(ErrClosed).Wait(ctx)
+	causes := l.ObserveCloseCauses()
+	outcome, err := l.BeginClose(ErrClosed).Wait(ctx)
+	return outcome, causes.join(err)
 }

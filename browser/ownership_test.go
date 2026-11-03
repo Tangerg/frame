@@ -61,6 +61,42 @@ func TestSealedEmptyRealmReturnsLiveCapacity(t *testing.T) {
 	}
 }
 
+func TestRealmApplicationOutlivesItsOpeningRequest(t *testing.T) {
+	e := openBridge(t, filepath.Join(t.TempDir(), "state.sqlite"), true)
+	opening, cancel := context.WithCancel(e.ctx)
+	credentials, err := e.bridge.OpenRealm(opening, "open-application", "0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	e.credentials = credentials
+	plan := e.start("application")
+	_, grant := e.acquire(plan, "application-use")
+	if err := e.bridge.ValidateUse(e.ctx, credentials.Token, grant); err != nil {
+		t.Fatalf("request cancellation closed the Realm application: %v", err)
+	}
+}
+
+func TestApplicationUseRetainsItsRetiringProviderUntilExecutionProof(t *testing.T) {
+	e := openBridge(t, filepath.Join(t.TempDir(), "state.sqlite"), true)
+	plan := e.start("provider")
+	_, grant := e.acquire(plan, "application-use")
+	if err := e.host.RetireInstance(e.ctx, plan.Execution.ID); err != nil {
+		t.Fatal(err)
+	}
+	retained, err := e.store.Use(e.ctx, grant.ID)
+	if err != nil || retained.Released {
+		t.Fatalf("provider retirement substituted for the application's exit: %+v %v", retained, err)
+	}
+	if ack, err := e.bridge.Prove(e.ctx, e.credentials.Token, executionProof(plan)); err != nil || !ack.Recorded {
+		t.Fatalf("original execution proof did not close its application Uses: %+v %v", ack, err)
+	}
+	retained, err = e.store.Use(e.ctx, grant.ID)
+	if err != nil || !retained.Released {
+		t.Fatalf("proven execution retained its application Use: %+v %v", retained, err)
+	}
+}
+
 type foreignSource struct{ called bool }
 
 func (s *foreignSource) Module(context.Context, frame.UnitBinding) (browser.Artifact, error) {
@@ -274,7 +310,7 @@ func TestRetiredExecutionCannotProveAnotherPublication(t *testing.T) {
 	if _, err = e.bridge.Prove(e.ctx, e.credentials.Token, foreign); !errors.Is(err, frame.ErrStaleBinding) {
 		t.Fatalf("foreign publication proof: %v", err)
 	}
-	withdrawn, err := e.bridge.Withdraw(e.ctx, e.credentials.Token, browser.Withdrawal{OperationID: "withdraw", Authority: live.Authority, PublicationID: published.Publication.ID})
+	withdrawn, err := e.bridge.Withdraw(e.ctx, e.credentials.Token, browser.Withdrawal{Authority: live.Authority, PublicationID: published.Publication.ID})
 	if err != nil || withdrawn.Decision != browser.Accepted {
 		t.Fatalf("original publication lost: %+v, %v", withdrawn, err)
 	}

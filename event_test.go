@@ -78,7 +78,7 @@ func TestWatchOverflowRequiresResnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"one", "two"} {
-		if _, err := host.Publish(ctx, setup.InstanceID(), name, frame.Contribute(name, point, name, name)); err != nil {
+		if _, err := host.Publish(ctx, name, preparePublication(t, host, setup.InstanceID(), frame.Contribute(name, point, name, name))); err != nil {
 			t.Fatal(err)
 		}
 	}

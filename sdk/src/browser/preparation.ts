@@ -3,8 +3,60 @@ import type {
   Authority,
   LocalPlan,
   PlanAdmissionDecision,
+  PublicationResult,
+  ReadyReport,
 } from "../protocol.generated.js";
-import { sameAuthority, type HostControl } from "./control.js";
+import {
+  isControlRefusal,
+  sameAuthority,
+  type HostControl,
+} from "./control.js";
+
+export class ReadySubmission {
+  readonly #report: ReadyReport;
+  readonly #lifetime: Lifetime;
+  #dispatched = false;
+
+  constructor(report: ReadyReport, lifetime: Lifetime) {
+    this.#report = report;
+    this.#lifetime = lifetime;
+  }
+
+  async submit(control: HostControl): Promise<void> {
+    const previouslyDispatched = this.#dispatched;
+    let result: PublicationResult;
+    try {
+      result = await this.#lifetime.run(() => {
+        this.#dispatched = true;
+        return control.ready(this.#report);
+      });
+    } catch (cause) {
+      if (!previouslyDispatched && isControlRefusal(cause)) {
+        await this.#lifetime.close();
+        throw cause;
+      }
+      // An earlier Ready may have committed. A later refused call cannot release
+      // prepared objects that exact Host Uses may already reference.
+      throw new FrameError(
+        "outcome_unknown",
+        "ready acknowledgement is unknown; prepared execution is retained",
+        { cause },
+      );
+    }
+    if (result.decision === "rejected") {
+      await this.#lifetime.close();
+      throw new FrameError(
+        "stale_binding",
+        "host rejected the prepared execution",
+      );
+    }
+    if (result.decision !== "accepted")
+      throw new FrameError(
+        "outcome_unknown",
+        "prepared acknowledgement remains unknown",
+      );
+  }
+}
 
 /** An uncertain start admission cannot release its reservation or run setup. */
 export class PreparationAdmission {

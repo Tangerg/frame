@@ -18,7 +18,10 @@ import (
 )
 
 func connect(ctx context.Context, channel io.ReadWriteCloser, maximum int, configure func(*sdk.Client) error) (*sdk.ClientSession, error) {
-	client := sdk.NewClient(&sdk.Implementation{Name: "frame", Version: "1"}, &sdk.ClientOptions{Capabilities: &sdk.ClientCapabilities{}})
+	client := sdk.NewClient(&sdk.Implementation{Name: "frame", Version: "1"}, &sdk.ClientOptions{
+		Capabilities:   &sdk.ClientCapabilities{},
+		MultiRoundTrip: &sdk.MultiRoundTripOptions{Disabled: true},
+	})
 	if configure != nil {
 		if err := configure(client); err != nil {
 			return nil, err

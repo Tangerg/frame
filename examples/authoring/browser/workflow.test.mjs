@@ -60,6 +60,33 @@ test(
       };
 
       await t.test(
+        "a first Snapshot refusal settles its task without a close request",
+        async () => {
+          const snapshot = client.control.snapshot.bind(client.control);
+          const closeSnapshot = client.control.closeSnapshot.bind(
+            client.control,
+          );
+          const closed = [];
+          client.control.snapshot = (request) =>
+            snapshot({ ...request, points: ["author.missing-point"] });
+          client.control.closeSnapshot = async (id) => {
+            closed.push(id);
+            await closeSnapshot(id);
+          };
+          const task = client.createConversion(reference);
+          try {
+            await assert.rejects(task.run(), { code: "contract_mismatch" });
+            await task.close();
+            assert.deepEqual(closed, []);
+            await assert.rejects(task.run(), { code: "closed" });
+          } finally {
+            client.control.snapshot = snapshot;
+            client.control.closeSnapshot = closeSnapshot;
+          }
+        },
+      );
+
+      await t.test(
         "failed selection closes its original snapshot through the real Host",
         async () => {
           const snapshot = client.control.snapshot.bind(client.control);
@@ -78,7 +105,7 @@ test(
           try {
             for (let attempt = 0; attempt < 4; attempt++) {
               await assert.rejects(
-                client.start(reference),
+                client.createConversion(reference).run(),
                 /requires both Points/,
               );
             }
@@ -93,10 +120,169 @@ test(
       await client.activate("validator");
 
       await t.test(
+        "one task recovers a lost acquisition acknowledgement",
+        async () => {
+          const acquire = client.control.acquire.bind(client.control);
+          const snapshot = client.control.snapshot.bind(client.control);
+          const requests = [];
+          const captures = [];
+          client.control.snapshot = async (request) => {
+            captures.push(request);
+            return snapshot(request);
+          };
+          client.control.acquire = async (request) => {
+            requests.push(request);
+            const grant = await acquire(request);
+            if (requests.length === 1)
+              throw new Error("lost acquisition reply");
+            return grant;
+          };
+          const task = client.createConversion(reference);
+          try {
+            assert.equal(requests.length, 0);
+            assert.equal(captures.length, 0);
+            await assert.rejects(task.run(), /lost acquisition reply/);
+            assert.equal(
+              client.runtime.hasPendingAcquisition(task.operationId),
+              true,
+            );
+            const [rendered, concurrent] = await Promise.all([
+              task.run(),
+              task.run(),
+            ]);
+            assert.equal(rendered, concurrent);
+            await rendered.with((resource) =>
+              assert.equal(resource.document.title, "Public author"),
+            );
+            assert.equal(captures.length, 1);
+            assert.equal(requests.length, 2);
+            assert.deepEqual(requests[0], requests[1]);
+            assert.equal(requests[0].operationId, task.operationId);
+            await task.close();
+            assert.equal(
+              client.runtime.hasPendingAcquisition(task.operationId),
+              false,
+            );
+            await assert.rejects(task.run(), { code: "closed" });
+          } finally {
+            client.control.acquire = acquire;
+            client.control.snapshot = snapshot;
+            await task.close();
+          }
+        },
+      );
+
+      await t.test(
+        "closing an uncertain task recovers its Use without running conversion",
+        async () => {
+          const acquire = client.control.acquire.bind(client.control);
+          const requests = [];
+          const before = await client.activity();
+          client.control.acquire = async (request) => {
+            requests.push(request);
+            const grant = await acquire(request);
+            if (requests.length <= 2) throw new Error("lost acquisition reply");
+            return grant;
+          };
+          const task = client.createConversion({
+            ...reference,
+            path: "wait.md",
+          });
+          try {
+            await assert.rejects(task.run(), /lost acquisition reply/);
+            await assert.rejects(task.close(), /lost acquisition reply/);
+            assert.equal(
+              client.runtime.hasPendingAcquisition(task.operationId),
+              true,
+            );
+            await task.close();
+            assert.equal(requests.length, 3);
+            assert.deepEqual(requests[0], requests[1]);
+            assert.deepEqual(requests[1], requests[2]);
+            assert.equal(
+              client.runtime.hasPendingAcquisition(task.operationId),
+              false,
+            );
+            assert.deepEqual(await client.activity(), before);
+          } finally {
+            client.control.acquire = acquire;
+            await task.close();
+          }
+        },
+      );
+
+      await t.test(
+        "one task retries the original Snapshot after its reply is lost",
+        async () => {
+          const snapshot = client.control.snapshot.bind(client.control);
+          const captures = [];
+          client.control.snapshot = async (request) => {
+            captures.push(request);
+            const captured = await snapshot(request);
+            if (captures.length === 1) throw new Error("lost snapshot reply");
+            return captured;
+          };
+          const task = client.createConversion(reference);
+          try {
+            await assert.rejects(task.run(), /lost snapshot reply/);
+            const rendered = await task.run();
+            await rendered.with((resource) =>
+              assert.equal(resource.document.title, "Public author"),
+            );
+            assert.equal(captures.length, 2);
+            assert.deepEqual(captures[0], captures[1]);
+          } finally {
+            client.control.snapshot = snapshot;
+            await task.close();
+          }
+        },
+      );
+
+      await t.test(
+        "a refused retry preserves an earlier uncertain Snapshot for close",
+        async () => {
+          const snapshot = client.control.snapshot.bind(client.control);
+          const closeSnapshot = client.control.closeSnapshot.bind(
+            client.control,
+          );
+          const refusal = await snapshot({
+            operationId: crypto.randomUUID(),
+            points: ["author.missing-point"],
+          }).catch((error) => error);
+          assert.equal(refusal.code, "contract_mismatch");
+          const captures = [];
+          const closed = [];
+          client.control.snapshot = async (request) => {
+            captures.push(request);
+            if (captures.length > 1) throw refusal;
+            await snapshot(request);
+            throw new Error("lost snapshot reply");
+          };
+          client.control.closeSnapshot = async (id) => {
+            await closeSnapshot(id);
+            closed.push(id);
+          };
+          const task = client.createConversion(reference);
+          try {
+            await assert.rejects(task.run(), /lost snapshot reply/);
+            await assert.rejects(task.run(), { code: "contract_mismatch" });
+            assert.equal(captures.length, 2);
+            assert.deepEqual(captures[0], captures[1]);
+            await task.close();
+            assert.deepEqual(closed, [captures[0].operationId]);
+          } finally {
+            client.control.snapshot = snapshot;
+            client.control.closeSnapshot = closeSnapshot;
+            await task.close();
+          }
+        },
+      );
+
+      await t.test(
         "FileReader import and a single multi-Point Use return a resource",
         async () => {
-          const task = await client.start(reference);
-          const rendered = await task.result;
+          const task = client.createConversion(reference);
+          const rendered = await task.run();
           let url;
           await rendered.with(async (resource) => {
             assert.equal(resource.document.title, "Public author");
@@ -117,13 +303,13 @@ test(
             () => client.runtime.pendingProofs.length === 0,
             () => diagnostics,
           );
-          const untitled = await client.start({
+          const untitled = client.createConversion({
             path: "untitled.md",
             revision: await sha256(
               new TextEncoder().encode("A document without a title.\n"),
             ),
           });
-          const validation = await untitled.result;
+          const validation = await untitled.run();
           await validation.with((resource) => {
             assert.equal(resource.document.title, "");
             assert.deepEqual(resource.diagnostics, [
@@ -142,9 +328,13 @@ test(
       await t.test(
         "closing the original Use aborts and joins the active FileReader",
         async () => {
-          const task = await client.start({ ...reference, path: "wait.md" });
+          const task = client.createConversion({
+            ...reference,
+            path: "wait.md",
+          });
+          const result = task.run();
           let settled = false;
-          void task.result.then(
+          void result.then(
             () => {
               settled = true;
             },
@@ -152,7 +342,7 @@ test(
               settled = true;
             },
           );
-          const failed = assert.rejects(task.result);
+          const failed = assert.rejects(result);
           await until(
             async () => (await client.activity()).started === 1,
             () => diagnostics,
@@ -162,7 +352,7 @@ test(
             false,
             "the source must still be pending when cancellation enters its original Use",
           );
-          assert.equal((await task.close()).status, "released");
+          await task.close();
           await failed;
           assert.equal(
             settled,
@@ -214,7 +404,33 @@ test(
           );
         },
       );
-      await client.close();
+      await t.test(
+        "application shutdown closes a task whose Snapshot reply was lost",
+        async () => {
+          const snapshot = client.control.snapshot.bind(client.control);
+          const closeSnapshot = client.control.closeSnapshot.bind(
+            client.control,
+          );
+          let captured;
+          const closed = [];
+          client.control.snapshot = async (request) => {
+            captured = request.operationId;
+            await snapshot(request);
+            throw new Error("lost snapshot reply");
+          };
+          client.control.closeSnapshot = async (id) => {
+            await closeSnapshot(id);
+            closed.push(id);
+          };
+          await assert.rejects(
+            client.createConversion(reference).run(),
+            /lost snapshot reply/,
+          );
+          await client.close();
+          assert.deepEqual(closed, [captured]);
+          assert.equal(client.runtime.pendingProofs.length, 0);
+        },
+      );
       client = undefined;
       completed = true;
     } finally {

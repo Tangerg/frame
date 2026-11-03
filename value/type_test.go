@@ -52,12 +52,18 @@ func TestTypeAdmissionRefusesUndecodableDeclarations(t *testing.T) {
 	})
 	nested := reflect.StructOf([]reflect.StructField{{Name: "Child", Type: duplicate, Tag: `json:"child"`}})
 	for name, typ := range map[string]reflect.Type{
-		"missing type":        nil,
-		"duplicate names":     duplicate,
-		"invalid nested":      nested,
-		"recursive embedding": reflect.TypeFor[recursiveEmbedding](),
-		"anonymous scalar":    reflect.TypeFor[scalarEmbedding](),
-		"non-string keys":     reflect.TypeFor[map[int]string](),
+		"missing type":         nil,
+		"duplicate names":      duplicate,
+		"invalid nested":       nested,
+		"recursive embedding":  reflect.TypeFor[recursiveEmbedding](),
+		"anonymous scalar":     reflect.TypeFor[scalarEmbedding](),
+		"non-string keys":      reflect.TypeFor[map[int]string](),
+		"implicit byte string": reflect.TypeFor[[]byte](),
+		"implicit byte array":  reflect.TypeFor[[8]byte](),
+		"bounded float":        reflect.TypeFor[float64](),
+		"unmodeled timestamp":  reflect.TypeFor[time.Time](),
+		"unmodeled address":    reflect.TypeFor[netip.Addr](),
+		"unbound interface":    reflect.TypeFor[error](),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := ValidateType(typ); err == nil {
@@ -308,16 +314,13 @@ func TestTypeAdmissionKeepsUnsupportedFieldOptionsClosed(t *testing.T) {
 }
 
 func TestDecodeValueHonorsCustomScalarDecoders(t *testing.T) {
-	var address netip.Addr
-	if err := DecodeValue(jsontext.Value(`"127.0.0.1"`), &address, "address"); err != nil || address != netip.MustParseAddr("127.0.0.1") {
-		t.Fatalf("text decoder = %v, %v", address, err)
+	expected := Hash([]byte("custom scalar"))
+	var digest Digest
+	if err := DecodeValue(jsontext.Value(strconv.Quote(expected.String())), &digest, "digest"); err != nil || digest != expected {
+		t.Fatalf("text decoder = %v, %v", digest, err)
 	}
-	if err := DecodeValue(jsontext.Value(`null`), &address, "address"); err == nil || address != netip.MustParseAddr("127.0.0.1") {
-		t.Fatalf("typed null changed the text value: %v, %v", address, err)
-	}
-	var timestamp time.Time
-	if err := DecodeValue(jsontext.Value(`"2026-10-28T00:00:00Z"`), &timestamp, "timestamp"); err != nil || timestamp.IsZero() {
-		t.Fatalf("JSON decoder = %v, %v", timestamp, err)
+	if err := DecodeValue(jsontext.Value(`null`), &digest, "digest"); err == nil || digest != expected {
+		t.Fatalf("typed null changed the text value: %v, %v", digest, err)
 	}
 }
 
@@ -339,11 +342,8 @@ func TestTypeAdmissionRefusesEmbeddedCustomEncoders(t *testing.T) {
 				Name: "Encoded", Type: embedded.Field(0).Type, Tag: `json:"encoded"`,
 			}})
 			value := reflect.New(named)
-			if err := DecodeValue(jsontext.Value(`{"encoded":{"value":"kept"}}`), value.Interface(), "payload"); err != nil {
-				t.Fatalf("explicitly named custom encoder field refused: %v", err)
-			}
-			if value.Elem().Field(0).FieldByName("Value").String() != "kept" {
-				t.Fatal("explicitly named custom encoder field lost its value")
+			if err := DecodeValue(jsontext.Value(`{"encoded":{"value":"kept"}}`), value.Interface(), "payload"); err == nil {
+				t.Fatal("one-sided custom encoding acquired an implicit decoding contract")
 			}
 		})
 	}

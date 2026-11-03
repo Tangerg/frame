@@ -62,7 +62,6 @@ func (b *Bridge) Acquire(ctx context.Context, token string, request AcquireReque
 	}
 	operation := &controlOperation{kind: acquireOperation, realm: session.realm, digest: digest, execution: entry.plan.Execution.ID, parentID: request.ParentUseID, done: make(chan struct{})}
 	b.operations[request.OperationID] = operation
-	delete(b.snapshots, request.SnapshotID)
 	b.mu.Unlock()
 	defer func() {
 		b.mu.Lock()
@@ -73,6 +72,16 @@ func (b *Bridge) Acquire(ctx context.Context, token string, request AcquireReque
 		b.mu.Unlock()
 		returned = errors.Join(returned, b.complete(ctx, request.OperationID, operation))
 	}()
+	if err := b.reserveReceipt(ctx, request.OperationID, operation); err != nil {
+		return UseGrant{}, err
+	}
+	b.mu.Lock()
+	if session.cleanupOnly || entry.retiring || b.executions[request.Execution.ID] != entry || b.snapshots[request.SnapshotID] != selection {
+		b.mu.Unlock()
+		return UseGrant{}, frame.ErrStaleBinding
+	}
+	delete(b.snapshots, request.SnapshotID)
+	b.mu.Unlock()
 	plan, err := selection.bind(request.Selections)
 	if err != nil {
 		return UseGrant{}, err
@@ -89,7 +98,12 @@ func (b *Bridge) Acquire(ctx context.Context, token string, request AcquireReque
 }
 
 func (b *Bridge) useConfig(session *realmSession, entry *browserExecution, parentID string) (frame.UseConfig, error) {
-	config := frame.UseConfig{Owner: entry.setup.Lifetime(), Scope: entry.setup.ScopeGrant(), Realm: RealmID(session.realm), ExecutionID: entry.plan.Execution.ID}
+	if session.application == nil {
+		return frame.UseConfig{}, frame.ErrFenced
+	}
+	// The Realm application consumes these exports. Making the provider execution
+	// own that borrow would make its exit wait on its own resource protection.
+	config := frame.UseConfig{Owner: session.application, Scope: entry.setup.ScopeGrant(), Realm: RealmID(session.realm), ExecutionID: entry.plan.Execution.ID}
 	if parentID != "" {
 		b.mu.Lock()
 		parent := b.uses[parentID]

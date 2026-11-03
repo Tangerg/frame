@@ -69,7 +69,7 @@ protocol := mcp.Tools{
 }
 ```
 
-The host freezes this choice before the child starts. A server cannot change it by adding or removing its output schema. An MCP `isError` response produces a `*mcp.ToolError`. Its `Result` retains the response content for the caller. A missing or invalid successful reply, or a canceled call after dispatch, carries `process.ErrOutcomeUnknown`. No call is replayed. Only the original runner's exit evidence releases a durable process attempt.
+The host freezes this choice before the child starts. A server cannot change it by adding or removing its output schema. An MCP `isError` response produces a `*mcp.ToolError`. Its `Result` retains the response content for the caller. A missing or invalid successful reply, or a canceled call after dispatch, carries `process.ErrOutcomeUnknown`. No call is replayed: the SDK's automatic multi-round-trip middleware is disabled, and input-required results retain an unknown outcome. Only the original runner's exit evidence releases a durable process attempt.
 
 An already cancelled local context is rejected before SDK handoff and retains
 only its cancellation cause. Once the SDK owns the request, a cancelled wait

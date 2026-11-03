@@ -35,8 +35,10 @@ func (s *Store) RegisterRealm(ctx context.Context, credential RealmCredential) e
 			if !errors.Is(err, sql.ErrNoRows) {
 				return err
 			}
-			_, err = tx.ExecContext(ctx, `INSERT INTO frame_realms VALUES(?,?,?,?)`, credential.ID, credential.Epoch, credential.OperationID, credential.ResumeVerifier)
-			return err
+			if _, err = tx.ExecContext(ctx, `INSERT INTO frame_realms(id,epoch,operation_id,resume_verifier) VALUES(?,?,?,?)`, credential.ID, credential.Epoch, credential.OperationID, credential.ResumeVerifier); err != nil {
+				return err
+			}
+			return s.checkRealmHistoryCapacity(ctx, tx)
 		})
 	})
 }

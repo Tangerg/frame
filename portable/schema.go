@@ -9,13 +9,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Tangerg/scope/core/jsonschema"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-// Schema owns profile admission and bounded evaluation preflight. Scope remains
-// the compiler and the only owner of JSON Schema validation semantics.
+// Schema owns the portable profile and its format predicates. One compiler
+// executes those predicates together with the remaining JSON Schema semantics.
 type Schema struct {
-	compiled jsonschema.Schema
+	compiled *jsonschema.Schema
 	work     []int
 	unique   bool
 }
@@ -32,16 +32,36 @@ func AdmitSchema(raw []byte) (Schema, error) {
 	if err != nil {
 		return Schema{}, err
 	}
-	compiled, err := jsonschema.Parse(raw)
+	compiled, err := compileSchema(value)
 	if err != nil {
 		return Schema{}, err
 	}
 	return Schema{compiled: compiled, work: work, unique: unique}, nil
 }
 
+const schemaResourceURL = "urn:frame:portable-schema"
+
+func compileSchema(document any) (*jsonschema.Schema, error) {
+	compiler := jsonschema.NewCompiler()
+	compiler.UseLoader(nil)
+	compiler.DefaultDraft(jsonschema.Draft2020)
+	compiler.AssertFormat()
+	for _, predicate := range formatPredicates() {
+		compiler.RegisterFormat(&jsonschema.Format{Name: predicate.name, Validate: predicate.validate})
+	}
+	if err := compiler.AddResource(schemaResourceURL, document); err != nil {
+		return nil, fmt.Errorf("portable: schema resource: %w", err)
+	}
+	compiled, err := compiler.Compile(schemaResourceURL)
+	if err != nil {
+		return nil, fmt.Errorf("portable: compile schema: %w", err)
+	}
+	return compiled, nil
+}
+
 func (s Schema) Validate(raw []byte) error {
-	if !s.compiled.Valid() || len(s.work) == 0 {
-		return jsonschema.ErrInvalid
+	if s.compiled == nil || len(s.work) == 0 {
+		return errors.New("portable: schema is not admitted")
 	}
 	size, err := checkJSON(raw, 0)
 	if err != nil {
@@ -56,7 +76,11 @@ func (s Schema) Validate(raw []byte) error {
 	if s.work[size.depth] > maximum/(size.nodes+size.keys) {
 		return limit("schema validation work", maximum)
 	}
-	return s.compiled.Validate(raw)
+	value, err := decodeBoundedJSON(raw)
+	if err != nil {
+		return err
+	}
+	return s.compiled.Validate(value)
 }
 
 type schemaNode struct {

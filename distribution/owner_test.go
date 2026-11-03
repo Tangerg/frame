@@ -70,7 +70,7 @@ func TestDirectoryHasOneOwnerAcrossConcurrentOpenAndPathAliases(t *testing.T) {
 	closeStore(t, next)
 }
 
-func TestCloseJoinsAcceptedIOAndLeasesAfterItsFirstWaiterCancels(t *testing.T) {
+func TestCloseJoinsAcceptedIOAndLeasesAfterItsOnlyWaiterCancels(t *testing.T) {
 	_, _, data, _ := packageFixture(t)
 	directory := t.TempDir()
 	entered, resume := make(chan struct{}), make(chan struct{})
@@ -115,23 +115,21 @@ func TestCloseJoinsAcceptedIOAndLeasesAfterItsFirstWaiterCancels(t *testing.T) {
 	if _, err := installation.lease.Read(t.Context(), "theme.css"); err != nil {
 		t.Fatalf("original admitted lease lost its content while closing: %v", err)
 	}
-	waiting := make(chan error, 1)
-	go func() { waiting <- store.Close(context.Background()) }()
 	select {
-	case err := <-waiting:
-		t.Fatalf("close abandoned an original lease: %v", err)
+	case <-store.closeDone:
+		t.Fatalf("close abandoned an original lease: %v", store.closeErr)
 	default:
 	}
 	if err := installation.lease.Close(); err != nil {
 		t.Fatal(err)
 	}
 	select {
-	case err := <-waiting:
-		if err != nil {
-			t.Fatal(err)
+	case <-store.closeDone:
+		if store.closeErr != nil {
+			t.Fatal(store.closeErr)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("original close did not finish after lease exit")
+		t.Fatal("original close required another waiter after lease exit")
 	}
 	if _, err := store.Inspect(t.Context(), installation.lease.Snapshot().Digest); !errors.Is(err, frame.ErrClosed) {
 		t.Fatalf("closed Store read content: %v", err)

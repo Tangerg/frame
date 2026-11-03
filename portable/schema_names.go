@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"maps"
 	"path"
+	"reflect"
 	"slices"
 	"strings"
 	"unicode"
 
+	"github.com/Tangerg/frame/value"
 	"github.com/Tangerg/scope/core/jsonschema"
 )
 
@@ -132,6 +134,9 @@ func importPath(value string) bool {
 
 // Every contract, tool and point must derive the same name for a Go type.
 func SchemaFor[T any]() ([]byte, error) {
+	if err := value.ValidateType(reflect.TypeFor[T]()); err != nil {
+		return nil, err
+	}
 	derived, err := jsonschema.For[T]()
 	if err != nil {
 		return nil, err

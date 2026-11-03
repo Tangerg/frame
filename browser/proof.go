@@ -75,8 +75,6 @@ func (b *Bridge) releaseProven(ctx context.Context, proof CloseProof, attempt sq
 	return nil
 }
 
-// provenAttempt finds the browser attempt a proof closes and refuses a proof
-// minted for an earlier epoch, generation or scope of it.
 func (b *Bridge) provenAttempt(ctx context.Context, session *realmSession, proof CloseProof) (sqlite.Attempt, error) {
 	b.mu.Lock()
 	entry := b.executions[proof.Execution.ID]
@@ -102,8 +100,6 @@ func (b *Bridge) provenAttempt(ctx context.Context, session *realmSession, proof
 	return attempt, nil
 }
 
-// bindProofScope checks that the proof's scope belongs to attempt and returns
-// the durable scope key it is recorded under.
 func (b *Bridge) bindProofScope(ctx context.Context, session *realmSession, attempt sqlite.Attempt, proof CloseProof) (string, *controlOperation, error) {
 	scope := string(proof.ScopeKind)
 	switch proof.ScopeKind {
@@ -148,15 +144,19 @@ func (b *Bridge) bindProofUse(ctx context.Context, session *realmSession, attemp
 
 func (b *Bridge) bindProofPublication(session *realmSession, attempt sqlite.Attempt, proof CloseProof) (*controlOperation, error) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	publication := b.publications[proof.PublicationID]
+	executing := b.executions[attempt.ID] != nil
+	b.mu.Unlock()
 	if publication != nil {
-		if publication.execution != attempt.ID || publication.realm != session.realm || !publication.withdrawn {
+		if publication.execution != attempt.ID || publication.realm != session.realm {
 			return nil, frame.ErrStaleBinding
+		}
+		if _, err := b.config.Host.Publication(publication.execution, publication.publication.Publication.OperationID); !errors.Is(err, frame.ErrUnavailable) {
+			return nil, errors.Join(frame.ErrStaleBinding, err)
 		}
 		return publication, nil
 	}
-	if b.executions[attempt.ID] != nil {
+	if executing {
 		return nil, frame.ErrStaleBinding
 	}
 	// Reconstruction may retain a subordinate proof after its catalog is gone.
@@ -248,6 +248,11 @@ func (b *Bridge) releaseUse(ctx context.Context, id string, attempt sqlite.Attem
 	if retained != nil {
 		if err := retained.resource.ConfirmReleased(nil); err != nil {
 			return err
+		}
+		// The proof can arrive after an initial unconfirmed close. Join that same
+		// exit's terminal evidence before asking the Use to settle durable protection.
+		if outcome, err := retained.use.BeginClose(frame.ErrClosed).WaitReleased(ctx); !outcome.Released {
+			return errors.Join(frame.ErrUnconfirmedRelease, err)
 		}
 		outcome, err := retained.use.Close(ctx)
 		if !outcome.Released {
@@ -449,6 +454,9 @@ func (b *Bridge) SealRealm(ctx context.Context, token string) error {
 	}
 	b.reapRealmLocked(session.realm)
 	b.mu.Unlock()
+	if session.application != nil {
+		session.application.BeginClose(frame.ErrFenced)
+	}
 	var failures []error
 	for _, entry := range entries {
 		b.fence(entry)

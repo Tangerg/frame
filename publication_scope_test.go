@@ -71,7 +71,7 @@ func TestPublicationRejectsFencedGrantBeforeMetadataPreparation(t *testing.T) {
 		t.Fatalf("original grant remained valid: %v", err)
 	}
 	prepared := false
-	_, err := host.Publish(t.Context(), running.ID(), "revoked-publication", frame.ExportValue{
+	_, err := host.PreparePublication(t.Context(), running.ID(), frame.ExportValue{
 		Name: "late", Contract: point.Ref(), Value: "value", Metadata: publicationMetadata(func() { prepared = true }),
 	})
 	if err == nil || prepared {
@@ -87,33 +87,73 @@ func TestPublicationRechecksOriginalGrantAfterMetadataPreparation(t *testing.T) 
 	defer runtime.GOMAXPROCS(previous)
 	host, grant, running, point := scopedPublisher(t)
 	prepared := false
-	_, err := host.Publish(t.Context(), running.ID(), "revoked-during-preparation", frame.ExportValue{
+	request, err := host.PreparePublication(t.Context(), running.ID(), frame.ExportValue{
 		Name: "late", Contract: point.Ref(), Value: "value", Metadata: publicationMetadata(func() {
 			prepared = true
 			host.Admission().FenceScope(grant.ID())
 		}),
 	})
-	if err == nil || !prepared {
-		t.Fatalf("publication crossed its original grant: prepared=%v error=%v", prepared, err)
+	if err != nil || !prepared {
+		t.Fatalf("metadata preparation failed: prepared=%v error=%v", prepared, err)
+	}
+	if _, err := host.Publish(t.Context(), "revoked-during-preparation", request); err == nil {
+		t.Fatal("publication crossed its original grant")
 	}
 	if _, err := host.Publication(running.ID(), "revoked-during-preparation"); !errors.Is(err, frame.ErrUnavailable) {
 		t.Fatalf("late publication entered the catalog: %v", err)
 	}
 }
 
-func TestPublicationReplayRetainsItsOriginalIdentity(t *testing.T) {
-	host, _, running, point := scopedPublisher(t)
-	value := frame.Contribute("dynamic", point, "metadata", "value")
-	first, err := host.Publish(t.Context(), running.ID(), "original", value)
+func preparePublication(t *testing.T, host *frame.Host, instanceID string, value frame.ExportValue) *frame.PublicationRequest {
+	t.Helper()
+	request, err := host.PreparePublication(t.Context(), instanceID, value)
 	if err != nil {
 		t.Fatal(err)
 	}
-	replayed, err := host.Publish(t.Context(), running.ID(), "original", value)
+	return request
+}
+
+func TestPublicationReplayRetainsItsOriginalIdentity(t *testing.T) {
+	host, _, running, point := scopedPublisher(t)
+	value := frame.Contribute("dynamic", point, "metadata", "value")
+	request := preparePublication(t, host, running.ID(), value)
+	first, err := host.Publish(t.Context(), "original", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value.Value = "mutated after preparation"
+	value.Metadata = "mutated after preparation"
+	replayed, err := host.Publish(t.Context(), "original", request)
 	if err != nil || replayed != first {
 		t.Fatalf("replay replaced its original publication: first=%+v replay=%+v error=%v", first, replayed, err)
 	}
-	value.Metadata = "different"
-	if _, err := host.Publish(t.Context(), running.ID(), "original", value); !errors.Is(err, frame.ErrStaleBinding) {
-		t.Fatalf("publication identity accepted a different request: %v", err)
+	for _, replacement := range []frame.ExportValue{
+		frame.Contribute("dynamic", point, "different", "value"),
+		frame.Contribute("dynamic", point, "metadata", "another implementation"),
+		frame.Contribute("dynamic", point, "metadata", "value"),
+	} {
+		other := preparePublication(t, host, running.ID(), replacement)
+		if _, err := host.Publish(t.Context(), "original", other); !errors.Is(err, frame.ErrStaleBinding) {
+			t.Fatalf("publication identity accepted a different request: %v", err)
+		}
+	}
+	if err := host.Withdraw(t.Context(), first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.Publish(t.Context(), "original", request); !errors.Is(err, frame.ErrStaleBinding) {
+		t.Fatalf("withdrawn original was republished by replay: %v", err)
+	}
+	next, err := host.Publish(t.Context(), "new-membership", request)
+	if err != nil || next.ID == first.ID {
+		t.Fatalf("new operation reused a withdrawn membership: %+v, %v", next, err)
+	}
+}
+
+func TestPublicationRequestCannotCrossHosts(t *testing.T) {
+	host, _, running, point := scopedPublisher(t)
+	request := preparePublication(t, host, running.ID(), frame.Contribute("dynamic", point, "metadata", "value"))
+	other := testHost(t, frame.HostConfig{})
+	if _, err := other.Publish(t.Context(), "foreign", request); !errors.Is(err, frame.ErrInvalid) {
+		t.Fatalf("another host accepted publication authority: %v", err)
 	}
 }

@@ -12,7 +12,7 @@ const minutesPerHour = 60;
 const hoursPerDay = 24;
 const minutesPerDay = minutesPerHour * hoursPerDay;
 const maximumSecond = 60;
-const twoDigitInteger = /^[+-]?[0-9]+$/;
+const twoDigitInteger = /^[0-9]{2}$/;
 
 function date(value: string): boolean {
   const match = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(value);
@@ -70,7 +70,7 @@ function time(value: string): boolean {
       return false;
     const offset = offsetHour * minutesPerHour + offsetMinute;
     utcMinute += zone[0] === "-" ? offset : -offset;
-    if (utcMinute < 0) utcMinute += minutesPerDay;
+    utcMinute = (utcMinute + minutesPerDay) % minutesPerDay;
   }
   return second < maximumSecond || utcMinute === minutesPerDay - 1;
 }
@@ -84,8 +84,8 @@ function pointer(value: string): boolean {
   return true;
 }
 
-// These adapters follow the admitted Go predicates; the generated inventory
-// prevents an engine's extra or missing format from changing the contract.
+// These predicates implement the portable format contract; engine defaults
+// cannot widen it independently of the Go and Node conformance corpus.
 export function validateFormat(name: string, value: unknown): boolean {
   if (typeof value !== "string") return true;
   const formats = profile.formats;

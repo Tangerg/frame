@@ -1,6 +1,7 @@
 package value
 
 import (
+	jsonv1 "encoding/json"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"errors"
@@ -58,3 +59,5 @@ func (i *JSON) UnmarshalJSON(data []byte) error {
 	*i = value
 	return nil
 }
+
+func (JSON) JSONSchemaModel() any { return jsonv1.RawMessage{} }

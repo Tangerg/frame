@@ -2,6 +2,7 @@ package value
 
 import (
 	"encoding"
+	jsonv1 "encoding/json"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"errors"
@@ -22,9 +23,6 @@ func validateType(target reflect.Type, visited map[reflect.Type]bool) error {
 	// Pointer cycles consume no JSON structure; field and element recursion does.
 	pointers := make(map[reflect.Type]bool)
 	for target.Kind() == reflect.Pointer {
-		if customDecoder(target) {
-			return nil
-		}
 		if pointers[target] {
 			return fmt.Errorf("json: recursive pointer type %s has no value shape", target)
 		}
@@ -35,15 +33,31 @@ func validateType(target reflect.Type, visited map[reflect.Type]bool) error {
 		return nil
 	}
 	visited[target] = true
-	if opaqueType(target) || customDecoder(target) {
+	if target.Kind() == reflect.Interface && target.NumMethod() != 0 {
+		return fmt.Errorf("json: %s requires a concrete value type", target)
+	}
+	if opaqueType(target) {
+		return nil
+	}
+	encoded, decoded := customEncoder(target), customDecoder(target)
+	if encoded || decoded {
+		if !encoded || !decoded || !target.Implements(reflect.TypeFor[interface{ JSONSchemaModel() any }]()) {
+			return fmt.Errorf("json: %s requires an encoder, decoder and value-receiver JSONSchemaModel", target)
+		}
 		return nil
 	}
 	switch target.Kind() {
 	case reflect.Slice, reflect.Array:
+		if target.Elem().Kind() == reflect.Uint8 {
+			return fmt.Errorf("json: %s requires an explicit string or array encoding", target)
+		}
 		return validateType(target.Elem(), visited)
 	case reflect.Map:
 		if target.Key().Kind() != reflect.String {
 			return fmt.Errorf("json: %s requires string object keys", target)
+		}
+		if customEncoder(target.Key()) || customDecoder(target.Key()) {
+			return fmt.Errorf("json: %s requires string keys without custom codecs", target)
 		}
 		return validateType(target.Elem(), visited)
 	case reflect.Struct:
@@ -59,16 +73,17 @@ func validateType(target reflect.Type, visited map[reflect.Type]bool) error {
 		return nil
 	case reflect.Bool, reflect.String,
 		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
-		reflect.Float32, reflect.Float64:
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		return nil
+	case reflect.Float32, reflect.Float64:
+		return fmt.Errorf("json: %s cannot represent exact JSON numbers; use value.Number", target)
 	default:
 		return fmt.Errorf("json: unsupported value type %s", target)
 	}
 }
 
 func opaqueType(target reflect.Type) bool {
-	return target == reflect.TypeFor[jsontext.Value]() || target == reflect.TypeFor[JSON]() || target.Kind() == reflect.Interface
+	return target == reflect.TypeFor[jsontext.Value]() || target == reflect.TypeFor[jsonv1.RawMessage]() || target == reflect.TypeFor[JSON]() || target.Kind() == reflect.Interface
 }
 
 // TextEncoded reports a value that crosses JSON as its own text spelling, so a

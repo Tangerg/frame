@@ -138,7 +138,7 @@ func TestSameContributionKeyKeepsOldAndNewUsesDistinct(t *testing.T) {
 	if err := host.Withdraw(ctx, oldCandidate.ID()); err != nil {
 		t.Fatal(err)
 	}
-	publication, err := host.Publish(ctx, instanceID, "replace-original-key", frame.Contribute("value", point, "new", func() string { return "new implementation" }))
+	publication, err := host.Publish(ctx, "replace-original-key", preparePublication(t, host, instanceID, frame.Contribute("value", point, "new", func() string { return "new implementation" })))
 	if err != nil {
 		t.Fatal(err)
 	}

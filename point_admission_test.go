@@ -87,16 +87,16 @@ func TestMultiPointCaptureValidatesItsWholeReadSet(t *testing.T) {
 			case "unselected member":
 				err = host.Withdraw(ctx, firstCandidates[1].ID())
 			case "empty point":
-				_, err = host.Publish(ctx, instanceID, "empty-added", frame.Contribute("new-empty-member", empty, "new", "new-value"))
+				_, err = host.Publish(ctx, "empty-added", preparePublication(t, host, instanceID, frame.Contribute("new-empty-member", empty, "new", "new-value")))
 			case "metadata":
 				// Membership metadata is immutable. A revision publishes a new
 				// member under the same logical source after withdrawing the old.
 				if err := host.Withdraw(ctx, firstCandidates[1].ID()); err != nil {
 					t.Fatal(err)
 				}
-				_, err = host.Publish(ctx, instanceID, "metadata-revised", frame.Contribute("other", first, "now preferred", "unused-value"))
+				_, err = host.Publish(ctx, "metadata-revised", preparePublication(t, host, instanceID, frame.Contribute("other", first, "now preferred", "unused-value")))
 			case "unrelated point":
-				_, err = host.Publish(ctx, instanceID, "unrelated-added", frame.Contribute("another-unrelated", unrelated, "new", "new-value"))
+				_, err = host.Publish(ctx, "unrelated-added", preparePublication(t, host, instanceID, frame.Contribute("another-unrelated", unrelated, "new", "new-value")))
 			}
 			if err != nil {
 				t.Fatal(err)

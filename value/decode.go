@@ -46,11 +46,11 @@ func (e *ShapeError) Error() string {
 // standard decoder otherwise collapses both spellings to nil. Opaque JSON
 // values remain open and may contain null by contract.
 func validateValueShape(raw jsontext.Value, target reflect.Type, path string) error {
+	if AllowsNull(target) {
+		return nil
+	}
 	for target.Kind() == reflect.Pointer {
 		target = target.Elem()
-	}
-	if opaqueType(target) {
-		return nil
 	}
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return &ShapeError{Field: path, Detail: "must not be null"}

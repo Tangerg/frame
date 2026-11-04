@@ -35,7 +35,7 @@ func (c *faultConnection) RegisterAuthorizer(authorizer modernc.AuthorizerFn) er
 			return err
 		}
 	}
-	if err := c.Conn.(modernc.AuthorizerRegisterer).RegisterAuthorizer(authorizer); err != nil {
+	if err := c.sqliteConnection.RegisterAuthorizer(authorizer); err != nil {
 		return err
 	}
 	if c.fault.afterAuthorize != nil {
@@ -58,13 +58,13 @@ func (c *faultConnector) Connect(context.Context) (driver.Conn, error) {
 	if c.fault.opened != nil {
 		c.fault.opened()
 	}
-	return &faultConnection{Conn: connection, fault: c.fault}, nil
+	return &faultConnection{sqliteConnection: connection.(sqliteConnection), fault: c.fault}, nil
 }
 
 func (c *faultConnector) Driver() driver.Driver { return c.driver }
 
 type faultConnection struct {
-	driver.Conn
+	sqliteConnection
 	fault  transactionFault
 	closed bool
 }
@@ -75,7 +75,7 @@ func (c *faultConnection) ExecContext(ctx context.Context, query string, argumen
 			return nil, err
 		}
 	}
-	result, err := c.Conn.(driver.ExecerContext).ExecContext(ctx, query, arguments)
+	result, err := c.sqliteConnection.ExecContext(ctx, query, arguments)
 	if err == nil && c.fault.afterExec != nil {
 		err = c.fault.afterExec(query)
 	}
@@ -83,15 +83,11 @@ func (c *faultConnection) ExecContext(ctx context.Context, query string, argumen
 }
 
 func (c *faultConnection) QueryContext(ctx context.Context, query string, arguments []driver.NamedValue) (driver.Rows, error) {
-	rows, err := c.Conn.(driver.QueryerContext).QueryContext(ctx, query, arguments)
+	rows, err := c.sqliteConnection.QueryContext(ctx, query, arguments)
 	if err == nil && c.fault.queryRows != nil {
 		rows = c.fault.queryRows(ctx, query, rows)
 	}
 	return rows, err
-}
-
-func (c *faultConnection) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
-	return c.Conn.(driver.ConnPrepareContext).PrepareContext(ctx, query)
 }
 
 func (c *faultConnection) Close() error {
@@ -103,7 +99,7 @@ func (c *faultConnection) Close() error {
 			return err
 		}
 	}
-	if err := c.Conn.Close(); err != nil {
+	if err := c.sqliteConnection.Close(); err != nil {
 		return err
 	}
 	c.closed = true
@@ -123,7 +119,7 @@ func installTransactionFault(t *testing.T, store *Store, fault transactionFault)
 	if err := store.db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store.db = sql.OpenDB(&faultConnector{driver: &modernc.Driver{}, dsn: storeDataSource(path), fault: fault})
+	store.db = sql.OpenDB(cursorConnector{Connector: &faultConnector{driver: &modernc.Driver{}, dsn: storeDataSource(path), fault: fault}})
 	store.db.SetMaxOpenConns(1)
 	store.db.SetMaxIdleConns(1)
 	if err := store.db.PingContext(t.Context()); err != nil {

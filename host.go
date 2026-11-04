@@ -26,7 +26,7 @@ type UseApproval struct {
 // domain receives it. Release observes the same original use, never a new one.
 type ExecutionProtection interface {
 	ApproveUse(context.Context, UseApproval) error
-	ReleaseUse(context.Context, string, CloseOutcome) error
+	ReleaseUse(context.Context, string, ReleaseProof) error
 }
 
 // AcceptedBindingReader reads a currently authorized business record under

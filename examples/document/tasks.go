@@ -274,14 +274,14 @@ func (a *App) Run(ctx context.Context, id string) (returned Task, returnErr erro
 	defer work.Finish()
 	ctx = work.Context()
 	a.mu.Lock()
-	if a.running[id] {
+	if a.activeRuns[id] {
 		a.mu.Unlock()
 		return Task{}, frame.ErrInUse
 	}
-	a.running[id] = true
+	a.activeRuns[id] = true
 	scope := a.scope
 	a.mu.Unlock()
-	defer func() { a.mu.Lock(); delete(a.running, id); a.mu.Unlock() }()
+	defer func() { a.mu.Lock(); delete(a.activeRuns, id); a.mu.Unlock() }()
 	task, err := a.Task(ctx, id)
 	if err != nil {
 		return Task{}, err

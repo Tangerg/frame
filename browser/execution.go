@@ -125,6 +125,9 @@ func (b *Bridge) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 		}
 	}()
 	attempt := sqlite.Attempt{ID: setup.InstanceID(), Epoch: setup.Epoch(), Source: setup.Binding().Source, Binding: setup.Snapshot(), Realm: string(RealmID(session.realm)), Profile: frame.BrowserJS, Scope: setup.ScopeGrant().WireID(), ScopeGeneration: setup.ScopeGrant().Generation(), Generation: setup.Generation()}
+	if err := b.config.Store.CheckExitCapacity(unadmittedExitProof(attempt)); err != nil {
+		return nil, err
+	}
 	entry := &browserExecution{plan: plan, attempt: attempt, setup: setup, prepared: make(chan []frame.ExportValue, 1), projectionBytes: projectionBytes}
 	registered := make(chan struct{})
 	resource, err := setup.Own(frame.Resource{Name: executionResourcePrefix + attempt.ID, Cancel: func(error) { b.fence(entry) }, Close: func(wait context.Context) (frame.ReleaseState, error) {
@@ -151,7 +154,6 @@ func (b *Bridge) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 		entry.retiring = true
 	}
 	revoked := entry.retiring
-	session.revision++
 	close(registered)
 	b.mu.Unlock()
 	if revoked {
@@ -330,13 +332,7 @@ func (b *Bridge) closeExecution(ctx context.Context, entry *browserExecution) (f
 func (b *Bridge) fence(entry *browserExecution) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if entry.retiring {
-		return
-	}
 	entry.retiring = true
-	if session := b.sessions.get(RealmID(entry.plan.Realm)); session != nil {
-		session.revision++
-	}
 }
 
 func (b *Bridge) Poll(ctx context.Context, token string) (Poll, error) {
@@ -349,7 +345,7 @@ func (b *Bridge) Poll(ctx context.Context, token string) (Poll, error) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	result := Poll{Authority: b.authority, Realm: session.realm, Revision: strconv.FormatUint(session.revision, 10), Plans: []LocalPlan{}, Fences: []Fence{}}
+	result := Poll{Authority: b.authority, Realm: session.realm, Plans: []LocalPlan{}, Fences: []Fence{}}
 	fences := make(map[Fence]bool)
 	for _, entry := range b.executions.all() {
 		if entry.plan.Realm == session.realm && entry.retiring && entry.admitted {
@@ -436,7 +432,6 @@ func (b *Bridge) Ready(ctx context.Context, token string, report ReadyReport) (P
 		return entry.ready.repeats(report.OperationID, digest)
 	}
 	entry.ready = &readyReport{operationID: report.OperationID, digest: digest}
-	session.revision++
 	entry.prepared <- exports
 	return PublicationResult{Decision: Accepted}, nil
 }

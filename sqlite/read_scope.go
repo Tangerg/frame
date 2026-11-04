@@ -33,9 +33,9 @@ func newConnectionScope(connection *sql.Conn, executor sqlExecutor) *connectionS
 
 func (s *connectionScope) authorize(policy modernc.AuthorizerFn) error {
 	return s.connection.Raw(func(connection any) error {
-		registerer, ok := connection.(modernc.AuthorizerRegisterer)
+		registerer, ok := connection.(*cursorConnection)
 		if !ok {
-			return errors.New("sqlite: connection does not support statement authorization")
+			return errors.New("sqlite: transactions require a database opened by OpenSchema")
 		}
 		return registerer.RegisterAuthorizer(policy)
 	})

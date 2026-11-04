@@ -1,5 +1,5 @@
 import type { Readable, Writable } from "node:stream";
-import { parseJSON, stringifyJSON } from "../json.js";
+import { cloneJSON, parseJSON, stringifyJSON } from "../json.js";
 import wire from "./wire.json" with { type: "json" };
 import { admitShape } from "./contract.js";
 import shapes from "./shapes.generated.json" with { type: "json" };
@@ -68,6 +68,11 @@ type Pending = {
   dispose(): void;
 };
 
+const maxCallWrites = wire.maxInFlight;
+const maxReplyWrites = wire.maxInFlight;
+// Node retains both the active write and buffered writes until their callbacks settle.
+const maxUnsettledWrites = maxCallWrites + maxReplyWrites;
+
 function sequence(id: unknown): bigint {
   if (typeof id !== "string" || !/^[1-9][0-9]{0,19}$/.test(id))
     throw new ProcessError(wire.errors.invalid, "invalid request sequence");
@@ -121,12 +126,13 @@ export class Peer {
   #encode(message: unknown): Buffer {
     this.signal.throwIfAborted();
     const data = Buffer.from(stringifyJSON(message) + "\n");
+    this.signal.throwIfAborted();
     if (data.length > this.#limit)
       throw new ProcessError(
         wire.errors.capacity,
         "frame exceeds negotiated limit",
       );
-    if (this.#writing.size >= 2 * wire.maxInFlight)
+    if (this.#writing.size >= maxUnsettledWrites)
       throw new ProcessError(wire.errors.capacity, "output capacity exceeded");
     return data;
   }
@@ -150,11 +156,7 @@ export class Peer {
     }
   }
 
-  request(
-    method: string,
-    params: unknown,
-    signal: AbortSignal,
-  ): Promise<unknown> {
+  #checkRequestAdmission(signal: AbortSignal): void {
     if (signal.aborted)
       throw new ProcessError(
         wire.errors.cancelled,
@@ -169,9 +171,23 @@ export class Peer {
       );
     if (this.#pending.size >= wire.maxInFlight)
       throw new ProcessError(wire.errors.capacity, "call capacity exceeded");
-    const id = (++this.#next).toString();
+  }
+
+  request(
+    method: string,
+    params: unknown,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    this.#checkRequestAdmission(signal);
+    // User getters may cancel, close the peer, or dispatch another request.
+    // Capture their values before reserving an identity in wire order.
+    const captured = cloneJSON({ method, params });
+    this.#checkRequestAdmission(signal);
+    const next = this.#next + 1n;
+    const id = next.toString();
     sequence(id);
-    const data = this.#encode({ id, method, params });
+    const data = this.#encode({ id, ...captured });
+    this.#next = next;
     return new Promise((resolve, reject) => {
       const abort = () => {
         // Retain the slot until the original reply or EOF. A cancelled waiter
@@ -184,11 +200,7 @@ export class Peer {
       const dispose = () => signal.removeEventListener("abort", abort);
       this.#pending.set(id, { resolve, reject, dispose });
       signal.addEventListener("abort", abort, { once: true });
-      this.#write(data).catch((error) => {
-        this.#pending.delete(id);
-        dispose();
-        reject(error);
-      });
+      void this.#write(data).catch((error) => this.stop(error));
     });
   }
 

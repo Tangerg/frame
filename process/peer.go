@@ -78,8 +78,10 @@ type peer struct {
 
 func newPeer(channel io.ReadWriteCloser, maxFrame int, handle dispatch) *peer {
 	ctx, stop := context.WithCancelCause(context.Background())
+	callQueueCapacity, replyQueueCapacity := wire.MaxInFlight, wire.MaxInFlight
+	// Both call directions share this budget; writeLoop holds its active frame outside the queue.
 	return &peer{transport: channel, handle: handle, ctx: ctx, stop: stop, done: make(chan struct{}), readDone: make(chan struct{}), writeDone: make(chan struct{}), joined: make(chan struct{}),
-		out: make(chan []byte, wire.MaxInFlight*2), maxFrame: maxFrame,
+		out: make(chan []byte, callQueueCapacity+replyQueueCapacity), maxFrame: maxFrame,
 		pending: make(map[string]chan envelope), running: make(map[string]context.CancelFunc)}
 }
 

@@ -558,8 +558,6 @@ func (s *Store) validate(ctx context.Context, root *os.Root) (Release, error) {
 	return release, nil
 }
 
-// readReleaseMetadata reads the manifest and its lock and checks that both
-// describe the release identity the manifest declares.
 func (s *Store) readReleaseMetadata(ctx context.Context, root *os.Root) (Release, error) {
 	manifestBytes, err := readRegular(ctx, root, ManifestName, s.limits.ManifestBytes)
 	if err != nil {

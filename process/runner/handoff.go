@@ -13,12 +13,21 @@ import (
 	"github.com/Tangerg/frame/value"
 )
 
-// ExitReceipt identifies the exact exit proof already committed by the Host.
+// The Host persists this original exit identity before acknowledging it, because
+// acknowledgement returns the runner's outstanding-attempt capacity.
 type ExitReceipt struct {
 	AttemptID string `json:"attemptId"`
 	Epoch     uint64 `json:"epoch"`
 	RunnerID  string `json:"runnerId"`
 	ProofID   string `json:"proofId"`
+}
+
+func (o Observation) ExitReceipt() (ExitReceipt, error) {
+	receipt := ExitReceipt{AttemptID: o.AttemptID, Epoch: o.Epoch, RunnerID: o.RunnerID, ProofID: o.ProofID}
+	if o.State != Exited || !receipt.valid() {
+		return ExitReceipt{}, ErrUnknown
+	}
+	return receipt, nil
 }
 
 func (receipt ExitReceipt) valid() bool {

@@ -92,13 +92,7 @@ func checkSchemaFieldShape(field reflect.StructField) error {
 	continued := false
 	for tag := range strings.SplitSeq(raw, ",") {
 		if tag == nullableSchemaOption {
-			target := field.Type
-			pointers := make(map[reflect.Type]bool)
-			for target.Kind() == reflect.Pointer && !pointers[target] {
-				pointers[target] = true
-				target = target.Elem()
-			}
-			if !opaqueType(target) {
+			if !AllowsNull(field.Type) {
 				return errors.New("nullable schema requires an opaque JSON field")
 			}
 		}
@@ -154,11 +148,12 @@ func ShapeOf(owner reflect.Type) Shape {
 	return shape
 }
 
-// Admits reports whether present names exactly the shape's required members
-// plus any of its optional ones.
 func (s Shape) Admits(present []string) bool {
 	required := 0
-	for _, name := range present {
+	for index, name := range present {
+		if slices.Contains(present[:index], name) {
+			return false
+		}
 		switch {
 		case slices.Contains(s.Required, name):
 			required++

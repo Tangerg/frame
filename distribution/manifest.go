@@ -522,7 +522,6 @@ func unportableSegment(segment string) bool {
 	return slices.Contains(windowsDeviceNames, stem) || numberedDevice(stem)
 }
 
-// numberedDevice reports COM1-COM9 and LPT1-LPT9.
 func numberedDevice(stem string) bool {
 	if len(stem) != 4 || stem[3] < '1' || stem[3] > '9' {
 		return false

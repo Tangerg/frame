@@ -227,7 +227,6 @@ export interface PointSnapshot {
 export interface Poll {
   readonly authority: Authority;
   readonly realm: Realm;
-  readonly revision: string;
   readonly plans: readonly LocalPlan[];
   readonly fences: readonly Fence[];
 }

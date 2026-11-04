@@ -93,7 +93,7 @@ func TestFailedAttachmentReleasesOriginalStdout(t *testing.T) {
 				t.Fatal(err)
 			}
 			pipe := trackStdout(t, server, request.AttemptID)
-			encoded, err := json.Marshal(controlRequest{Operation: methodAttach, Attempt: &request.AttemptRef})
+			encoded, err := json.Marshal(controlRequest{Operation: methodAttachControl, Attempt: &request.AttemptRef})
 			if err != nil {
 				t.Fatal(err)
 			}

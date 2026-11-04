@@ -86,7 +86,7 @@ func (b *Bridge) reserveProjectionLocked(session *realmSession, plan LocalPlan) 
 	if session.cleanupOnly || b.sessions.get(RealmID(session.realm)) != session {
 		return 0, frame.ErrFenced
 	}
-	base := Poll{Authority: b.authority, Realm: session.realm, Revision: strconv.FormatUint(math.MaxUint64, 10), Plans: []LocalPlan{}, Fences: []Fence{}}
+	base := Poll{Authority: b.authority, Realm: session.realm, Plans: []LocalPlan{}, Fences: []Fence{}}
 	pollBytes, err := encodedSize(base)
 	if err != nil {
 		return 0, err
@@ -138,7 +138,23 @@ func (b *Bridge) checkExitCapacity(plan LocalPlan, kind CloseScopeKind, id strin
 	case PublicationScope:
 		proof.PublicationID = id
 	}
-	return b.checkRequest(proveMethod, proof)
+	if err := b.checkRequest(proveMethod, proof); err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(proof)
+	if err != nil {
+		return err
+	}
+	if kind == PublicationScope {
+		return b.config.Store.CheckExitEvidenceCapacity(encoded)
+	}
+	exit := proof.exitProof(encoded)
+	if kind == ExecutionScope {
+		if err := b.config.Store.CheckExitCapacity(exit); err != nil {
+			return err
+		}
+	}
+	return b.config.Store.CheckRealmUseExitCapacity(exit)
 }
 
 func maximumEncodedName() string {

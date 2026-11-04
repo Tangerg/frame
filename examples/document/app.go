@@ -42,7 +42,7 @@ type App struct {
 	preview    distribution.Release
 	recoveryMu sync.Mutex
 	mu         sync.Mutex
-	running    map[string]bool
+	activeRuns map[string]bool
 }
 
 func Open(ctx context.Context, config Config) (_ *App, err error) {
@@ -68,7 +68,7 @@ func Open(ctx context.Context, config Config) (_ *App, err error) {
 		return nil, err
 	}
 	lifetime := frame.NewLifetime(context.Background())
-	a := &App{Store: store, Contracts: contracts, owner: owner, lifetime: lifetime, running: map[string]bool{}}
+	a := &App{Store: store, Contracts: contracts, owner: owner, lifetime: lifetime, activeRuns: map[string]bool{}}
 	host, err := frame.NewHost(context.Background(), frame.HostConfig{ReadAcceptedBinding: a.readQueuedBinding, Admission: admission, Lifetime: lifetime, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store, UseOwners: []frame.UseOwner{owner}})
 	if err != nil {
 		return nil, err

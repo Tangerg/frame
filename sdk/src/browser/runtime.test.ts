@@ -146,7 +146,6 @@ function fixture(definitions: Record<string, Unit>, proofCapacity = 128) {
     poll: vi.fn<HostControl["poll"]>(async () => ({
       authority,
       realm,
-      revision: "1",
       plans: [],
       fences: [],
     })),
@@ -1313,7 +1312,6 @@ describe("approved browser execution", () => {
     const oldReply: Poll = {
       authority,
       realm,
-      revision: "1",
       plans: [original],
       fences: [],
     };
@@ -1371,7 +1369,6 @@ describe("approved browser execution", () => {
       reply.resolve({
         authority,
         realm,
-        revision: "1",
         plans: [original],
         fences: [],
       });
@@ -1405,7 +1402,6 @@ describe("approved browser execution", () => {
     reply.resolve({
       authority,
       realm,
-      revision: "1",
       plans: [releasedPlan],
       fences: [
         {

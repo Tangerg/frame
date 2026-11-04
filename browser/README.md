@@ -4,6 +4,13 @@ This package owns the browser control DTOs, their TypeScript projection, the aut
 It depends on the original Frame Host and SQLite Store, which share one Admission.
 It does not select providers or publish a second catalog.
 
+`WriteTypeScriptTypes` derives fields and omission from the admitted Go wire
+declaration. Custom codecs project their explicit `JSONSchemaModel`, including
+`value.Number` through the SDK's exact `JSONNumber` representation. Pointer
+fields do not introduce null; `value.AllowsNull` owns that distinction for
+decoding and projections. String enum values require a string wire model.
+Malformed, cyclic or unsupported models fail before any output is published.
+
 The application creates the Host and Store, constructs `NewBridge`, and registers
 the Bridge as the `browser-js` driver. `ModuleSource` projects an approved unit to
 one immutable artifact. Opaque installation configuration is withheld by
@@ -29,8 +36,9 @@ bootstrap authentication. The bearer credential belongs to a Realm and must
 never appear in plugin configuration, artifact URLs or logs.
 
 `Poll` returns complete pending plans and fences without transferring execution
-responsibility. The Runtime reserves its original execution and exit owner, then
-calls `AdmitPlan` before loading code. `admitted` permits preparation;
+responsibility. Each response reflects the current owners directly, and callers
+process its complete contents. The Runtime reserves its original execution and
+exit owner, then calls `AdmitPlan` before loading code. `admitted` permits preparation;
 `cleanupRequired` permits only the original exit proof. `notAdmitted` and `settled`
 observe the original Host's durable settlement and let an unstarted Runtime
 release its temporary reservation. A transport or authentication error provides
@@ -99,7 +107,9 @@ Runtime owner. The Host settles an unadmitted plan with its original
 still requires its execution owner's proof. A bounded browser scheduler can
 defer plans without acquiring cleanup duties for work it has not admitted.
 
-MaxRealms bounds resident Realms and MaxPending bounds active operations. On
+MaxRealms bounds resident Realms and MaxPending bounds active operations. A single
+Snapshot occupies one lease slot regardless of its Point count; complete request
+and response byte limits bound that capture's payload. On
 seal, an empty Realm relinquishes its slot. Its credential can still submit
 idempotent cleanup observations. Completed control replies live in the original
 authority epoch's SQLite receipt journal and do not consume active capacity.
@@ -114,7 +124,11 @@ submit the old execution's proofs on the new cleanup-only channel.
 
 `MaxMessageBytes` bounds complete encoded control requests and responses,
 including their envelopes. Before persisting an attempt, the Bridge checks its
-plan admission, declared Ready shape and original execution proof. Each Realm
+plan admission, declared Ready shape and original execution proof. The Bridge
+also composes proof admission with the Store's actual `MaxRequestBytes` capacity,
+including the complete stored envelope needed to release Uses after reconstruction.
+Use and publication grants apply the same transport and durable-capacity checks
+before handing responsibility to the Runtime. Each Realm
 also reserves encoded bytes for its complete pending and reconnect projections;
 ready executions retain that reservation until their original release. An
 admission cannot turn a pending backlog into an oversized response.

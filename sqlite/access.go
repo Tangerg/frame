@@ -15,21 +15,15 @@ type sqlExecutor interface {
 }
 
 type ownedCursor struct {
-	rows     *sql.Rows
-	cancel   context.CancelFunc
-	once     sync.Once
-	closeErr error
+	rows    *sql.Rows
+	cancel  context.CancelFunc
+	release *cursorRelease
 }
 
 func (c *ownedCursor) close() error {
-	c.once.Do(func() {
-		c.closeErr = c.rows.Close()
-		if c.cancel != nil {
-			c.cancel()
-			c.cancel = nil
-		}
-	})
-	return c.closeErr
+	_ = c.rows.Close()
+	c.cancel()
+	return c.release.result()
 }
 
 // A callback receives authority over this connection for its original transaction
@@ -146,15 +140,23 @@ func (a *transactionAccess) query(ctx context.Context, statement string, args ..
 	if a.executor == nil {
 		return nil, sql.ErrTxDone
 	}
-	child, cancel := context.WithCancel(ctx)
-	rows, err := a.executor.QueryContext(child, statement, args...)
+	cursor, err := queryCursor(ctx, a.executor, statement, args...)
+	if err != nil {
+		return nil, err
+	}
+	a.cursors = append(a.cursors, cursor)
+	return cursor, nil
+}
+
+func queryCursor(ctx context.Context, executor sqlExecutor, statement string, args ...any) (*ownedCursor, error) {
+	release := &cursorRelease{done: make(chan struct{})}
+	child, cancel := context.WithCancel(context.WithValue(ctx, cursorReleaseKey{}, release))
+	rows, err := executor.QueryContext(child, statement, args...)
 	if err != nil {
 		cancel()
 		return nil, err
 	}
-	cursor := &ownedCursor{rows: rows, cancel: cancel}
-	a.cursors = append(a.cursors, cursor)
-	return cursor, nil
+	return &ownedCursor{rows: rows, cancel: cancel, release: release}, nil
 }
 
 func (a *transactionAccess) QueryRowContext(ctx context.Context, statement string, args ...any) *Row {
@@ -177,9 +179,6 @@ func (r readAccess) QueryRowContext(ctx context.Context, statement string, args 
 type databaseAccess struct{ sqlExecutor }
 
 func (a databaseAccess) QueryRowContext(ctx context.Context, statement string, args ...any) *Row {
-	rows, err := a.QueryContext(ctx, statement, args...)
-	if err != nil {
-		return &Row{err: err}
-	}
-	return &Row{cursor: &ownedCursor{rows: rows}}
+	cursor, err := queryCursor(ctx, a.sqlExecutor, statement, args...)
+	return &Row{cursor: cursor, err: err}
 }

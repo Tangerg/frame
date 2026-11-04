@@ -356,6 +356,13 @@ func TestRunnerProcessHelper(t *testing.T) {
 		return
 	}
 	switch os.Getenv("FRAME_RUNNER_HELPER") {
+	case "reply-and-exit":
+		var input [1]byte
+		if _, err := io.ReadFull(os.Stdin, input[:]); err != nil {
+			os.Exit(33)
+		}
+		fmt.Println("final")
+		os.Exit(0)
 	case "wait-for-kill":
 		fmt.Println("ready")
 		for {

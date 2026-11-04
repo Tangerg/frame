@@ -41,6 +41,11 @@ one of the framework's error codes. Cancellation is an intent to stop waiting or
 work; it does not establish rollback, non-execution, or permission to replay.
 Only the original business owner can settle its operation. A valid returned result
 is preserved even when the remote handler observes cancellation before returning.
+Request encoding captures user values before reserving a transport identity.
+Cancellation, channel closure and call capacity are checked again after encoding,
+including when a value getter dispatches another request. A dispatched call keeps
+its capacity until its original reply or channel shutdown; cancelling its waiter
+does not free that capacity.
 
 Each streaming call owns its accepted chunk deliveries. Consumer errors, invalid
 chunks, overlapping emits and an early final result remain failures for that

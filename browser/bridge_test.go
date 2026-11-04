@@ -48,10 +48,16 @@ func openBridge(t *testing.T, path string, cleanup bool) *bridgeEnvironment {
 
 func openConfiguredBridge(t *testing.T, path string, cleanup bool, configure func(*browser.BridgeConfig)) *bridgeEnvironment {
 	t.Helper()
+	return openBridgeEnvironment(t, sqlite.Config{Path: path}, cleanup, configure)
+}
+
+func openBridgeEnvironment(t *testing.T, storeConfig sqlite.Config, cleanup bool, configure func(*browser.BridgeConfig)) *bridgeEnvironment {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
 	admission := frame.NewAdmission()
-	store, err := sqlite.Open(ctx, sqlite.Config{Path: path, Admission: admission})
+	storeConfig.Admission = admission
+	store, err := sqlite.Open(ctx, storeConfig)
 	if err != nil {
 		t.Fatal(err)
 	}

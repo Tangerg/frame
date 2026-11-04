@@ -22,7 +22,7 @@ func (d realmValueDriver) Prepare(_ context.Context, setup *frame.Setup) ([]fram
 type realmUseProtection struct{}
 
 func (realmUseProtection) ApproveUse(context.Context, frame.UseApproval) error { return nil }
-func (realmUseProtection) ReleaseUse(context.Context, string, frame.CloseOutcome) error {
+func (realmUseProtection) ReleaseUse(context.Context, string, frame.ReleaseProof) error {
 	return nil
 }
 

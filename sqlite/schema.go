@@ -29,7 +29,7 @@ func OpenSchema(ctx context.Context, path string, statements []string) (*sql.DB,
 		"file:%s?_txlock=immediate&_pragma=foreign_keys(ON)&_pragma=busy_timeout(%d)",
 		url.PathEscape(filepath.ToSlash(path)), busyTimeout/time.Millisecond,
 	)
-	db, err := sql.Open("sqlite", dsn)
+	db, err := openDatabase(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: open %q: %w", path, err)
 	}

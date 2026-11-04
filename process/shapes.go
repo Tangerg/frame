@@ -69,20 +69,22 @@ type WireShapes struct {
 	Cancelled   framevalue.Shape `json:"cancelled"`
 }
 
-var shapes = WireShapes{
-	Request:     framevalue.ShapeOf(reflect.TypeFor[requestMessage]()),
-	Cancel:      framevalue.ShapeOf(reflect.TypeFor[cancelMessage]()),
-	Result:      framevalue.ShapeOf(reflect.TypeFor[resultMessage]()),
-	Failure:     framevalue.ShapeOf(reflect.TypeFor[failureMessage]()),
-	Problem:     framevalue.ShapeOf(reflect.TypeFor[Problem]()),
-	Hello:       framevalue.ShapeOf(reflect.TypeFor[hello]()),
-	Preparation: framevalue.ShapeOf(reflect.TypeFor[preparation]()),
-	Grant:       framevalue.ShapeOf(reflect.TypeFor[offered]()),
-	Source:      framevalue.ShapeOf(reflect.TypeFor[frame.ExportRef]()),
-	Contract:    framevalue.ShapeOf(reflect.TypeFor[frame.ContractRef]()),
-	Call:        framevalue.ShapeOf(reflect.TypeFor[callParams]()),
-	Chunk:       framevalue.ShapeOf(reflect.TypeFor[chunkParams]()),
-	Cancelled:   framevalue.ShapeOf(reflect.TypeFor[cancelParams]()),
-}
+var shapes = Shapes()
 
-func Shapes() WireShapes { return shapes }
+func Shapes() WireShapes {
+	return WireShapes{
+		Request:     framevalue.ShapeOf(reflect.TypeFor[requestMessage]()),
+		Cancel:      framevalue.ShapeOf(reflect.TypeFor[cancelMessage]()),
+		Result:      framevalue.ShapeOf(reflect.TypeFor[resultMessage]()),
+		Failure:     framevalue.ShapeOf(reflect.TypeFor[failureMessage]()),
+		Problem:     framevalue.ShapeOf(reflect.TypeFor[Problem]()),
+		Hello:       framevalue.ShapeOf(reflect.TypeFor[hello]()),
+		Preparation: framevalue.ShapeOf(reflect.TypeFor[preparation]()),
+		Grant:       framevalue.ShapeOf(reflect.TypeFor[offered]()),
+		Source:      framevalue.ShapeOf(reflect.TypeFor[frame.ExportRef]()),
+		Contract:    framevalue.ShapeOf(reflect.TypeFor[frame.ContractRef]()),
+		Call:        framevalue.ShapeOf(reflect.TypeFor[callParams]()),
+		Chunk:       framevalue.ShapeOf(reflect.TypeFor[chunkParams]()),
+		Cancelled:   framevalue.ShapeOf(reflect.TypeFor[cancelParams]()),
+	}
+}

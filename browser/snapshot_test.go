@@ -32,6 +32,28 @@ func snapshotBridge(t *testing.T) (*bridgeEnvironment, *browser.Bridge) {
 	return e, bridge
 }
 
+func TestSnapshotCapacityCountsLeasesInsteadOfPoints(t *testing.T) {
+	e := openConfiguredBridge(t, filepath.Join(t.TempDir(), "state.sqlite"), true, func(config *browser.BridgeConfig) { config.MaxPending = 1 })
+	credentials, err := e.bridge.OpenRealm(e.ctx, "one", "0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := snapshotRequest(e.first.Ref().Name, e.second.Ref().Name)
+	snapshot, err := e.bridge.Snapshot(e.ctx, credentials.Token, request)
+	if err != nil || len(snapshot.Points) != 2 {
+		t.Fatalf("one lease could not capture two registered Points: %+v %v", snapshot, err)
+	}
+	if _, err := e.bridge.Snapshot(e.ctx, credentials.Token, snapshotRequest(e.first.Ref().Name)); !errors.Is(err, frame.ErrCapacity) {
+		t.Fatalf("live lease did not occupy its original slot: %v", err)
+	}
+	if err := e.bridge.CloseSnapshot(e.ctx, credentials.Token, request.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.bridge.Snapshot(e.ctx, credentials.Token, snapshotRequest(e.first.Ref().Name, e.second.Ref().Name)); err != nil {
+		t.Fatalf("released lease did not return capacity: %v", err)
+	}
+}
+
 type lostSnapshotResponse struct {
 	header http.Header
 	body   []byte

@@ -33,7 +33,6 @@ type Use struct {
 	// initialized is closed once admission has published or refused the Use;
 	// retirement reads no admission-written field before then.
 	initialized chan struct{}
-	retireOnce  sync.Once
 	settlement  *settlement
 
 	// Host.mu guards the fields below. Retirement clears them only after the
@@ -263,6 +262,17 @@ func (h *Host) acquirePrepared(ctx context.Context, plan *BindingPlan, config Us
 		members:     make(map[string]*publication),
 		selections:  make(map[string][]string),
 	}
+	causes := use.lifetime.ObserveCloseCauses()
+	context.AfterFunc(use.Context(), func() {
+		<-use.initialized
+		operation := use.lifetime.BeginClose(ErrClosed)
+		// This join cannot be cancelled; cleanup diagnostics cannot invalidate its proof.
+		outcome, _ := operation.WaitReleased(context.Background())
+		proof, _ := operation.ReleaseProof()
+		use.settleRelease(proof)
+		use.retire(causes.join(outcomeError(outcome)))
+		use.settlement.complete()
+	})
 	if config.Parent != nil {
 		use.parentID = config.Parent.id
 	}
@@ -464,29 +474,15 @@ func (h *Host) publishUse(use *Use, owner *Lifetime) error {
 }
 
 func (u *Use) BeginClose(cause error) *Close {
-	causes := u.lifetime.ObserveCloseCauses()
-	operation := u.lifetime.BeginClose(cause)
-	u.retireOnce.Do(func() {
-		go func() {
-			<-u.initialized
-			outcome, _ := operation.WaitReleased(context.Background())
-			if !outcome.Released {
-				return
-			}
-			u.settleRelease(outcome)
-			u.retire(causes.join(outcomeError(outcome)))
-			u.settlement.complete()
-		}()
-	})
-	return operation
+	return u.lifetime.BeginClose(cause)
 }
 
 // settleRelease durably releases a protected Use. A failed attempt fences new
 // admission and is retried only when a caller explicitly closes the Use again.
-func (u *Use) settleRelease(outcome CloseOutcome) {
+func (u *Use) settleRelease(proof ReleaseProof) {
 	h := u.host
 	for u.protected {
-		err := h.protection.ReleaseUse(context.Background(), u.id, outcome)
+		err := h.protection.ReleaseUse(context.Background(), u.id, proof)
 		if err == nil {
 			return
 		}

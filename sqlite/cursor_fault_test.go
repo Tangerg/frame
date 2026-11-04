@@ -15,7 +15,7 @@ import (
 )
 
 type cursorFaultRows struct {
-	driver.Rows
+	sqliteRows
 	beforeNext  func()
 	beforeClose func()
 	afterClose  func() error
@@ -25,14 +25,14 @@ func (r *cursorFaultRows) Next(values []driver.Value) error {
 	if r.beforeNext != nil {
 		r.beforeNext()
 	}
-	return r.Rows.Next(values)
+	return r.sqliteRows.Next(values)
 }
 
 func (r *cursorFaultRows) Close() error {
 	if r.beforeClose != nil {
 		r.beforeClose()
 	}
-	err := r.Rows.Close()
+	err := r.sqliteRows.Close()
 	if r.afterClose != nil {
 		err = errors.Join(err, r.afterClose())
 	}
@@ -49,7 +49,7 @@ func cursorFaultDatabase(t *testing.T, fault transactionFault) *sql.DB {
 	if err := seed.Close(); err != nil {
 		t.Fatal(err)
 	}
-	database := sql.OpenDB(&faultConnector{driver: &modernc.Driver{}, dsn: storeDataSource(path), fault: fault})
+	database := sql.OpenDB(cursorConnector{Connector: &faultConnector{driver: &modernc.Driver{}, dsn: storeDataSource(path), fault: fault}})
 	database.SetMaxOpenConns(1)
 	database.SetMaxIdleConns(1)
 	t.Cleanup(func() {
@@ -73,7 +73,7 @@ func TestReadSnapshotJoinsOriginalNextAndCloseBeforeRestoringWriter(t *testing.T
 				return rows
 			}
 			return &cursorFaultRows{
-				Rows:        rows,
+				sqliteRows:  rows.(sqliteRows),
 				beforeNext:  func() { close(nextEntered); <-releaseNext },
 				beforeClose: func() { close(closeEntered); <-releaseClose },
 			}
@@ -172,7 +172,7 @@ func TestCursorCloseFailureRemainsWithOriginalTransaction(t *testing.T) {
 					if query != statement {
 						return rows
 					}
-					return &cursorFaultRows{Rows: rows, afterClose: func() error { return closeCause }}
+					return &cursorFaultRows{sqliteRows: rows.(sqliteRows), afterClose: func() error { return closeCause }}
 				},
 				afterClose: func() { disposed.Add(1) },
 			})
@@ -216,6 +216,97 @@ func TestCursorCloseFailureRemainsWithOriginalTransaction(t *testing.T) {
 			var count int
 			if err := database.QueryRowContext(t.Context(), `SELECT count(*) FROM facts`).Scan(&count); err != nil || count != 0 {
 				t.Fatalf("unconfirmed cursor committed its enclosing transaction: count=%d error=%v", count, err)
+			}
+		})
+	}
+}
+
+func TestAutomaticAndCallerCursorCloseKeepOriginalReleaseEvidence(t *testing.T) {
+	closeCause := errors.New("original cursor close is unconfirmed")
+	for _, test := range []struct {
+		name      string
+		statement string
+		consume   func(*testing.T, *sql.Rows, context.CancelFunc, <-chan struct{})
+	}{
+		{name: "explicit", statement: `SELECT 1`, consume: func(t *testing.T, rows *sql.Rows, _ context.CancelFunc, _ <-chan struct{}) {
+			if err := rows.Close(); !errors.Is(err, closeCause) {
+				t.Fatalf("original Close result: %v", err)
+			}
+			if err := rows.Close(); err != nil {
+				t.Fatalf("database/sql did not make repeated Close a no-op: %v", err)
+			}
+		}},
+		{name: "deferred", statement: `SELECT 1`, consume: func(t *testing.T, rows *sql.Rows, _ context.CancelFunc, _ <-chan struct{}) {
+			defer rows.Close()
+			if !rows.Next() || rows.Err() != nil {
+				t.Fatalf("row before deferred Close: %v", rows.Err())
+			}
+		}},
+		{name: "exhausted", statement: `SELECT 1`, consume: func(t *testing.T, rows *sql.Rows, _ context.CancelFunc, _ <-chan struct{}) {
+			for rows.Next() {
+			}
+			if !errors.Is(rows.Err(), closeCause) {
+				t.Fatalf("EOF did not invoke original Close: %v", rows.Err())
+			}
+		}},
+		{name: "canceled", statement: `SELECT 1`, consume: func(t *testing.T, rows *sql.Rows, cancel context.CancelFunc, closed <-chan struct{}) {
+			cancel()
+			select {
+			case <-closed:
+			case <-time.After(5 * time.Second):
+				t.Fatal("query cancellation did not close its physical cursor")
+			}
+			if !errors.Is(rows.Err(), context.Canceled) {
+				t.Fatalf("query cancellation disappeared: %v", rows.Err())
+			}
+		}},
+		{name: "iteration and close failure", statement: `SELECT 1 UNION ALL SELECT abs(-9223372036854775808)`, consume: func(t *testing.T, rows *sql.Rows, _ context.CancelFunc, _ <-chan struct{}) {
+			if !rows.Next() || rows.Next() || rows.Err() == nil {
+				t.Fatalf("iteration did not reach its error: %v", rows.Err())
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			closed := make(chan struct{})
+			var disposed, cursorCloses atomic.Int32
+			database := cursorFaultDatabase(t, transactionFault{
+				queryRows: func(_ context.Context, query string, rows driver.Rows) driver.Rows {
+					if query != test.statement {
+						return rows
+					}
+					return &cursorFaultRows{sqliteRows: rows.(sqliteRows), afterClose: func() error {
+						cursorCloses.Add(1)
+						close(closed)
+						return closeCause
+					}}
+				},
+				afterClose: func() { disposed.Add(1) },
+			})
+			err := RunInTx(t.Context(), database, func(writer context.Context) error {
+				if _, err := Connection(writer, database).ExecContext(writer, `INSERT INTO facts VALUES('must rollback')`); err != nil {
+					return err
+				}
+				err := RunReadSnapshot(writer, database, func(reader context.Context) error {
+					query, cancel := context.WithCancel(reader)
+					defer cancel()
+					rows, err := Connection(reader, database).QueryContext(query, test.statement)
+					if err != nil {
+						return err
+					}
+					test.consume(t, rows, cancel, closed)
+					return nil
+				})
+				if !errors.Is(err, closeCause) {
+					t.Fatalf("nested reader forgot its original release: %v", err)
+				}
+				return nil
+			})
+			if !errors.Is(err, closeCause) || !errors.Is(err, errCursorCloseUnconfirmed) || disposed.Load() != 1 || cursorCloses.Load() != 1 {
+				t.Fatalf("original cursor failure was lost: error=%v disposed=%d cursor closes=%d", err, disposed.Load(), cursorCloses.Load())
+			}
+			var count int
+			if err := database.QueryRowContext(t.Context(), `SELECT count(*) FROM facts`).Scan(&count); err != nil || count != 0 {
+				t.Fatalf("unconfirmed cursor committed its writer: count=%d error=%v", count, err)
 			}
 		})
 	}

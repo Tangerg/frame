@@ -35,7 +35,7 @@ Pass the same Admission, epoch and SQLite Store to the durable Host and its adap
 
 Configure subprocess environments explicitly. An empty environment is the default. Host service grants limit access through Frame, not the process's operating-system rights. Deploy native code only with appropriate OS permissions. Maintain one trusted source for executable artifacts, interpreter pins and dependencies. A local Runner confirms the exit of its direct child, not that child's descendants or effects outside the framework.
 
-The portable schema profile uses the published Scope JSON Schema library as a compiler. No host product or agent transport is required by the framework or its Node SDK.
+The portable schema profile derives schemas with Scope and compiles the admitted profile with `santhosh-tekuri/jsonschema/v6`. No host product or agent transport is required by the framework or its Node SDK.
 
 The profile admits only `date`, `time`, `date-time`, `uuid`, `json-pointer` and
 `relative-json-pointer` formats. Unsupported format names are rejected when a
@@ -100,10 +100,21 @@ and one `LifetimeLimits.MaxResources` entry. Closing the Watch closes its
 channel and then returns both capacities. A Host with no Watches reserves no
 subscription resource.
 
+Closing a Use's original Lifetime also starts that Use's original retirement.
+`Use.WaitRetired` joins actual release, durable settlement and removal of Host
+references regardless of which close entry point was used. Admission publishes
+or refuses the Use before retirement reads its acquired holds.
+
 `CloseOutcome` is bounded evidence, with at most 32 diagnostic failures and
-2,048 UTF-8 bytes per detail. `Close.Wait` and `Close.WaitReleased` report stable
-`ErrCloseFailed` and `ErrUnconfirmedRelease` categories from that evidence.
-They do not reconstruct original error chains from diagnostic text.
+2,048 UTF-8 bytes per resource label and detail. Resource names are diagnostic
+labels; only handles identify resources. `Close.Wait` and `Close.WaitReleased`
+report stable `ErrCloseFailed` and `ErrUnconfirmedRelease` categories from that
+evidence. They do not reconstruct original error chains from diagnostic text.
+
+`Close.ReleaseProof` succeeds only after the original Lifetime has released.
+Its compact `ReleaseProof` contains the original Close ID, without diagnostic
+text or a competing release flag. Execution protection persists this terminal
+proof; admitting a Use must reserve enough capacity for its eventual proof.
 
 A first local `Lifetime.Close`, `Use.Close` or `Host.Close` observes cleanup
 causes while it waits and preserves them for `errors.Is` and `errors.As` in the

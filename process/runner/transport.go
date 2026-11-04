@@ -35,7 +35,8 @@ const (
 	methodLaunch          controlMethod = "launch"
 	methodInspect         controlMethod = "inspect"
 	methodClose           controlMethod = "close"
-	methodAttach          controlMethod = "attach"
+	methodAttachControl   controlMethod = "attach_control"
+	methodAttachStream    controlMethod = "attach_stream"
 )
 
 type controlRequest struct {
@@ -107,12 +108,16 @@ func (s *Server) handle(ctx context.Context, connection net.Conn, release func()
 	if err := connection.SetReadDeadline(time.Time{}); err != nil {
 		return
 	}
-	if request.Operation == methodAttach {
+	if request.Operation == methodAttachControl || request.Operation == methodAttachStream {
 		if request.Attempt == nil {
 			_ = s.writeResponse(connection, nil, frame.ErrInvalid)
 			return
 		}
-		s.serveAttachment(ctx, connection, reader, *request.Attempt, release)
+		if request.Operation == methodAttachControl {
+			s.serveAttachmentControl(ctx, connection, reader, *request.Attempt, release)
+		} else {
+			s.serveAttachmentStream(ctx, connection, reader, *request.Attempt, release)
+		}
 		return
 	}
 	response, err := s.respond(ctx, request)
@@ -182,9 +187,36 @@ func observed(observation Observation, err error) (controlResponse, error) {
 	return controlResponse{Observation: &observation}, err
 }
 
-func (s *Server) attach(ref AttemptRef) (*attachment, error) {
+func (s *Server) attach(ref AttemptRef, control net.Conn) (*attachment, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	live, err := s.attachableProcess(ref)
+	if err != nil {
+		return nil, err
+	}
+	if live.attachment != nil {
+		return nil, ErrAttached
+	}
+	attached := &attachment{stdin: live.stdin, stdout: live.stdout, control: control}
+	live.stdout = nil
+	live.attachment = attached
+	return attached, nil
+}
+
+func (s *Server) attachStream(ref AttemptRef, connection net.Conn) (*attachment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	live, err := s.attachableProcess(ref)
+	if err != nil {
+		return nil, err
+	}
+	if live.attachment == nil {
+		return nil, fmt.Errorf("%w: attachment control is required", frame.ErrInvalid)
+	}
+	return live.attachment, live.attachment.bindStream(connection)
+}
+
+func (s *Server) attachableProcess(ref AttemptRef) (*process, error) {
 	if s.closed {
 		return nil, frame.ErrClosed
 	}
@@ -205,12 +237,7 @@ func (s *Server) attach(ref AttemptRef) (*attachment, error) {
 	if live == nil || live.closeState != processOpen {
 		return nil, frame.ErrClosed
 	}
-	if live.stdout == nil {
-		return nil, ErrAttached
-	}
-	attached := &attachment{stdin: live.stdin, stdout: live.stdout}
-	live.stdout = nil
-	return attached, nil
+	return live, nil
 }
 
 type Client struct{ socket string }
@@ -313,37 +340,73 @@ func (c *Client) request(ctx context.Context, request controlRequest) (controlRe
 	return decodeResponse(line)
 }
 
-type attached struct {
-	net.Conn
-	reader *bufio.Reader
+type clientAttachment struct {
+	stream    net.Conn
+	reader    *bufio.Reader
+	control   net.Conn
+	closeOnce sync.Once
+	closeErr  error
 }
 
-func (a *attached) Read(p []byte) (int, error) { return a.reader.Read(p) }
+func (a *clientAttachment) Read(p []byte) (int, error)  { return a.reader.Read(p) }
+func (a *clientAttachment) Write(p []byte) (int, error) { return a.stream.Write(p) }
 
-func (c *Client) Attach(ctx context.Context, ref AttemptRef) (io.ReadWriteCloser, error) {
-	connection, err := c.dial(ctx)
+func (a *clientAttachment) Close() error {
+	a.closeOnce.Do(func() { a.closeErr = errors.Join(a.control.Close(), a.stream.Close()) })
+	return a.closeErr
+}
+
+func (c *Client) Attach(ctx context.Context, ref AttemptRef) (result io.ReadWriteCloser, err error) {
+	control, _, err := c.openAttachmentConnection(ctx, methodAttachControl, ref)
 	if err != nil {
 		return nil, err
 	}
+	stop := context.AfterFunc(ctx, func() { _ = control.Close() })
+	defer func() {
+		stop()
+		if cause := cancellation.Err(ctx); cause != nil {
+			err = errors.Join(err, cause)
+		}
+		if err != nil {
+			_ = control.Close()
+			if result != nil {
+				_ = result.Close()
+				result = nil
+			}
+		}
+	}()
+	stream, reader, err := c.openAttachmentConnection(ctx, methodAttachStream, ref)
+	if err != nil {
+		return nil, err
+	}
+	return &clientAttachment{stream: stream, reader: reader, control: control}, nil
+}
+
+func (c *Client) openAttachmentConnection(ctx context.Context, method controlMethod, ref AttemptRef) (net.Conn, *bufio.Reader, error) {
+	connection, err := c.dial(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
 	stop := context.AfterFunc(ctx, func() { _ = connection.Close() })
-	if err := writeRequest(connection, controlRequest{Operation: methodAttach, Attempt: &ref}); err != nil {
+	if err := writeRequest(connection, controlRequest{Operation: method, Attempt: &ref}); err != nil {
 		stop()
 		_ = connection.Close()
-		return nil, err
+		return nil, nil, errors.Join(err, cancellation.Err(ctx))
 	}
 	reader := bufio.NewReader(connection)
 	line, err := readLine(reader)
 	if err == nil {
 		_, err = decodeResponse(line)
 	}
-	if !stop() && ctx.Err() != nil {
-		err = errors.Join(err, ctx.Err())
+	stop()
+	if cause := cancellation.Err(ctx); cause != nil {
+		err = errors.Join(err, cause)
 	}
 	if err != nil {
 		_ = connection.Close()
-		return nil, err
+		return nil, nil, err
 	}
-	return &attached{Conn: connection, reader: reader}, nil
+	return connection, reader, nil
 }
 
 func readLine(reader *bufio.Reader) ([]byte, error) {

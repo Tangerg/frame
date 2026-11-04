@@ -121,10 +121,11 @@ type journal struct {
 }
 
 type process struct {
-	command *exec.Cmd
-	kill    func() error
-	stdin   io.WriteCloser
-	stdout  io.ReadCloser
+	command    *exec.Cmd
+	kill       func() error
+	stdin      io.WriteCloser
+	stdout     io.ReadCloser
+	attachment *attachment
 
 	closeState  processCloseState
 	environment []string
@@ -462,6 +463,9 @@ func (s *Server) wait(id string, live *process, path string) {
 	if exited && live.stdout != nil {
 		_ = live.stdout.Close()
 		live.stdout = nil
+	}
+	if live.attachment != nil {
+		live.attachment.closeUnconnected()
 	}
 	close(live.done)
 	s.mu.Unlock()

@@ -38,7 +38,6 @@ type realmSession struct {
 	application *frame.Lifetime
 
 	cleanupOnly     bool
-	revision        uint64
 	projectionBytes int64
 }
 
@@ -213,7 +212,6 @@ func (b *Bridge) sealed(session *realmSession) bool {
 
 func (b *Bridge) sealSessionLocked(session *realmSession) {
 	session.cleanupOnly = true
-	session.revision++
 	for id, snapshot := range b.snapshots {
 		if snapshot.realm == session.realm {
 			delete(b.snapshots, id)

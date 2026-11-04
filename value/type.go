@@ -41,7 +41,7 @@ func validateType(target reflect.Type, visited map[reflect.Type]bool) error {
 	}
 	encoded, decoded := customEncoder(target), customDecoder(target)
 	if encoded || decoded {
-		if !encoded || !decoded || !target.Implements(reflect.TypeFor[interface{ JSONSchemaModel() any }]()) {
+		if !encoded || !decoded || !target.Implements(reflect.TypeFor[schemaModeler]()) {
 			return fmt.Errorf("json: %s requires an encoder, decoder and value-receiver JSONSchemaModel", target)
 		}
 		return nil
@@ -49,7 +49,6 @@ func validateType(target reflect.Type, visited map[reflect.Type]bool) error {
 	return validateShape(target, visited)
 }
 
-// validateShape admits a type whose JSON shape follows from its kind alone.
 func validateShape(target reflect.Type, visited map[reflect.Type]bool) error {
 	switch target.Kind() {
 	case reflect.Slice, reflect.Array:
@@ -91,12 +90,15 @@ func opaqueType(target reflect.Type) bool {
 	return target == reflect.TypeFor[jsontext.Value]() || target == reflect.TypeFor[jsonv1.RawMessage]() || target == reflect.TypeFor[JSON]() || target.Kind() == reflect.Interface
 }
 
-// TextEncoded reports a value that crosses JSON as its own text spelling, so a
-// schema or type projection renders it as a string and never as its private
-// representation.
-func TextEncoded(target reflect.Type) bool {
-	return target.Implements(reflect.TypeFor[encoding.TextMarshaler]()) &&
-		reflect.PointerTo(target).Implements(reflect.TypeFor[encoding.TextUnmarshaler]())
+// Pointers represent omission. Only opaque JSON preserves an explicit null
+// without collapsing it into an absent typed value.
+func AllowsNull(target reflect.Type) bool {
+	pointers := make(map[reflect.Type]bool)
+	for target != nil && target.Kind() == reflect.Pointer && !pointers[target] {
+		pointers[target] = true
+		target = target.Elem()
+	}
+	return target != nil && opaqueType(target)
 }
 
 func customDecoder(target reflect.Type) bool {

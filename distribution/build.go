@@ -52,7 +52,6 @@ type releaseContents struct {
 	limits Limits
 }
 
-// readArtifacts reads each listed artifact and records its size and digest.
 func (c *releaseContents) readArtifacts(ctx context.Context, input *os.Root, artifacts []Artifact) error {
 	paths := releasePaths()
 	if len(artifacts)+len(paths) > c.limits.Files {

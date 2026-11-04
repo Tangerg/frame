@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"errors"
+	"math"
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/value"
@@ -29,6 +30,9 @@ func (s *Store) ApproveUse(ctx context.Context, approval frame.UseApproval) erro
 	}
 	if len(encoded) > s.maxRequestBytes {
 		return frame.ErrCapacity
+	}
+	if _, err := s.encodeProof(UseProof{Host: &frame.ReleaseProof{CloseID: math.MaxUint64}}); err != nil {
+		return err
 	}
 	return s.fenceUnlessRefused(s.transaction(ctx, func(tx Executor) error {
 		return recordOnce(func() (bool, error) {
@@ -64,7 +68,7 @@ type UseRecord struct {
 }
 
 type UseProof struct {
-	Host  *frame.CloseOutcome `json:"host,omitempty"`
+	Host  *frame.ReleaseProof `json:"host,omitempty"`
 	Realm *ExitProof          `json:"realm,omitempty"`
 }
 
@@ -99,22 +103,19 @@ func decodeUse(row protectedRecord) (UseRecord, error) {
 			return record, err
 		}
 	}
-	if record.Released && (record.Proof == nil || record.Proof.Host == nil && record.Proof.Realm == nil || record.Proof.Host != nil && !record.Proof.Host.Released) {
+	if record.Released && (record.Proof == nil || (record.Proof.Host == nil) == (record.Proof.Realm == nil) || record.Proof.Host != nil && record.Proof.Host.CloseID == 0) {
 		return record, errors.New("sqlite: released use lacks proof")
 	}
 	return record, nil
 }
 
-func (s *Store) ReleaseUse(ctx context.Context, id string, outcome frame.CloseOutcome) error {
-	if !frame.ValidName(id) || outcome.ID == 0 {
+func (s *Store) ReleaseUse(ctx context.Context, id string, proof frame.ReleaseProof) error {
+	if !frame.ValidName(id) || proof.CloseID == 0 {
 		return frame.ErrInvalid
 	}
-	encoded, err := json.Marshal(UseProof{Host: &outcome})
+	encoded, err := s.encodeProof(UseProof{Host: &proof})
 	if err != nil {
 		return err
-	}
-	if len(encoded) > s.maxRequestBytes {
-		return frame.ErrCapacity
 	}
 	return s.admission.Maintenance(ctx, func() error {
 		return s.fenceUnlessRefused(s.transaction(ctx, func(tx Executor) error {
@@ -132,19 +133,7 @@ func (s *Store) ReleaseUse(ctx context.Context, id string, outcome frame.CloseOu
 				}
 				return nil
 			}
-			if len(previous) != 0 {
-				var prior UseProof
-				if err := json.Unmarshal(previous, &prior); err != nil {
-					return err
-				}
-				if prior.Host == nil || prior.Host.ID != outcome.ID {
-					return ErrConflict
-				}
-			}
-			if outcome.Released {
-				state = useReleased
-			}
-			_, err := tx.ExecContext(ctx, `UPDATE frame_use_approvals SET state=?,proof=? WHERE id=?`, state, encoded, id)
+			_, err := tx.ExecContext(ctx, `UPDATE frame_use_approvals SET state=?,proof=? WHERE id=?`, useReleased, encoded, id)
 			return err
 		}))
 	})
@@ -154,15 +143,12 @@ func (s *Store) ReleaseUse(ctx context.Context, id string, outcome frame.CloseOu
 // The trusted bridge verifies the actual Realm proof; it cannot release another
 // execution which merely shares the Realm or installation scope.
 func (s *Store) ReleaseRealmUse(ctx context.Context, id string, realm frame.RealmID, executionID string, proof ExitProof) error {
-	if !frame.ValidName(id) || realm.Validate() != nil || !proof.proves(executionID, s.maxRequestBytes) || proof.Realm != string(realm) {
+	if !frame.ValidName(id) || realm.Validate() != nil || !proof.proves(executionID) || proof.Realm != string(realm) {
 		return frame.ErrInvalid
 	}
-	encoded, err := json.Marshal(UseProof{Realm: &proof})
+	encoded, err := s.encodeProof(UseProof{Realm: &proof})
 	if err != nil {
 		return err
-	}
-	if len(encoded) > s.maxRequestBytes {
-		return frame.ErrCapacity
 	}
 	return s.admission.Maintenance(ctx, func() error {
 		return s.fenceUnlessRefused(s.transaction(ctx, func(tx Executor) error {

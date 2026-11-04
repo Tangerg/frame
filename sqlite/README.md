@@ -42,10 +42,19 @@ cursor expires when its callback ends. `QueryRowContext` returns `*Row`, which
 projects a cursor held by that same scope. The scope closes and joins all its
 cursors before restoring connection authority; canceling a query alone cannot
 prove that a later `Rows.Next` or `Row.Scan` has stopped.
+Each physical cursor retains its first driver `Close` result, including closure
+initiated by the caller, EOF or cancellation. Transaction settlement reads that
+original evidence after joining the cursor. A later `database/sql.Rows.Close`
+returning nil cannot erase a cleanup failure. SQLite's finalizer may repeat the
+last statement-evaluation error after destroying the statement; that original
+evaluation error remains distinguishable from an additional cleanup failure.
 The Store never exposes its pool, so pool closure, independent writers and
 connection settings remain with its original lifecycle owner. Application adapters
 compose by passing the issued capability explicitly. The standalone transaction
 helpers apply only to separately owned databases returned by `OpenSchema`.
+Their connection admission enforces that constructor so raw driver connections
+cannot bypass cursor-release evidence. `OpenSchema` uses modernc's registered
+connector and preserves its registered functions, collations and connection hooks.
 Both read and write callbacks reject transaction control, attachments and
 configurable PRAGMAs. Metadata-only PRAGMAs may inspect databases, tables, columns,
 indexes, foreign keys and the SQLite runtime. Changing or removing an authorizer
@@ -137,6 +146,20 @@ Only the trusted driver that verified the actual owner's evidence may call
 durable acceptance is idempotent, and a different proof cannot replace it. These
 monotonic settlements use `Admission.Maintenance`, which is the same gate and does
 not independently reopen recovery. Native in-memory Hosts do not need this package.
+
+Host Use settlement persists the original `frame.ReleaseProof`, projected by its
+confirmed `Close`. Cleanup diagnostics remain on that Lifetime; they cannot grow
+the durable release record or originate another release transition. `ApproveUse`
+checks capacity for that fixed terminal representation before accepting the Use.
+
+`Config.MaxRequestBytes` defaults to 1 MiB and bounds complete encoded protection
+records, including proof envelopes. Drivers can compose admission with
+`CheckExitEvidenceCapacity` for subordinate proof bytes, `CheckExitCapacity`
+for attempt settlement and `CheckRealmUseExitCapacity` for reconstructed Uses.
+Each check uses its settlement's stored encoding, including base64 expansion of
+the original evidence. Drivers admit every possible exit path before recording
+an attempt. A configured capacity refusal returns `frame.ErrCapacity`
+before a driver accepts responsibility for work it cannot later settle.
 
 ## Browser history capacity
 

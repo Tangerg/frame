@@ -58,18 +58,16 @@ type ExitProof struct {
 	Evidence  []byte `json:"evidence"`
 }
 
-func (p ExitProof) proves(attemptID string, maxEvidenceBytes int) bool {
+func (p ExitProof) proves(attemptID string) bool {
 	return frame.ValidName(attemptID) && p.AttemptID == attemptID && frame.ValidName(p.Realm) && frame.ValidName(p.ExitID) && frame.ValidName(p.Kind) &&
-		len(p.Evidence) != 0 && len(p.Evidence) <= maxEvidenceBytes
+		len(p.Evidence) != 0
 }
 
 // LocalExit is the exit proof of an attempt that never started: its driver
 // knows that outcome without external evidence.
 func (a Attempt) LocalExit(kind, evidence string) ExitProof {
-	return ExitProof{AttemptID: a.ID, Realm: a.Realm, ExitID: a.ID + localExitSeparator + kind, Kind: kind, Evidence: []byte(evidence)}
+	return ExitProof{AttemptID: a.ID, Realm: a.Realm, ExitID: a.ID, Kind: kind, Evidence: []byte(evidence)}
 }
-
-const localExitSeparator = ":"
 
 type AttemptRecord struct {
 	Attempt Attempt      `json:"attempt"`
@@ -257,10 +255,10 @@ func (s *Store) AcceptExit(ctx context.Context, id string, proof ExitProof) erro
 }
 
 func (s *Store) recordRelease(ctx context.Context, id string, proof ExitProof, target AttemptState) error {
-	if !proof.proves(id, s.maxRequestBytes) {
+	if !proof.proves(id) {
 		return errors.New("sqlite: exact exit evidence is required")
 	}
-	encoded, err := json.Marshal(proof)
+	encoded, err := s.encodeProof(proof)
 	if err != nil {
 		return err
 	}
@@ -298,8 +296,11 @@ func (s *Store) recordRelease(ctx context.Context, id string, proof ExitProof, t
 // enclosing attempt. The driver owns scope validation; an acknowledgement can
 // be repeated only for these exact original bytes.
 func (s *Store) RecordExitProof(ctx context.Context, attemptID, scope, proofID string, evidence []byte) error {
-	if !frame.ValidName(attemptID) || !frame.ValidName(scope) || !frame.ValidName(proofID) || len(evidence) == 0 || len(evidence) > s.maxRequestBytes {
+	if !frame.ValidName(attemptID) || !frame.ValidName(scope) || !frame.ValidName(proofID) {
 		return frame.ErrInvalid
+	}
+	if err := s.CheckExitEvidenceCapacity(evidence); err != nil {
+		return err
 	}
 	evidence = bytes.Clone(evidence)
 	return s.admission.Maintenance(ctx, func() error {

@@ -49,6 +49,12 @@ type CloseOutcome struct {
 	OmittedFailures uint64         `json:"omittedFailures"`
 }
 
+// ReleaseProof carries only the original close identity: diagnostics cannot
+// enlarge or revoke evidence that every resource has released.
+type ReleaseProof struct {
+	CloseID uint64 `json:"closeId"`
+}
+
 // cleanupState is the progress of a resource's own Close callback. Release
 // proof is a separate fact: it may arrive before, during or after cleanup.
 type cleanupState uint8
@@ -140,9 +146,9 @@ const (
 	defaultLifetimeResources = 4096
 	// Close evidence is retained in terminal handles and wire reports, so its
 	// size cannot grow with the number or verbosity of failing resources.
-	maxCloseFailures     = 32
-	maxCloseDetailBytes  = 2048
-	cancellationResource = "cancellation"
+	maxCloseFailures        = 32
+	maxCloseDiagnosticBytes = 2048
+	cancellationResource    = "cancellation"
 )
 
 func NewLifetime(parent context.Context) *Lifetime {
@@ -300,7 +306,7 @@ func (w *Work) Own(resource Resource, dependencies ...*ResourceHandle) (*Resourc
 		if cancelErr := invokeCancel(resource.Cancel, cause); cancelErr != nil {
 			detail := closeFailureDetail(cancelErr)
 			l.mu.Lock()
-			l.recordFailureLocked(resource.Name, detail, cancelErr)
+			l.recordFailureLocked(handle.entry.resource.Name, detail, cancelErr)
 			l.mu.Unlock()
 		}
 	}
@@ -323,6 +329,7 @@ func (l *Lifetime) ownLocked(resource Resource, dependencies []*ResourceHandle) 
 	if len(l.resources) >= l.limits.MaxResources {
 		return nil, fmt.Errorf("%w: lifetime resources", ErrCapacity)
 	}
+	resource.Name = boundedDiagnostic(resource.Name)
 	entry := &resourceEntry{resource: resource, index: len(l.resources)}
 	seen := make(map[*resourceEntry]bool)
 	for _, dependency := range dependencies {
@@ -578,19 +585,19 @@ func closeFailureDetail(err error) string {
 	if err == nil {
 		return ""
 	}
-	return boundedDetail(fmt.Sprint(err))
+	return boundedDiagnostic(fmt.Sprint(err))
 }
 
-func boundedDetail(detail string) string {
-	detail = strings.ToValidUTF8(detail, string(utf8.RuneError))
-	if len(detail) > maxCloseDetailBytes {
-		detail = detail[:maxCloseDetailBytes]
-		for !utf8.ValidString(detail) {
-			detail = detail[:len(detail)-1]
+func boundedDiagnostic(text string) string {
+	text = strings.ToValidUTF8(text, string(utf8.RuneError))
+	if len(text) > maxCloseDiagnosticBytes {
+		text = text[:maxCloseDiagnosticBytes]
+		for !utf8.ValidString(text) {
+			text = text[:len(text)-1]
 		}
-		return strings.Clone(detail)
+		return strings.Clone(text)
 	}
-	return detail
+	return text
 }
 
 func (l *Lifetime) recordFailureLocked(name, detail string, cause error) {
@@ -690,6 +697,18 @@ func (c *Close) Outcome() CloseOutcome {
 	c.lifetime.mu.Lock()
 	defer c.lifetime.mu.Unlock()
 	return c.lifetime.outcomeLocked(c.id)
+}
+
+func (c *Close) ReleaseProof() (ReleaseProof, error) {
+	if c == nil || c.lifetime == nil {
+		return ReleaseProof{}, ErrInvalid
+	}
+	c.lifetime.mu.Lock()
+	defer c.lifetime.mu.Unlock()
+	if !c.lifetime.released {
+		return ReleaseProof{}, ErrUnconfirmedRelease
+	}
+	return ReleaseProof{CloseID: c.id}, nil
 }
 
 // Wait reports bounded evidence from the original close. Resource causes belong

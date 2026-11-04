@@ -191,7 +191,7 @@ func (o *controlOperation) ownsSnapshot(realm Realm) error {
 }
 
 func (b *Bridge) snapshotPoints(names []string) ([]frame.ContractRef, error) {
-	if len(names) == 0 || len(names) > b.config.MaxPending || hasDuplicate(names) {
+	if len(names) == 0 || hasDuplicate(names) {
 		return nil, frame.ErrInvalid
 	}
 	points := make([]frame.ContractRef, 0, len(names))

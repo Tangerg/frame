@@ -140,6 +140,9 @@ func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 		return nil, err
 	}
 	attempt := sqlite.Attempt{ID: setup.InstanceID(), Epoch: setup.Epoch(), Source: setup.Binding().Source, Binding: setup.Snapshot(), Realm: realm, Profile: d.profile}
+	if err := d.checkExitCapacity(attempt); err != nil {
+		return nil, err
+	}
 	if err := d.config.Store.RecordAttempt(ctx, attempt); err != nil {
 		return nil, err
 	}
@@ -300,14 +303,17 @@ func (d *Driver) forget(id string) {
 }
 
 func (d *Driver) release(ctx context.Context, attempt sqlite.Attempt, observed runner.Observation) error {
-	if observed.AttemptID != attempt.ID || observed.Epoch != attempt.Epoch || observed.RunnerID != attempt.Realm || observed.State != runner.Exited || observed.ProofID == "" {
+	if observed.Reference() != runnerAttempt(attempt) {
 		return runner.ErrUnknown
 	}
-	evidence, err := json.Marshal(observed)
+	receipt, err := observed.ExitReceipt()
 	if err != nil {
 		return err
 	}
-	proof := sqlite.ExitProof{AttemptID: attempt.ID, Realm: attempt.Realm, ExitID: observed.ProofID, Kind: runnerWaitProofKind, Evidence: evidence}
+	proof, err := runnerExitProof(attempt, receipt)
+	if err != nil {
+		return err
+	}
 	if err := d.config.Store.AcceptExit(ctx, attempt.ID, proof); err != nil {
 		return err
 	}
@@ -315,7 +321,13 @@ func (d *Driver) release(ctx context.Context, attempt sqlite.Attempt, observed r
 }
 
 func (d *Driver) acknowledgeExit(ctx context.Context, attempt sqlite.Attempt, proof sqlite.ExitProof) error {
-	receipt := runner.ExitReceipt{AttemptID: attempt.ID, Epoch: attempt.Epoch, RunnerID: attempt.Realm, ProofID: proof.ExitID}
+	var receipt runner.ExitReceipt
+	if err := json.Unmarshal(proof.Evidence, &receipt, json.RejectUnknownMembers(true)); err != nil {
+		return errors.Join(runner.ErrUnknown, err)
+	}
+	if proof.Kind != runnerWaitProofKind || receipt != (runner.ExitReceipt{AttemptID: attempt.ID, Epoch: attempt.Epoch, RunnerID: attempt.Realm, ProofID: proof.ExitID}) {
+		return runner.ErrUnknown
+	}
 	if err := d.config.Runner.AcknowledgeExit(ctx, receipt); err != nil {
 		return err
 	}
@@ -420,9 +432,9 @@ func (d *Driver) releaseAbsentAttempt(ctx context.Context, attempt sqlite.Attemp
 	if err != nil {
 		return errors.Join(runner.ErrUnknown, err)
 	}
-	evidence, err := json.Marshal(proof)
+	exit, err := absenceExitProof(attempt, proof)
 	if err != nil {
 		return err
 	}
-	return d.config.Store.ReleaseAttempt(ctx, attempt.ID, sqlite.ExitProof{AttemptID: attempt.ID, Realm: attempt.Realm, ExitID: proof.ProofID, Kind: sealedAbsenceProofKind, Evidence: evidence})
+	return d.config.Store.ReleaseAttempt(ctx, attempt.ID, exit)
 }

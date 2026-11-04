@@ -177,3 +177,27 @@ func TestHandledCursorErrorsDoNotBecomeConnectionCleanupFailures(t *testing.T) {
 		t.Fatalf("handled statement errors poisoned the original writer: count=%d error=%v", count, err)
 	}
 }
+
+func TestTransactionsRefuseUnobservedDriverConnections(t *testing.T) {
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	for _, test := range []struct {
+		name  string
+		enter func(context.Context, *sql.DB, func(context.Context) error) error
+	}{
+		{name: "write", enter: sqlite.RunInTx},
+		{name: "independent", enter: sqlite.RunIndependentTx},
+		{name: "read", enter: sqlite.RunReadSnapshot},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			entered := false
+			err := test.enter(t.Context(), database, func(context.Context) error { entered = true; return nil })
+			if err == nil || entered {
+				t.Fatalf("transaction admitted a connection without original cursor evidence: entered=%t error=%v", entered, err)
+			}
+		})
+	}
+}

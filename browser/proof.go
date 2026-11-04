@@ -52,7 +52,7 @@ func (b *Bridge) Prove(ctx context.Context, token string, proof CloseProof) (Pro
 	if err := b.config.Store.RecordExitProof(ctx, attempt.ID, scope, proof.ProofID, encoded); err != nil {
 		return ProofAcknowledgement{}, err
 	}
-	exit := sqlite.ExitProof{AttemptID: attempt.ID, Realm: attempt.Realm, ExitID: proof.CloseID, Kind: proof.exitKind(), Evidence: encoded}
+	exit := proof.exitProof(encoded)
 	if err := b.releaseProven(ctx, proof, attempt, publication, exit); err != nil {
 		return ProofAcknowledgement{}, err
 	}
@@ -70,6 +70,10 @@ func (p CloseProof) claims(realm Realm, authority Authority) bool {
 }
 
 func (p CloseProof) exitKind() string { return proofKindPrefix + string(p.ScopeKind) }
+
+func (p CloseProof) exitProof(encoded []byte) sqlite.ExitProof {
+	return sqlite.ExitProof{AttemptID: p.Execution.ID, Realm: string(RealmID(p.Realm)), ExitID: p.CloseID, Kind: p.exitKind(), Evidence: encoded}
+}
 
 func (b *Bridge) releaseProven(ctx context.Context, proof CloseProof, attempt sqlite.Attempt, publication *controlOperation, exit sqlite.ExitProof) error {
 	switch proof.ScopeKind {
@@ -394,9 +398,6 @@ func (b *Bridge) forgetExecutionLocked(attempt sqlite.Attempt, entry *browserExe
 	if entry != nil {
 		b.removeExecutionLocked(entry)
 		b.reapRealmLocked(entry.plan.Realm)
-	}
-	if session := b.sessions.get(frame.RealmID(attempt.Realm)); session != nil {
-		session.revision++
 	}
 }
 

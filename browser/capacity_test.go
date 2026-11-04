@@ -15,6 +15,7 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	"github.com/Tangerg/frame/sqlite"
 )
 
 func beginBrowserActivation(e *bridgeEnvironment, id string) <-chan error {
@@ -74,6 +75,46 @@ func TestPlanCapacityIsRefusedBeforeExposure(t *testing.T) {
 	if err != nil || len(dependencies) != 0 {
 		t.Fatalf("unsent plan retained execution protection: %+v %v", dependencies, err)
 	}
+}
+
+func TestPlanAdmissionIncludesDurableExitCapacity(t *testing.T) {
+	for _, requestBytes := range []int{2048, 4096} {
+		t.Run(fmt.Sprint(requestBytes), func(t *testing.T) {
+			e := openBridgeEnvironment(t, sqlite.Config{Path: filepath.Join(t.TempDir(), "state.sqlite"), MaxRequestBytes: requestBytes}, true, nil)
+			if err := <-beginBrowserActivation(e, "component"); !errors.Is(err, frame.ErrCapacity) {
+				t.Fatalf("durably untransportable proof was admitted: %v", err)
+			}
+			poll, err := e.bridge.Poll(e.ctx, e.credentials.Token)
+			if err != nil || len(poll.Plans) != 0 || len(poll.Fences) != 0 {
+				t.Fatalf("refused proof budget exposed work: %+v %v", poll, err)
+			}
+			attempts, err := e.store.Attempts(e.ctx)
+			if err != nil || len(attempts) != 0 {
+				t.Fatalf("refused proof budget accepted durable responsibility: %+v %v", attempts, err)
+			}
+		})
+	}
+}
+
+func TestAdmittedExecutionCanPersistMaximumExitIdentity(t *testing.T) {
+	const requestBytes = 8192
+	e := openBridgeEnvironment(t, sqlite.Config{Path: filepath.Join(t.TempDir(), "state.sqlite"), MaxRequestBytes: requestBytes}, true, nil)
+	plan := e.start("component")
+	proof := executionProof(plan)
+	proof.CloseID = strings.Repeat("<", frame.MaxNameBytes)
+	proof.ProofID = strings.Repeat(">", frame.MaxNameBytes)
+	ack, err := e.bridge.Prove(e.ctx, e.credentials.Token, proof)
+	if err != nil || !ack.Recorded {
+		t.Fatalf("admitted execution cannot settle original proof: %+v %v", ack, err)
+	}
+	ack, err = e.bridge.Prove(e.ctx, e.credentials.Token, proof)
+	if err != nil || !ack.Recorded {
+		t.Fatalf("original proof cannot be observed: %+v %v", ack, err)
+	}
+	if err := e.host.WaitInstanceRetired(e.ctx, plan.Execution.ID); err != nil {
+		t.Fatal(err)
+	}
+	e.plans = nil
 }
 
 func TestCompletePendingProjectionReservesEncodedBytesAndReturnsCapacityOnRelease(t *testing.T) {

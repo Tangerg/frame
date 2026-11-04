@@ -63,7 +63,7 @@ type recoveryReport struct {
 }
 
 func (r *recoveryReport) Error() string {
-	text := ErrRecoveryRequired.Error() + ": " + boundedDetail(r.cause.Error())
+	text := ErrRecoveryRequired.Error() + ": " + boundedDiagnostic(r.cause.Error())
 	if r.additional != 0 {
 		text += fmt.Sprintf("; %d additional recovery reports", r.additional)
 	}

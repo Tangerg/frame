@@ -3,7 +3,6 @@ package sqlite
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -136,7 +135,7 @@ func databasePath(requested string) (string, error) {
 }
 
 func (s *Store) openDatabase(ctx context.Context, path string) error {
-	database, err := sql.Open("sqlite", storeDataSource(path))
+	database, err := openDatabase(storeDataSource(path))
 	if err != nil {
 		return err
 	}

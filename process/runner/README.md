@@ -41,9 +41,23 @@ publishing any plugin export. `Fence` advances the approved Host epoch only afte
 older Launch operations have settled. Old processes retain their original close
 path. `Attach` returns an `io.ReadWriteCloser` suitable for a framed stdio stream
 transport. There is one attachment per attempt; disconnect begins its original exit.
-Taking that attachment transfers the sole stdout reader before its reply is sent.
-Failed acknowledgement, stream completion and cancellation all close that same
-reader. Child exit and output-pipe release remain separate resource obligations.
+The attachment owns a control connection and a separate stdin/stdout connection.
+Control is admitted first and carries no payload after its acknowledgement, so
+child stdin backpressure cannot conceal a disconnected Host. The stream joins
+that original attachment; a missing, closed or already connected attachment
+refuses it. Control loss, server cancellation or completion of a forwarding worker
+closes both connections and requests the original attempt's close before joining
+the forwarding workers. Control is the attachment's independent liveness signal;
+normal data backpressure does not expire it or invent an exit observation.
+`Attach` still returns one `io.ReadWriteCloser`; its `Close` releases both connections.
+The private runner protocol now uses `attach_control` and `attach_stream`; the
+former single-connection `attach` operation is removed.
+
+Taking the control attachment transfers the sole stdout reader before its reply
+is sent. Failed acknowledgement, stream completion and cancellation all close
+that same reader. If the child exits before its data connection joins, the control
+attachment closes too; an already connected reader may drain the final output.
+Child exit and output-pipe release remain separate resource obligations.
 
 Launch accepts an absolute executable, its exact SHA-256 digest, explicit arguments,
 working directory and environment, plus configuration and credential revisions.

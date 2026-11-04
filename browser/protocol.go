@@ -111,7 +111,6 @@ type Fence struct {
 type Poll struct {
 	Authority Authority   `json:"authority"`
 	Realm     Realm       `json:"realm"`
-	Revision  string      `json:"revision"`
 	Plans     []LocalPlan `json:"plans"`
 	Fences    []Fence     `json:"fences"`
 }

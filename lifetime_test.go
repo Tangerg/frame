@@ -144,3 +144,101 @@ func TestCloseFailureHistoryIsBoundedAndErrorsDoNotNegateReleasedEvidence(t *tes
 		t.Fatalf("incorrect bounded conclusion: %+v %v", final, err)
 	}
 }
+
+func TestResourceNamesRemainBoundedInCloseEvidence(t *testing.T) {
+	for _, late := range []bool{false, true} {
+		name := "cleanup diagnostic"
+		if late {
+			name = "late resource cancellation"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := testContext(t)
+			lifetime := frame.NewLifetime(context.Background())
+			label := "\xff" + strings.Repeat("界", 1024)
+			diagnostic := errors.New("resource diagnostic")
+			resource := frame.Resource{Name: label, Close: func(context.Context) (frame.ReleaseState, error) {
+				if late {
+					return frame.ResourceUnconfirmed, nil
+				}
+				return frame.ResourceReleased, diagnostic
+			}}
+			var handle *frame.ResourceHandle
+			var closing *frame.Close
+			var err error
+			if late {
+				work, err := lifetime.Enter(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				closing = lifetime.BeginClose(frame.ErrClosed)
+				resource.Cancel = func(error) { panic(diagnostic) }
+				handle, err = work.Own(resource)
+				work.Finish()
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				handle, err = lifetime.Own(resource)
+				if err != nil {
+					t.Fatal(err)
+				}
+				closing = lifetime.BeginClose(frame.ErrClosed)
+			}
+			first, err := closing.Wait(ctx)
+			if len(first.Failures) != 1 || !errors.Is(err, frame.ErrCloseFailed) {
+				t.Fatalf("missing diagnostic: %+v, %v", first, err)
+			}
+			bounded := first.Failures[0].Resource
+			if !utf8.ValidString(bounded) || len(bounded) > 2048 || len(bounded) >= len(label) {
+				t.Fatalf("unbounded resource name: bytes=%d, valid=%v", len(bounded), utf8.ValidString(bounded))
+			}
+			if late {
+				if first.Released || len(first.Pending) != 1 || first.Pending[0] != bounded {
+					t.Fatalf("pending resource lost its bounded label: %+v", first)
+				}
+				if err := handle.ConfirmReleased(diagnostic); err != nil {
+					t.Fatal(err)
+				}
+			}
+			final, err := closing.WaitReleased(ctx)
+			if !final.Released || !errors.Is(err, frame.ErrCloseFailed) {
+				t.Fatalf("release failed: %+v, %v", final, err)
+			}
+			for _, failure := range final.Failures {
+				if failure.Resource != bounded {
+					t.Fatalf("late proof restored an unbounded label: bytes=%d", len(failure.Resource))
+				}
+			}
+		})
+	}
+}
+
+func TestReleaseProofRequiresTheOriginalCloseToRelease(t *testing.T) {
+	ctx := testContext(t)
+	lifetime := frame.NewLifetime(context.Background())
+	resource, err := lifetime.Own(frame.Resource{Name: "original resource", Close: func(context.Context) (frame.ReleaseState, error) {
+		return frame.ResourceUnconfirmed, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closing := lifetime.BeginClose(frame.ErrClosed)
+	first, err := closing.Wait(ctx)
+	if first.Released || !errors.Is(err, frame.ErrUnconfirmedRelease) {
+		t.Fatalf("unconfirmed close: %+v, %v", first, err)
+	}
+	if proof, err := closing.ReleaseProof(); proof.CloseID != 0 || !errors.Is(err, frame.ErrUnconfirmedRelease) {
+		t.Fatalf("unconfirmed close issued release proof: %+v, %v", proof, err)
+	}
+	if err := resource.ConfirmReleased(errors.New("release diagnostic")); err != nil {
+		t.Fatal(err)
+	}
+	final, err := closing.WaitReleased(ctx)
+	if !final.Released || !errors.Is(err, frame.ErrCloseFailed) {
+		t.Fatalf("late release: %+v, %v", final, err)
+	}
+	proof, err := closing.ReleaseProof()
+	if err != nil || proof.CloseID != first.ID || final.ID != first.ID {
+		t.Fatalf("diagnostic changed the original release proof: %+v, %v", proof, err)
+	}
+}

@@ -2,7 +2,7 @@ package process_test
 
 import (
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"errors"
 	"os"
 	"path/filepath"
@@ -185,7 +185,11 @@ func TestRecoverOriginalExitHandoffAcrossHostRestart(t *testing.T) {
 			if err == nil || exit.State != runner.Exited {
 				t.Fatalf("failed start: %+v %v", exit, err)
 			}
-			evidence, err := json.Marshal(exit)
+			receipt, err := exit.ExitReceipt()
+			if err != nil {
+				t.Fatal(err)
+			}
+			evidence, err := json.Marshal(receipt)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -194,7 +198,7 @@ func TestRecoverOriginalExitHandoffAcrossHostRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			if alreadyAcknowledged {
-				if err := original.AcknowledgeExit(ctx, runner.ExitReceipt{AttemptID: attempt.ID, Epoch: attempt.Epoch, RunnerID: attempt.Realm, ProofID: exit.ProofID}); err != nil {
+				if err := original.AcknowledgeExit(ctx, receipt); err != nil {
 					t.Fatal(err)
 				}
 			}

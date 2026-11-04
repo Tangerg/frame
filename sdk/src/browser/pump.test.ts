@@ -66,7 +66,6 @@ function fixture(units: readonly Unit[], preparationCapacity = 2) {
     poll: vi.fn<HostControl["poll"]>(async () => ({
       authority,
       realm,
-      revision: "1",
       ...pending,
     })),
     prove: vi.fn<HostControl["prove"]>(async (proof) => {
@@ -344,7 +343,6 @@ describe("control pump ownership", () => {
         poll: vi.fn<HostControl["poll"]>(async () => ({
           authority,
           realm,
-          revision: "2",
           ...f.pending,
         })),
       };
@@ -353,7 +351,6 @@ describe("control pump ownership", () => {
         oldPoll.resolve({
           authority: { id: "retired", epoch: "0" },
           realm,
-          revision: "1",
           plans: [],
           fences: [{ scopeId: "current", scopeGeneration: "1" }],
         });

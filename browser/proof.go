@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"slices"
 
@@ -23,7 +22,7 @@ func (b *Bridge) Prove(ctx context.Context, token string, proof CloseProof) (Pro
 	if !proof.claims(session.realm, b.authority) {
 		return ProofAcknowledgement{}, frame.ErrInvalid
 	}
-	encoded, err := json.Marshal(proof)
+	encoded, err := marshalControl(proof)
 	if err != nil {
 		return ProofAcknowledgement{}, err
 	}
@@ -184,39 +183,60 @@ func (b *Bridge) releaseUseTree(ctx context.Context, id string, attempt sqlite.A
 	covered := map[string]bool{id: true}
 	joined := make(map[*controlOperation]bool)
 	for {
-		records, err := b.config.Store.ExecutionUses(ctx, attempt.ID)
-		if err != nil {
-			return err
-		}
-		if err := coverDelegated(covered, records, attempt); err != nil {
-			return err
-		}
 		b.mu.Lock()
+		delegations := make([]useDelegation, 0, len(b.uses))
+		for _, live := range b.uses {
+			grant := live.grant
+			delegations = append(delegations, useDelegation{grant.ID, grant.ParentUseID, grant.Execution.ID, RealmID(grant.Realm)})
+		}
+		err := coverDelegated(covered, delegations, attempt)
+		if err != nil {
+			b.mu.Unlock()
+			return err
+		}
+		// A child can finish and leave the operation journal while SQLite is read.
+		// Fence its live owner first, then join admissions before taking that read.
 		b.markReleasedLocked(covered, proof.ExitID)
 		pending := b.unjoinedLocked(joined, func(operation *controlOperation) bool { return covered[operation.parentID] })
 		b.mu.Unlock()
 		if len(pending) == 0 {
-			return b.releaseCovered(ctx, covered, records, attempt, proof)
+			break
 		}
 		if err := awaitOperations(ctx, pending); err != nil {
 			return err
 		}
 	}
+	records, err := b.config.Store.ExecutionUses(ctx, attempt.ID)
+	if err != nil {
+		return err
+	}
+	delegations := make([]useDelegation, 0, len(records))
+	for _, record := range records {
+		approval := record.Approval
+		delegations = append(delegations, useDelegation{approval.ID, approval.ParentID, approval.ExecutionID, approval.Realm})
+	}
+	if err := coverDelegated(covered, delegations, attempt); err != nil {
+		return err
+	}
+	return b.releaseCovered(ctx, covered, records, attempt, proof)
 }
 
-// coverDelegated extends covered with every Use delegated from a covered Use.
-func coverDelegated(covered map[string]bool, records []sqlite.UseRecord, attempt sqlite.Attempt) error {
+type useDelegation struct {
+	id, parentID, executionID string
+	realm                     frame.RealmID
+}
+
+func coverDelegated(covered map[string]bool, delegations []useDelegation, attempt sqlite.Attempt) error {
 	for changed := true; changed; {
 		changed = false
-		for _, record := range records {
-			approval := record.Approval
-			if !covered[approval.ParentID] || covered[approval.ID] {
+		for _, delegation := range delegations {
+			if !covered[delegation.parentID] || covered[delegation.id] {
 				continue
 			}
-			if approval.ExecutionID != attempt.ID || approval.Realm != frame.RealmID(attempt.Realm) {
+			if delegation.executionID != attempt.ID || delegation.realm != frame.RealmID(attempt.Realm) {
 				return frame.ErrStaleBinding
 			}
-			covered[approval.ID] = true
+			covered[delegation.id] = true
 			changed = true
 		}
 	}

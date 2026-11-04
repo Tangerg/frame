@@ -3,9 +3,9 @@ export {
   type RuntimeOptions,
   type ExecutionHandle,
   type Use,
-  type PublicationHandle,
   type EventRoute,
 } from "./runtime.js";
+export type { PublicationHandle } from "./publication.js";
 export { RealmModules, type ModuleLease } from "./modules.js";
 export { select, type Choice } from "./selection.js";
 export { isControlRefusal, type HostControl } from "./control.js";

@@ -1,8 +1,4 @@
-import type {
-  Authority,
-  ControlInputs,
-  ControlOutputs,
-} from "../protocol.generated.js";
+import type { ControlInputs, ControlOutputs } from "../protocol.generated.js";
 import { FrameError } from "../errors.js";
 
 /** The application supplies an authenticated transport to its single Go Host. */
@@ -25,8 +21,4 @@ export function isControlRefusal(error: unknown): boolean {
       "closed",
     ].includes(error.code)
   );
-}
-
-export function sameAuthority(left: Authority, right: Authority): boolean {
-  return left.id === right.id && left.epoch === right.epoch;
 }

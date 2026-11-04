@@ -6,11 +6,9 @@ import type {
   PublicationResult,
   ReadyReport,
 } from "../protocol.generated.js";
-import {
-  isControlRefusal,
-  sameAuthority,
-  type HostControl,
-} from "./control.js";
+import { isControlRefusal, type HostControl } from "./control.js";
+
+import { sameAuthority } from "./identity.js";
 
 export class ReadySubmission {
   readonly #report: ReadyReport;

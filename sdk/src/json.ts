@@ -219,6 +219,17 @@ export function cloneJSON<T>(value: T): T {
   return value === undefined ? value : (parseJSON(stringifyJSON(value)) as T);
 }
 
+export function freezeJSON<T>(value: T): T {
+  const copy = cloneJSON(value);
+  const freeze = (value: unknown): void => {
+    if (value === null || typeof value !== "object" || Object.isFrozen(value))
+      return;
+    for (const child of Object.values(value)) freeze(child);
+    Object.freeze(value);
+  };
+  freeze(copy);
+  return copy;
+}
 export function parseJSON(text: string): unknown {
   validateJSON(text);
   function read(node: Node): unknown {
@@ -316,7 +327,10 @@ class JSONWriter {
     this.#ancestors.add(value);
     try {
       return Array.isArray(value)
-        ? `[${Array.from(value, (item) => this.#write(item) ?? "null").join(",")}]`
+        ? `[${Array.from(
+            { length: value.length },
+            (_, index) => this.#write(value[index]) ?? "null",
+          ).join(",")}]`
         : this.#writeRecord(value as Record<string, unknown>);
     } finally {
       this.#ancestors.delete(value);

@@ -35,7 +35,6 @@ func (h *Host) StartUnit(ctx context.Context, grant ScopeGrant, root UnitRef) (*
 	return handle, nil
 }
 
-// start counts one more start handle for the root instance this Use approved.
 func (u *Use) start(ctx context.Context, root UnitRef) (*Instance, error) {
 	work, err := u.enter(ctx)
 	if err != nil {
@@ -56,7 +55,6 @@ func (u *Use) start(ctx context.Context, root UnitRef) (*Instance, error) {
 	return instance, nil
 }
 
-// releaseStart returns the completion to await when this was the final start.
 func (i *Instance) releaseStart() <-chan struct{} {
 	h := i.host
 	h.mu.Lock()

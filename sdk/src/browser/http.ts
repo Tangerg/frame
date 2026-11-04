@@ -2,8 +2,9 @@ import { FrameError, type Lifetime } from "../index.js";
 import { readResponseBytes } from "./response.js";
 import { parseJSON, stringifyJSON } from "../json.js";
 import {
-  CONTROL_ERROR_CODES,
   CONTROL_MUTATIONS,
+  decodeControlOutput,
+  isControlProblem,
   type ControlInputs,
   type ControlOutputs,
 } from "../protocol.generated.js";
@@ -35,7 +36,6 @@ export interface HTTPControlOptions {
   readonly fetch?: typeof fetch;
 }
 
-const codes = new Set<string>(CONTROL_ERROR_CODES);
 const mutations = new Set<string>(CONTROL_MUTATIONS);
 
 export class HTTPControl implements HostControl {
@@ -84,16 +84,15 @@ export class HTTPControl implements HostControl {
           "control request capacity exceeded before transmission",
         ),
       );
-    return this.#lifetime.run((signal) =>
-      this.#send<ControlOutputs[K]>(body, signal, mutations.has(method)),
-    );
+    return this.#lifetime.run((signal) => this.#send(method, body, signal));
   }
 
-  async #send<T>(
+  async #send<K extends keyof ControlInputs>(
+    method: K,
     body: string,
     signal: AbortSignal,
-    mutating: boolean,
-  ): Promise<T> {
+  ): Promise<ControlOutputs[K]> {
+    const mutating = mutations.has(method);
     let response: Response;
     try {
       response = await this.#fetch(this.#endpoint, {
@@ -129,23 +128,22 @@ export class HTTPControl implements HostControl {
       );
     }
     if (!response.ok) {
-      const problem = value as {
-        code?: (typeof CONTROL_ERROR_CODES)[number];
-        message?: string;
-      } | null;
-      if (
-        problem &&
-        problem.code &&
-        codes.has(problem.code) &&
-        typeof problem.message === "string"
-      )
-        throw new FrameError(problem.code, problem.message);
+      if (isControlProblem(value))
+        throw new FrameError(value.code, value.message);
       throw new FrameError(
         mutating ? "outcome_unknown" : "unavailable",
         "control operation was not confirmed",
       );
     }
-    return value as T;
+    try {
+      return decodeControlOutput(method, value);
+    } catch (cause) {
+      throw new FrameError(
+        mutating ? "outcome_unknown" : "unavailable",
+        "control response does not match its declared message",
+        { cause },
+      );
+    }
   }
 
   admitPlan(plan: LocalPlan): Promise<PlanAdmission> {

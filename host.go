@@ -10,25 +10,6 @@ import (
 	"github.com/Tangerg/frame/internal/nilness"
 )
 
-type UseApproval struct {
-	ID              string
-	ParentID        string
-	ExecutionID     string
-	Instances       []string
-	Realm           RealmID
-	Scope           ScopeID
-	ScopeGeneration uint64
-	Epoch           uint64
-	Binding         BindingSnapshot
-}
-
-// ExecutionProtection persists an approved range before a surviving execution
-// domain receives it. Release observes the same original use, never a new one.
-type ExecutionProtection interface {
-	ApproveUse(context.Context, UseApproval) error
-	ReleaseUse(context.Context, string, ReleaseProof) error
-}
-
 // AcceptedBindingReader reads a currently authorized business record under
 // Host admission, before preparation and again before the final grant. Reading
 // must not consume the record or change its authorization.

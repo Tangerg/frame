@@ -116,8 +116,7 @@ const (
 	storeReleasing
 )
 
-// ioOrigin distinguishes new work, which closing refuses, from I/O that an
-// already granted Lease still performs while the Store closes.
+// Closing cannot revoke I/O already promised to an admitted Lease.
 type ioOrigin uint8
 
 const (
@@ -125,8 +124,6 @@ const (
 	leaseOperation
 )
 
-// beginOperation reserves real directory I/O before it starts; Close waits for
-// every reservation to finish.
 func (s *Store) beginOperation(origin ioOrigin) (func(), error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -201,7 +198,7 @@ func (s *Store) openRelease(digest value.Digest) (*os.Root, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.IsDir() || info.Mode()&fs.ModeSymlink != 0 || info.Mode().Perm() != sealedDirectoryMode {
+	if !info.IsDir() || info.Mode()&(fs.ModeSymlink|specialFileModes) != 0 || info.Mode().Perm() != sealedDirectoryMode {
 		return nil, ErrIntegrity
 	}
 	root, err := s.root.OpenRoot(name)
@@ -209,7 +206,7 @@ func (s *Store) openRelease(digest value.Digest) (*os.Root, error) {
 		return nil, err
 	}
 	opened, err := root.Stat(".")
-	if err != nil || !os.SameFile(info, opened) || opened.Mode().Perm() != sealedDirectoryMode {
+	if err != nil || !os.SameFile(info, opened) || opened.Mode() != info.Mode() {
 		return nil, errors.Join(ErrIntegrity, err, root.Close())
 	}
 	return root, nil

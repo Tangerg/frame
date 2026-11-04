@@ -294,7 +294,6 @@ func (p *peer) receiveCancellation(msg envelope) error {
 	return nil
 }
 
-// receiveResponseLocked delivers the single reply to a request this peer sent.
 func (p *peer) receiveResponseLocked(msg envelope, n uint64) error {
 	if msg.Params != nil || (msg.Result == nil) == (msg.Error == nil) || n > p.next || msg.Error != nil && !msg.Error.valid() {
 		return errors.New("process: invalid response")

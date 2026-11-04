@@ -113,7 +113,6 @@ func Open(ctx context.Context, config Config) (_ *App, err error) {
 	return a, nil
 }
 
-// previewTrust admits exactly the preview archive this application built.
 type previewTrust struct{ archive value.Digest }
 
 func (t *previewTrust) pin(archive value.Digest) { t.archive = archive }
@@ -142,7 +141,6 @@ func (a *App) retainsRelease(ctx context.Context, release value.Digest) (bool, e
 	return slices.ContainsFunc(dependencies, func(dependency frame.Dependency) bool { return dependency.Release == release }), nil
 }
 
-// catalog is every plugin definition this application can install.
 type catalog struct {
 	files, converter, secondConverter, validators *frame.Plugin
 }
@@ -218,8 +216,6 @@ func (a *App) initialized(ctx context.Context) (bool, error) {
 	return initialized, err
 }
 
-// restorePreview reads the installed preview release, or builds the first one
-// before the application has bootstrapped.
 func (a *App) restorePreview(ctx context.Context, records []frame.InstallationRecord, initialized bool, trustPreview func(value.Digest)) (*frame.Plugin, error) {
 	var err error
 	for _, record := range records {

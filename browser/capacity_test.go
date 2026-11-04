@@ -98,23 +98,29 @@ func TestPlanAdmissionIncludesDurableExitCapacity(t *testing.T) {
 
 func TestAdmittedExecutionCanPersistMaximumExitIdentity(t *testing.T) {
 	const requestBytes = 8192
-	e := openBridgeEnvironment(t, sqlite.Config{Path: filepath.Join(t.TempDir(), "state.sqlite"), MaxRequestBytes: requestBytes}, true, nil)
-	plan := e.start("component")
-	proof := executionProof(plan)
-	proof.CloseID = strings.Repeat("<", frame.MaxNameBytes)
-	proof.ProofID = strings.Repeat(">", frame.MaxNameBytes)
-	ack, err := e.bridge.Prove(e.ctx, e.credentials.Token, proof)
-	if err != nil || !ack.Recorded {
-		t.Fatalf("admitted execution cannot settle original proof: %+v %v", ack, err)
+	for _, spelling := range []struct{ name, character string }{
+		{"HTML", "<"}, {"quote", `"`}, {"backslash", `\`},
+	} {
+		t.Run(spelling.name, func(t *testing.T) {
+			e := openBridgeEnvironment(t, sqlite.Config{Path: filepath.Join(t.TempDir(), "state.sqlite"), MaxRequestBytes: requestBytes}, true, nil)
+			plan := e.start("component")
+			proof := executionProof(plan)
+			proof.CloseID = strings.Repeat(spelling.character, frame.MaxNameBytes)
+			proof.ProofID = proof.CloseID
+			ack, err := e.bridge.Prove(e.ctx, e.credentials.Token, proof)
+			if err != nil || !ack.Recorded {
+				t.Fatalf("admitted execution cannot settle original proof: %+v %v", ack, err)
+			}
+			ack, err = e.bridge.Prove(e.ctx, e.credentials.Token, proof)
+			if err != nil || !ack.Recorded {
+				t.Fatalf("original proof cannot be observed: %+v %v", ack, err)
+			}
+			if err := e.host.WaitInstanceRetired(e.ctx, plan.Execution.ID); err != nil {
+				t.Fatal(err)
+			}
+			e.plans = nil
+		})
 	}
-	ack, err = e.bridge.Prove(e.ctx, e.credentials.Token, proof)
-	if err != nil || !ack.Recorded {
-		t.Fatalf("original proof cannot be observed: %+v %v", ack, err)
-	}
-	if err := e.host.WaitInstanceRetired(e.ctx, plan.Execution.ID); err != nil {
-		t.Fatal(err)
-	}
-	e.plans = nil
 }
 
 func TestCompletePendingProjectionReservesEncodedBytesAndReturnsCapacityOnRelease(t *testing.T) {

@@ -41,7 +41,7 @@ const (
 
 type controlRequest struct {
 	Operation controlMethod  `json:"operation"`
-	Epoch     uint64         `json:"epoch,omitempty"`
+	Epoch     uint64         `json:"epoch,omitzero"`
 	AttemptID string         `json:"attemptId,omitempty"`
 	Launch    *LaunchRequest `json:"launch,omitempty"`
 	Receipt   *ExitReceipt   `json:"receipt,omitempty"`
@@ -136,7 +136,6 @@ func readRequest(reader *bufio.Reader) (controlRequest, error) {
 	return request, jsonv2.Unmarshal(line, &request, jsonv2.RejectUnknownMembers(true))
 }
 
-// respond performs one request-response operation.
 func (s *Server) respond(ctx context.Context, request controlRequest) (controlResponse, error) {
 	switch request.Operation {
 	case methodIdentity:
@@ -427,7 +426,7 @@ func readLine(reader *bufio.Reader) ([]byte, error) {
 }
 
 func writeRequest(writer io.Writer, request controlRequest) error {
-	data, err := json.Marshal(request)
+	data, err := jsonv2.Marshal(request)
 	if err != nil {
 		return err
 	}

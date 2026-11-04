@@ -116,8 +116,6 @@ func serve(app *document.App, state, address, web string) error {
 	return server.Shutdown(shutdown)
 }
 
-// applicationToken returns a 256-bit secret, more than the minimum the
-// document handler accepts.
 func applicationToken() string {
 	var secret [32]byte
 	_, _ = rand.Read(secret[:])

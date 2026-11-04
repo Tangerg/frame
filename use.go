@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"sync"
 )
 
 type UseConfig struct {
@@ -160,6 +159,16 @@ func (h *Host) useConfig(config UseConfig) (UseConfig, error) {
 		}
 		config = inherited
 	}
+	if config.Realm != "" {
+		if err := config.Realm.Validate(); err != nil {
+			return config, err
+		}
+	}
+	if config.ExecutionID != "" {
+		if err := validateName("execution identity", config.ExecutionID); err != nil {
+			return config, err
+		}
+	}
 	if config.Realm != "" && h.protection == nil {
 		return config, fmt.Errorf("%w: surviving execution requires protection", ErrInvalid)
 	}
@@ -205,7 +214,6 @@ func (h *Host) acquireActivated(ctx context.Context, config UseConfig, recordID 
 	return h.acquirePrepared(work.Context(), plan, config, recordID)
 }
 
-// readyPlan names the ready instances that realize an activated binding.
 func (h *Host) readyPlan(binding BindingSnapshot, realm RealmID) (*BindingPlan, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -247,7 +255,7 @@ func (h *Host) readyInstanceLocked(source UnitRef, realm RealmID) (*Instance, er
 	return instance, nil
 }
 
-func (h *Host) acquirePrepared(ctx context.Context, plan *BindingPlan, config UseConfig, recordID string) (*Use, error) {
+func (h *Host) acquirePrepared(ctx context.Context, plan *BindingPlan, config UseConfig, recordID string) (_ *Use, err error) {
 	use := &Use{
 		authority:   h.identity,
 		id:          rand.Text(),
@@ -262,6 +270,13 @@ func (h *Host) acquirePrepared(ctx context.Context, plan *BindingPlan, config Us
 		members:     make(map[string]*publication),
 		selections:  make(map[string][]string),
 	}
+	published := false
+	defer func() {
+		close(use.initialized)
+		if !published {
+			use.BeginClose(err)
+		}
+	}()
 	causes := use.lifetime.ObserveCloseCauses()
 	context.AfterFunc(use.Context(), func() {
 		<-use.initialized
@@ -276,7 +291,7 @@ func (h *Host) acquirePrepared(ctx context.Context, plan *BindingPlan, config Us
 	if config.Parent != nil {
 		use.parentID = config.Parent.id
 	}
-	err := h.admission.Admit(ctx, func(admitted context.Context) error {
+	err = h.admission.Admit(ctx, func(admitted context.Context) error {
 		if err := h.admission.ValidateScope(config.Scope); err != nil {
 			return err
 		}
@@ -293,15 +308,13 @@ func (h *Host) acquirePrepared(ctx context.Context, plan *BindingPlan, config Us
 		}
 		return h.publishUse(use, config.Owner)
 	})
-	close(use.initialized)
 	if err != nil {
-		use.BeginClose(err)
 		return nil, err
 	}
+	published = true
 	return use, nil
 }
 
-// checkAcceptedBinding rereads the business record before the final grant.
 func (h *Host) checkAcceptedBinding(admitted context.Context, recordID string, scope ScopeGrant, binding BindingSnapshot) error {
 	accepted, err := h.readAcceptedBinding(admitted, recordID, scope)
 	if err != nil {
@@ -408,7 +421,6 @@ func (h *Host) validateUseOwnerLocked(owner *Lifetime, instances []*Instance) er
 	return nil
 }
 
-// useOwnerLocked returns the Lifetime owning the Use whose Lifetime is l.
 func (h *Host) useOwnerLocked(l *Lifetime) *Lifetime {
 	for _, use := range h.uses {
 		if use.lifetime == l && use.ownerResource != nil {
@@ -430,7 +442,18 @@ func (h *Host) protectUse(admitted context.Context, use *Use) error {
 	}
 	slices.Sort(instanceIDs)
 	approval := UseApproval{ID: use.id, ParentID: use.parentID, ExecutionID: use.executionID, Instances: instanceIDs, Realm: use.realm, Scope: use.scope.WireID(), ScopeGeneration: use.scope.Generation(), Epoch: h.epoch, Binding: use.binding.Clone()}
-	if err := h.protection.ApproveUse(admitted, approval); err != nil {
+	if err := approval.Validate(); err != nil {
+		return err
+	}
+	concluded := false
+	defer func() {
+		if !concluded {
+			h.admission.RequireRecovery(fmt.Errorf("%w: use approval interrupted", ErrRecoveryRequired))
+		}
+	}()
+	err := h.protection.ApproveUse(admitted, approval)
+	concluded = true
+	if err != nil {
 		return err
 	}
 	use.protected = true
@@ -449,20 +472,26 @@ func (h *Host) publishUse(use *Use, owner *Lifetime) error {
 			return releaseState(outcome, causes.join(err))
 		},
 	}
-	ownerResource, err := owner.Own(resource)
-	if err != nil {
-		return err
-	}
-	use.ownerResource = ownerResource
 	instances := make([]*ResourceHandle, 0, len(use.instances))
 	for _, instance := range use.instances {
 		instances = append(instances, instance.resource)
 	}
-	hostResource, err := h.lifetime.Own(resource, instances...)
+	var ownerDependencies []*ResourceHandle
+	if owner == h.lifetime {
+		ownerDependencies = instances
+	}
+	ownerResource, err := owner.Own(resource, ownerDependencies...)
 	if err != nil {
 		return err
 	}
-	use.hostResource = hostResource
+	use.ownerResource = ownerResource
+	if owner != h.lifetime {
+		hostResource, err := h.lifetime.Own(resource, instances...)
+		if err != nil {
+			return err
+		}
+		use.hostResource = hostResource
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.uses[use.id] = use
@@ -612,71 +641,4 @@ func WithPlan(ctx context.Context, host *Host, plan *BindingPlan, scope ScopeGra
 		return err
 	}
 	return call(use)
-}
-
-// settlement is the durable release of a protected Use. done closes exactly
-// once, after the release has been settled and the Host forgot the Use.
-type settlement struct {
-	mu      sync.Mutex
-	failure error
-	reports uint64
-	changed chan struct{}
-	retry   chan struct{}
-	done    chan struct{}
-}
-
-func newSettlement() *settlement {
-	return &settlement{changed: make(chan struct{}), retry: make(chan struct{}, 1), done: make(chan struct{})}
-}
-
-func (s *settlement) fail(err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.failure = err
-	s.reports++
-	close(s.changed)
-	s.changed = make(chan struct{})
-}
-
-func (s *settlement) awaitRetry() { <-s.retry }
-
-func (s *settlement) complete() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.failure = nil
-	s.reports++
-	close(s.done)
-	close(s.changed)
-}
-
-// await requests one retry of a failed settlement and reports its next
-// conclusion; an earlier failure is never reported as this attempt's result.
-func (s *settlement) await(ctx context.Context) error {
-	s.mu.Lock()
-	reports := s.reports
-	if s.failure != nil {
-		select {
-		case s.retry <- struct{}{}:
-		default:
-		}
-	}
-	for {
-		if isClosed(s.done) {
-			s.mu.Unlock()
-			return nil
-		}
-		if s.reports > reports && s.failure != nil {
-			failure := s.failure
-			s.mu.Unlock()
-			return failure
-		}
-		changed := s.changed
-		s.mu.Unlock()
-		select {
-		case <-changed:
-		case <-ctx.Done():
-			return contextError(ctx)
-		}
-		s.mu.Lock()
-	}
 }

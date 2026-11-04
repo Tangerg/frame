@@ -156,8 +156,6 @@ func (route callbackRoute) serve(w http.ResponseWriter, req *http.Request, ref M
 	_, _ = w.Write(data)
 }
 
-// read authenticates and decodes one callback, returning the HTTP status that
-// refuses it, or StatusOK.
 func (route callbackRoute) read(w http.ResponseWriter, req *http.Request, ref ManagedCallback, limits CallbackReceiverLimits) (managedParams, value.JSON, int) {
 	if req.Method != http.MethodPost || req.RequestURI != "/" ||
 		!credentialMatches(req.Header, credentialHeader, ref.Credential) || !credentialMatches(req.Header, callHeader, ref.Call) {

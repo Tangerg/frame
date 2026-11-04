@@ -81,7 +81,9 @@ Canceling a request queued for stdio leaves the active sender and other readers 
 The adapter admits each complete newline-delimited inbound frame within
 `MaxFrameBytes`, including its terminator, before the SDK interprets JSON-RPC.
 Missing terminators, oversized frames, blank lines and values split across lines
-fail the stream. Each line must contain one complete JSON value. The same budget applies
+fail the stream. Duplicate object names and malformed Unicode also fail before
+the SDK can decode a different value from the original frame. Each line must
+contain one complete JSON value. The same budget applies
 to each outgoing frame. SDK decoder prefetch cannot move bytes between budgets.
 
 The standard tools profile supports unary calls. Frame streaming methods and reverse imports require another protocol. MCP prompts, resource browsing, multi-round elicitation and network transports are outside this profile. List-change notifications do not grant methods or change an approved Frame binding. See the [MCP tools specification](https://modelcontextprotocol.io/specification/2025-11-25/server/tools) and the [executable integration test](tools_test.go).

@@ -11,11 +11,11 @@ import (
 // and version bind exactly one digest; Host.mu guards it.
 type contractRegistry struct {
 	declarations map[ContractRef]*declaration
-	digests      map[nominalContract]ContractRef
+	digests      map[ContractKey]ContractRef
 }
 
 func newContractRegistry() contractRegistry {
-	return contractRegistry{declarations: make(map[ContractRef]*declaration), digests: make(map[nominalContract]ContractRef)}
+	return contractRegistry{declarations: make(map[ContractRef]*declaration), digests: make(map[ContractKey]ContractRef)}
 }
 
 func (r *contractRegistry) lookup(ref ContractRef) *declaration { return r.declarations[ref] }
@@ -23,7 +23,7 @@ func (r *contractRegistry) lookup(ref ContractRef) *declaration { return r.decla
 // admit registers definitions atomically. same decides whether a definition
 // repeats an already admitted declaration of the same reference.
 func (r *contractRegistry) admit(definitions []*declaration, same func(admitted, next *declaration) bool) error {
-	batch := contractRegistry{declarations: make(map[ContractRef]*declaration, len(definitions)), digests: make(map[nominalContract]ContractRef, len(definitions))}
+	batch := contractRegistry{declarations: make(map[ContractRef]*declaration, len(definitions)), digests: make(map[ContractKey]ContractRef, len(definitions))}
 	for _, definition := range definitions {
 		if r.conflicts(definition, same) || batch.conflicts(definition, same) {
 			return ErrContractMismatch
@@ -39,7 +39,7 @@ func (r *contractRegistry) admit(definitions []*declaration, same func(admitted,
 }
 
 func (r *contractRegistry) conflicts(definition *declaration, same func(admitted, next *declaration) bool) bool {
-	if ref, exists := r.digests[contractName(definition.ref)]; exists && ref != definition.ref {
+	if ref, exists := r.digests[definition.ref.Key()]; exists && ref != definition.ref {
 		return true
 	}
 	admitted := r.declarations[definition.ref]
@@ -48,7 +48,7 @@ func (r *contractRegistry) conflicts(definition *declaration, same func(admitted
 
 func (r *contractRegistry) add(definition *declaration) {
 	r.declarations[definition.ref] = definition
-	r.digests[contractName(definition.ref)] = definition.ref
+	r.digests[definition.ref.Key()] = definition.ref
 }
 
 func sameDescriptor(admitted, next *declaration) bool {

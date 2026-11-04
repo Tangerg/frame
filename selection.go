@@ -381,8 +381,6 @@ func (h *Host) validateServingLocked(instance *Instance) error {
 	return h.admission.ValidateScope(instance.scope)
 }
 
-// validatePreparationLocked checks a resolved plan whose setups may not have
-// started: its declarations, its existing instances and its candidate reads.
 func (h *Host) validatePreparationLocked(plan *BindingPlan) error {
 	if err := h.validateBindingLocked(plan.binding); err != nil {
 		return err

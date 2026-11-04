@@ -25,7 +25,6 @@ func (r *Resources) Read(ctx context.Context, path string) ([]byte, error) {
 	return r.lease.Read(ctx, path)
 }
 
-// contentResourceName names a Setup's claim on its release content.
 const contentResourceName = "static content"
 
 type ResourceDriver struct{ store *Store }
@@ -77,8 +76,6 @@ func (m Manifest) unit(id frame.UnitID) (Unit, bool) {
 	return Unit{}, false
 }
 
-// contributionMetadata returns the declared metadata of a Point contribution,
-// or nil for an export without one.
 func (m Manifest) contributionMetadata(unit frame.UnitID, export string) (any, error) {
 	for _, contribution := range m.Contributions {
 		if contribution.Unit == unit && contribution.Export == export {

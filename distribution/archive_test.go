@@ -22,7 +22,7 @@ func TestBoundedArchiveDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	limits := DefaultLimits()
-	limits.Files = 2
+	limits.Entries = 2
 	if _, err := limits.openArchive(data.Bytes()); !errors.Is(err, ErrCapacity) {
 		t.Fatal(err)
 	}

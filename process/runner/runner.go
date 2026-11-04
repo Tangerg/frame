@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/internal/cancellation"
@@ -177,8 +179,6 @@ func Open(config Config) (_ *Server, err error) {
 	return server, nil
 }
 
-// resolve applies the default limits and canonicalizes the private state
-// directory this runner owns.
 func (c Config) resolve() (Config, error) {
 	if c.Directory == "" {
 		return c, errors.New("runner: state directory is required")
@@ -187,7 +187,7 @@ func (c Config) resolve() (Config, error) {
 	c.MaxExecutableBytes = cmp.Or(c.MaxExecutableBytes, defaultMaxExecutableBytes)
 	c.MaxControlConnections = cmp.Or(c.MaxControlConnections, defaultControlConnections)
 	c.ControlTimeout = cmp.Or(c.ControlTimeout, defaultControlTimeout)
-	if c.MaxAttempts < 1 || c.MaxExecutableBytes < 1 || c.MaxControlConnections < 1 || c.ControlTimeout < 0 {
+	if c.MaxAttempts < 1 || c.MaxExecutableBytes < 1 || c.MaxExecutableBytes == math.MaxInt64 || c.MaxControlConnections < 1 || c.ControlTimeout < 0 {
 		return c, frame.ErrCapacity
 	}
 	directory, err := filepath.Abs(c.Directory)
@@ -601,24 +601,33 @@ func syncDirectory(path string) error {
 }
 
 func validateLaunch(request LaunchRequest) error {
-	if !request.AttemptRef.valid() || !filepath.IsAbs(request.Command) || request.ExecutableDigest.Validate() != nil || request.Configuration.Validate() != nil {
-		return errors.New("runner: exact launch identity is required")
+	if !request.AttemptRef.valid() || !filepath.IsAbs(request.Command) || !validProgramText(request.Command) || request.ExecutableDigest.Validate() != nil || request.Configuration.Validate() != nil {
+		return fmt.Errorf("%w: runner requires exact launch identity", frame.ErrInvalid)
 	}
-	if request.Directory != "" && !filepath.IsAbs(request.Directory) {
-		return errors.New("runner: working directory must be absolute")
+	if request.Directory != "" && (!filepath.IsAbs(request.Directory) || !validProgramText(request.Directory)) {
+		return fmt.Errorf("%w: runner working directory must be absolute utf-8 text without nul", frame.ErrInvalid)
 	}
 	if request.CredentialRevision != "" && !frame.ValidName(request.CredentialRevision) {
-		return errors.New("runner: invalid credential revision")
+		return fmt.Errorf("%w: runner credential revision", frame.ErrInvalid)
+	}
+	for _, argument := range request.Args {
+		if !validProgramText(argument) {
+			return fmt.Errorf("%w: runner arguments must be utf-8 text without nul", frame.ErrInvalid)
+		}
 	}
 	names := map[string]bool{}
 	for _, entry := range request.Env {
 		key, _, ok := strings.Cut(entry, "=")
-		if !ok || key == "" || strings.ContainsRune(entry, '\x00') || names[key] {
-			return errors.New("runner: invalid or duplicate environment key")
+		if !ok || key == "" || !validProgramText(entry) || names[key] {
+			return fmt.Errorf("%w: runner environment requires unique names and utf-8 text without nul", frame.ErrInvalid)
 		}
 		names[key] = true
 	}
 	return nil
+}
+
+func validProgramText(text string) bool {
+	return utf8.ValidString(text) && !strings.ContainsRune(text, '\x00')
 }
 
 func requestIdentity(request LaunchRequest) (framevalue.Digest, error) {

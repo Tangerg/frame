@@ -16,6 +16,12 @@ const ready: ReadyReport = {
   objects: [],
   contributions: [],
 };
+const emptyPoll = {
+  authority: ready.authority,
+  realm: ready.realm,
+  plans: [],
+  fences: [],
+};
 function control(fetch: typeof globalThis.fetch, maximumMessageBytes = 4096) {
   const lifetime = new Lifetime("control");
   return {
@@ -35,7 +41,7 @@ describe("authenticated control transport", () => {
     const lifetime = new Lifetime("native browser transport");
     const fetch = vi.fn(function (this: typeof globalThis) {
       if (this !== globalThis) throw new TypeError("Illegal invocation");
-      return Promise.resolve(new Response("null"));
+      return Promise.resolve(Response.json(emptyPoll));
     });
     vi.stubGlobal("fetch", fetch);
     try {
@@ -54,8 +60,8 @@ describe("authenticated control transport", () => {
   });
 
   it("sends the explicit realm credential and envelope without cookies or redirects", async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>(
-      async () => new Response("null"),
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      Response.json(emptyPoll),
     );
     const f = control(fetch);
     await f.control.poll();

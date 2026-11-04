@@ -1,10 +1,10 @@
 import type { Awaitable } from "../index.js";
 import type { JSONNumber } from "../json.js";
 import { createHash } from "node:crypto";
-import { canonicalJSON, cloneJSON } from "../json.js";
+import { canonicalJSON, freezeJSON } from "../json.js";
 import { compileSchema, SchemaMismatch } from "./schema.js";
 import profile from "./profile.generated.json" with { type: "json" };
-import { checkDescriptor, exceeded, PORTABLE_LIMITS } from "./limits.js";
+import { captureDescriptor, exceeded, PORTABLE_LIMITS } from "./limits.js";
 
 export const PROTOCOL = profile.protocol;
 const maximumUTF16CodeUnitsPerCodePoint = 2;
@@ -25,17 +25,6 @@ export interface CapabilityDescriptor {
 }
 export function digestJSON(value: unknown): string {
   return createHash("sha256").update(canonicalJSON(value)).digest("hex");
-}
-export function freezeJSON<T>(value: T): T {
-  const copy = cloneJSON(value);
-  const freeze = (value: unknown): void => {
-    if (value === null || typeof value !== "object" || Object.isFrozen(value))
-      return;
-    for (const child of Object.values(value)) freeze(child);
-    Object.freeze(value);
-  };
-  freeze(copy);
-  return copy;
 }
 function boundedUTF8(value: unknown, maximumBytes: number): value is string {
   return (
@@ -93,8 +82,8 @@ export class Method {
   readonly validateOutput: (value: unknown) => void;
   readonly validateChunk?: (value: unknown) => void;
 
-  constructor(descriptor: MethodDescriptor) {
-    checkDescriptor(descriptor);
+  constructor(source: MethodDescriptor) {
+    const descriptor = freezeJSON(captureDescriptor(source));
     admitShape(descriptor, profile.descriptors.method);
     if (
       !validToken(descriptor.name) ||
@@ -103,7 +92,7 @@ export class Method {
       typeof descriptor.description !== "string"
     )
       throw new Error("plugin: invalid method contract");
-    this.descriptor = freezeJSON(descriptor);
+    this.descriptor = descriptor;
     this.validateInput = compileSchema(descriptor.input);
     let admitsNull = true;
     try {
@@ -220,7 +209,8 @@ export class Capability<
   readonly identity: string;
   readonly #methods: ReadonlyMap<string, Method>;
 
-  constructor(descriptor: D) {
+  constructor(source: D) {
+    const descriptor = freezeJSON(captureDescriptor(source));
     admitShape(descriptor, profile.descriptors.capability);
     if (
       descriptor.protocol !== PROTOCOL ||
@@ -231,7 +221,6 @@ export class Capability<
       throw new Error("plugin: invalid capability contract");
     if (descriptor.methods.length > PORTABLE_LIMITS.maxMethods)
       exceeded("capability methods", PORTABLE_LIMITS.maxMethods);
-    checkDescriptor(descriptor);
     const methods = descriptor.methods
       .map((value) => new Method(value))
       .sort((a, b) => compareTokens(a.descriptor.name, b.descriptor.name));
@@ -240,7 +229,7 @@ export class Capability<
     );
     if (this.#methods.size !== methods.length)
       throw new Error("plugin: duplicate capability method");
-    this.descriptor = freezeJSON(descriptor);
+    this.descriptor = descriptor;
     this.identity = digestJSON({
       ...this.descriptor,
       methods: methods.map((method) => ({

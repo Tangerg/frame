@@ -62,6 +62,393 @@ export const CONTROL_MUTATIONS = [
   "reconnect",
 ] as const;
 
+function wireObject(value: unknown, members: readonly string[]): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value) &&
+    Object.keys(value).every((name) => members.includes(name));
+}
+
+const wireDigest = new RegExp(DIGEST_PATTERN);
+
+function matchesWireArtifact(value: unknown): value is Artifact {
+  return wireObject(value, ["path", "digest"]) &&
+    Object.hasOwn(value, "path") &&
+    (typeof value["path"] === "string") &&
+    Object.hasOwn(value, "digest") &&
+    (matchesWireDigest(value["digest"]));
+}
+
+function matchesWireAuthority(value: unknown): value is Authority {
+  return wireObject(value, ["id", "epoch"]) &&
+    Object.hasOwn(value, "id") &&
+    (typeof value["id"] === "string") &&
+    Object.hasOwn(value, "epoch") &&
+    (typeof value["epoch"] === "string");
+}
+
+function matchesWireCandidate(value: unknown): value is Candidate {
+  return wireObject(value, ["publicationId", "source", "metadataJson", "token"]) &&
+    Object.hasOwn(value, "publicationId") &&
+    (typeof value["publicationId"] === "string") &&
+    Object.hasOwn(value, "source") &&
+    (matchesWireExportRef(value["source"])) &&
+    Object.hasOwn(value, "metadataJson") &&
+    (typeof value["metadataJson"] === "string") &&
+    Object.hasOwn(value, "token") &&
+    (typeof value["token"] === "string");
+}
+
+function matchesWireContractKind(value: unknown): value is ContractKind {
+  return typeof value === "string" && ContractKindValues.includes(value as ContractKind);
+}
+
+function matchesWireContractMode(value: unknown): value is ContractMode {
+  return typeof value === "string" && ContractModeValues.includes(value as ContractMode);
+}
+
+function matchesWireContractRef(value: unknown): value is ContractRef {
+  return wireObject(value, ["name", "version", "digest", "kind", "mode"]) &&
+    Object.hasOwn(value, "name") &&
+    (typeof value["name"] === "string") &&
+    Object.hasOwn(value, "version") &&
+    (typeof value["version"] === "string") &&
+    Object.hasOwn(value, "digest") &&
+    (matchesWireDigest(value["digest"])) &&
+    Object.hasOwn(value, "kind") &&
+    (matchesWireContractKind(value["kind"])) &&
+    Object.hasOwn(value, "mode") &&
+    (matchesWireContractMode(value["mode"]));
+}
+
+function matchesWireDecision(value: unknown): value is Decision {
+  return typeof value === "string" && DecisionValues.includes(value as Decision);
+}
+
+function matchesWireDigest(value: unknown): value is Digest {
+  return typeof value === "string" && wireDigest.test(value);
+}
+
+function matchesWireExecution(value: unknown): value is Execution {
+  return wireObject(value, ["id", "generation"]) &&
+    Object.hasOwn(value, "id") &&
+    (typeof value["id"] === "string") &&
+    Object.hasOwn(value, "generation") &&
+    (typeof value["generation"] === "string");
+}
+
+function matchesWireExportDeclaration(value: unknown): value is ExportDeclaration {
+  return wireObject(value, ["name", "contract"]) &&
+    Object.hasOwn(value, "name") &&
+    (typeof value["name"] === "string") &&
+    Object.hasOwn(value, "contract") &&
+    (matchesWireContractRef(value["contract"]));
+}
+
+function matchesWireExportRef(value: unknown): value is ExportRef {
+  return wireObject(value, ["installationId", "release", "unitId", "export", "contract"]) &&
+    Object.hasOwn(value, "installationId") &&
+    (matchesWireInstallationID(value["installationId"])) &&
+    Object.hasOwn(value, "release") &&
+    (matchesWireDigest(value["release"])) &&
+    Object.hasOwn(value, "unitId") &&
+    (matchesWireUnitID(value["unitId"])) &&
+    Object.hasOwn(value, "export") &&
+    (typeof value["export"] === "string") &&
+    Object.hasOwn(value, "contract") &&
+    (matchesWireContractRef(value["contract"]));
+}
+
+function matchesWireFence(value: unknown): value is Fence {
+  return wireObject(value, ["scopeId", "scopeGeneration"]) &&
+    Object.hasOwn(value, "scopeId") &&
+    (typeof value["scopeId"] === "string") &&
+    Object.hasOwn(value, "scopeGeneration") &&
+    (typeof value["scopeGeneration"] === "string");
+}
+
+function matchesWireHTTPProblem(value: unknown): value is HTTPProblem {
+  return wireObject(value, ["code", "message"]) &&
+    Object.hasOwn(value, "code") &&
+    (typeof value["code"] === "string") &&
+    Object.hasOwn(value, "message") &&
+    (typeof value["message"] === "string");
+}
+
+function matchesWireImport(value: unknown): value is Import {
+  return wireObject(value, ["slot", "contract", "kind", "local", "remote"]) &&
+    Object.hasOwn(value, "slot") &&
+    (typeof value["slot"] === "string") &&
+    Object.hasOwn(value, "contract") &&
+    (matchesWireContractRef(value["contract"])) &&
+    Object.hasOwn(value, "kind") &&
+    (matchesWireImportKind(value["kind"])) &&
+    (!Object.hasOwn(value, "local") || (matchesWireLocalExport(value["local"]))) &&
+    (!Object.hasOwn(value, "remote") || (matchesWireRemoteImport(value["remote"])));
+}
+
+function matchesWireImportKind(value: unknown): value is ImportKind {
+  return typeof value === "string" && ImportKindValues.includes(value as ImportKind);
+}
+
+function matchesWireInstallationID(value: unknown): value is InstallationID {
+  return typeof value === "string";
+}
+
+function matchesWireInstance(value: unknown): value is Instance {
+  return wireObject(value, ["id", "generation", "source", "configuration"]) &&
+    Object.hasOwn(value, "id") &&
+    (typeof value["id"] === "string") &&
+    Object.hasOwn(value, "generation") &&
+    (typeof value["generation"] === "string") &&
+    Object.hasOwn(value, "source") &&
+    (matchesWireUnitRef(value["source"])) &&
+    Object.hasOwn(value, "configuration") &&
+    (matchesWireDigest(value["configuration"]));
+}
+
+function matchesWireLocalExport(value: unknown): value is LocalExport {
+  return wireObject(value, ["instanceId", "name", "contract"]) &&
+    Object.hasOwn(value, "instanceId") &&
+    (typeof value["instanceId"] === "string") &&
+    Object.hasOwn(value, "name") &&
+    (typeof value["name"] === "string") &&
+    Object.hasOwn(value, "contract") &&
+    (matchesWireContractRef(value["contract"]));
+}
+
+function matchesWireLocalPlan(value: unknown): value is LocalPlan {
+  return wireObject(value, ["protocol", "approvalToken", "authority", "realm", "execution", "scopeId", "scopeGeneration", "units"]) &&
+    Object.hasOwn(value, "protocol") &&
+    (typeof value["protocol"] === "string") &&
+    Object.hasOwn(value, "approvalToken") &&
+    (typeof value["approvalToken"] === "string") &&
+    Object.hasOwn(value, "authority") &&
+    (matchesWireAuthority(value["authority"])) &&
+    Object.hasOwn(value, "realm") &&
+    (matchesWireRealm(value["realm"])) &&
+    Object.hasOwn(value, "execution") &&
+    (matchesWireExecution(value["execution"])) &&
+    Object.hasOwn(value, "scopeId") &&
+    (typeof value["scopeId"] === "string") &&
+    Object.hasOwn(value, "scopeGeneration") &&
+    (typeof value["scopeGeneration"] === "string") &&
+    Object.hasOwn(value, "units") &&
+    (Array.isArray(value["units"]) && value["units"].every((item: unknown) => matchesWirePlannedUnit(item)));
+}
+
+function matchesWireObjectRef(value: unknown): value is ObjectRef {
+  return wireObject(value, ["export", "objectId"]) &&
+    Object.hasOwn(value, "export") &&
+    (matchesWireLocalExport(value["export"])) &&
+    Object.hasOwn(value, "objectId") &&
+    (typeof value["objectId"] === "string");
+}
+
+function matchesWirePlanAdmission(value: unknown): value is PlanAdmission {
+  return wireObject(value, ["authority", "realm", "execution", "decision"]) &&
+    Object.hasOwn(value, "authority") &&
+    (matchesWireAuthority(value["authority"])) &&
+    Object.hasOwn(value, "realm") &&
+    (matchesWireRealm(value["realm"])) &&
+    Object.hasOwn(value, "execution") &&
+    (matchesWireExecution(value["execution"])) &&
+    Object.hasOwn(value, "decision") &&
+    (matchesWirePlanAdmissionDecision(value["decision"]));
+}
+
+function matchesWirePlanAdmissionDecision(value: unknown): value is PlanAdmissionDecision {
+  return typeof value === "string" && PlanAdmissionDecisionValues.includes(value as PlanAdmissionDecision);
+}
+
+function matchesWirePlannedUnit(value: unknown): value is PlannedUnit {
+  return wireObject(value, ["instance", "configurationJson", "profile", "module", "imports", "exports"]) &&
+    Object.hasOwn(value, "instance") &&
+    (matchesWireInstance(value["instance"])) &&
+    Object.hasOwn(value, "configurationJson") &&
+    (typeof value["configurationJson"] === "string") &&
+    Object.hasOwn(value, "profile") &&
+    (matchesWireProfile(value["profile"])) &&
+    Object.hasOwn(value, "module") &&
+    (matchesWireArtifact(value["module"])) &&
+    Object.hasOwn(value, "imports") &&
+    (Array.isArray(value["imports"]) && value["imports"].every((item: unknown) => matchesWireImport(item))) &&
+    Object.hasOwn(value, "exports") &&
+    (Array.isArray(value["exports"]) && value["exports"].every((item: unknown) => matchesWireExportDeclaration(item)));
+}
+
+function matchesWirePointSnapshot(value: unknown): value is PointSnapshot {
+  return wireObject(value, ["point", "revision", "candidates"]) &&
+    Object.hasOwn(value, "point") &&
+    (matchesWireContractRef(value["point"])) &&
+    Object.hasOwn(value, "revision") &&
+    (typeof value["revision"] === "string") &&
+    Object.hasOwn(value, "candidates") &&
+    (Array.isArray(value["candidates"]) && value["candidates"].every((item: unknown) => matchesWireCandidate(item)));
+}
+
+function matchesWirePoll(value: unknown): value is Poll {
+  return wireObject(value, ["authority", "realm", "plans", "fences"]) &&
+    Object.hasOwn(value, "authority") &&
+    (matchesWireAuthority(value["authority"])) &&
+    Object.hasOwn(value, "realm") &&
+    (matchesWireRealm(value["realm"])) &&
+    Object.hasOwn(value, "plans") &&
+    (Array.isArray(value["plans"]) && value["plans"].every((item: unknown) => matchesWireLocalPlan(item))) &&
+    Object.hasOwn(value, "fences") &&
+    (Array.isArray(value["fences"]) && value["fences"].every((item: unknown) => matchesWireFence(item)));
+}
+
+function matchesWireProfile(value: unknown): value is Profile {
+  return typeof value === "string";
+}
+
+function matchesWireProofAcknowledgement(value: unknown): value is ProofAcknowledgement {
+  return wireObject(value, ["closeId", "proofId", "recorded", "authority"]) &&
+    Object.hasOwn(value, "closeId") &&
+    (typeof value["closeId"] === "string") &&
+    Object.hasOwn(value, "proofId") &&
+    (typeof value["proofId"] === "string") &&
+    Object.hasOwn(value, "recorded") &&
+    (typeof value["recorded"] === "boolean") &&
+    Object.hasOwn(value, "authority") &&
+    (matchesWireAuthority(value["authority"]));
+}
+
+function matchesWirePublication(value: unknown): value is Publication {
+  return wireObject(value, ["id", "operationId", "revision", "object"]) &&
+    Object.hasOwn(value, "id") &&
+    (typeof value["id"] === "string") &&
+    Object.hasOwn(value, "operationId") &&
+    (typeof value["operationId"] === "string") &&
+    Object.hasOwn(value, "revision") &&
+    (typeof value["revision"] === "string") &&
+    Object.hasOwn(value, "object") &&
+    (matchesWireObjectRef(value["object"]));
+}
+
+function matchesWirePublicationResult(value: unknown): value is PublicationResult {
+  return wireObject(value, ["decision", "publication", "problem"]) &&
+    Object.hasOwn(value, "decision") &&
+    (matchesWireDecision(value["decision"])) &&
+    (!Object.hasOwn(value, "publication") || (matchesWirePublication(value["publication"]))) &&
+    (!Object.hasOwn(value, "problem") || (typeof value["problem"] === "string"));
+}
+
+function matchesWireRealm(value: unknown): value is Realm {
+  return wireObject(value, ["id", "epoch"]) &&
+    Object.hasOwn(value, "id") &&
+    (typeof value["id"] === "string") &&
+    Object.hasOwn(value, "epoch") &&
+    (typeof value["epoch"] === "string");
+}
+
+function matchesWireReconnectMode(value: unknown): value is ReconnectMode {
+  return typeof value === "string" && ReconnectModeValues.includes(value as ReconnectMode);
+}
+
+function matchesWireReconnectResult(value: unknown): value is ReconnectResult {
+  return wireObject(value, ["authority", "realm", "mode", "executions"]) &&
+    Object.hasOwn(value, "authority") &&
+    (matchesWireAuthority(value["authority"])) &&
+    Object.hasOwn(value, "realm") &&
+    (matchesWireRealm(value["realm"])) &&
+    Object.hasOwn(value, "mode") &&
+    (matchesWireReconnectMode(value["mode"])) &&
+    Object.hasOwn(value, "executions") &&
+    (Array.isArray(value["executions"]) && value["executions"].every((item: unknown) => matchesWireRevalidatedExecution(item)));
+}
+
+function matchesWireRemoteImport(value: unknown): value is RemoteImport {
+  return wireObject(value, ["source", "token"]) &&
+    Object.hasOwn(value, "source") &&
+    (matchesWireExportRef(value["source"])) &&
+    Object.hasOwn(value, "token") &&
+    (typeof value["token"] === "string");
+}
+
+function matchesWireRevalidatedExecution(value: unknown): value is RevalidatedExecution {
+  return wireObject(value, ["execution", "scopeId", "scopeGeneration"]) &&
+    Object.hasOwn(value, "execution") &&
+    (matchesWireExecution(value["execution"])) &&
+    Object.hasOwn(value, "scopeId") &&
+    (typeof value["scopeId"] === "string") &&
+    Object.hasOwn(value, "scopeGeneration") &&
+    (typeof value["scopeGeneration"] === "string");
+}
+
+function matchesWireSnapshot(value: unknown): value is Snapshot {
+  return wireObject(value, ["id", "authority", "points"]) &&
+    Object.hasOwn(value, "id") &&
+    (typeof value["id"] === "string") &&
+    Object.hasOwn(value, "authority") &&
+    (matchesWireAuthority(value["authority"])) &&
+    Object.hasOwn(value, "points") &&
+    (Array.isArray(value["points"]) && value["points"].every((item: unknown) => matchesWirePointSnapshot(item)));
+}
+
+function matchesWireUnitID(value: unknown): value is UnitID {
+  return typeof value === "string";
+}
+
+function matchesWireUnitRef(value: unknown): value is UnitRef {
+  return wireObject(value, ["installationId", "release", "unitId"]) &&
+    Object.hasOwn(value, "installationId") &&
+    (matchesWireInstallationID(value["installationId"])) &&
+    Object.hasOwn(value, "release") &&
+    (matchesWireDigest(value["release"])) &&
+    Object.hasOwn(value, "unitId") &&
+    (matchesWireUnitID(value["unitId"]));
+}
+
+function matchesWireUseGrant(value: unknown): value is UseGrant {
+  return wireObject(value, ["operationId", "parentUseId", "id", "approvalToken", "authority", "realm", "execution", "scopeId", "scopeGeneration", "objects"]) &&
+    Object.hasOwn(value, "operationId") &&
+    (typeof value["operationId"] === "string") &&
+    (!Object.hasOwn(value, "parentUseId") || (typeof value["parentUseId"] === "string")) &&
+    Object.hasOwn(value, "id") &&
+    (typeof value["id"] === "string") &&
+    Object.hasOwn(value, "approvalToken") &&
+    (typeof value["approvalToken"] === "string") &&
+    Object.hasOwn(value, "authority") &&
+    (matchesWireAuthority(value["authority"])) &&
+    Object.hasOwn(value, "realm") &&
+    (matchesWireRealm(value["realm"])) &&
+    Object.hasOwn(value, "execution") &&
+    (matchesWireExecution(value["execution"])) &&
+    Object.hasOwn(value, "scopeId") &&
+    (typeof value["scopeId"] === "string") &&
+    Object.hasOwn(value, "scopeGeneration") &&
+    (typeof value["scopeGeneration"] === "string") &&
+    Object.hasOwn(value, "objects") &&
+    (Array.isArray(value["objects"]) && value["objects"].every((item: unknown) => matchesWireObjectRef(item)));
+}
+
+const controlOutputs = {
+  ["admitPlan"]: (value: unknown) => matchesWirePlanAdmission(value),
+  ["ready"]: (value: unknown) => matchesWirePublicationResult(value),
+  ["acquire"]: (value: unknown) => matchesWireUseGrant(value),
+  ["validateUse"]: (value: unknown) => value === null,
+  ["validateRoute"]: (value: unknown) => value === null,
+  ["snapshot"]: (value: unknown) => matchesWireSnapshot(value),
+  ["closeSnapshot"]: (value: unknown) => value === null,
+  ["publish"]: (value: unknown) => matchesWirePublicationResult(value),
+  ["publication"]: (value: unknown) => matchesWirePublicationResult(value),
+  ["withdraw"]: (value: unknown) => matchesWirePublicationResult(value),
+  ["prove"]: (value: unknown) => matchesWireProofAcknowledgement(value),
+  ["reconnect"]: (value: unknown) => matchesWireReconnectResult(value),
+  ["poll"]: (value: unknown) => matchesWirePoll(value),
+} as const;
+
+export function decodeControlOutput<K extends keyof ControlOutputs>(method: K, value: unknown): ControlOutputs[K] {
+  if (!Object.hasOwn(controlOutputs, method) || !controlOutputs[method](value))
+    throw new TypeError("invalid control response");
+  return (value === null ? undefined : value) as ControlOutputs[K];
+}
+
+export function isControlProblem(value: unknown): value is HTTPProblem & { code: (typeof CONTROL_ERROR_CODES)[number] } {
+  return matchesWireHTTPProblem(value) &&
+    CONTROL_ERROR_CODES.includes(value.code as (typeof CONTROL_ERROR_CODES)[number]);
+}
+
 export interface AcquireRequest {
   readonly operationId: string;
   readonly snapshotId: string;
@@ -149,6 +536,11 @@ export interface ExportRef {
 export interface Fence {
   readonly scopeId: string;
   readonly scopeGeneration: string;
+}
+
+export interface HTTPProblem {
+  readonly code: string;
+  readonly message: string;
 }
 
 export interface Import {

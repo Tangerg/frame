@@ -62,16 +62,16 @@ func (r ContractRef) Validate() error {
 
 func (r ContractRef) String() string { return r.Name + "@" + r.Version }
 
-// nominalContract is a contract's identity without its digest: one kind, name
-// and version may bind only one digest within a Host.
-type nominalContract struct {
-	kind    ContractKind
-	name    string
-	version string
+// ContractKey groups declarations that must agree on one exact ContractRef.
+// Native and portable implementations cannot independently claim that name.
+type ContractKey struct {
+	Kind    ContractKind
+	Name    string
+	Version string
 }
 
-func contractName(ref ContractRef) nominalContract {
-	return nominalContract{kind: ref.Kind, name: ref.Name, version: ref.Version}
+func (r ContractRef) Key() ContractKey {
+	return ContractKey{Kind: r.Kind, Name: r.Name, Version: r.Version}
 }
 
 type declaration struct {

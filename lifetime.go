@@ -94,7 +94,7 @@ type Lifetime struct {
 	cancelContext   context.CancelCauseFunc
 	stopParent      func() bool
 	changed         chan struct{}
-	work            map[*Work]struct{}
+	work            map[*workInterval]struct{}
 	holds           int
 	resources       []*resourceEntry
 	limits          LifetimeLimits
@@ -103,24 +103,6 @@ type Lifetime struct {
 	causes          weak.Pointer[CloseCauses]
 	failures        []CloseFailure
 	omittedFailures uint64
-}
-
-// workKind separates a Lifetime's own work, which closing cancels, from a
-// consumer's hold, which retirement drains before it closes anything.
-type workKind uint8
-
-const (
-	ownWork workKind = iota
-	consumerHold
-)
-
-// Work is an admitted interval inside a Lifetime.
-type Work struct {
-	lifetime *Lifetime
-	ctx      context.Context
-	cancel   context.CancelCauseFunc
-	kind     workKind
-	finished bool
 }
 
 // Close is one owned retirement, independent of all callers waiting for it.
@@ -172,7 +154,7 @@ func NewLifetimeWithLimits(parent context.Context, limits LifetimeLimits) (*Life
 		return nil, err
 	}
 	ctx, cancel := context.WithCancelCause(context.WithoutCancel(parent))
-	l := &Lifetime{ctx: ctx, cancelContext: cancel, changed: make(chan struct{}), work: make(map[*Work]struct{}), limits: limits}
+	l := &Lifetime{ctx: ctx, cancelContext: cancel, changed: make(chan struct{}), work: make(map[*workInterval]struct{}), limits: limits}
 	stop := context.AfterFunc(parent, func() { l.BeginClose(context.Cause(parent)) })
 	l.mu.Lock()
 	if l.released {
@@ -197,7 +179,6 @@ func (l *Lifetime) closingLocked() bool {
 	return l.closing != nil || l.released || l.ctx.Err() != nil
 }
 
-// closeOutcome observes the current close, if one has begun.
 func (l *Lifetime) closeOutcome() (CloseOutcome, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -215,103 +196,6 @@ func (l *Lifetime) cancel(cause error) {
 }
 
 func (l *Lifetime) signalLocked() { close(l.changed); l.changed = make(chan struct{}) }
-
-func (l *Lifetime) Enter(ctx context.Context) (*Work, error) {
-	return l.enter(ctx, ownWork)
-}
-
-// hold registers a consumer that retirement drains instead of cancelling. Its
-// context ends only when the Lifetime itself begins closing.
-func (l *Lifetime) hold() (*Work, error) {
-	return l.enter(context.Background(), consumerHold)
-}
-
-func (l *Lifetime) enter(ctx context.Context, kind workKind) (*Work, error) {
-	if err := contextError(ctx); err != nil {
-		return nil, err
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.closingLocked() {
-		return nil, ErrClosed
-	}
-	if len(l.work) >= l.limits.MaxWork {
-		return nil, fmt.Errorf("%w: lifetime work", ErrCapacity)
-	}
-	child, cancel := context.WithCancelCause(ctx)
-	work := &Work{lifetime: l, ctx: child, cancel: cancel, kind: kind}
-	l.work[work] = struct{}{}
-	if kind == consumerHold {
-		l.holds++
-	}
-	return work, nil
-}
-
-// awaitUnheld waits for every hold to finish without cancelling any of them.
-func (l *Lifetime) awaitUnheld(ctx context.Context) error {
-	for {
-		l.mu.Lock()
-		holds, changed := l.holds, l.changed
-		l.mu.Unlock()
-		if holds == 0 {
-			return nil
-		}
-		select {
-		case <-changed:
-		case <-ctx.Done():
-			return contextError(ctx)
-		}
-	}
-}
-
-func (w *Work) Context() context.Context { return w.ctx }
-
-func (w *Work) Finish() {
-	if w == nil || w.lifetime == nil {
-		return
-	}
-	l := w.lifetime
-	l.mu.Lock()
-	if w.finished {
-		l.mu.Unlock()
-		return
-	}
-	w.finished = true
-	delete(l.work, w)
-	if w.kind == consumerHold {
-		l.holds--
-	}
-	l.signalLocked()
-	l.mu.Unlock()
-	w.cancel(ErrClosed)
-}
-
-// Own accepts a late resource only while the work which acquired it is still
-// registered. Retirement waits for that work before walking its resources.
-func (w *Work) Own(resource Resource, dependencies ...*ResourceHandle) (*ResourceHandle, error) {
-	if w == nil || w.lifetime == nil {
-		return nil, ErrInvalid
-	}
-	l := w.lifetime
-	l.mu.Lock()
-	if w.finished {
-		l.mu.Unlock()
-		return nil, ErrClosed
-	}
-	handle, err := l.ownLocked(resource, dependencies)
-	closing := l.closing != nil
-	cause := context.Cause(l.ctx)
-	l.mu.Unlock()
-	if err == nil && closing && resource.Cancel != nil {
-		if cancelErr := invokeCancel(resource.Cancel, cause); cancelErr != nil {
-			detail := closeFailureDetail(cancelErr)
-			l.mu.Lock()
-			l.recordFailureLocked(handle.entry.resource.Name, detail, cancelErr)
-			l.mu.Unlock()
-		}
-	}
-	return handle, err
-}
 
 func (l *Lifetime) Own(resource Resource, dependencies ...*ResourceHandle) (*ResourceHandle, error) {
 	l.mu.Lock()
@@ -366,21 +250,6 @@ func cleanupResource(name string, closeResource func() error) Resource {
 func (l *Lifetime) Cleanup(name string, closeResource func() error, dependencies ...*ResourceHandle) (*ResourceHandle, error) {
 	return l.Own(cleanupResource(name, closeResource), dependencies...)
 }
-func (w *Work) Cleanup(name string, closeResource func() error, dependencies ...*ResourceHandle) (*ResourceHandle, error) {
-	return w.Own(cleanupResource(name, closeResource), dependencies...)
-}
-func (l *Lifetime) Go(ctx context.Context, run func(context.Context)) error {
-	if run == nil {
-		return ErrInvalid
-	}
-	work, err := l.Enter(ctx)
-	if err != nil {
-		return err
-	}
-	go func() { defer work.Finish(); run(work.Context()) }()
-	return nil
-}
-
 func (l *Lifetime) BeginClose(cause error) *Close {
 	l.mu.Lock()
 	if l.closing != nil {
@@ -393,7 +262,7 @@ func (l *Lifetime) BeginClose(cause error) *Close {
 	}
 	operation := &Close{lifetime: l, id: closeSequence.Add(1), settled: make(chan struct{})}
 	l.closing = operation
-	work := make([]*Work, 0, len(l.work))
+	work := make([]*workInterval, 0, len(l.work))
 	for item := range l.work {
 		work = append(work, item)
 	}
@@ -493,7 +362,6 @@ func (c *Close) startReadyLocked() []*resourceEntry {
 	return started
 }
 
-// releaseLocked makes the Lifetime terminal and returns its parent watch to stop.
 func (l *Lifetime) releaseLocked() func() bool {
 	l.released = true
 	l.resources = nil

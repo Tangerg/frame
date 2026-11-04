@@ -74,7 +74,6 @@ func (c *catalog) find(id string) *publication {
 	return nil
 }
 
-// members returns the contract's publications in their stable source order.
 func (c *catalog) members(contract ContractRef) []*publication {
 	members := c.contracts[contract]
 	if members == nil {

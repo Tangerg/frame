@@ -1,18 +1,15 @@
 package browser
 
 import (
-	"bytes"
 	"cmp"
 	"context"
-	"encoding/json"
-	"fmt"
 	"slices"
 	"strconv"
 	"sync"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/nilness"
 	"github.com/Tangerg/frame/sqlite"
-	framevalue "github.com/Tangerg/frame/value"
 )
 
 type ModuleSource interface {
@@ -96,7 +93,10 @@ type browserRoute struct {
 }
 
 func NewBridge(config BridgeConfig) (*Bridge, error) {
-	if config.Host == nil || config.Store == nil || config.Source == nil || !config.Host.UsesAuthority(config.Store) {
+	if config.Host == nil || config.Store == nil || nilness.Is(config.Source) || !config.Host.UsesAuthority(config.Store) {
+		return nil, frame.ErrInvalid
+	}
+	if config.Remote != nil && nilness.Is(config.Remote) {
 		return nil, frame.ErrInvalid
 	}
 	config.MaxRealms = cmp.Or(config.MaxRealms, defaultMaxRealms)
@@ -130,38 +130,3 @@ const useResourcePrefix = "browser use "
 
 // jsonNull is the wire spelling of absent Point metadata.
 const jsonNull = "null"
-
-// sameWire compares protocol values by their wire encoding, which is the
-// representation both peers agree on.
-func sameWire[T any](a, b T) bool {
-	return bytes.Equal(wireBytes(a), wireBytes(b))
-}
-
-// copyWire detaches a protocol value from the Bridge's retained state.
-func copyWire[T any](value T) T {
-	var copy T
-	if err := json.Unmarshal(wireBytes(value), &copy); err != nil {
-		panic(fmt.Errorf("browser: protocol value %T does not round-trip: %w", value, err))
-	}
-	return copy
-}
-
-func wireBytes(value any) []byte {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		panic(fmt.Errorf("browser: protocol value %T is not encodable: %w", value, err))
-	}
-	return encoded
-}
-
-func requestDigest(value any) (framevalue.Digest, error) {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return framevalue.Digest{}, err
-	}
-	canonical, err := framevalue.ParseJSON(encoded)
-	if err != nil {
-		return framevalue.Digest{}, err
-	}
-	return canonical.Digest(), nil
-}

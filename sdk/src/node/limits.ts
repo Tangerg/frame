@@ -1,4 +1,9 @@
-import { isJSONNumber, stringifyJSON } from "../json.js";
+import {
+  ExactNumber,
+  isJSONNumber,
+  parseJSON,
+  stringifyJSON,
+} from "../json.js";
 import profile from "./profile.generated.json" with { type: "json" };
 
 // This is a generated Go profile, not a second configurable SDK policy.
@@ -32,7 +37,6 @@ export interface JSONSize {
   weight: number;
 }
 
-/** Accounts for the encoded size of a document while it is counted. */
 interface ByteMeter {
   add(count: number): void;
   encoded(value: unknown): void;
@@ -60,16 +64,15 @@ class DescriptorBytes implements ByteMeter {
   }
 }
 
-// The encoded length of each JSON literal and separator.
 const NULL_BYTES = 4;
 const TRUE_BYTES = 4;
 const FALSE_BYTES = 5;
 const BRACKET_BYTES = 2;
 const SEPARATOR_BYTES = 1;
 
-// Count before clone/stringification can recurse or numeric validation expands
-// a lexeme. Payload bytes remain the transport/call owner's explicit budget.
-class JSONCounter {
+// Meter while capturing so getters cannot replace an admitted value before
+// cloning, compilation or validation. Payload bytes belong to the transport.
+class JSONCapture {
   readonly size: JSONSize = {
     nodes: 0,
     depth: 0,
@@ -86,34 +89,38 @@ class JSONCounter {
     this.#bytes = bytes;
   }
 
-  visit(value: unknown, depth: number): void {
+  visit(value: unknown, depth: number): unknown {
+    if (value instanceof Date) value = parseJSON(stringifyJSON(value));
     if (++this.size.nodes > this.#maxNodes)
       exceeded("JSON value nodes", this.#maxNodes);
     if (depth > PORTABLE_LIMITS.maxJSONDepth)
       exceeded("JSON depth", PORTABLE_LIMITS.maxJSONDepth);
     this.size.depth = Math.max(this.size.depth, depth);
     this.size.weight++;
-    if (isJSONNumber(value)) this.#number(value.toString(), value);
-    else if (typeof value === "string") {
+    if (isJSONNumber(value)) {
+      const lexeme =
+        value instanceof ExactNumber ? value.text : value.toString();
+      this.#number(lexeme);
+      return value instanceof ExactNumber ? new ExactNumber(lexeme) : value;
+    } else if (typeof value === "string") {
       this.size.weight += Buffer.byteLength(value);
       this.#bytes.encoded(value);
     } else if (value === null || value === undefined)
       this.#bytes.add(NULL_BYTES);
     else if (typeof value === "boolean")
       this.#bytes.add(value ? TRUE_BYTES : FALSE_BYTES);
-    else if (value instanceof Date) {
-      this.size.weight += Buffer.byteLength(stringifyJSON(value));
-      this.#bytes.encoded(value);
-    } else this.#container(value, depth);
+    else return this.#container(value, depth);
+    return value;
   }
 
-  #number(lexeme: string, value: unknown): void {
+  #number(lexeme: string): void {
     checkNumber(lexeme);
     this.size.weight += lexeme.length;
-    this.#bytes.encoded(value);
+    // Number lexemes are ASCII; encoding the caller object would reread its text.
+    this.#bytes.add(lexeme.length);
   }
 
-  #container(value: unknown, depth: number): void {
+  #container(value: unknown, depth: number): unknown {
     if (typeof value !== "object" || value === null)
       throw new TypeError("portable: unsupported JSON value");
     if (
@@ -126,49 +133,63 @@ class JSONCounter {
       throw new TypeError("portable: cyclic JSON value");
     this.#ancestors.add(value);
     this.#bytes.add(BRACKET_BYTES);
-    if (Array.isArray(value)) this.#array(value, depth);
-    else this.#object(value as Record<string, unknown>, depth);
+    const captured = Array.isArray(value)
+      ? this.#array(value, depth)
+      : this.#object(value as Record<string, unknown>, depth);
     this.#ancestors.delete(value);
+    return captured;
   }
 
-  /** Charges an array for comparing its elements for uniqueness. */
-  #array(value: readonly unknown[], depth: number): void {
+  #array(value: readonly unknown[], depth: number): unknown[] {
+    const length = value.length;
+    if (length > this.#maxNodes - this.size.nodes)
+      exceeded("JSON value nodes", this.#maxNodes);
     const startWeight = this.size.weight;
-    value.forEach((child, index) => {
+    const captured: unknown[] = [];
+    // Every index becomes a JSON value; holes and undefined encode as null.
+    for (let index = 0; index < length; index++) {
       if (index > 0) this.#bytes.add(SEPARATOR_BYTES);
-      this.visit(child, depth + 1);
-    });
-    if (value.length > 1)
+      captured.push(this.visit(value[index], depth + 1) ?? null);
+    }
+    if (length > 1)
       this.size.equality = Math.min(
         PORTABLE_LIMITS.maxEqualityWork + 1,
-        this.size.equality +
-          (value.length - 1) * (this.size.weight - startWeight),
+        this.size.equality + (length - 1) * (this.size.weight - startWeight),
       );
+    return captured;
   }
 
-  #object(value: Record<string, unknown>, depth: number): void {
+  #object(
+    value: Record<string, unknown>,
+    depth: number,
+  ): Record<string, unknown> {
+    const captured = Object.create(null) as Record<string, unknown>;
     let count = 0;
-    for (const [key, child] of Object.entries(value)) {
+    for (const key of Object.keys(value)) {
+      const child = value[key];
       if (child === undefined) continue;
       if (count++ > 0) this.#bytes.add(SEPARATOR_BYTES);
       this.#bytes.encoded(key);
       this.#bytes.add(SEPARATOR_BYTES);
       this.size.keys++;
       this.size.weight += Math.max(1, Buffer.byteLength(key));
-      this.visit(child, depth + 1);
+      captured[key] = this.visit(child, depth + 1);
     }
+    return captured;
   }
 }
 
-export function checkDescriptor(value: unknown): void {
-  new JSONCounter(
+export function captureDescriptor<T>(value: T): T {
+  return new JSONCapture(
     PORTABLE_LIMITS.maxDescriptorNodes,
     new DescriptorBytes(),
-  ).visit(value, 1);
+  ).visit(value, 1) as T;
 }
 
-export function checkValue(value: unknown): JSONSize {
-  const counter = new JSONCounter(PORTABLE_LIMITS.maxValueNodes, unmetered);
-  counter.visit(value, 1);
-  return counter.size;
+export function captureValue(source: unknown): {
+  value: unknown;
+  size: JSONSize;
+} {
+  const capture = new JSONCapture(PORTABLE_LIMITS.maxValueNodes, unmetered);
+  return { value: capture.visit(source, 1), size: capture.size };
 }

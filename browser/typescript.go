@@ -23,7 +23,7 @@ const (
 // WriteTypeScript projects compiled protocol types. It neither scans another
 // checkout nor owns a second description of fields or enum values.
 func WriteTypeScript(out io.Writer) error {
-	var roots []reflect.Type
+	roots := []reflect.Type{reflect.TypeFor[HTTPProblem]()}
 	for _, method := range controlMethods {
 		roots = append(roots, method.input)
 		if method.output != nil {
@@ -36,6 +36,9 @@ func WriteTypeScript(out io.Writer) error {
 	}
 	emitter.WriteString(generatedHeader)
 	if err := emitter.writeProtocol(); err != nil {
+		return err
+	}
+	if err := emitter.writeResponseDecoders(); err != nil {
 		return err
 	}
 	return emitter.finish(out)

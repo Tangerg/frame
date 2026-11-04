@@ -67,6 +67,11 @@ describe("feature JSON values", () => {
       '{"__proto__":{"n":18446744073709551615}}',
     );
   });
+  it("encodes array indices independently of an overridden iterator", () => {
+    const values = [1, 2];
+    values[Symbol.iterator] = () => [3].values();
+    expect(stringifyJSON(values)).toBe("[1,2]");
+  });
   it("refuses already rounded numbers and unsupported values before dispatch", () => {
     for (const value of [
       9007199254740992,

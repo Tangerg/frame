@@ -8,7 +8,8 @@ import (
 	"github.com/Tangerg/frame"
 )
 
-// ArchiveDriver validates its own execution entry after the archive's shared integrity checks.
+// Archive integrity cannot prove runtime support; each execution adapter
+// must admit its own entry shape before the Host installs it.
 type ArchiveDriver interface {
 	frame.Driver
 	ValidateArchiveUnit(Unit) error
@@ -21,7 +22,8 @@ type Installation struct {
 	Native        func(frame.UnitID) (frame.SetupFunc, error)
 }
 
-// Install pins the verified content until the Host accepts or rejects the original release.
+// Slow profile validation cannot relinquish content before the Host accepts
+// or rejects the original release.
 func (l *Lease) Install(ctx context.Context, host *frame.Host, config Installation) (record frame.InstallationRecord, err error) {
 	if l == nil || host == nil || host.Admission() != l.store.admission {
 		return record, frame.ErrInvalid

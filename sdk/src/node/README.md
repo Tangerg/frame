@@ -12,6 +12,11 @@ runtime adapters; each runtime keeps its existing schema engine. Validation uses
 a private JSON projection with prototype-free records, so only declared own
 members can satisfy object constraints. Prototype names remain legal contract
 names and validation leaves the caller's descriptor and values unchanged.
+The bounded traversal captures each caller value once. Descriptor checks,
+compilation, retained contracts and identity all use that capture; changing
+getters cannot supply a second schema after admission. Array budgets count every
+indexed position, including holes that encode as null, before cloning or schema
+execution can expand them.
 
 Format admission follows the fixed list generated from the Go portable profile:
 `date`, `time`, `date-time`, `uuid`, `json-pointer`, and `relative-json-pointer`.

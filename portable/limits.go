@@ -164,7 +164,6 @@ func (c *jsonCounter) count(token jsontext.Token) error {
 	return nil
 }
 
-// closeContainer charges an array for comparing its elements for uniqueness.
 func (c *jsonCounter) closeContainer(kind jsontext.Kind) {
 	parent := c.stack[len(c.stack)-1]
 	if kind == ']' {
@@ -173,7 +172,6 @@ func (c *jsonCounter) closeContainer(kind jsontext.Kind) {
 	c.stack = c.stack[:len(c.stack)-1]
 }
 
-// memberName counts an object member name, which is not a value node.
 func (c *jsonCounter) memberName(token jsontext.Token) bool {
 	if len(c.stack) == 0 {
 		return false

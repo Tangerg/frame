@@ -24,7 +24,9 @@ listener's later `Close` cannot remove a successor's pathname.
 Daemon `Close` joins its original process even when startup has not completed.
 An interrupt delivered by that close is an expected stop only after the original
 Wait observes the matching exit. A process that already crashed keeps its original
-exit diagnostic.
+exit diagnostic. If shutdown retains unconfirmed resources, restore them and call
+`Close` again to advance that same process's shutdown. A cancelled wait leaves the
+original owner active; later calls cannot start or substitute another daemon.
 
 Server shutdown seals creation before advancing each original child's close.
 A rejected Kill leaves the close request pending and the directory authority held;
@@ -61,6 +63,9 @@ Child exit and output-pipe release remain separate resource obligations.
 
 Launch accepts an absolute executable, its exact SHA-256 digest, explicit arguments,
 working directory and environment, plus configuration and credential revisions.
+Program paths, arguments and environment entries must be valid UTF-8 without NUL.
+Admission rejects unrepresentable text before reserving an attempt, and the control
+encoder never silently replaces malformed bytes with a different character.
 It copies and verifies the executable into a private read-only snapshot before
 creation. There is no PATH lookup or shell interpretation. Environment values are
 not persisted or included in the journal digest; credential revisions identify a

@@ -7,7 +7,7 @@ import {
   type Unit,
 } from "../index.js";
 import type { LocalPlan, PlannedUnit } from "../protocol.generated.js";
-import { sameAuthority } from "./control.js";
+import { sameAuthority } from "./identity.js";
 
 export interface ModuleLease {
   readonly url: string;

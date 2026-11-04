@@ -23,7 +23,6 @@ const digestHexBytes = 2 * sha256.Size
 
 var digestExpression = regexp.MustCompile(fmt.Sprintf(`^[0-9a-f]{%d}$`, digestHexBytes))
 
-// DigestPattern projects the canonical spelling for public contracts.
 func DigestPattern() string { return digestExpression.String() }
 
 func ParseDigest(value string) (Digest, error) {

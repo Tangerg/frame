@@ -26,23 +26,23 @@ type DaemonConfig struct {
 // Daemon joins one original startup. The process remains the authority after
 // this client or its Host exits; a later Host connects to its original journal.
 type Daemon struct {
-	config    DaemonConfig
-	client    *Client
-	once      sync.Once
-	ready     chan struct{}
-	err       error
-	mu        sync.Mutex
-	started   bool
-	closing   bool
-	command   *exec.Cmd
-	exited    chan struct{}
-	exitErr   error
-	closeOnce sync.Once
-	closeDone chan struct{}
-	closeErr  error
+	config        DaemonConfig
+	client        *Client
+	once          sync.Once
+	ready         chan struct{}
+	err           error
+	mu            sync.Mutex
+	started       bool
+	closing       bool
+	command       *exec.Cmd
+	exited        chan struct{}
+	exitErr       error
+	closeOnce     sync.Once
+	closeRequests chan chan error
+	closeDone     chan struct{}
+	closeErr      error
 }
 
-// readinessPollInterval paces probes of a just-started daemon's socket.
 const readinessPollInterval = 10 * time.Millisecond
 
 func NewDaemon(config DaemonConfig) (*Daemon, error) {
@@ -53,7 +53,7 @@ func NewDaemon(config DaemonConfig) (*Daemon, error) {
 	if err := validateSocketPath(socket); err != nil {
 		return nil, err
 	}
-	return &Daemon{config: config, client: Dial(socket), ready: make(chan struct{}), closeDone: make(chan struct{})}, nil
+	return &Daemon{config: config, client: Dial(socket), ready: make(chan struct{}), closeRequests: make(chan chan error), closeDone: make(chan struct{})}, nil
 }
 
 func (d *Daemon) connect(ctx context.Context) error {
@@ -180,6 +180,8 @@ func (d *Daemon) ProveAbsent(ctx context.Context, request AttemptRef) (AbsencePr
 // Close stops only the daemon this object actually created, after joining its
 // startup. A connected pre-existing authority is left with its original owner.
 // Consumers order this after all Host resources have actual release proof.
+// A later call advances the same shutdown if the daemon retained an unconfirmed
+// release; cancellation abandons only this caller's wait.
 func (d *Daemon) Close(ctx context.Context) error {
 	if ctx == nil {
 		return frame.ErrInvalid
@@ -188,41 +190,62 @@ func (d *Daemon) Close(ctx context.Context) error {
 	d.closing = true
 	started := d.started
 	d.mu.Unlock()
+	result := make(chan error, 1)
+	first := false
 	d.closeOnce.Do(func() {
+		first = true
 		go func() {
 			if started {
-				d.closeErr = d.closeOriginal()
+				d.closeErr = d.closeOriginal(result)
 			}
 			close(d.closeDone)
 		}()
 	})
+	if !first {
+		select {
+		case <-d.closeDone:
+			return d.closeErr
+		case d.closeRequests <- result:
+		case <-ctx.Done():
+			return cancellation.Err(ctx)
+		}
+	}
 	select {
 	case <-ctx.Done():
 		return cancellation.Err(ctx)
+	case err := <-result:
+		return err
 	case <-d.closeDone:
 		return d.closeErr
 	}
 }
 
-func (d *Daemon) closeOriginal() error {
+func (d *Daemon) closeOriginal(result chan error) error {
 	<-d.ready
 	if d.command == nil {
 		return nil
 	}
-	select {
-	case <-d.exited:
-		return d.exitErr
-	default:
+	stopIssued := false
+	for {
+		select {
+		case <-d.exited:
+			// Startup can end before the executable installs a signal handler. Only
+			// normalize our delivered stop after the original Wait proves that exit.
+			if stopIssued && interruptedExit(d.exitErr) {
+				return nil
+			}
+			return d.exitErr
+		default:
+		}
+		err := d.command.Process.Signal(os.Interrupt)
+		if err == nil {
+			stopIssued = true
+		} else if !errors.Is(err, os.ErrProcessDone) {
+			result <- err
+		}
+		select {
+		case <-d.exited:
+		case result = <-d.closeRequests:
+		}
 	}
-	signalErr := d.command.Process.Signal(os.Interrupt)
-	if signalErr != nil && !errors.Is(signalErr, os.ErrProcessDone) {
-		return signalErr
-	}
-	<-d.exited
-	// Startup can end before the executable installs a signal handler. Only
-	// normalize our delivered stop after the original Wait proves that exit.
-	if signalErr == nil && interruptedExit(d.exitErr) {
-		return nil
-	}
-	return d.exitErr
 }

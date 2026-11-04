@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { Validator } from "jsonschema";
-import { parseJSON } from "../json.js";
-import { digestJSON, freezeJSON, Method } from "./contract.js";
+import { freezeJSON, parseJSON } from "../json.js";
+import { digestJSON, Method } from "./contract.js";
 import { compileSchema, SchemaMismatch } from "./schema.js";
 
 interface ProfileCase {

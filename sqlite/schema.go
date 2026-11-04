@@ -1,5 +1,3 @@
-// Package sqlite owns strict SQLite schema admission and transaction lifetimes.
-// Business schemas and records remain with their calling owners.
 package sqlite
 
 import (
@@ -23,7 +21,6 @@ const (
 	primaryResultMask = 0xff
 )
 
-// OpenSchema admits an exact owner-supplied schema in its private database.
 func OpenSchema(ctx context.Context, path string, statements []string) (*sql.DB, error) {
 	dsn := fmt.Sprintf(
 		"file:%s?_txlock=immediate&_pragma=foreign_keys(ON)&_pragma=busy_timeout(%d)",

@@ -2,7 +2,6 @@ package frame
 
 import "fmt"
 
-// resolveLimit gives an unset limit its default; a negative limit is invalid.
 func resolveLimit(name string, value *int, fallback int) error {
 	if *value == 0 {
 		*value = fallback

@@ -18,11 +18,11 @@ func (s *Store) ApproveUse(ctx context.Context, approval frame.UseApproval) erro
 	if err := s.admission.CheckAdmitted(ctx); err != nil {
 		return err
 	}
-	if !frame.ValidName(approval.ID) || approval.Realm.Validate() != nil || approval.Scope.Validate() != nil || approval.Epoch != s.epoch {
-		return frame.ErrInvalid
-	}
-	if err := approval.Binding.Validate(); err != nil {
+	if err := approval.Validate(); err != nil {
 		return err
+	}
+	if approval.Epoch != s.epoch {
+		return frame.ErrFenced
 	}
 	encoded, err := json.Marshal(approval)
 	if err != nil {
@@ -36,24 +36,29 @@ func (s *Store) ApproveUse(ctx context.Context, approval frame.UseApproval) erro
 	}
 	return s.fenceUnlessRefused(s.transaction(ctx, func(tx Executor) error {
 		return recordOnce(func() (bool, error) {
-			var previous []byte
-			err := tx.QueryRowContext(ctx, `SELECT request FROM frame_use_approvals WHERE id=?`, approval.ID).Scan(&previous)
-			return bytes.Equal(previous, encoded), err
+			row, err := readProtectionRow(ctx, tx, useByID, approval.ID)
+			if err != nil {
+				return false, err
+			}
+			if _, err := decodeUse(row); err != nil {
+				return false, err
+			}
+			return bytes.Equal(row.request, encoded), nil
 		}, func() error { return insertUse(ctx, tx, approval, encoded) })
 	}))
 }
 
-// insertUse approves a delegated Use only while its parent is approved.
 func insertUse(ctx context.Context, tx Executor, approval frame.UseApproval, encoded []byte) error {
 	if approval.ParentID != "" {
-		var state useState
-		if err := tx.QueryRowContext(ctx, `SELECT state FROM frame_use_approvals WHERE id=?`, approval.ParentID).Scan(&state); err != nil {
+		row, err := readProtectionRow(ctx, tx, useByID, approval.ParentID)
+		if err != nil {
 			return err
 		}
-		if err := state.validate(); err != nil {
+		parent, err := decodeUse(row)
+		if err != nil {
 			return err
 		}
-		if state != useApproved {
+		if parent.Released {
 			return frame.ErrClosed
 		}
 	}
@@ -72,14 +77,25 @@ type UseProof struct {
 	Realm *ExitProof          `json:"realm,omitempty"`
 }
 
-const useRecords = `SELECT request,request_digest,state,proof FROM frame_use_approvals`
+func (p *UseProof) proves(approval frame.UseApproval) bool {
+	if p == nil || (p.Host == nil) == (p.Realm == nil) {
+		return false
+	}
+	if p.Host != nil {
+		return p.Host.CloseID != 0
+	}
+	return p.Realm.proves(approval.ExecutionID) && p.Realm.Realm == string(approval.Realm)
+}
+
+const useRecords = `SELECT id,request,request_digest,state,proof FROM frame_use_approvals`
+const useByID = useRecords + ` WHERE id=?`
 const protectedUses = useRecords + ` WHERE state=? ORDER BY id`
 
 func (s *Store) Uses(ctx context.Context) ([]UseRecord, error) {
 	return readRecords(ctx, s, useRecords+" ORDER BY id", decodeUse)
 }
 func (s *Store) Use(ctx context.Context, id string) (UseRecord, error) {
-	return readRecord(ctx, s, useRecords+" WHERE id=?", decodeUse, id)
+	return readRecord(ctx, s, useByID, decodeUse, id)
 }
 func (s *Store) ExecutionUses(ctx context.Context, id string) ([]UseRecord, error) {
 	return readRecords(ctx, s, useRecords+` WHERE execution_id=? ORDER BY id`, decodeUse, id)
@@ -94,16 +110,23 @@ func decodeUse(row protectedRecord) (UseRecord, error) {
 	if err := jsonv2.Unmarshal(row.request, &record.Approval, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return record, err
 	}
-	if err := record.Approval.Binding.Validate(); err != nil {
+	if err := record.Approval.Validate(); err != nil {
 		return record, err
 	}
-	record.Released = state == useReleased
-	if len(row.proof) != 0 {
-		if err := jsonv2.Unmarshal(row.proof, &record.Proof, jsonv2.RejectUnknownMembers(true)); err != nil {
-			return record, err
-		}
+	if record.Approval.ID != row.id {
+		return record, errors.New("sqlite: execution use identity mismatch")
 	}
-	if record.Released && (record.Proof == nil || (record.Proof.Host == nil) == (record.Proof.Realm == nil) || record.Proof.Host != nil && record.Proof.Host.CloseID == 0) {
+	record.Released = state == useReleased
+	if !record.Released {
+		if len(row.proof) != 0 {
+			return record, errors.New("sqlite: approved use has release proof")
+		}
+		return record, nil
+	}
+	if err := jsonv2.Unmarshal(row.proof, &record.Proof, jsonv2.RejectUnknownMembers(true)); err != nil {
+		return record, err
+	}
+	if !record.Proof.proves(record.Approval) {
 		return record, errors.New("sqlite: released use lacks proof")
 	}
 	return record, nil
@@ -119,21 +142,21 @@ func (s *Store) ReleaseUse(ctx context.Context, id string, proof frame.ReleasePr
 	}
 	return s.admission.Maintenance(ctx, func() error {
 		return s.fenceUnlessRefused(s.transaction(ctx, func(tx Executor) error {
-			var state useState
-			var previous []byte
-			if err := tx.QueryRowContext(ctx, `SELECT state,proof FROM frame_use_approvals WHERE id=?`, id).Scan(&state, &previous); err != nil {
+			row, err := readProtectionRow(ctx, tx, useByID, id)
+			if err != nil {
 				return err
 			}
-			if err := state.validate(); err != nil {
+			record, err := decodeUse(row)
+			if err != nil {
 				return err
 			}
-			if state == useReleased {
-				if !bytes.Equal(previous, encoded) {
+			if record.Released {
+				if !bytes.Equal(row.proof, encoded) {
 					return ErrConflict
 				}
 				return nil
 			}
-			_, err := tx.ExecContext(ctx, `UPDATE frame_use_approvals SET state=?,proof=? WHERE id=?`, useReleased, encoded, id)
+			_, err = tx.ExecContext(ctx, `UPDATE frame_use_approvals SET state=?,proof=? WHERE id=?`, useReleased, encoded, id)
 			return err
 		}))
 	})
@@ -152,28 +175,25 @@ func (s *Store) ReleaseRealmUse(ctx context.Context, id string, realm frame.Real
 	}
 	return s.admission.Maintenance(ctx, func() error {
 		return s.fenceUnlessRefused(s.transaction(ctx, func(tx Executor) error {
-			var request, prior []byte
-			var state useState
-			if err := tx.QueryRowContext(ctx, `SELECT request,state,proof FROM frame_use_approvals WHERE id=?`, id).Scan(&request, &state, &prior); err != nil {
+			row, err := readProtectionRow(ctx, tx, useByID, id)
+			if err != nil {
 				return err
 			}
-			var approval frame.UseApproval
-			if err := json.Unmarshal(request, &approval); err != nil {
+			record, err := decodeUse(row)
+			if err != nil {
 				return err
 			}
+			approval := record.Approval
 			if approval.Realm != realm || approval.ExecutionID != executionID || approval.Epoch >= s.epoch {
 				return ErrConflict
 			}
-			if err := state.validate(); err != nil {
-				return err
-			}
-			if state == useReleased {
-				if !bytes.Equal(prior, encoded) {
+			if record.Released {
+				if !bytes.Equal(row.proof, encoded) {
 					return ErrConflict
 				}
 				return nil
 			}
-			_, err := tx.ExecContext(ctx, `UPDATE frame_use_approvals SET state=?,proof=? WHERE id=?`, useReleased, encoded, id)
+			_, err = tx.ExecContext(ctx, `UPDATE frame_use_approvals SET state=?,proof=? WHERE id=?`, useReleased, encoded, id)
 			return err
 		}))
 	})

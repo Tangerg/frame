@@ -10,7 +10,7 @@ import {
   type Setup,
   type Unit,
 } from "../index.js";
-import { canonicalJSON, cloneJSON, parseJSON } from "../json.js";
+import { canonicalJSON, freezeJSON, parseJSON } from "../json.js";
 import type {
   AcquireRequest,
   Authority,
@@ -29,12 +29,20 @@ import type {
   RouteGrant,
   UseGrant,
 } from "../protocol.generated.js";
-import { DecisionValues, PROTOCOL } from "../protocol.generated.js";
+import { PROTOCOL } from "../protocol.generated.js";
+import { isControlRefusal, type HostControl } from "./control.js";
 import {
-  isControlRefusal,
-  type HostControl,
   sameAuthority,
-} from "./control.js";
+  sameExecution,
+  sameObject,
+  sameRealm,
+} from "./identity.js";
+import {
+  PublicationReceipt,
+  publicationView,
+  type PublicationHandle,
+  type PublicationState,
+} from "./publication.js";
 import { ProofOutbox } from "./outbox.js";
 import { UseAdmission } from "./admission.js";
 import { PreparationAdmission, ReadySubmission } from "./preparation.js";
@@ -68,141 +76,9 @@ export interface Use {
   wait(signal?: AbortSignal): Promise<CloseOutcome>;
 }
 
-export interface PublicationHandle {
-  readonly operationId: string;
-  readonly object: ObjectRef;
-  readonly outcome: PublicationResult;
-  observe(): Promise<PublicationResult>;
-  withdraw(): Promise<PublicationResult>;
-}
-
 export interface EventRoute<T> {
   dispatch(payload: T): Promise<void>;
   close(signal?: AbortSignal): Promise<CloseOutcome>;
-}
-
-interface PublicationState {
-  readonly receipt: PublicationReceipt;
-  observe?: () => Promise<PublicationResult>;
-  withdraw?: () => Promise<PublicationResult>;
-}
-
-class PublicationReceipt {
-  #outcome: PublicationResult = Object.freeze({ decision: "unknown" });
-  #withdrawalConfirmed = false;
-
-  constructor(
-    readonly operationId: string,
-    readonly object: ObjectRef,
-  ) {}
-
-  get outcome(): PublicationResult {
-    return this.#outcome;
-  }
-
-  get acceptedPublication(): PublicationResult["publication"] {
-    return this.#outcome.decision === "accepted"
-      ? this.#outcome.publication
-      : undefined;
-  }
-
-  /**
-   * Records a reply. Only an unknown outcome may be refined; a confirmed
-   * decision and the publication it names never change.
-   */
-  receive(result: PublicationResult): PublicationResult {
-    this.#checkShape(result);
-    this.#checkIdentity(result);
-    if (result.decision !== "unknown" || this.#outcome.decision === "unknown")
-      this.#outcome = immutable(result);
-    return this.#outcome;
-  }
-
-  #checkShape(result: PublicationResult): void {
-    if (!result || !DecisionValues.includes(result.decision))
-      throw new FrameError("invalid_plan", "invalid publication decision");
-    if (result.decision === "accepted" && !result.publication)
-      throw new FrameError(
-        "invalid_plan",
-        "accepted publication has no exact publication identity",
-      );
-  }
-
-  #checkIdentity(result: PublicationResult): void {
-    const publication = result.publication;
-    if (
-      publication &&
-      (!sameObject(publication.object, this.object) ||
-        publication.operationId !== this.operationId)
-    )
-      throw new FrameError(
-        "permission_denied",
-        "publication response changed the original object or operation",
-      );
-    const current = this.#outcome.decision;
-    if (
-      current !== "unknown" &&
-      result.decision !== "unknown" &&
-      result.decision !== current
-    )
-      throw new FrameError(
-        "invalid_plan",
-        "a confirmed publication decision cannot change",
-      );
-    const accepted = this.acceptedPublication;
-    if (
-      accepted &&
-      publication &&
-      (publication.id !== accepted.id ||
-        publication.revision !== accepted.revision)
-    )
-      throw new FrameError(
-        "permission_denied",
-        "publication response changed the original publication identity",
-      );
-  }
-
-  uncertain(cause: unknown): void {
-    if (this.#outcome.decision !== "unknown") return;
-    this.#outcome = Object.freeze({
-      decision: "unknown",
-      problem:
-        cause instanceof FrameError
-          ? cause.message
-          : "invalid publication acknowledgement",
-    });
-  }
-
-  acknowledgeWithdrawal(): void {
-    if (this.#outcome.decision !== "accepted")
-      throw new FrameError(
-        "invalid_plan",
-        "publication must be accepted before withdrawal",
-      );
-    this.#withdrawalConfirmed = true;
-  }
-
-  get withdrawnPublicationId(): string | undefined {
-    return this.#withdrawalConfirmed ? this.acceptedPublication?.id : undefined;
-  }
-}
-
-function publicationView(state: PublicationState): PublicationHandle {
-  return Object.freeze({
-    operationId: state.receipt.operationId,
-    object: state.receipt.object,
-    get outcome() {
-      return state.receipt.outcome;
-    },
-    observe: () =>
-      state.observe ? state.observe() : Promise.resolve(state.receipt.outcome),
-    withdraw: () =>
-      state.withdraw
-        ? state.withdraw()
-        : Promise.reject(
-            new FrameError("closed", "publication resource has exited"),
-          ),
-  });
 }
 
 // Public handles capture only their original resource state. Constructing them
@@ -240,7 +116,7 @@ function useView(
       work: (value: T, signal: AbortSignal) => Awaitable<R>,
     ) => {
       owner.assertOpen();
-      const object = objects.get(objectKey(reference));
+      const object = objects.get(reference.objectId);
       if (
         !object ||
         !sameObject(reference, object.reference) ||
@@ -303,36 +179,6 @@ interface ExecutionEntry {
   readonly view: ExecutionHandle;
   prepared?: Promise<ExecutionHandle>;
   ready?: ReadySubmission;
-}
-
-function immutable<T>(value: T): T {
-  const copy = cloneJSON(value);
-  const freeze = (item: unknown): void => {
-    if (item === null || typeof item !== "object" || Object.isFrozen(item))
-      return;
-    for (const child of Object.values(item)) freeze(child);
-    Object.freeze(item);
-  };
-  freeze(copy);
-  return copy;
-}
-
-function sameRealm(left: Realm, right: Realm): boolean {
-  return left.id === right.id && left.epoch === right.epoch;
-}
-function sameExecution(left: Execution, right: Execution): boolean {
-  return left.id === right.id && left.generation === right.generation;
-}
-function objectKey(reference: ObjectRef): string {
-  return reference.objectId;
-}
-function sameObject(left: ObjectRef, right: ObjectRef): boolean {
-  return (
-    left.objectId === right.objectId &&
-    left.export.instanceId === right.export.instanceId &&
-    left.export.name === right.export.name &&
-    sameContract(left.export.contract, right.export.contract)
-  );
 }
 
 /**
@@ -489,8 +335,8 @@ export class Runtime {
   #admissions = new Map<string, UseAdmission>();
 
   constructor(options: RuntimeOptions) {
-    this.#realm = immutable(options.realm);
-    this.#authority = immutable(options.authority);
+    this.#realm = freezeJSON(options.realm);
+    this.#authority = freezeJSON(options.authority);
     this.#control = options.control;
     this.#load = options.load;
     this.#remote = options.remote;
@@ -528,7 +374,7 @@ export class Runtime {
   }
 
   async prepare(received: LocalPlan): Promise<ExecutionHandle> {
-    const plan = immutable(received);
+    const plan = freezeJSON(received);
     const fingerprint = canonicalJSON(plan);
     const existing = this.#executions.get(plan.execution.id);
     if (existing) {
@@ -672,7 +518,7 @@ export class Runtime {
     }
     entry.lifetime.assertOpen();
     entry.ready = new ReadySubmission(
-      immutable({
+      freezeJSON({
         operationId: crypto.randomUUID(),
         authority: entry.plan.authority,
         realm: this.#realm,
@@ -832,7 +678,7 @@ export class Runtime {
         owner,
       );
       entry.preparations.push(
-        immutable({
+        freezeJSON({
           object: object.reference,
           metadataJson: canonicalJSON(metadata),
         }),
@@ -844,7 +690,7 @@ export class Runtime {
         "contract_mismatch",
         "service implementation is missing",
       );
-    const reference: ObjectRef = immutable({
+    const reference: ObjectRef = freezeJSON({
       export: {
         instanceId: unit.instance.id,
         name: declared.name,
@@ -853,8 +699,8 @@ export class Runtime {
       objectId: crypto.randomUUID(),
     });
     const object: ObjectEntry = { reference, value: exported, lifetime: owner };
-    entry.objects.set(objectKey(reference), object);
-    this.#objects.set(objectKey(reference), object);
+    entry.objects.set(reference.objectId, object);
+    this.#objects.set(reference.objectId, object);
   }
 
   async #submitReady(
@@ -904,13 +750,13 @@ export class Runtime {
         "invalid_plan",
         "contribution key is empty or already prepared",
       );
-    const reference: ObjectRef = immutable({
+    const reference: ObjectRef = freezeJSON({
       export: { instanceId, name: key, contract: point.ref },
       objectId: crypto.randomUUID(),
     });
     const object: ObjectEntry = { reference, lifetime: owner, value };
-    entry.objects.set(objectKey(reference), object);
-    this.#objects.set(objectKey(reference), object);
+    entry.objects.set(reference.objectId, object);
+    this.#objects.set(reference.objectId, object);
     return object;
   }
 
@@ -921,7 +767,7 @@ export class Runtime {
 
   async acquire(received: AcquireRequest): Promise<Use> {
     this.#assertConnected();
-    const request = immutable(received);
+    const request = freezeJSON(received);
     const entry = this.#useExecution(request.execution);
     const previous = this.#admissions.get(request.operationId);
     const admission = this.#admission(request, entry);
@@ -947,7 +793,7 @@ export class Runtime {
 
   async accept(received: UseGrant): Promise<Use> {
     this.#assertConnected();
-    const grant = immutable(received);
+    const grant = freezeJSON(received);
     const original = this.#admissions.get(grant.operationId);
     original?.verifyGrant(grant);
     if (original?.use) return original.use;
@@ -1023,7 +869,7 @@ export class Runtime {
     admission: UseAdmission,
     revision: number,
   ): Promise<Use> {
-    const grant = immutable(received);
+    const grant = freezeJSON(received);
     admission.verifyGrant(grant);
     if (
       !sameExecution(entry.plan.execution, grant.execution) ||
@@ -1073,7 +919,7 @@ export class Runtime {
           "use admission arrived after its owner stopped accepting work",
         );
       for (const reference of grant.objects) {
-        const value = this.#objects.get(objectKey(reference));
+        const value = this.#objects.get(reference.objectId);
         if (!value || !sameObject(value.reference, reference))
           throw new FrameError(
             "stale_binding",
@@ -1081,7 +927,7 @@ export class Runtime {
           );
         value.lifetime.assertOpen();
         owner.dependsOn(value.lifetime);
-        objects.set(objectKey(reference), value);
+        objects.set(reference.objectId, value);
       }
     } catch (error) {
       owner.beginClose();
@@ -1125,7 +971,7 @@ export class Runtime {
       this.#outbox.cancelReservation(reservation);
       throw error;
     }
-    const request: PublicationRequest = immutable({
+    const request: PublicationRequest = freezeJSON({
       operationId,
       authority: entry.plan.authority,
       realm: this.#realm,
@@ -1163,8 +1009,8 @@ export class Runtime {
     };
     owner.observeExit((outcome) => {
       if (outcome.status !== "released") return;
-      entry.objects.delete(objectKey(object.reference));
-      this.#objects.delete(objectKey(object.reference));
+      entry.objects.delete(object.reference.objectId);
+      this.#objects.delete(object.reference.objectId);
       object.value = undefined;
       state.observe = undefined;
       state.withdraw = undefined;
@@ -1172,7 +1018,7 @@ export class Runtime {
       if (publicationId) {
         this.#outbox.record(
           reservation,
-          immutable({
+          freezeJSON({
             closeId: outcome.closeId,
             proofId: crypto.randomUUID(),
             authority: entry.plan.authority,
@@ -1217,11 +1063,12 @@ export class Runtime {
   }
 
   async route<T>(
-    grant: RouteGrant,
+    received: RouteGrant,
     event: Event<T>,
     listener: (payload: T, signal: AbortSignal) => Awaitable<void>,
   ): Promise<EventRoute<T>> {
     this.#assertConnected();
+    const grant = freezeJSON(received);
     if (
       event.ref.mode !== "native" ||
       !sameContract(event.ref, grant.source.contract) ||
@@ -1262,7 +1109,7 @@ export class Runtime {
   ): void {
     lifetime.observeExit((outcome) => {
       if (outcome.status !== "released") return;
-      const proof: CloseProof = immutable({
+      const proof: CloseProof = freezeJSON({
         closeId: outcome.closeId,
         proofId: crypto.randomUUID(),
         authority: entry.plan.authority,
@@ -1279,7 +1126,7 @@ export class Runtime {
       if (targetKind === "execution") {
         for (const object of entry.objects.values()) {
           object.value = undefined;
-          this.#objects.delete(objectKey(object.reference));
+          this.#objects.delete(object.reference.objectId);
         }
         for (const instanceId of entry.units.keys())
           this.#instances.delete(instanceId);
@@ -1329,7 +1176,7 @@ export class Runtime {
         "reconnection belongs to another realm",
       );
     const sameEpoch = sameAuthority(result.authority, this.#authority);
-    this.#authority = immutable(result.authority);
+    this.#authority = freezeJSON(result.authority);
     this.#control = control;
     if (closing) {
       this.#connection = "closed";

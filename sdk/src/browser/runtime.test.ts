@@ -1183,6 +1183,40 @@ describe("approved browser execution", () => {
     await f.runtime.close();
   });
 
+  it("materializes the route grant that crossed its validation boundary", async () => {
+    const event = new Event<void>(ref("documents.changed", "event"));
+    const f = fixture({
+      events: defineUnit({
+        id: "events",
+        imports: {},
+        exports: { event },
+        setup: () => ({ event: undefined }),
+      }),
+    });
+    const live = await f.runtime.prepare(
+      plan("a", [
+        unit("events", "events", [{ name: "event", contract: event.ref }]),
+      ]),
+    );
+    const approved = f.grant("a", live.objects);
+    const replacement = f.grant("a", live.objects);
+    const received = {
+      id: "route",
+      use: approved,
+      source: live.objects[0]!.export,
+      receiver: live.objects[0]!.export,
+    };
+    const validation = Promise.withResolvers<void>();
+    vi.mocked(f.control.validateRoute).mockReturnValueOnce(validation.promise);
+    const pending = f.runtime.route(received, event, () => {});
+    received.use = replacement;
+    validation.resolve();
+    const route = await pending;
+    expect(f.control.validateUse).toHaveBeenCalledWith(approved);
+    await route.close();
+    await f.runtime.close();
+  });
+
   it("retains failed consumers and their providers while independent work exits", async () => {
     let proof!: Cleanup;
     const released: string[] = [];

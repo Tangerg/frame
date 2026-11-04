@@ -226,8 +226,6 @@ func closeHost(host *frame.Host) error {
 	return err
 }
 
-// routes serves the author module, its documents and the application calls
-// that require the original private Realm credential.
 func routes(host *frame.Host, bridge *browser.Bridge, author author, credentials browser.Credentials) http.Handler {
 	var activity activity
 	mux := http.NewServeMux()
@@ -259,7 +257,6 @@ func routes(host *frame.Host, bridge *browser.Bridge, author author, credentials
 	return mux
 }
 
-// activity counts document reads that a test cancels mid-response.
 type activity struct {
 	started, cancelled atomic.Int64
 }
@@ -339,7 +336,6 @@ func readBounded(path string, maximum int64) ([]byte, error) {
 	return data, err
 }
 
-// resumeToken returns a 256-bit secret, the entropy OpenRealm expects.
 func resumeToken() string {
 	var secret [32]byte
 	_, _ = rand.Read(secret[:])

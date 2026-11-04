@@ -89,7 +89,6 @@ func checkPattern(pattern string) error {
 	return err
 }
 
-// variableWidthSyntax would make the pattern's width depend on its input.
 const variableWidthSyntax = "*+?|()}"
 
 // patternSyntax is the dialect checkPattern admits; ProfilePatternSyntax
@@ -158,7 +157,6 @@ func (s *patternScanner) escape() error {
 	return nil
 }
 
-// rangeEndpoint reports a class escape at position adjoining a range dash.
 func (s *patternScanner) rangeEndpoint(position int) bool {
 	return position > 1 && s.pattern[position-2] == '-' || position+1 < len(s.pattern) && s.pattern[position+1] == '-'
 }

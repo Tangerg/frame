@@ -62,7 +62,6 @@ type ScopeGrant struct {
 func (g ScopeGrant) ID() ScopeID        { return g.key.id }
 func (g ScopeGrant) Generation() uint64 { return g.generation }
 
-// issued distinguishes a grant from the zero value, which grants nothing.
 func (g ScopeGrant) issued() bool { return g.owner != nil }
 
 // WireID identifies the scope independently of its generation. A tenant's
@@ -104,7 +103,6 @@ func (a *Admission) checkScopeCapacity(keys ...scopeKey) error {
 	return nil
 }
 
-// openScope grants the open generation, starting a new one after a fence.
 func (a *Admission) openScope(key scopeKey) (ScopeGrant, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

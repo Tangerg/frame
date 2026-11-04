@@ -9,6 +9,7 @@ A service defines behavior. A point describes a collection of contributions to w
 | Exact approved providers and accepted optional absence | Original binding | Reacquisition cannot silently switch provider |
 | Approval of a use | Host admission | Withdrawal fences new approvals |
 | Reachability of a borrowed object | Original use lifetime | Holds its accepted providers until admitted work has drained |
+| Completion of an admitted work interval | Original interval in its Lifetime | Copies of a Work handle observe and finish that same interval |
 | Host admission and subscription lifetime | Original Host Lifetime | Its closure fences new Host work and closes registered Watches before release is confirmed |
 | Process exit | Runner holding the direct child | Its original wait result; a disconnected connection proves no exit |
 | Business result, pending task and command receipt | Original business owner | A lost response may require observing that same operation |
@@ -27,6 +28,12 @@ The bundled CLI trust policy pins SHA-256 archive digests in a file controlled b
 
 Use Store.ImportArchiveHeld to obtain a content lease. Lease.Install validates and projects the verified manifest into the Host. For compiled native units supply native setup functions in distribution.Installation. For an external execution profile register its driver with the Host and implement distribution.ArchiveDriver on that driver. The driver checks the already integrity-validated unit's execution shape. Unknown profiles remain inspectable. Store retention must query both installed release facts and any retained business/execution dependencies. Close a lease to release content; Lease.Snapshot returns a detached projection.
 
+`distribution.Limits.Entries` counts files, explicit directories and implicit
+ancestors. Import and cached-release verification use the same path admission.
+Every artifact read checks its bytes, size and executable status against the
+manifest using one physical file snapshot. A previously acquired lease does
+not turn altered cached content into trusted bytes.
+
 A Host.Install error is not sufficient to tell whether a persistence operation committed. InstallationConclusion(err) reads the owning transition's conclusion, including committed with diagnostics, rejected and indeterminate. Inspect the original installation after recovery; do not replay an unknown mutation blindly.
 
 ## Execution boundaries
@@ -36,6 +43,12 @@ Pass the same Admission, epoch and SQLite Store to the durable Host and its adap
 Configure subprocess environments explicitly. An empty environment is the default. Host service grants limit access through Frame, not the process's operating-system rights. Deploy native code only with appropriate OS permissions. Maintain one trusted source for executable artifacts, interpreter pins and dependencies. A local Runner confirms the exit of its direct child, not that child's descendants or effects outside the framework.
 
 The portable schema profile derives schemas with Scope and compiles the admitted profile with `santhosh-tekuri/jsonschema/v6`. No host product or agent transport is required by the framework or its Node SDK.
+
+The Node boundary captures caller-provided schema values once under the
+portable resource budget. Validation, the retained declaration and its digest
+consume that captured value; getters cannot supply separate versions to each
+step. Arrays are read by index, so sparse entries and a custom iterator cannot
+change which values are counted and encoded.
 
 The profile admits only `date`, `time`, `date-time`, `uuid`, `json-pointer` and
 `relative-json-pointer` formats. Unsupported format names are rejected when a
@@ -104,6 +117,15 @@ Closing a Use's original Lifetime also starts that Use's original retirement.
 `Use.WaitRetired` joins actual release, durable settlement and removal of Host
 references regardless of which close entry point was used. Admission publishes
 or refuses the Use before retirement reads its acquired holds.
+
+That initialization barrier also closes when admission unwinds through a
+panic. An interrupted durable approval requires recovery because its commit
+outcome is unknown. A Use owned directly by the Host Lifetime registers one
+resource there, retaining its instance dependencies on that same handle.
+
+`Work` is a handle to a private interval. Copies share its completion and
+resource-admission state under the original Lifetime mutex; a copied handle
+cannot return capacity twice or acquire resources after completion.
 
 `CloseOutcome` is bounded evidence, with at most 32 diagnostic failures and
 2,048 UTF-8 bytes per resource label and detail. Resource names are diagnostic

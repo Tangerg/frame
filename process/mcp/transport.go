@@ -6,11 +6,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"fmt"
 	"io"
 	"sync"
-	"unicode/utf8"
 
 	"github.com/Tangerg/frame/internal/cancellation"
 
@@ -100,8 +99,9 @@ func (r *frameReader) splitFrame(data []byte, atEOF bool) (int, []byte, error) {
 		if size > r.maximum {
 			return 0, nil, frameSizeError(r.maximum)
 		}
-		// Decoder prefetch must not combine individually bounded lines into one value.
-		if !utf8.Valid(data[:size]) || !json.Valid(data[:size]) {
+		// Reject ambiguous names and malformed Unicode before SDK decoding can
+		// replace their original wire representation. Each line owns one value.
+		if !jsontext.Value(data[:size]).IsValid() {
 			return 0, nil, fmt.Errorf("%w: MCP frame must contain one complete JSON value", frame.ErrContractMismatch)
 		}
 		return size, data[:size], nil

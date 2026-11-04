@@ -29,7 +29,7 @@ func (limits Limits) openArchive(data []byte) (*zip.Reader, error) {
 	if end.Signature != endSignature || end.CommentBytes != 0 || end.Disk != 0 || end.DirectoryDisk != 0 || end.Entries != end.DiskEntries || end.Entries == math.MaxUint16 || end.Offset == math.MaxUint32 || end.Size == math.MaxUint32 || uint64(end.Offset)+uint64(end.Size) != uint64(endOffset) {
 		return nil, ErrInvalid
 	}
-	if int(end.Entries) > limits.Files {
+	if int(end.Entries) > limits.Entries {
 		return nil, ErrCapacity
 	}
 	if err := limits.checkDirectory(data[end.Offset:endOffset], int(end.Entries)); err != nil {
@@ -52,7 +52,7 @@ func (limits Limits) checkDirectory(directory []byte, expected int) error {
 	}
 	count := 0
 	for len(directory) != 0 {
-		if count == limits.Files {
+		if count == limits.Entries {
 			return ErrCapacity
 		}
 		fixed, err := binary.Decode(directory, binary.LittleEndian, &header)

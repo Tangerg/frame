@@ -125,8 +125,6 @@ func runInspect(args []string, output io.Writer) error {
 	return inspectArchive(output, options)
 }
 
-// runVerify additionally pins the archive digest or checks it against a
-// publisher policy.
 func runVerify(args []string, output io.Writer) error {
 	options, err := parseArchiveOptions(args, func(flags *flag.FlagSet, options *archiveOptions) {
 		flags.StringVar(&options.expected, "digest", "", "expected archive digest")
@@ -164,7 +162,6 @@ func parseArchiveOptions(args []string, register func(*flag.FlagSet, *archiveOpt
 	return options, nil
 }
 
-// jsonFormat is the only report format.
 const jsonFormat = "json"
 
 func inspectArchive(output io.Writer, options archiveOptions) error {

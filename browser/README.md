@@ -34,6 +34,12 @@ credential or a mismatched verifier is an authentication refusal.
 returns the published control DTO. The application owns TLS, origin policy and
 bootstrap authentication. The bearer credential belongs to a Realm and must
 never appear in plugin configuration, artifact URLs or logs.
+The same Go declarations generate the SDK's executable response checks. Control
+encoding, identity comparisons, capacity reservations and persisted evidence use
+one deterministic JSON policy: nil collections encode as empty collections,
+with the same string escaping used when reserving maximum exit identities.
+Unknown fields, incorrect nulls and invalid enum values cannot become a valid
+SDK acknowledgement merely because the HTTP status was successful.
 
 `Poll` returns complete pending plans and fences without transferring execution
 responsibility. Each response reflects the current owners directly, and callers
@@ -90,6 +96,9 @@ arrives. A Use proof releases the original parent-to-child delegated closure,
 including an unknown child acknowledgement. An execution proof releases only
 that original execution's Uses. Proof acknowledgement waits for durable release;
 repeating it never starts cleanup again or substitutes a new exit identity.
+The parent proof fences the complete live descendant closure before joining
+admissions and reading durable protection, so a completed child admission cannot
+disappear between those observations or admit another descendant during release.
 
 The Realm application's Lifetime owns root Uses. A provider execution cannot own
 an application borrow of its own exports: that would create a release cycle.

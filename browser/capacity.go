@@ -1,7 +1,6 @@
 package browser
 
 import (
-	"encoding/json"
 	"math"
 	"strconv"
 	"strings"
@@ -16,12 +15,12 @@ const (
 )
 
 func encodedSize(value any) (int64, error) {
-	encoded, err := json.Marshal(value)
+	encoded, err := marshalControl(value)
 	return int64(len(encoded)), err
 }
 
 func requestSize(method methodName, input any) (int64, error) {
-	encoded, err := json.Marshal(input)
+	encoded, err := marshalControl(input)
 	if err != nil {
 		return 0, err
 	}
@@ -141,7 +140,7 @@ func (b *Bridge) checkExitCapacity(plan LocalPlan, kind CloseScopeKind, id strin
 	if err := b.checkRequest(proveMethod, proof); err != nil {
 		return err
 	}
-	encoded, err := json.Marshal(proof)
+	encoded, err := marshalControl(proof)
 	if err != nil {
 		return err
 	}

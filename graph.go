@@ -38,7 +38,6 @@ func (h *Host) exportLocked(ref ExportRef) error {
 	return fmt.Errorf("%w: exact export %s", ErrContractMismatch, ref.Export)
 }
 
-// candidatesLocked lists every enabled export of contract in source order.
 func (h *Host) candidatesLocked(contract ContractRef) []ExportRef {
 	var result []ExportRef
 	for _, installation := range h.installations {

@@ -5,9 +5,7 @@ import (
 	"errors"
 )
 
-// recordOnce stores an idempotent fact. read reports whether an existing row
-// equals the new one: an equal row accepts the retry without writing, a
-// different row conflicts, and only a missing row is inserted.
+// An existing identity never permits replacement of its original fact.
 func recordOnce(read func() (same bool, err error), insert func() error) error {
 	same, err := read()
 	switch {

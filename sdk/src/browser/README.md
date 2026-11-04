@@ -11,6 +11,10 @@ It does not contain another catalog, resolver, package manager.
 A trusted application creates a Realm session through its Host integration. The
 session supplies an authority identity, Realm identity, and credential. Keep that
 credential in the bootstrap control adapter rather than exposing it to units.
+`HTTPControl` validates successful replies and problem bodies with Go-generated
+decoders before accepting them. A malformed mutation acknowledgement remains
+`outcome_unknown`; a malformed observation reports `unavailable`. A void
+acknowledgement must carry JSON null on the wire.
 
 ```ts
 import { Lifetime } from "@frame/sdk";
@@ -103,6 +107,9 @@ emitting the parent proof. A terminal Use remains observable until proof
 acknowledgement; afterward, a historical receipt must pass current Host
 validation before it can materialize any local object. Released Uses cannot be
 restarted by replaying a receipt or switching entrances.
+Event routing captures the complete grant before Host validation. Changes to the
+caller's object while validation is pending cannot replace the Use that the
+approved route will materialize.
 `select` is a pure consumer metadata policy helper; the Host still admits its
 result. `Use.with` accesses approved native objects locally without per-call RPC.
 

@@ -3,7 +3,7 @@ package browser
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"math"
@@ -256,7 +256,7 @@ func (b *Bridge) readReceipt(ctx context.Context, id string) (*controlOperation,
 }
 
 func (b *Bridge) archive(ctx context.Context, id string, o *controlOperation) error {
-	data, err := json.Marshal(o.receipt())
+	data, err := marshalControl(o.receipt())
 	if err != nil {
 		return err
 	}

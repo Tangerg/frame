@@ -29,8 +29,8 @@ func (s submissionState) settlement() (frame.CommitState, error) {
 	}
 }
 
-// AttemptState is the durable progress of an execution attempt: approved to
-// run, exit proven but its runner not yet acknowledged, or fully released.
+// Exit may be proven before the runner acknowledges it, so handoff must
+// survive reconstruction without resurrecting execution protection.
 type AttemptState string
 
 const (

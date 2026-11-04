@@ -15,9 +15,8 @@ import (
 	"github.com/Tangerg/frame/value"
 )
 
-// Build computes the artifact inventory from the declared source files, then
-// writes a deterministic ZIP and its exact lock. It does not execute build tools
-// or include undeclared source files. The source remains mutable; its output is not.
+// Author sources remain mutable, so the inventory and deterministic archive
+// must derive from the same captured bytes.
 func Build(ctx context.Context, source string, manifest Manifest, output io.Writer) (Lock, error) {
 	input, err := os.OpenRoot(source)
 	if err != nil {
@@ -45,7 +44,6 @@ func Build(ctx context.Context, source string, manifest Manifest, output io.Writ
 	return lock, contents.writeArchive(ctx, output, manifest.Artifacts)
 }
 
-// releaseContents accumulates the exact bytes of a release within its limits.
 type releaseContents struct {
 	files  map[string][]byte
 	total  int64
@@ -53,25 +51,25 @@ type releaseContents struct {
 }
 
 func (c *releaseContents) readArtifacts(ctx context.Context, input *os.Root, artifacts []Artifact) error {
-	paths := releasePaths()
-	if len(artifacts)+len(paths) > c.limits.Files {
+	paths := reservedMetadataPaths()
+	if len(artifacts)+len(paths) > c.limits.Entries {
 		return ErrCapacity
 	}
 	for i, artifact := range artifacts {
 		if err := paths.admit(artifact.Path, fileEntry); err != nil {
 			return err
 		}
-		if len(paths) > c.limits.Files {
+		if len(paths) > c.limits.Entries {
 			return ErrCapacity
 		}
-		data, err := readRegular(ctx, input, artifact.Path, c.limits.ExpandedBytes-c.total)
+		content, err := readRegular(ctx, input, artifact.Path, c.limits.ExpandedBytes-c.total)
 		if err != nil {
 			return err
 		}
-		c.total += int64(len(data))
-		artifacts[i].Digest = value.Hash(data)
-		artifacts[i].Size = int64(len(data))
-		c.files[artifact.Path] = data
+		c.total += int64(len(content.data))
+		artifacts[i].Digest = value.Hash(content.data)
+		artifacts[i].Size = int64(len(content.data))
+		c.files[artifact.Path] = content.data
 	}
 	return nil
 }

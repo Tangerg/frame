@@ -37,6 +37,8 @@ func TestInboundFrameBudgetIsIndependentOfEarlierFramesAndReadBoundaries(t *test
 	}{
 		{name: "exact budget", input: message(maximum), accepted: 1, failure: io.EOF},
 		{name: "consecutive exact budgets", input: message(maximum) + message(maximum), accepted: 2, failure: io.EOF},
+		{name: "exact numeric lexeme", input: `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"value":9.007199254740993e15}}` + "\n", accepted: 1, failure: io.EOF},
+		{name: "paired surrogate", input: `{"jsonrpc":"2.0","id":1,"method":"\ud834\udd1e"}` + "\n", accepted: 1, failure: io.EOF},
 		{name: "oversized alone", input: message(maximum + 1), failure: frame.ErrCapacity},
 		{name: "small then oversized", input: small + message(maximum+21), accepted: 1, failure: frame.ErrCapacity},
 		{name: "oversized whitespace suffix", input: strings.TrimSuffix(small, "\n") + strings.Repeat(" ", maximum) + "\n", failure: frame.ErrCapacity},
@@ -47,6 +49,9 @@ func TestInboundFrameBudgetIsIndependentOfEarlierFramesAndReadBoundaries(t *test
 		{name: "blank frames cannot aggregate", input: strings.Repeat(" \n", maximum) + small, failure: frame.ErrContractMismatch},
 		{name: "one line cannot contain multiple values", input: "{}{}\n", failure: frame.ErrContractMismatch},
 		{name: "invalid UTF-8", input: "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"\xff\"}\n", failure: frame.ErrContractMismatch},
+		{name: "duplicate message identity", input: `{"jsonrpc":"2.0","id":1,"id":2,"method":"ping"}` + "\n", failure: frame.ErrContractMismatch},
+		{name: "duplicate schema member", input: `{"jsonrpc":"2.0","id":1,"result":{"inputSchema":{"type":"number","type":"string"}}}` + "\n", failure: frame.ErrContractMismatch},
+		{name: "unpaired surrogate", input: `{"jsonrpc":"2.0","id":1,"method":"\ud800"}` + "\n", failure: frame.ErrContractMismatch},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			for _, chunks := range []struct {

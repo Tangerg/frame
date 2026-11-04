@@ -56,8 +56,9 @@ Only regular files are accepted. Symbolic links, special files, traversal, absol
 paths, platform-reserved names, duplicate destinations and case aliases are refused.
 Portable paths use ASCII to avoid filesystem-dependent Unicode aliases. Executable
 bits are explicit in the inventory; setuid, setgid and sticky bits are rejected.
-File count, source and expanded bytes, manifest bytes and compression ratio have
-explicit configurable bounds. ZIP checksums and artifact hashes are both verified.
+`Limits.Entries` counts files, directories and their implicit ancestors. Source
+and expanded bytes, manifest bytes and compression ratio have explicit configurable
+bounds. ZIP checksums and artifact hashes are both verified.
 Staging belongs to one installation operation and is removed unless atomically
 published. Validated content is read-only in the content-addressed cache.
 Contents are sealed before rename; the release root is sealed after rename under
@@ -70,8 +71,10 @@ the directory has left the public namespace.
 `Acquire` holds a read lease under the Host's same Admission. `Read` returns verified
 detached bytes, and `Executable` exposes only a verified declared executable while
 its lease remains alive. The process runner makes its own verified executable
-snapshot before spawn. Cache bytes are checked again on inspection and reads;
-read-only permissions are not treated as a cryptographic proof.
+snapshot before spawn. Cache inspection repeats path, entry-capacity and file-mode
+admission for the entire tree. Every leased read checks size, digest and
+executability against bytes and permissions captured from the same physical file.
+Read-only permissions are not treated as a cryptographic proof.
 
 `Remove` enters the same admission gate and checks both active leases and the
 application's current retention query. That query includes installation, durable

@@ -191,7 +191,7 @@ func (m Manifest) Validate() error {
 
 func indexArtifacts(declared []Artifact) (map[string]Artifact, error) {
 	artifacts := make(map[string]Artifact, len(declared))
-	paths := releasePaths()
+	paths := reservedMetadataPaths()
 	for _, artifact := range declared {
 		if artifact.Size < 0 || artifact.Digest.Validate() != nil {
 			return nil, fmt.Errorf("%w: artifact %q", ErrInvalid, artifact.Path)
@@ -206,11 +206,7 @@ func indexArtifacts(declared []Artifact) (map[string]Artifact, error) {
 
 func indexContracts(declared []frame.ContractRef) (map[frame.ContractRef]struct{}, error) {
 	contracts := map[frame.ContractRef]struct{}{}
-	type nominalContract struct {
-		kind          frame.ContractKind
-		name, version string
-	}
-	nominal := map[nominalContract]frame.ContractRef{}
+	nominal := map[frame.ContractKey]frame.ContractRef{}
 	for _, contract := range declared {
 		if err := contract.Validate(); err != nil {
 			return nil, errors.Join(ErrInvalid, err)
@@ -218,7 +214,7 @@ func indexContracts(declared []frame.ContractRef) (map[frame.ContractRef]struct{
 		if _, ok := contracts[contract]; ok {
 			return nil, fmt.Errorf("%w: duplicate contract %q", ErrInvalid, contract.Name)
 		}
-		key := nominalContract{contract.Kind, contract.Name, contract.Version}
+		key := contract.Key()
 		if prior, ok := nominal[key]; ok && prior != contract {
 			return nil, fmt.Errorf("%w: conflicting contract version %q", ErrInvalid, contract.Name)
 		}
@@ -458,11 +454,7 @@ func (m Manifest) Lock() (Lock, error) {
 	}
 	lock := Lock{SchemaVersion: LockSchemaVersion, Package: m.Package, Release: digest, Artifacts: slices.Clone(m.Artifacts), Contracts: slices.Clone(m.Contracts), Dependencies: slices.Clone(m.Dependencies)}
 	slices.SortFunc(lock.Artifacts, func(a, b Artifact) int { return strings.Compare(a.Path, b.Path) })
-	data, err := json.Marshal(lock)
-	if err != nil {
-		return Lock{}, err
-	}
-	return ParseLock(data)
+	return lock, nil
 }
 
 func (l Lock) Verify(m Manifest) error {
@@ -508,8 +500,6 @@ func validPath(value string) bool {
 	return !slices.ContainsFunc(strings.Split(value, "/"), unportableSegment)
 }
 
-// unportableRune refuses everything but printable ASCII and the characters
-// Windows reserves.
 func unportableRune(r rune) bool {
 	return r < '!' || r > '~' || strings.ContainsRune(windowsReservedCharacters, r)
 }
@@ -536,40 +526,40 @@ type entryKind uint8
 const (
 	fileEntry entryKind = iota
 	directoryEntry
+	ancestorEntry
 )
 
-// archivePath is one case-folded release path. An implicit path exists only
-// as the ancestor of an explicitly listed entry.
-type archivePath struct {
-	name     string
-	kind     entryKind
-	explicit bool
+// Implicit ancestors reserve their original spelling before a later explicit
+// directory can introduce a filesystem-dependent alias.
+type pathEntry struct {
+	name string
+	kind entryKind
 }
 
-type archivePaths map[string]archivePath
+type pathInventory map[string]pathEntry
 
-func releasePaths() archivePaths {
-	return archivePaths{ManifestName: {name: ManifestName, explicit: true}, LockName: {name: LockName, explicit: true}}
+func reservedMetadataPaths() pathInventory {
+	return pathInventory{ManifestName: {name: ManifestName, kind: fileEntry}, LockName: {name: LockName, kind: fileEntry}}
 }
 
-func (paths archivePaths) admit(name string, kind entryKind) error {
+func (paths pathInventory) admit(name string, kind entryKind) error {
 	if !validPath(name) {
 		return fmt.Errorf("%w: unsafe path", ErrInvalid)
 	}
 	key := strings.ToLower(name)
-	if prior, exists := paths[key]; exists && (prior.explicit || kind != directoryEntry || prior.kind != directoryEntry || prior.name != name) {
+	if prior, exists := paths[key]; exists && (prior.kind != ancestorEntry || kind != directoryEntry || prior.name != name) {
 		return fmt.Errorf("%w: duplicate or aliased path", ErrInvalid)
 	}
 	for ancestor := path.Dir(name); ancestor != "."; ancestor = path.Dir(ancestor) {
 		key := strings.ToLower(ancestor)
 		if prior, ok := paths[key]; ok {
-			if prior.kind != directoryEntry || prior.name != ancestor {
+			if prior.kind == fileEntry || prior.name != ancestor {
 				return fmt.Errorf("%w: file or alias is a path ancestor", ErrInvalid)
 			}
 		} else {
-			paths[key] = archivePath{name: ancestor, kind: directoryEntry}
+			paths[key] = pathEntry{name: ancestor, kind: ancestorEntry}
 		}
 	}
-	paths[key] = archivePath{name: name, kind: kind, explicit: true}
+	paths[key] = pathEntry{name: name, kind: kind}
 	return nil
 }

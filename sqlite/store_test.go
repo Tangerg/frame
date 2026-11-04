@@ -489,7 +489,7 @@ func TestProtectionQueriesDoNotReadReleasedHistory(t *testing.T) {
 	// Invalid historical proof bytes make accidental full-history decoding observable.
 	err = store.transaction(ctx, func(tx Executor) error {
 		const history = `WITH RECURSIVE ids(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM ids WHERE n<1000) `
-		if _, err := tx.ExecContext(ctx, history+`INSERT INTO frame_attempts(id,epoch,request,request_digest,state,proof) SELECT 'old-'||n,1,'{}',?,'released','!' FROM ids`, value.Hash([]byte("{}"))); err != nil {
+		if _, err := tx.ExecContext(ctx, history+`INSERT INTO frame_attempts(id,request,request_digest,state,proof) SELECT 'old-'||n,'{}',?,'released','!' FROM ids`, value.Hash([]byte("{}"))); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx, history+`INSERT INTO frame_use_approvals(id,request,request_digest,state,proof) SELECT 'old-'||n,?,?,'released','!' FROM ids`, historical, value.Hash(historical))

@@ -77,7 +77,6 @@ func identities(contracts map[string]*portable.Capability) map[string]string {
 	return result
 }
 
-// acknowledged is the result of a method that only reports success.
 const acknowledged = "true"
 
 func (s *server) handle(ctx context.Context, method string, raw jsontext.Value) (jsontext.Value, error) {

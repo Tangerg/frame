@@ -122,7 +122,6 @@ func (h *Host) activate(ctx context.Context, realm RealmID, grant ScopeGrant, bi
 	return binding.Clone(), h.awaitReady(ctx, selected)
 }
 
-// abandon retires instances whose activation was refused before they prepared.
 func (h *Host) abandon(created []*Instance, cause error) {
 	h.mu.Lock()
 	for _, instance := range created {
@@ -136,8 +135,6 @@ func (h *Host) abandon(created []*Instance, cause error) {
 	}
 }
 
-// planInstanceLocked returns the live instance that already realizes bound
-// under its exact setup identity, or creates one holding its planned providers.
 func (h *Host) planInstanceLocked(binding BindingSnapshot, bound UnitBinding, realm RealmID, reads []bindingRead, planned map[UnitRef]*Instance, grant ScopeGrant) (*Instance, bool, error) {
 	unit, installation, err := h.unitLocked(bound.Source)
 	if err != nil {

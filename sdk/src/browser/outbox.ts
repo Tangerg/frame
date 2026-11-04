@@ -1,6 +1,7 @@
 import { FrameError } from "../index.js";
 import type { Authority, CloseProof } from "../protocol.generated.js";
-import { type HostControl, sameAuthority } from "./control.js";
+import type { HostControl } from "./control.js";
+import { sameAuthority } from "./identity.js";
 
 /** Realm bootstrap owns delivery; proof delivery is outside plugin Lifetimes. */
 export class ProofOutbox {

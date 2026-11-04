@@ -18,8 +18,8 @@ import {
   type JSONNumber,
 } from "../json.js";
 import {
-  checkDescriptor,
-  checkValue,
+  captureDescriptor,
+  captureValue,
   exceeded,
   PORTABLE_LIMITS,
 } from "./limits.js";
@@ -221,8 +221,7 @@ function engineProjection(source: unknown): unknown {
 // jsonschema supplies traversal and composition. Its supported instance-local
 // hooks adapt numeric comparison to the public exact JSON representation.
 export function compileSchema(source: unknown): (value: unknown) => void {
-  checkDescriptor(source);
-  const document = engineProjection(source);
+  const document = engineProjection(captureDescriptor(source));
   const budget = schemaWork(document);
   const validator = new Validator() as Validator & {
     types: Record<string, (value: unknown) => boolean>;
@@ -344,7 +343,8 @@ export function compileSchema(source: unknown): (value: unknown) => void {
   const base = "https://frame.invalid/schema";
   validator.addSchema(schema, base);
   const validate = (value: unknown) => {
-    const size = checkValue(value);
+    const captured = captureValue(value);
+    const size = captured.size;
     if (budget.unique && size.equality > PORTABLE_LIMITS.maxEqualityWork)
       exceeded("schema equality work", PORTABLE_LIMITS.maxEqualityWork);
     if (
@@ -352,7 +352,7 @@ export function compileSchema(source: unknown): (value: unknown) => void {
       PORTABLE_LIMITS.maxValidationWork / (size.nodes + size.keys)
     )
       exceeded("schema validation work", PORTABLE_LIMITS.maxValidationWork);
-    const instance = engineProjection(value);
+    const instance = engineProjection(captured.value);
     if (
       !validator.validate(instance, schema, {
         base,
@@ -384,11 +384,11 @@ function countEqualityWork(
   if (key === "enum") {
     if (!Array.isArray(field) || !field.length)
       throw new Error("portable: enum requires a nonempty array");
-    const weight = checkValue(field).weight - 1;
+    const weight = captureValue(field).size.weight - 1;
     if ((field.length - 1) * weight > PORTABLE_LIMITS.maxEqualityWork)
       exceeded("schema equality work", PORTABLE_LIMITS.maxEqualityWork);
     node.local += weight;
-  } else if (key === "const") node.local += checkValue(field).weight;
+  } else if (key === "const") node.local += captureValue(field).size.weight;
   else if (key === "uniqueItems") node.unique = field === true;
 }
 

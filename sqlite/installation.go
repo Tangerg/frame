@@ -54,7 +54,6 @@ func (s *Store) CommitInstallation(ctx context.Context, change frame.Installatio
 	return settlement.State, err
 }
 
-// changedInstallation names the one installation a change replaces.
 func changedInstallation(change frame.InstallationChange) (frame.InstallationID, error) {
 	var id frame.InstallationID
 	if change.Before != nil {
@@ -69,8 +68,6 @@ func changedInstallation(change frame.InstallationChange) (frame.InstallationID,
 	return id, id.Validate()
 }
 
-// applyInstallation compares the stored record with the expected one and
-// replaces it, then projects the same change into the business tables.
 func (s *Store) applyInstallation(ctx context.Context, tx Executor, id frame.InstallationID, change frame.InstallationChange) error {
 	if err := checkInstalled(ctx, tx, id, change.Before); err != nil {
 		return err

@@ -2,8 +2,9 @@
 
 `@frame/sdk` contains typed native contracts, unit declarations, structured resource
 ownership, and exact JSON. The native entry point has no React or Node runtime dependency.
-Public control messages are generated from `frame/browser` Go types. They are
-projections, not a second handwritten protocol schema.
+Public control messages and executable response decoders are generated from
+`frame/browser` Go types. They share the original fields, omission rules, enum
+values and encoding models.
 
 ## Installation and entry points
 
@@ -99,7 +100,10 @@ identity. Late acquisition follows the same close-diagnostic projection.
 
 Use `@frame/sdk/json` for values that may contain integers or decimal bounds beyond
 JavaScript's exact `number` range. It exports `parseJSON`, `stringifyJSON`,
-`cloneJSON`, `ExactNumber`, and numeric inspection helpers. `prettyJSON` serializes
+`cloneJSON`, `freezeJSON`, `ExactNumber`, and numeric inspection helpers.
+`freezeJSON` detaches and recursively freezes one exact JSON value. Array
+serialization reads indexed values, including nulls for holes; a custom iterator
+cannot replace the array's wire contents. `prettyJSON` serializes
 those values with two-space indentation. `formatJSONText` changes only whitespace
 in captured source, retaining numeric literals, string escapes and member order;
 it is presentation, not validation or decoding. Protocol identities,

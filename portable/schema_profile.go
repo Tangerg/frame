@@ -17,7 +17,6 @@ const (
 	SchemaDescend SchemaEdge = "descend"
 )
 
-// SchemaType is a JSON Schema instance type admitted by the portable dialect.
 type SchemaType string
 
 const (

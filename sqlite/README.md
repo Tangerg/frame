@@ -132,6 +132,14 @@ epoch before first creation. A short-lived child uses its own attempt and exact
 binding; it cannot silently enlarge an earlier approval. Repeated recording must
 match the original identity and bytes.
 
+The encoded request remains the original approval; the SQL identity is only its
+lookup projection. Replay, delegated admission, reconstruction and settlement all
+verify the same request digest, matching identity and complete domain invariants.
+An approved record cannot carry exit evidence, and a settled record must carry
+complete proof for its original execution and Realm. Corruption discovered while
+advancing protection raises the Host's recovery barrier before the transaction can
+change its conclusion. Attempt epochs live only in their original request.
+
 `Attempt` and `Use` look up an immutable operation by ID. `PendingAttempts`
 returns approved attempts and outstanding exit acknowledgements.
 `ExecutionUses` reads one execution's approvals. `ExecutionDependencies` reads

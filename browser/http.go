@@ -49,7 +49,7 @@ func (b *Bridge) Handler() http.Handler {
 			writeProblem(writer, p.status, p.code, p.message)
 			return
 		}
-		encoded, err := json.Marshal(result)
+		encoded, err := marshalControl(result)
 		if err != nil {
 			writeProblem(writer, http.StatusInternalServerError, uncertainProblem.code, "control response could not be encoded")
 			return
@@ -116,5 +116,5 @@ func classifyProblem(err error) httpProblemKind {
 }
 func writeProblem(writer http.ResponseWriter, status int, code, message string) {
 	writer.WriteHeader(status)
-	_ = json.NewEncoder(writer).Encode(HTTPProblem{Code: code, Message: message})
+	_, _ = writer.Write(wireBytes(HTTPProblem{Code: code, Message: message}))
 }

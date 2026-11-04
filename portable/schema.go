@@ -94,6 +94,14 @@ type schemaReference struct {
 	path   string
 }
 
+type schemaVisitState uint8
+
+const (
+	schemaUnvisited schemaVisitState = iota
+	schemaVisiting
+	schemaVisited
+)
+
 // schemaGraph counts possible schema traversal, not predicates or verdicts.
 // A property/item edge (descend) consumes instance depth; a ref/composition
 // edge (same) does not. Only cycles of the latter are forbidden, preserving
@@ -279,19 +287,19 @@ func (g *schemaGraph) resolveReferences() error {
 
 // Same-value cycles cannot consume instance depth to terminate evaluation.
 func (g *schemaGraph) expansionOrder() ([]int, error) {
-	state := make([]byte, len(g.nodes))
+	state := make([]schemaVisitState, len(g.nodes))
 	expansion := make([]int, len(g.nodes))
 	depths := make([]int, len(g.nodes))
 	var order []int
 	var expand func(int) error
 	expand = func(index int) error {
-		if state[index] == 1 {
+		if state[index] == schemaVisiting {
 			return errors.New("portable: schema reference or composition cycle does not consume instance depth")
 		}
-		if state[index] == 2 {
+		if state[index] == schemaVisited {
 			return nil
 		}
-		state[index] = 1
+		state[index] = schemaVisiting
 		expansion[index], depths[index] = 1, 1
 		for _, child := range g.nodes[index].same {
 			if err := expand(child); err != nil {
@@ -306,7 +314,7 @@ func (g *schemaGraph) expansionOrder() ([]int, error) {
 				return limit("same-value schema depth", g.limits.MaxReferenceDepth)
 			}
 		}
-		state[index] = 2
+		state[index] = schemaVisited
 		order = append(order, index)
 		return nil
 	}

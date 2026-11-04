@@ -1,4 +1,3 @@
-// Command frame generates public contracts and builds or validates immutable releases.
 package main
 
 import (

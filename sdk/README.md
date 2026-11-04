@@ -8,7 +8,14 @@ values and encoding models.
 
 ## Installation and entry points
 
-Install `@frame/sdk` once and import the entry point for your role.
+Download `frame-sdk-0.1.0.tgz` from the [v0.1.0 release](https://github.com/Tangerg/frame/releases/tag/v0.1.0),
+then install the single SDK artifact and import the entry point for your role:
+
+```sh
+npm install ./frame-sdk-0.1.0.tgz
+```
+
+The SDK is distributed through GitHub release assets.
 
 | Import | Use |
 | --- | --- |
@@ -20,7 +27,7 @@ Install `@frame/sdk` once and import the entry point for your role.
 | `@frame/sdk/lifetime` | Use lifetime and release primitives directly. |
 | `@frame/sdk/protocol` | Consume the generated control-plane messages and protocol constants. |
 
-The native and browser entries work with `npm install --omit=optional @frame/sdk`.
+The native and browser entries work with `npm install --omit=optional ./frame-sdk-0.1.0.tgz`.
 The Node entry uses the SDK's optional validation dependencies, included in a
 standard installation. For React, install `react` and `react-dom` (version 19)
 in the rendering application. TypeScript React applications also need their

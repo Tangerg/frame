@@ -33,26 +33,30 @@ The indexer receives a document-scoped reader and writer, starts only after acti
 
 ## Install
 
-This tree contains breaking changes after the v0.0.1 release. To try this revision
-in a separate Go application, point a temporary workspace at both projects:
+Install the Go module in an application:
 
 ```sh
-# Run in the application directory, which already contains a go.mod.
-go work init . /absolute/path/to/frame
-go test ./...
+go get github.com/Tangerg/frame@v0.1.0
 ```
 
-Build one installable npm artifact from the patched monorepo:
+Install the command-line tools when needed:
 
 ```sh
-npm ci
-npm pack --workspace @frame/sdk
-# In the consuming application:
-npm install /absolute/path/to/frame/frame-sdk-0.0.1.tgz
+go install github.com/Tangerg/frame/cmd/frame@v0.1.0
+go install github.com/Tangerg/frame/cmd/frame-runner@v0.1.0
 ```
 
-The tarball includes the native, browser, Node and React entries. See the
-[SDK guide](sdk/README.md) for import names and optional dependencies.
+Download `frame-sdk-0.1.0.tgz` from the [v0.1.0 release](https://github.com/Tangerg/frame/releases/tag/v0.1.0)
+and install it in the consuming application:
+
+```sh
+npm install ./frame-sdk-0.1.0.tgz
+```
+
+The tarball includes the native, browser, Node and React entries. The SDK is
+distributed through GitHub release assets. See the [SDK guide](sdk/README.md)
+for import names and optional dependencies, and [release notes](CHANGELOG.md)
+for the breaking changes since v0.0.1.
 
 ## Repository
 

@@ -3,6 +3,7 @@ package mcp
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -14,12 +15,42 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/go-sdk/jsonrpc"
+	sdk "github.com/Tangerg/go-sdk/mcp"
 )
 
 type inputStream struct{ io.Reader }
 
 func (inputStream) Write(data []byte) (int, error) { return len(data), nil }
 func (inputStream) Close() error                   { return nil }
+
+func mustTransport(t *testing.T, channel io.ReadWriteCloser, maximum int) *Transport {
+	t.Helper()
+	transport, err := NewTransport(channel, maximum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return transport
+}
+
+func TestTransportRequiresChannelAndBudget(t *testing.T) {
+	from, to := net.Pipe()
+	defer from.Close()
+	defer to.Close()
+	for _, test := range []struct {
+		name    string
+		channel io.ReadWriteCloser
+		maximum int
+	}{
+		{name: "missing channel", maximum: 1 << 10},
+		{name: "typed nil channel", channel: (*net.TCPConn)(nil), maximum: 1 << 10},
+		{name: "zero budget", channel: from},
+		{name: "negative budget", channel: from, maximum: -1},
+	} {
+		if transport, err := NewTransport(test.channel, test.maximum); !errors.Is(err, frame.ErrInvalid) || transport != nil {
+			t.Fatalf("%s: got %v, %v", test.name, transport, err)
+		}
+	}
+}
 
 func TestInboundFrameBudgetIsIndependentOfEarlierFramesAndReadBoundaries(t *testing.T) {
 	const maximum = 256
@@ -64,7 +95,7 @@ func TestInboundFrameBudgetIsIndependentOfEarlierFramesAndReadBoundaries(t *test
 			} {
 				t.Run(chunks.name, func(t *testing.T) {
 					channel := inputStream{chunks.read(strings.NewReader(test.input))}
-					connection, err := (attachedTransport{channel: channel, maximum: maximum}).Connect(t.Context())
+					connection, err := mustTransport(t, channel, maximum).Connect(t.Context())
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -87,7 +118,7 @@ func TestUnterminatedInboundFrameFailsAtBudgetWithoutWaitingForEOF(t *testing.T)
 	const maximum = 256
 	from, to := net.Pipe()
 	defer to.Close()
-	connection, err := (attachedTransport{channel: from, maximum: maximum}).Connect(t.Context())
+	connection, err := mustTransport(t, from, maximum).Connect(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +149,7 @@ func TestCanceledBlockedWriteReleasesStream(t *testing.T) {
 	from, to := net.Pipe()
 	defer to.Close()
 	writer := blockedWriter{from, make(chan struct{})}
-	transport := attachedTransport{writer, 1 << 10}
+	transport := mustTransport(t, writer, 1<<10)
 	conn, err := transport.Connect(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +191,7 @@ func TestCancelQueuedWriteKeepsActiveSenderAndReader(t *testing.T) {
 	from, to := net.Pipe()
 	defer to.Close()
 	writer := blockedWriter{from, make(chan struct{})}
-	conn, err := (attachedTransport{writer, 1 << 10}).Connect(t.Context())
+	conn, err := mustTransport(t, writer, 1<<10).Connect(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,5 +243,33 @@ func TestCancelQueuedWriteKeepsActiveSenderAndReader(t *testing.T) {
 	}
 	if err := <-read; err != nil {
 		t.Fatalf("other call lost its response: %v", err)
+	}
+}
+
+// A custom protocol keeps its own client and methods while the stream gets
+// this package's frame admission.
+func TestCustomProtocolClientConnectsThroughTransport(t *testing.T) {
+	ctx := t.Context()
+	server := sdk.NewServer(&sdk.Implementation{Name: "custom", Version: "1"}, nil)
+	server.AddTool(&sdk.Tool{Name: "echo", InputSchema: json.RawMessage(`{"type":"object"}`)}, func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: strings.Repeat("x", 1<<10)}}}, nil
+	})
+	clientPipe, serverPipe := net.Pipe()
+	serverSession, err := server.Connect(ctx, &sdk.IOTransport{Reader: serverPipe, Writer: serverPipe}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client := sdk.NewClient(&sdk.Implementation{Name: "custom-host", Version: "1"}, nil)
+	session, err := client.Connect(ctx, mustTransport(t, clientPipe, 1<<10), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if _, err := session.ListTools(ctx, nil); err != nil {
+		t.Fatalf("frame within budget: %v", err)
+	}
+	if _, err := session.CallTool(ctx, &sdk.CallToolParams{Name: "echo", Arguments: map[string]any{}}); !errors.Is(err, frame.ErrCapacity) {
+		t.Fatalf("reply above the frame budget: %v", err)
 	}
 }

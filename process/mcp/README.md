@@ -86,4 +86,31 @@ the SDK can decode a different value from the original frame. Each line must
 contain one complete JSON value. The same budget applies
 to each outgoing frame. SDK decoder prefetch cannot move bytes between budgets.
 
+## Connect a custom protocol
+
+A host that defines its own MCP methods, callbacks or receipts implements
+`process.Protocol` and keeps its own SDK client. In `Connection.Connect`, wrap
+the channel the driver attached with `mcp.NewTransport`, passing the frame
+budget the driver gave `Prepare`. The session then has the same inbound and
+outbound frame admission and write cancellation as the protocols above.
+
+```go
+func (c *connection) Connect(ctx context.Context, channel io.ReadWriteCloser) ([]frame.ExportValue, error) {
+    transport, err := mcp.NewTransport(channel, c.maxFrameBytes)
+    if err != nil {
+        return nil, err
+    }
+    session, err := c.client.Connect(ctx, transport, nil)
+    if err != nil {
+        return nil, err
+    }
+    c.session = session
+    return c.exports(ctx, session)
+}
+```
+
+The transport owns only the stream. Closing the session closes the attached
+channel; the driver still owns launch, attachment and exit proof, and the host
+protocol still owns its business outcomes.
+
 The standard tools profile supports unary calls. Frame streaming methods and reverse imports require another protocol. MCP prompts, resource browsing, multi-round elicitation and network transports are outside this profile. List-change notifications do not grant methods or change an approved Frame binding. See the [MCP tools specification](https://modelcontextprotocol.io/specification/2025-11-25/server/tools) and the [executable integration test](tools_test.go).

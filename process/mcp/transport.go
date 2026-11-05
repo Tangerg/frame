@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/Tangerg/frame/internal/cancellation"
+	"github.com/Tangerg/frame/internal/nilness"
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/go-sdk/jsonrpc"
@@ -19,6 +20,10 @@ import (
 )
 
 func connect(ctx context.Context, channel io.ReadWriteCloser, maximum int, configure func(*sdk.Client) error) (*sdk.ClientSession, error) {
+	transport, err := NewTransport(channel, maximum)
+	if err != nil {
+		return nil, err
+	}
 	client := sdk.NewClient(&sdk.Implementation{Name: "frame", Version: "1"}, &sdk.ClientOptions{
 		Capabilities:   &sdk.ClientCapabilities{},
 		MultiRoundTrip: &sdk.MultiRoundTripOptions{Disabled: true},
@@ -28,22 +33,42 @@ func connect(ctx context.Context, channel io.ReadWriteCloser, maximum int, confi
 			return nil, err
 		}
 	}
-	return client.Connect(ctx, attachedTransport{channel, maximum}, nil)
+	return client.Connect(ctx, transport, nil)
 }
 
-type attachedTransport struct {
+// Transport carries one MCP session over the stream a process driver attached
+// for one execution, under this package's wire profile. Each inbound frame is
+// admitted whole, terminator included, within the frame budget and as exactly
+// one strict JSON value before the SDK interprets it; each outbound frame stays
+// within the same budget. Canceling a queued write leaves the active sender and
+// readers alone. Canceling a write whose bytes are moving closes the stream,
+// because the peer may already hold part of the frame.
+//
+// A custom [process.Protocol] connects its own SDK client through Transport in
+// [process.Connection.Connect], so its methods and handlers get the same
+// admission as [Tools] and [ManagedProtocol]. Transport neither launches nor
+// releases the process: closing it closes the attached stream, and the driver
+// alone establishes exit.
+type Transport struct {
 	channel io.ReadWriteCloser
 	maximum int
 }
 
+// NewTransport binds the attached channel to the frame budget the driver passed
+// to [process.Protocol.Prepare].
+func NewTransport(channel io.ReadWriteCloser, maxFrameBytes int) (*Transport, error) {
+	if nilness.Is(channel) || maxFrameBytes <= 0 {
+		return nil, fmt.Errorf("%w: transport requires an attached channel and a positive frame budget", frame.ErrInvalid)
+	}
+	return &Transport{channel: channel, maximum: maxFrameBytes}, nil
+}
+
 const sdkFrameLimitDisabled = -1
 
-func (t attachedTransport) Connect(ctx context.Context) (sdk.Connection, error) {
+// Connect implements the SDK transport contract for one session.
+func (t *Transport) Connect(ctx context.Context) (sdk.Connection, error) {
 	writer := &frameWriter{channel: t.channel, maximum: t.maximum}
-	reader := &frameReader{channel: t.channel, scanner: bufio.NewScanner(t.channel), maximum: t.maximum}
-	reader.scanner.Buffer(make([]byte, min(t.maximum, bufio.MaxScanTokenSize)), t.maximum)
-	reader.scanner.Split(reader.splitFrame)
-	transport := &sdk.IOTransport{Reader: reader, Writer: writer, MaxLineLength: sdkFrameLimitDisabled}
+	transport := &sdk.IOTransport{Reader: newFrameReader(t.channel, t.maximum), Writer: writer, MaxLineLength: sdkFrameLimitDisabled}
 	conn, err := transport.Connect(ctx)
 	if err != nil {
 		return nil, err
@@ -60,6 +85,13 @@ type frameReader struct {
 	maximum int
 	pending []byte
 	err     error
+}
+
+func newFrameReader(channel io.ReadCloser, maximum int) *frameReader {
+	reader := &frameReader{channel: channel, scanner: bufio.NewScanner(channel), maximum: maximum}
+	reader.scanner.Buffer(make([]byte, min(maximum, bufio.MaxScanTokenSize)), maximum)
+	reader.scanner.Split(reader.splitFrame)
+	return reader
 }
 
 func (r *frameReader) Read(p []byte) (int, error) {

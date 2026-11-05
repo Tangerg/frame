@@ -42,6 +42,24 @@ const source =
   );
 
 describe("Realm module ownership", () => {
+  it("refuses a lease a network attacker could replace before importing it", async () => {
+    const close = vi.fn();
+    const modules = new RealmModules(async () => ({
+      url: "http://plugins.example/module.js",
+      digest,
+      close,
+    }));
+    const owner = new Lifetime("plaintext");
+    const entry = unit();
+    await expect(modules.load(entry, owner, plan(entry))).rejects.toMatchObject(
+      {
+        code: "permission_denied",
+      },
+    );
+    await owner.close();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it("evaluates once and retires only after every actual lease releases", async () => {
     const close = vi.fn();
     const modules = new RealmModules(async () => ({

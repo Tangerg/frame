@@ -16,6 +16,12 @@ decoders before accepting them. A malformed mutation acknowledgement remains
 `outcome_unknown`; a malformed observation reports `unavailable`. A void
 acknowledgement must carry JSON null on the wire.
 
+The control endpoint and every module lease URL must be potentially trustworthy
+in the W3C Secure Contexts sense: HTTPS, or HTTP to a loopback host; a module
+lease may also use a `file:` or `data:` URL. A browser cannot hash module bytes
+before evaluating them, so the approved digest is checked against the lease, not
+the code: module integrity rests on the Host issuing URLs that only it can serve.
+
 ```ts
 import { Lifetime } from "@frame/sdk";
 import { ControlPump, HTTPControl, RealmModules, Runtime } from "@frame/sdk/browser";

@@ -39,6 +39,25 @@ function transport(body: unknown) {
   return { control, lifetime, fetch };
 }
 
+describe("control endpoint admission", () => {
+  it.each([
+    "http://control.example/control",
+    "http://10.0.0.1/control",
+    "file:///control",
+  ])("refuses %s, which would expose the realm credential", (endpoint) => {
+    expect(
+      () =>
+        new HTTPControl({
+          endpoint,
+          credential: "realm-secret",
+          maximumMessageBytes: 4096,
+          lifetime: new Lifetime("plaintext control"),
+          fetch: vi.fn<typeof globalThis.fetch>(),
+        }),
+    ).toThrow(TypeError);
+  });
+});
+
 describe("control response admission", () => {
   it.each([{}, false, [], "accepted"])(
     "refuses a malformed validation acknowledgement %j",

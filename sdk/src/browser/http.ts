@@ -1,5 +1,6 @@
 import { FrameError, type Lifetime } from "../index.js";
 import { readResponseBytes } from "./response.js";
+import { potentiallyTrustworthy } from "./trust.js";
 import { parseJSON, stringifyJSON } from "../json.js";
 import {
   CONTROL_MUTATIONS,
@@ -49,6 +50,7 @@ export class HTTPControl implements HostControl {
     const endpoint = new URL(options.endpoint);
     if (
       !["https:", "http:"].includes(endpoint.protocol) ||
+      !potentiallyTrustworthy(endpoint) ||
       endpoint.username ||
       endpoint.password ||
       endpoint.hash ||

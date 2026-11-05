@@ -8,6 +8,7 @@ import {
 } from "../index.js";
 import type { LocalPlan, PlannedUnit } from "../protocol.generated.js";
 import { sameAuthority } from "./identity.js";
+import { potentiallyTrustworthy } from "./trust.js";
 
 export interface ModuleLease {
   readonly url: string;
@@ -111,10 +112,10 @@ export class RealmModules {
         "leased module does not match the approved artifact digest",
       );
     const url = new URL(lease!.url);
-    if (!["https:", "http:", "file:", "data:"].includes(url.protocol))
+    if (!potentiallyTrustworthy(url))
       throw new FrameError(
         "permission_denied",
-        "module lease uses an unsupported URL scheme",
+        "module lease URL must use https, file, data, or http to a loopback host",
       );
     evaluation = currentEvaluation();
     if (!evaluation) {

@@ -3,7 +3,7 @@ module github.com/Tangerg/frame
 go 1.27.3
 
 require (
-	github.com/Tangerg/go-sdk v1.8.1-scope.3
+	github.com/Tangerg/go-sdk v1.8.1-scope.4
 	github.com/Tangerg/scope/core v0.58.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	modernc.org/sqlite v1.61.0

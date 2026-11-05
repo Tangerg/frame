@@ -11,6 +11,11 @@
   and `data:` for module leases. Plain HTTP to any other host is refused, since
   it would expose the realm credential or let the network replace module code
   that the approved digest cannot verify.
+- Require `github.com/Tangerg/go-sdk` v1.8.1-scope.4. The SDK now cancels a
+  queued MCP write without sending it and closes the connection when an active
+  write is canceled, so `process/mcp` no longer wraps SDK connections to provide
+  that itself. Frame admission, strict JSON and the outbound frame budget are
+  unchanged.
 - `make check` and CI run golangci-lint with `.golangci.yml`: errcheck, govet,
   ineffassign, staticcheck and unused. An ignored write, sync or commit error now
   fails the build; closing a read handle and test cleanup follow the

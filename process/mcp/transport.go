@@ -11,11 +11,9 @@ import (
 	"io"
 	"sync"
 
-	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/internal/nilness"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/go-sdk/jsonrpc"
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
 
@@ -69,11 +67,7 @@ const sdkFrameLimitDisabled = -1
 func (t *Transport) Connect(ctx context.Context) (sdk.Connection, error) {
 	writer := &frameWriter{channel: t.channel, maximum: t.maximum}
 	transport := &sdk.IOTransport{Reader: newFrameReader(t.channel, t.maximum), Writer: writer, MaxLineLength: sdkFrameLimitDisabled}
-	conn, err := transport.Connect(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &interruptibleConnection{Connection: conn, writer: writer, sending: make(chan struct{}, 1)}, nil
+	return transport.Connect(ctx)
 }
 
 // Admit the complete newline-delimited frame before the SDK can decode a prefix.
@@ -160,54 +154,20 @@ func frameSizeError(maximum int) error {
 	return fmt.Errorf("%w: MCP frame exceeds %d bytes", frame.ErrCapacity, maximum)
 }
 
-type interruptibleConnection struct {
-	sdk.Connection
-	writer  *frameWriter
-	sending chan struct{}
-}
-
-func (c *interruptibleConnection) Write(ctx context.Context, message jsonrpc.Message) error {
-	// The SDK serializes writes behind a mutex. A waiting caller must be able
-	// to leave that queue without interrupting the sender that owns the stream.
-	select {
-	case <-ctx.Done():
-		return cancellation.Err(ctx)
-	case c.sending <- struct{}{}:
-	}
-	defer func() {
-		c.writer.ctx = nil
-		<-c.sending
-	}()
-	c.writer.ctx = ctx
-	return c.Connection.Write(ctx, message)
-}
-
-// The SDK issues one synchronous Write per complete JSON-RPC frame. Only the
-// caller actually writing bytes may interrupt this shared stream. If the child
-// stops reading, that write may already have sent a partial frame.
+// The SDK issues one synchronous Write per complete JSON-RPC frame and owns
+// its cancellation: a canceled queued write never starts, and canceling the
+// active one closes the transport, which interrupts this shared stream through
+// its read half. The adapter owns only the outbound frame budget.
 type frameWriter struct {
 	channel io.ReadWriteCloser
 	maximum int
-	ctx     context.Context
 }
 
 func (w *frameWriter) Write(frameBytes []byte) (int, error) {
 	if len(frameBytes) > w.maximum {
 		return 0, frameSizeError(w.maximum)
 	}
-	if err := context.Cause(w.ctx); err != nil {
-		return 0, err
-	}
-	closed := make(chan struct{})
-	stop := context.AfterFunc(w.ctx, func() {
-		_ = w.channel.Close()
-		close(closed)
-	})
 	n, err := w.channel.Write(frameBytes)
-	if !stop() {
-		// Keep the write slot until cancellation has finished interrupting it.
-		<-closed
-	}
 	if err == nil && n != len(frameBytes) {
 		err = io.ErrShortWrite
 	}

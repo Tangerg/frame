@@ -36,21 +36,21 @@ The indexer receives a document-scoped reader and writer, starts only after acti
 Install the Go module in an application:
 
 ```sh
-go get github.com/Tangerg/frame@v0.1.0
+go get github.com/Tangerg/frame@v0.1.1
 ```
 
 Install the command-line tools when needed:
 
 ```sh
-go install github.com/Tangerg/frame/cmd/frame@v0.1.0
-go install github.com/Tangerg/frame/cmd/frame-runner@v0.1.0
+go install github.com/Tangerg/frame/cmd/frame@v0.1.1
+go install github.com/Tangerg/frame/cmd/frame-runner@v0.1.1
 ```
 
-Download `frame-sdk-0.1.0.tgz` from the [v0.1.0 release](https://github.com/Tangerg/frame/releases/tag/v0.1.0)
+Download `frame-sdk-0.1.1.tgz` from the [v0.1.1 release](https://github.com/Tangerg/frame/releases/tag/v0.1.1)
 and install it in the consuming application:
 
 ```sh
-npm install ./frame-sdk-0.1.0.tgz
+npm install ./frame-sdk-0.1.1.tgz
 ```
 
 The tarball includes the native, browser, Node and React entries. The SDK is

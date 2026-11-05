@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.1.1 — 2026-11-05
+
+- Dispose the original SQLite connection when BEGIN is not acknowledged, so
+  cancellation before BEGIN cannot introduce a spurious rollback failure.
+- Preserve both cancellation and the caller's original cause when transaction
+  admission fails. A BEGIN that ran before its acknowledgement was lost is
+  settled by closing that same connection before further operations can proceed.
+- Keep existing commit uncertainty, rollback failure and retained connection
+  cleanup guarantees. There are no storage or wire format changes from v0.1.0.
+
 ## v0.1.0 — 2026-11-05
 
 Frame v0.1.0 consolidates the TypeScript SDK and strengthens exact binding,

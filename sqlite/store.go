@@ -196,6 +196,15 @@ const (
 	readTransaction
 )
 
+type transactionPhase uint8
+
+const (
+	transactionBeginning transactionPhase = iota
+	transactionActive
+	transactionCommitting
+	transactionSettled
+)
+
 // beginStatement takes the write lock up front for a write transaction, so
 // it can never fail to upgrade after reading.
 func (m transactionMode) beginStatement() string {
@@ -205,17 +214,19 @@ func (m transactionMode) beginStatement() string {
 	return "BEGIN IMMEDIATE"
 }
 
-// rollbackUnsettled rolls back a transaction that did not commit. A connection
-// whose rollback or scope failed is closed; one that cannot even be closed is
-// retained, unreturned, as unconfirmed. It reports whether the connection may
-// still return to the pool.
-func (s *Store) rollbackUnsettled(connection *sql.Conn, scope *connectionScope, commitIssued bool, err error) (bool, error) {
-	_, rollbackErr := connection.ExecContext(context.Background(), `ROLLBACK`)
-	if rollbackErr == nil && scope.failure() == nil {
-		return true, err
-	}
-	if rollbackErr != nil && commitIssued {
-		err = errors.Join(err, errCommitUnresolved)
+// A failed BEGIN acknowledgement cannot prove whether a transaction exists.
+// Disposing its original connection settles either case without inventing a
+// rollback failure. Later phases retain their rollback and commit evidence.
+func (s *Store) settleFailedTransaction(connection *sql.Conn, scope *connectionScope, phase transactionPhase, err error) (bool, error) {
+	var rollbackErr error
+	if phase != transactionBeginning {
+		_, rollbackErr = connection.ExecContext(context.Background(), `ROLLBACK`)
+		if rollbackErr == nil && scope.failure() == nil {
+			return true, err
+		}
+		if rollbackErr != nil && phase == transactionCommitting {
+			err = errors.Join(err, errCommitUnresolved)
+		}
 	}
 	returnable := true
 	if released, closeErr := closeOriginalConnection(connection); !released {
@@ -264,18 +275,17 @@ func (s *Store) transact(ctx context.Context, mode transactionMode, apply func(E
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	settled := false
-	commitIssued := false
+	phase := transactionBeginning
 	scope := newConnectionScope(connection, connection)
 	defer func() {
 		recovered := recover()
 		scope.seal()
-		if !settled {
-			returnConnection, err = s.rollbackUnsettled(connection, scope, commitIssued, err)
+		if phase != transactionSettled {
+			returnConnection, err = s.settleFailedTransaction(connection, scope, phase, err)
 			err = scope.include(err)
 		}
 		if recovered != nil {
-			if !settled && err != nil {
+			if phase != transactionSettled && err != nil {
 				panic(errors.Join(panicError(recovered), err))
 			}
 			panic(recovered)
@@ -284,8 +294,9 @@ func (s *Store) transact(ctx context.Context, mode transactionMode, apply func(E
 	// A failed acknowledgement can follow a successful BEGIN. This owner must
 	// settle or close that same connection before it can return to the pool.
 	if _, err := connection.ExecContext(ctx, mode.beginStatement()); err != nil {
-		return err
+		return errors.Join(err, cancellation.Err(ctx))
 	}
+	phase = transactionActive
 	if err := scope.enter(); err != nil {
 		return err
 	}
@@ -304,11 +315,11 @@ func (s *Store) transact(ctx context.Context, mode transactionMode, apply func(E
 	if err = cancellation.Err(ctx); err != nil {
 		return err
 	}
-	commitIssued = true
+	phase = transactionCommitting
 	if _, err = connection.ExecContext(context.Background(), `COMMIT`); err != nil {
 		return err
 	}
-	settled = true
+	phase = transactionSettled
 	return nil
 }
 

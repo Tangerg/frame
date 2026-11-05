@@ -72,7 +72,8 @@ preserves the committed conclusion and raises the recovery barrier.
 original conclusion; changing its request is a conflict. Context cancellation is
 checked before COMMIT. Cleanup responsibility starts before BEGIN or an authorizer
 change is attempted, since a failed acknowledgement does not prove that the
-change failed. Transaction rollback or connection disposal is joined
+change failed. A failed BEGIN disposes its original connection and preserves
+the caller's cancellation cause, whether BEGIN ran or not. Transaction rollback or connection disposal is joined
 before the owner releases admission. An unresolved connection or storage error
 raises RecoveryRequired instead of authorizing a retry.
 

@@ -143,6 +143,52 @@ func assertFaultDocumentCount(t *testing.T, store *Store, want int) {
 	}
 }
 
+func TestCanceledBeginDisposesOriginalConnection(t *testing.T) {
+	for _, phase := range []string{"before begin", "after begin"} {
+		for _, operation := range []string{"read", "update"} {
+			t.Run(phase+"/"+operation, func(t *testing.T) {
+				store, owner, _ := testStore(t)
+				ctx, cancel := context.WithCancelCause(t.Context())
+				defer cancel(nil)
+				cause := errors.New("original transaction canceled")
+				var interrupted atomic.Bool
+				var disposed atomic.Int64
+				interrupt := func(query string) error {
+					if (query == "BEGIN" || query == "BEGIN IMMEDIATE") && interrupted.CompareAndSwap(false, true) {
+						cancel(cause)
+						return ctx.Err()
+					}
+					return nil
+				}
+				fault := transactionFault{afterClose: func() { disposed.Add(1) }}
+				if phase == "before begin" {
+					fault.beforeExec = interrupt
+				} else {
+					fault.afterExec = interrupt
+				}
+				installTransactionFault(t, store, fault)
+				var err error
+				if operation == "read" {
+					err = store.Read(ctx, func(Reader) error { t.Error("read ran without an acknowledged begin"); return nil })
+				} else {
+					err = owner.Update(ctx, func(context.Context, Executor) error { t.Error("update ran without an acknowledged begin"); return nil })
+				}
+				var sqliteError *modernc.Error
+				if errors.As(err, &sqliteError) {
+					t.Fatalf("canceled begin introduced a SQLite failure: %v", err)
+				}
+				if !errors.Is(err, context.Canceled) || !errors.Is(err, cause) {
+					t.Fatalf("original cancellation was lost: %v", err)
+				}
+				if disposed.Load() != 1 {
+					t.Fatalf("original connection disposals = %d, want one", disposed.Load())
+				}
+				assertFaultDocumentCount(t, store, 0)
+			})
+		}
+	}
+}
+
 func TestCommitResponseLossSettlesOriginalDurableConclusion(t *testing.T) {
 	store, owner, admission := testStore(t)
 	request := []byte("commit-response-loss")

@@ -55,7 +55,11 @@ type callbackRoute struct {
 // Grant binds one unary method to ctx. The host owns authorization, effects,
 // and receipts. The handler receives the original command ID (empty for queries).
 func (r *CallbackReceiver) Grant(ctx context.Context, method *portable.Method, handle func(context.Context, string, value.JSON) (value.JSON, error)) (ManagedCallback, error) {
-	if r == nil || method == nil || handle == nil || len(method.Descriptor().Stream) != 0 {
+	if r == nil || method == nil || handle == nil {
+		return ManagedCallback{}, frame.ErrInvalid
+	}
+	method = new(*method)
+	if method.Identity().Validate() != nil || len(method.Descriptor().Stream) != 0 {
 		return ManagedCallback{}, frame.ErrInvalid
 	}
 	return r.open(ctx, callbackRoute{method.Name(), method.Identity().Digest().String(), method.Kind(), func(call context.Context, id string, input value.JSON) (value.JSON, error) {
@@ -186,6 +190,9 @@ func encodeCallbackReply(output value.JSON, failure error, limits CallbackReceiv
 		}
 		reply.Value = output.Bytes()
 	} else {
+		if _, interrupted := errors.AsType[*callbackPanic](failure); interrupted {
+			return nil, false
+		}
 		refusal, known := errors.AsType[*Refusal](failure)
 		if !known || refusal == nil || refusal.Code == "" || int64(len(refusal.Code))+int64(len(refusal.Message)) > limits.MaxResponseBytes {
 			return nil, false

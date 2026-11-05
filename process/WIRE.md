@@ -28,6 +28,11 @@ a framework rejection by returning one of the framework error codes. Neither
 cancellation nor unknown outcome authorizes replay; reconciliation uses the
 original business operation identity and owner.
 
+A handler that exits its goroutine without returning also has an unknown outcome.
+Its worker still replies and releases the original call slot. Local consumer panic
+errors retain their causes for inspection; those causes cannot change the fixed
+wire classification or become remote error text.
+
 The sender checks cancellation again when it holds outbound admission, after
 payload encoding and any wait for the queue lock. Cancellation already visible
 at that boundary consumes no request ID, pending slot or output frame. A
@@ -58,7 +63,8 @@ This contract is protocol version 2; peers using the earlier command-less format
 are refused during the handshake.
 
 Each stream endpoint retains its first delivery failure for the whole call.
-Consumer rejection, invalid chunks, panic, overlapping deliveries or a final result
+Consumer rejection, invalid chunks, panic, goroutine exit without a return,
+overlapping deliveries or a final result
 that overtakes an accepted delivery prevent success, even if the producer ignores
 the failed acknowledgement. Finishing a call joins accepted delivery callbacks;
 an escaped emitter cannot publish after the final result.

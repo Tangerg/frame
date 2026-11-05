@@ -62,7 +62,7 @@ type cleanupState uint8
 const (
 	cleanupPending cleanupState = iota
 	cleanupRunning
-	cleanupReturned
+	cleanupFinished
 )
 
 // resourceEntry is a node of the release graph: it closes only after every
@@ -399,14 +399,37 @@ func (l *Lifetime) forgetResourceLocked(entry *resourceEntry) {
 	l.resources = l.resources[:last]
 }
 
-func invokeCancel(cancel func(error), cause error) (err error) {
-	defer func() {
-		if value := recover(); value != nil {
-			err = fmt.Errorf("resource cancellation panicked: %v", value)
-		}
+func callbackPanicError(callback string, value any) error {
+	if cause, ok := value.(error); ok {
+		return errors.Join(fmt.Errorf("frame: %s panicked", callback), cause)
+	}
+	return fmt.Errorf("frame: %s panicked: %v", callback, value)
+}
+
+func invokeCancel(cancel func(error), cause error) error {
+	return joinCallback("resource cancellation", func() error {
+		cancel(cause)
+		return nil
+	})
+}
+
+func joinCallback(name string, callback func() error) error {
+	// Goexit cannot be recovered. Join the original callback's goroutine so
+	// its exit cannot abandon the caller's remaining cleanup or settlement.
+	done := make(chan struct{})
+	var err error
+	go func() {
+		defer close(done)
+		err = fmt.Errorf("frame: %s exited without returning", name)
+		defer func() {
+			if value := recover(); value != nil {
+				err = callbackPanicError(name, value)
+			}
+		}()
+		err = callback()
 	}()
-	cancel(cause)
-	return nil
+	<-done
+	return err
 }
 
 func invokeResourceClose(closeResource func(context.Context) (ReleaseState, error), ctx context.Context) (state ReleaseState, err error) {
@@ -414,7 +437,7 @@ func invokeResourceClose(closeResource func(context.Context) (ReleaseState, erro
 	defer func() {
 		if value := recover(); value != nil {
 			state = ResourceUnconfirmed
-			err = fmt.Errorf("resource close panicked: %v", value)
+			err = callbackPanicError("resource close", value)
 		}
 	}()
 	state, err = closeResource(ctx)
@@ -429,31 +452,44 @@ func (l *Lifetime) closeResource(entry *resourceEntry) {
 	closeResource := entry.resource.Close
 	ctx := context.WithoutCancel(l.ctx)
 	l.mu.Unlock()
-	state, err := invokeResourceClose(closeResource, ctx)
-	detail := closeFailureDetail(err)
-	l.mu.Lock()
-	entry.cleanup = cleanupReturned
-	l.closing.running--
-	if state == ResourceReleased {
-		entry.released = true
-	}
-	if err != nil {
-		l.recordFailureLocked(entry.resource.Name, detail, err)
-	}
-	if entry.released {
-		l.forgetResourceLocked(entry)
-	}
-	l.signalLocked()
-	l.mu.Unlock()
+	state := ResourceUnconfirmed
+	err := errors.New("frame: resource close exited without returning")
+	// Callback exit ends cleanup even without a return value. Release still
+	// requires the original callback's conclusion or a ResourceHandle proof.
+	defer func() {
+		detail := closeFailureDetail(err)
+		l.mu.Lock()
+		entry.cleanup = cleanupFinished
+		l.closing.running--
+		if state == ResourceReleased {
+			entry.released = true
+		}
+		if err != nil {
+			l.recordFailureLocked(entry.resource.Name, detail, err)
+		}
+		if entry.released {
+			l.forgetResourceLocked(entry)
+		}
+		l.signalLocked()
+		l.mu.Unlock()
+	}()
+	state, err = invokeResourceClose(closeResource, ctx)
 }
 
-// Error formatting may call back into its resource owner. Keep it outside the
-// state lock, and retain a bounded valid JSON string as the diagnostic projection.
+// Error formatting may call back into its resource owner or call Goexit. Its
+// projection cannot hold the state lock or abandon the original close evidence.
 func closeFailureDetail(err error) string {
 	if err == nil {
 		return ""
 	}
-	return boundedDiagnostic(fmt.Sprint(err))
+	var detail string
+	if failure := joinCallback("close diagnostic", func() error {
+		detail = fmt.Sprint(err)
+		return nil
+	}); failure != nil {
+		detail = failure.Error()
+	}
+	return boundedDiagnostic(detail)
 }
 
 func boundedDiagnostic(text string) string {

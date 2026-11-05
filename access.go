@@ -7,7 +7,10 @@ import (
 
 // Access borrows every selected member under one admitted work interval.
 // Native implementations must not keep those values after the callback returns.
-type Access struct {
+type Access struct{ interval *accessInterval }
+
+// All handle copies lose access together before the original work is finished.
+type accessInterval struct {
 	mu  sync.Mutex
 	use *Use
 	ctx context.Context
@@ -19,7 +22,18 @@ type Member[M, V any] struct {
 	Value    V
 }
 
-func (a *Access) Context() context.Context { return a.ctx }
+func (a *Access) Context() context.Context {
+	if a.interval == nil {
+		return nil
+	}
+	return a.interval.ctx
+}
+
+func (a *accessInterval) close() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.use = nil
+}
 
 func withAccess(ctx context.Context, use *Use, call func(*Access) error) error {
 	if use == nil || call == nil {
@@ -29,14 +43,10 @@ func withAccess(ctx context.Context, use *Use, call func(*Access) error) error {
 	if err != nil {
 		return err
 	}
-	access := &Access{use: use, ctx: work.Context()}
-	defer func() {
-		access.mu.Lock()
-		access.use = nil
-		access.mu.Unlock()
-		work.Finish()
-	}()
-	return call(access)
+	defer work.Finish()
+	interval := &accessInterval{use: use, ctx: work.Context()}
+	defer interval.close()
+	return call(&Access{interval: interval})
 }
 
 func (h *Host) With(ctx context.Context, grant ScopeGrant, plan *BindingPlan, call func(*Access) error) error {
@@ -50,9 +60,13 @@ func (s Selection[M, V]) Members(access *Access) ([]Member[M, V], error) {
 	if access == nil {
 		return nil, ErrInvalid
 	}
-	access.mu.Lock()
-	defer access.mu.Unlock()
-	use := access.use
+	interval := access.interval
+	if interval == nil {
+		return nil, ErrClosed
+	}
+	interval.mu.Lock()
+	defer interval.mu.Unlock()
+	use := interval.use
 	if use == nil {
 		return nil, ErrClosed
 	}

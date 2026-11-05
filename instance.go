@@ -178,26 +178,31 @@ func (i *Instance) releaseProvidersLocked() {
 }
 
 func (i *Instance) prepare() {
+	err := errors.New("frame: preparation exited without returning")
+	// Setup and activation may end their goroutine with Goexit. Only this
+	// original preparation completes its waiters and starts failed retirement.
+	defer func() { i.finishPrepare(err) }()
+	err = i.prepareUnit()
+}
+
+func (i *Instance) prepareUnit() error {
 	h := i.host
 	work, err := i.lifetime.Enter(i.lifetime.Context())
 	if err != nil {
-		i.finishPrepare(nil, nil, err)
-		return
+		return err
 	}
 	defer work.Finish()
 	for _, provider := range i.providers {
 		select {
 		case <-provider.prepared:
 		case <-work.Context().Done():
-			i.finishPrepare(nil, nil, contextError(work.Context()))
-			return
+			return contextError(work.Context())
 		}
 		h.mu.Lock()
 		serving := provider.servingLocked()
 		h.mu.Unlock()
 		if !serving {
-			i.finishPrepare(nil, nil, errors.Join(ErrUnavailable, provider.preparationErr))
-			return
+			return errors.Join(ErrUnavailable, provider.preparationErr)
 		}
 	}
 	setup := &Setup{host: h, instance: i, work: work, activation: &activation{}}
@@ -208,14 +213,16 @@ func (i *Instance) prepare() {
 	}
 	h.mu.Unlock()
 	if err != nil {
-		i.finishPrepare(nil, nil, err)
-		return
+		return err
 	}
-	exports, err := invokeSetup(run, work.Context(), setup)
+	exports, activate, err := invokeSetup(run, work.Context(), setup)
 	if err == nil {
 		err = contextError(work.Context())
 	}
-	i.finishPrepare(exports, setup.sealPreparation(), err)
+	if err != nil {
+		return err
+	}
+	return i.publishPrepared(exports, activate)
 }
 
 // setupFuncLocked returns the native setup or the registered driver for the
@@ -311,13 +318,13 @@ func (i *Instance) validateCurrentLocked() error {
 	return h.validateBindingReadsLocked(i.preparation)
 }
 
-func (i *Instance) finishPrepare(exports []ExportValue, activate func(context.Context) error, err error) {
+func (i *Instance) publishPrepared(exports []ExportValue, activate func(context.Context) error) error {
 	h := i.host
-	var publications []*publication
-	if err == nil {
-		publications, err = h.setupPublications(i, exports)
+	publications, err := h.setupPublications(i, exports)
+	if err != nil {
+		return err
 	}
-	if err == nil && activate != nil {
+	if activate != nil {
 		err = h.admission.Admit(i.lifetime.Context(), func(context.Context) error {
 			h.mu.Lock()
 			defer h.mu.Unlock()
@@ -326,14 +333,19 @@ func (i *Instance) finishPrepare(exports []ExportValue, activate func(context.Co
 		if err == nil {
 			err = invokeActivation(activate, i.lifetime.Context())
 		}
+		if err != nil {
+			return err
+		}
 	}
-	if err == nil {
-		err = h.admission.Admit(i.lifetime.Context(), func(context.Context) error {
-			h.mu.Lock()
-			defer h.mu.Unlock()
-			return i.publishSetupLocked(publications)
-		})
-	}
+	return h.admission.Admit(i.lifetime.Context(), func(context.Context) error {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return i.publishSetupLocked(publications)
+	})
+}
+
+func (i *Instance) finishPrepare(err error) {
+	h := i.host
 	h.mu.Lock()
 	i.preparation = nil
 	i.preparationErr = err
@@ -426,19 +438,21 @@ func (i *Instance) beginRetire() {
 	})
 }
 
-func invokeSetup(setup SetupFunc, ctx context.Context, value *Setup) (exports []ExportValue, err error) {
+func invokeSetup(setup SetupFunc, ctx context.Context, value *Setup) (exports []ExportValue, activate func(context.Context) error, err error) {
 	defer func() {
+		activate = value.sealPreparation()
 		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("frame: setup panicked: %v", recovered)
+			err = callbackPanicError("setup", recovered)
 		}
 	}()
-	return setup(ctx, value)
+	exports, err = setup(ctx, value)
+	return exports, activate, err
 }
 
 func invokeActivation(activate func(context.Context) error, ctx context.Context) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("frame: activation panicked: %v", recovered)
+			err = callbackPanicError("activation", recovered)
 		}
 	}()
 	return activate(ctx)

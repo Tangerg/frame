@@ -282,7 +282,7 @@ func TestSQLiteTransactionCutChild(t *testing.T) {
 		if err := store.Close(); err != nil {
 			cut.CloseErr = err.Error()
 		}
-		owner, store = nil, nil
+		owner, store = Owner{}, nil
 		runtime.GC()
 		runtime.GC()
 		pause()

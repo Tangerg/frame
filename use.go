@@ -511,7 +511,9 @@ func (u *Use) BeginClose(cause error) *Close {
 func (u *Use) settleRelease(proof ReleaseProof) {
 	h := u.host
 	for u.protected {
-		err := h.protection.ReleaseUse(context.Background(), u.id, proof)
+		err := joinCallback("use release", func() error {
+			return h.protection.ReleaseUse(context.Background(), u.id, proof)
+		})
 		if err == nil {
 			return
 		}
@@ -552,13 +554,17 @@ func (u *Use) retire(diagnostic error) {
 }
 
 func (u *Use) Close(ctx context.Context) (CloseOutcome, error) {
+	if ctx == nil || u == nil {
+		return CloseOutcome{}, ErrInvalid
+	}
+	reports := u.settlement.requestRetry()
 	causes := u.lifetime.ObserveCloseCauses()
 	outcome, err := u.BeginClose(ErrClosed).Wait(ctx)
 	err = causes.join(err)
 	if !outcome.Released {
 		return outcome, err
 	}
-	if settleErr := u.settlement.await(ctx); settleErr != nil {
+	if settleErr := u.settlement.await(ctx, reports); settleErr != nil {
 		outcome.Released = false
 		outcome.Pending = append(outcome.Pending, useSettlementPrefix+u.id)
 		return outcome, errors.Join(err, settleErr)

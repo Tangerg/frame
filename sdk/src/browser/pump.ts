@@ -39,14 +39,18 @@ export class ControlPump {
   synchronize(): Promise<void> {
     if (this.#stopping.signal.aborted)
       return Promise.reject(new FrameError("closed", "control pump is closed"));
-    this.#flushProofs();
-    this.#polling ??= this.#synchronize().finally(() => {
+    if (this.#polling) return this.#polling;
+    const completion = Promise.withResolvers<void>();
+    this.#polling = completion.promise.finally(() => {
       this.#polling = undefined;
     });
+    this.#flushProofs();
+    this.#synchronize().then(completion.resolve, completion.reject);
     return this.#polling;
   }
 
   async #synchronize(): Promise<void> {
+    if (this.#stopping.signal.aborted) return;
     await this.#runtime.poll((plans) => {
       if (this.#stopping.signal.aborted) return;
       for (const plan of plans) {
@@ -101,7 +105,9 @@ export class ControlPump {
       );
     if (this.#stopping.signal.aborted)
       return Promise.reject(new FrameError("closed", "control pump is closed"));
-    this.#running = this.#run(signal);
+    const completion = Promise.withResolvers<void>();
+    this.#running = completion.promise;
+    this.#run(signal).then(completion.resolve, completion.reject);
     return this.#running;
   }
 
@@ -140,11 +146,14 @@ export class ControlPump {
   }
 
   close(): Promise<void> {
-    this.#closing ??= this.#close().catch((error) => {
+    if (this.#closing) return this.#closing;
+    const completion = Promise.withResolvers<void>();
+    this.#closing = completion.promise.catch((error) => {
       this.#closing = undefined;
       throw error;
     });
     this.#stopping.abort();
+    this.#close().then(completion.resolve, completion.reject);
     return this.#closing;
   }
 

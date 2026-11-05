@@ -8,16 +8,16 @@ import (
 // settlement is the durable release of a protected Use. done closes exactly
 // once, after the release has been settled and the Host forgot the Use.
 type settlement struct {
-	mu      sync.Mutex
-	failure error
-	reports uint64
-	changed chan struct{}
-	retry   chan struct{}
-	done    chan struct{}
+	mu             sync.Mutex
+	failure        error
+	reports        uint64
+	changed        chan struct{}
+	retryRequested chan struct{}
+	done           chan struct{}
 }
 
 func newSettlement() *settlement {
-	return &settlement{changed: make(chan struct{}), retry: make(chan struct{}, 1), done: make(chan struct{})}
+	return &settlement{changed: make(chan struct{}), done: make(chan struct{})}
 }
 
 func (s *settlement) fail(err error) {
@@ -25,11 +25,17 @@ func (s *settlement) fail(err error) {
 	defer s.mu.Unlock()
 	s.failure = err
 	s.reports++
+	s.retryRequested = make(chan struct{})
 	close(s.changed)
 	s.changed = make(chan struct{})
 }
 
-func (s *settlement) awaitRetry() { <-s.retry }
+func (s *settlement) awaitRetry() {
+	s.mu.Lock()
+	requested := s.retryRequested
+	s.mu.Unlock()
+	<-requested
+}
 
 func (s *settlement) complete() {
 	s.mu.Lock()
@@ -40,17 +46,19 @@ func (s *settlement) complete() {
 	close(s.changed)
 }
 
-// await requests one retry of a failed settlement and reports its next
-// conclusion; an earlier failure is never reported as this attempt's result.
-func (s *settlement) await(ctx context.Context) error {
+// A close can retry only a failure it observed on entry. A first failure during
+// that close must be reported rather than silently starting another attempt.
+func (s *settlement) requestRetry() uint64 {
 	s.mu.Lock()
-	reports := s.reports
-	if s.failure != nil {
-		select {
-		case s.retry <- struct{}{}:
-		default:
-		}
+	defer s.mu.Unlock()
+	if s.failure != nil && !isClosed(s.retryRequested) {
+		close(s.retryRequested)
 	}
+	return s.reports
+}
+
+func (s *settlement) await(ctx context.Context, reports uint64) error {
+	s.mu.Lock()
 	for {
 		if isClosed(s.done) {
 			s.mu.Unlock()

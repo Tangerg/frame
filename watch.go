@@ -13,9 +13,13 @@ type Change struct {
 	Err      error
 }
 
-// Watch streams catalog revisions after its initial Snapshot. Its host is the
-// single closed/open fact: it is cleared exactly once, under Host.mu.
-type Watch struct {
+// Copies of a Watch share one subscription; closing any handle releases that
+// subscription's capacity and cannot close a later Watch.
+type Watch struct{ subscription *catalogWatch }
+
+// The subscription, rather than a caller-owned handle, belongs to the catalog
+// and Lifetime. Its host is cleared exactly once, under Host.mu.
+type catalogWatch struct {
 	host      atomic.Pointer[Host]
 	contracts []ContractRef
 	changes   chan Change
@@ -29,7 +33,7 @@ const watchResourceName = "contract watch"
 // ends this stream with ErrResyncRequired; it never silently drops a revision.
 func (h *Host) Watch(ctx context.Context, points ...ContractRef) (*Snapshot, *Watch, error) {
 	var snapshot *Snapshot
-	var watch *Watch
+	var watch *catalogWatch
 	err := h.admission.Under(ctx, func() error {
 		h.mu.Lock()
 		defer h.mu.Unlock()
@@ -44,7 +48,7 @@ func (h *Host) Watch(ctx context.Context, points ...ContractRef) (*Snapshot, *Wa
 		if err != nil {
 			return err
 		}
-		watch = &Watch{contracts: slices.Clone(points), changes: make(chan Change, h.limits.WatchBuffer)}
+		watch = &catalogWatch{contracts: slices.Clone(points), changes: make(chan Change, h.limits.WatchBuffer)}
 		watch.host.Store(h)
 		resource, err := h.lifetime.Own(Resource{
 			Name:   watchResourceName,
@@ -65,7 +69,7 @@ func (h *Host) Watch(ctx context.Context, points ...ContractRef) (*Snapshot, *Wa
 	if err != nil {
 		return nil, nil, err
 	}
-	stop := context.AfterFunc(ctx, watch.Close)
+	stop := context.AfterFunc(ctx, func() { watch.close(nil) })
 	h.mu.Lock()
 	if watch.host.Load() == nil {
 		h.mu.Unlock()
@@ -74,14 +78,23 @@ func (h *Host) Watch(ctx context.Context, points ...ContractRef) (*Snapshot, *Wa
 		watch.stop = stop
 		h.mu.Unlock()
 	}
-	return snapshot, watch, nil
+	return snapshot, &Watch{subscription: watch}, nil
 }
 
-func (w *Watch) Changes() <-chan Change { return w.changes }
+func (w *Watch) Changes() <-chan Change {
+	if w == nil || w.subscription == nil {
+		return nil
+	}
+	return w.subscription.changes
+}
 
-func (w *Watch) Close() { w.close(nil) }
+func (w *Watch) Close() {
+	if w != nil && w.subscription != nil {
+		w.subscription.close(nil)
+	}
+}
 
-func (w *Watch) close(err error) {
+func (w *catalogWatch) close(err error) {
 	host := w.host.Load()
 	if host == nil {
 		return
@@ -92,7 +105,7 @@ func (w *Watch) close(err error) {
 }
 
 // deliverLocked never blocks the catalog: a full buffer ends the stream.
-func (w *Watch) deliverLocked(change Change) {
+func (w *catalogWatch) deliverLocked(change Change) {
 	select {
 	case w.changes <- change:
 	default:
@@ -102,7 +115,7 @@ func (w *Watch) deliverLocked(change Change) {
 
 // closeLocked replaces undelivered changes with err, so the terminal reason
 // always fits the buffer.
-func (w *Watch) closeLocked(err error) {
+func (w *catalogWatch) closeLocked(err error) {
 	host := w.host.Load()
 	if host == nil {
 		return
@@ -124,7 +137,7 @@ func (w *Watch) closeLocked(err error) {
 }
 
 // discardBuffered never blocks: the receiver may drain concurrently.
-func (w *Watch) discardBuffered() {
+func (w *catalogWatch) discardBuffered() {
 	for {
 		select {
 		case <-w.changes:

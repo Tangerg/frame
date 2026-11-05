@@ -36,7 +36,7 @@ type App struct {
 	Content    *distribution.Store
 	Bridge     *browser.Bridge
 	Contracts  Contracts
-	owner      *sqlite.Owner
+	owner      sqlite.Owner
 	lifetime   *frame.Lifetime
 	scope      frame.ScopeGrant
 	preview    distribution.Release

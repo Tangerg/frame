@@ -137,13 +137,13 @@ type View struct {
 	report Report
 }
 
-func (p *Prepared) Acquire(ctx context.Context, owner *frame.Lifetime, reference document.DocumentRef) (_ *View, err error) {
+func (p *Prepared) Acquire(ctx context.Context, owner *frame.Lifetime, reference document.DocumentRef) (view *View, err error) {
 	use, err := p.host.Acquire(ctx, p.plan, frame.UseConfig{Owner: owner, Scope: p.scope})
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
-		if err != nil {
+		if view == nil {
 			_, closeErr := use.Close(context.WithoutCancel(ctx))
 			err = errors.Join(err, closeErr)
 		}

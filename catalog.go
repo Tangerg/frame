@@ -28,12 +28,12 @@ type contractMembers struct {
 // contract's revision and is delivered to its Watches; Host.mu guards it.
 type catalog struct {
 	contracts       map[ContractRef]*contractMembers
-	watches         map[*Watch]struct{}
+	watches         map[*catalogWatch]struct{}
 	maxPublications int
 }
 
 func newCatalog(maxPublications int) catalog {
-	return catalog{contracts: make(map[ContractRef]*contractMembers), watches: make(map[*Watch]struct{}), maxPublications: maxPublications}
+	return catalog{contracts: make(map[ContractRef]*contractMembers), watches: make(map[*catalogWatch]struct{}), maxPublications: maxPublications}
 }
 
 func (c *catalog) count() int {

@@ -28,22 +28,33 @@ func reserveManagedLease(lifetime *frame.Lifetime) (*managedLease, error) {
 	return lease, err
 }
 
-func (l *managedLease) bind(grant *ManagedCallback) {
+func (l *managedLease) bind(grant *ManagedCallback) *ManagedCallback {
+	if grant != nil {
+		copy := *grant
+		grant = &copy
+	}
 	l.grant = grant
 	close(l.ready)
+	return grant
 }
 
 // A broker returning no grant on failure asserts that no permission escaped.
-// A panic makes no such assertion and must leave the owner unconfirmed.
+// An interrupted callback makes no such assertion and must leave the owner unconfirmed.
 func (l *managedLease) issue(open func() (*ManagedCallback, error)) (grant *ManagedCallback, err error) {
+	returned := false
 	defer func() {
-		if recover() != nil {
+		if recovered := recover(); recovered != nil {
 			grant = &ManagedCallback{}
-			err = errors.New("mcp: callback broker panicked while issuing a grant")
+			err = newCallbackPanic("mcp: callback broker panicked while issuing a grant", recovered)
+		} else if !returned {
+			grant = &ManagedCallback{}
+			err = errors.New("mcp: callback broker did not return its grant")
 		}
-		l.bind(grant)
+		grant = l.bind(grant)
 	}()
-	return open()
+	grant, err = open()
+	returned = true
+	return grant, err
 }
 
 func issuedGrant(grant ManagedCallback, err error) (*ManagedCallback, error) {
@@ -53,35 +64,35 @@ func issuedGrant(grant ManagedCallback, err error) (*ManagedCallback, error) {
 	return &grant, err
 }
 
-func revokeManaged(grant *ManagedCallback) (err error) {
-	defer func() {
-		if recover() != nil {
-			err = errors.New("mcp: callback broker panicked while revoking a grant")
-		}
-	}()
-	return grant.Revoke()
-}
-
 func (l *managedLease) revoke() {
 	<-l.ready
 	g := l.grant
-	if g != nil {
-		if g.Revoke != nil {
-			l.err = revokeManaged(g)
+	returned := false
+	// Revocation may interrupt its goroutine; only the original release proof
+	// can settle the lease, so its observation must survive that interruption.
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			l.err = newCallbackPanic("mcp: callback broker panicked while revoking a grant", recovered)
+		} else if !returned {
+			l.err = errors.New("mcp: callback broker did not return from revocation")
 		}
-		if g.Released == nil {
+		if g != nil && g.Released == nil {
 			l.err = errors.Join(l.err, frame.ErrUnconfirmedRelease)
 		}
-	}
-	close(l.revoked)
-	if g != nil {
-		if g.Released == nil {
-			return
+		close(l.revoked)
+		if g != nil {
+			if g.Released == nil {
+				return
+			}
+			<-g.Released
 		}
-		<-g.Released
+		_ = l.owner.ConfirmReleased(l.err)
+		close(l.released)
+	}()
+	if g != nil && g.Revoke != nil {
+		l.err = g.Revoke()
 	}
-	_ = l.owner.ConfirmReleased(l.err)
-	close(l.released)
+	returned = true
 }
 
 func (l *managedLease) close(ctx context.Context) (frame.ReleaseState, error) {

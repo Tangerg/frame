@@ -75,7 +75,12 @@ func ParseManagedContract(data []byte) (*ManagedContract, error) {
 	return &ManagedContract{capability: capability, wire: identity}, nil
 }
 
-func (c *ManagedContract) Capability() *portable.Capability { return c.capability }
+func (c *ManagedContract) Capability() *portable.Capability {
+	if c.capability == nil {
+		return nil
+	}
+	return new(*c.capability)
+}
 
 type managedDescription struct {
 	Protocol     string                      `json:"protocol"`

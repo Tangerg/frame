@@ -326,36 +326,39 @@ func (p *peer) receiveRequestLocked(msg envelope, n uint64) error {
 func (p *peer) respond(ctx context.Context, cancel context.CancelFunc, msg envelope) {
 	defer p.workers.Done()
 	defer cancel()
-	result, err := p.run(ctx, msg)
-	reply := envelope{ID: msg.ID, Result: result}
-	if err != nil {
-		reply.Result = nil
-		if errors.Is(err, context.Canceled) {
-			reply.Error = &Problem{wire.Errors.Cancelled, "request cancelled"}
-		} else if errors.Is(err, ErrOutcomeUnknown) {
-			reply.Error = &Problem{wire.Errors.Unknown, "operation did not return a confirmed result"}
-		} else if established, ok := errors.AsType[*Problem](err); ok {
-			reply.Error = established
-		} else {
-			reply.Error = &Problem{wire.Errors.Unknown, "operation did not return a confirmed result"}
-		}
-	}
-	p.mu.Lock()
-	delete(p.running, msg.ID)
-	sendErr := p.sendLocked(reply)
-	p.mu.Unlock()
-	if sendErr != nil {
-		p.end(sendErr)
-	}
-}
-func (p *peer) run(ctx context.Context, msg envelope) (result jsontext.Value, err error) {
+	var result jsontext.Value
+	var err error
+	returned := false
+	// Goexit runs defers without returning or panicking. The original worker
+	// still owes its reply and capacity release after that interruption.
 	defer func() {
-		if recover() != nil {
+		if recover() != nil || !returned {
 			result = nil
 			err = ErrOutcomeUnknown
 		}
+		reply := envelope{ID: msg.ID, Result: result}
+		if err != nil {
+			reply.Result = nil
+			if errors.Is(err, context.Canceled) && !errors.Is(err, errConsumerPanic) {
+				reply.Error = &Problem{wire.Errors.Cancelled, "request cancelled"}
+			} else if errors.Is(err, ErrOutcomeUnknown) {
+				reply.Error = &Problem{wire.Errors.Unknown, "operation did not return a confirmed result"}
+			} else if established, ok := errors.AsType[*Problem](err); ok {
+				reply.Error = established
+			} else {
+				reply.Error = &Problem{wire.Errors.Unknown, "operation did not return a confirmed result"}
+			}
+		}
+		p.mu.Lock()
+		delete(p.running, msg.ID)
+		sendErr := p.sendLocked(reply)
+		p.mu.Unlock()
+		if sendErr != nil {
+			p.end(sendErr)
+		}
 	}()
-	return p.handle(ctx, msg.Method, msg.Params)
+	result, err = p.handle(ctx, msg.Method, msg.Params)
+	returned = true
 }
 
 func decode(raw jsontext.Value, out any) error {

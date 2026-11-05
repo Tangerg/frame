@@ -38,8 +38,8 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 	if err != nil {
 		return nil, err
 	}
-	store := &Store{lock: lock, admission: config.Admission, owners: make(map[string]*Owner), maxRequestBytes: config.MaxRequestBytes, maxSubmissions: config.MaxSubmissionsPerOwner, maxRealmHistoryBytes: config.MaxRealmHistoryBytes, projectInstallation: config.ProjectInstallation}
-	store.control = &Owner{store: store, id: installationOwnerID}
+	store := &Store{lock: lock, admission: config.Admission, owners: make(map[string]Owner), maxRequestBytes: config.MaxRequestBytes, maxSubmissions: config.MaxSubmissionsPerOwner, maxRealmHistoryBytes: config.MaxRealmHistoryBytes, projectInstallation: config.ProjectInstallation}
+	store.control = Owner{store: store, id: installationOwnerID}
 	defer func() {
 		if err != nil {
 			err = errors.Join(err, store.Close())
@@ -106,7 +106,7 @@ func (s *Store) registerOwners(owners []OwnerSchema) ([]string, framevalue.Diges
 		if _, duplicate := s.owners[owner.ID]; duplicate {
 			return nil, framevalue.Digest{}, errors.New("sqlite: duplicate owner")
 		}
-		s.owners[owner.ID] = &Owner{store: s, id: owner.ID, references: owner.References}
+		s.owners[owner.ID] = Owner{store: s, id: owner.ID, references: owner.References}
 		statements = append(statements, owner.Statements...)
 		declarations += "\n-- owner " + owner.ID + "\n" + strings.Join(owner.Statements, ";\n")
 	}

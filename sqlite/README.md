@@ -17,6 +17,10 @@ tables and a trusted reference query. Register the resulting `Owner` with the sa
 Admission through `RegisterUseOwner` before its first destructive dependency check.
 That check seals the owner set for the life of this Admission. Frame does not create a competing business
 reference-count ledger. Every admission read uses a new current transaction.
+`Store.Owner` returns an `Owner` value capability. Store that value and register it
+directly: reassigning a local variable cannot replace the Store's declaration or
+the reference reader already captured by Admission. A zero Owner refuses all
+operations with `frame.ErrInvalid`; its diagnostic `ID` is empty.
 
 ## Business submission
 
@@ -67,6 +71,9 @@ submission evidence, not a plugin's business receipt. Actual business results st
 with their original owner. An optional synchronization callback updates the local
 authority after a confirmed commit and before admission reopens. Its failure
 preserves the committed conclusion and raises the recovery barrier.
+These obligations also survive `runtime.Goexit`: an entered mutation settles its
+original rolled-back intent before admission returns, and an interrupted
+post-commit synchronization keeps admission fenced until the owner restores it.
 
 `frame.CommitSucceeded` and `frame.CommitRejected` are terminal. Repeating the same identity returns its
 original conclusion; changing its request is a conflict. Context cancellation is

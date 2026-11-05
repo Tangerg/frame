@@ -27,7 +27,10 @@ type Settlement struct {
 
 // Prepare issues an identity only after its sequence and original request are
 // durable together. The identity alone grants no right to dispatch plugin work.
-func (o *Owner) Prepare(ctx context.Context, request []byte) (id SubmissionID, err error) {
+func (o Owner) Prepare(ctx context.Context, request []byte) (id SubmissionID, err error) {
+	if err := o.validate(); err != nil {
+		return id, err
+	}
 	err = o.store.admission.Admit(ctx, func(admitted context.Context) error {
 		id, err = o.PrepareUnder(admitted, request)
 		return err
@@ -37,16 +40,19 @@ func (o *Owner) Prepare(ctx context.Context, request []byte) (id SubmissionID, e
 
 // PrepareUnder joins an existing bounded admission. The supplied context must
 // belong to this Store's active authority; it does not reacquire the gate.
-func (o *Owner) PrepareUnder(ctx context.Context, request []byte) (SubmissionID, error) {
+func (o Owner) PrepareUnder(ctx context.Context, request []byte) (SubmissionID, error) {
+	if err := o.validate(); err != nil {
+		return SubmissionID{}, err
+	}
 	if err := o.store.admission.CheckAdmitted(ctx); err != nil {
 		return SubmissionID{}, err
 	}
 	return o.prepare(ctx, request)
 }
 
-func (o *Owner) prepare(ctx context.Context, request []byte) (id SubmissionID, err error) {
-	if len(request) == 0 || len(request) > o.store.maxRequestBytes {
-		return id, errors.New("sqlite: request exceeds its admitted byte range")
+func (o Owner) prepare(ctx context.Context, request []byte) (id SubmissionID, err error) {
+	if err := o.validateRequest(request); err != nil {
+		return id, err
 	}
 	request = bytes.Clone(request)
 	err = func() error {
@@ -93,7 +99,10 @@ func (o *Owner) prepare(ctx context.Context, request []byte) (id SubmissionID, e
 // lost. Evidence locates the accepted change; it is not a plugin result receipt.
 // synchronize runs under the same admission after storage settles, before new
 // work may observe a committed installation or business binding.
-func (o *Owner) Commit(ctx context.Context, id SubmissionID, request []byte, mutation func(context.Context, Executor) ([]byte, error), synchronize func(Settlement) error) (settlement Settlement, err error) {
+func (o Owner) Commit(ctx context.Context, id SubmissionID, request []byte, mutation func(context.Context, Executor) ([]byte, error), synchronize func(Settlement) error) (settlement Settlement, err error) {
+	if err := o.validate(); err != nil {
+		return settlement, err
+	}
 	err = o.store.admission.Admit(ctx, func(admitted context.Context) error {
 		settlement, err = o.CommitUnder(admitted, id, request, mutation, synchronize)
 		return err
@@ -103,7 +112,10 @@ func (o *Owner) Commit(ctx context.Context, id SubmissionID, request []byte, mut
 
 // CommitUnder shares the original admission with business validation and
 // storage. It never admits a caller carrying an expired or foreign context.
-func (o *Owner) CommitUnder(ctx context.Context, id SubmissionID, request []byte, mutation func(context.Context, Executor) ([]byte, error), synchronize func(Settlement) error) (Settlement, error) {
+func (o Owner) CommitUnder(ctx context.Context, id SubmissionID, request []byte, mutation func(context.Context, Executor) ([]byte, error), synchronize func(Settlement) error) (Settlement, error) {
+	if err := o.validate(); err != nil {
+		return Settlement{}, err
+	}
 	if err := o.store.admission.CheckAdmitted(ctx); err != nil {
 		return Settlement{}, err
 	}
@@ -120,22 +132,22 @@ const (
 )
 
 type submissionMutation struct {
-	owner      *Owner
+	owner      Owner
 	id         SubmissionID
 	request    []byte
 	settlement Settlement
 	entered    bool
 }
 
-func (o *Owner) commit(ctx context.Context, id SubmissionID, request []byte, mutation func(context.Context, Executor) ([]byte, error), synchronize func(Settlement) error, confirm confirmation) (Settlement, error) {
-	if err := o.validate(id); err != nil {
+func (o Owner) commit(ctx context.Context, id SubmissionID, request []byte, mutation func(context.Context, Executor) ([]byte, error), synchronize func(Settlement) error, confirm confirmation) (Settlement, error) {
+	if err := o.validateSubmission(id); err != nil {
 		return Settlement{}, err
 	}
 	if mutation == nil {
 		return Settlement{}, errors.New("sqlite: mutation is required")
 	}
-	if len(request) == 0 || len(request) > o.store.maxRequestBytes {
-		return Settlement{}, errors.New("sqlite: request exceeds its admitted byte range")
+	if err := o.validateRequest(request); err != nil {
+		return Settlement{}, err
 	}
 	attempt := submissionMutation{owner: o, id: id, request: bytes.Clone(request)}
 	if err := attempt.execute(ctx, mutation); err != nil {
@@ -147,8 +159,17 @@ func (o *Owner) commit(ctx context.Context, id SubmissionID, request []byte, mut
 }
 
 func (m *submissionMutation) execute(ctx context.Context, mutate func(context.Context, Executor) ([]byte, error)) error {
-	defer m.onPanic()
-	return m.owner.store.transaction(ctx, func(tx Executor) error {
+	returned := false
+	defer func() {
+		cause := recover()
+		if !returned {
+			m.resolveInterruption()
+		}
+		if cause != nil {
+			panic(cause)
+		}
+	}()
+	err := m.owner.store.transaction(ctx, func(tx Executor) error {
 		original, err := m.owner.readSettlement(ctx, tx, m.id, m.request)
 		if err != nil {
 			return err
@@ -172,23 +193,28 @@ func (m *submissionMutation) execute(ctx context.Context, mutate func(context.Co
 		}
 		return err
 	})
+	returned = true
+	return err
 }
 
-func (m *submissionMutation) onPanic() {
-	cause := recover()
-	if cause == nil {
+func (m *submissionMutation) resolveInterruption() {
+	if !m.entered {
 		return
 	}
-	if m.entered {
-		original, err := m.owner.settlePrepared(context.Background(), m.id, m.request)
-		if err == nil && original.State == frame.CommitRejected {
-			err = m.owner.confirm(context.Background(), m.id)
-		}
-		if err != nil || original.State == frame.CommitSucceeded {
-			m.owner.store.admission.RequireRecovery(errors.Join(ErrUnsettled, err))
+	original, err := m.owner.settlePrepared(context.Background(), m.id, m.request)
+	m.settlement = original
+	if err != nil {
+		m.settlement = Settlement{ID: m.id, State: frame.CommitIndeterminate}
+	}
+	if err == nil && original.State == frame.CommitRejected {
+		err = m.owner.confirm(context.Background(), m.id)
+		if err == nil {
+			m.settlement.Synchronized = true
 		}
 	}
-	panic(cause)
+	if err != nil || original.State == frame.CommitSucceeded {
+		m.owner.store.admission.RequireRecovery(errors.Join(ErrUnsettled, err))
+	}
 }
 
 // Only a mutation whose original bytes matched can need reconciliation after
@@ -220,13 +246,17 @@ func (m *submissionMutation) resolveFailure(failure error) error {
 	return errors.Join(failure, err)
 }
 
-func (o *Owner) synchronize(settlement Settlement, apply func(Settlement) error, confirm confirmation) (Settlement, error) {
+func (o Owner) synchronize(settlement Settlement, apply func(Settlement) error, confirm confirmation) (Settlement, error) {
 	if settlement.Synchronized {
 		return settlement, nil
 	}
+	returned := false
 	defer func() {
-		if cause := recover(); cause != nil {
+		cause := recover()
+		if !returned {
 			o.store.admission.RequireRecovery(ErrUnsettled)
+		}
+		if cause != nil {
 			panic(cause)
 		}
 	}()
@@ -235,20 +265,23 @@ func (o *Owner) synchronize(settlement Settlement, apply func(Settlement) error,
 		projection.Evidence = bytes.Clone(settlement.Evidence)
 		if err := apply(projection); err != nil {
 			o.store.admission.RequireRecovery(err)
+			returned = true
 			return settlement, err
 		}
 	}
 	if confirm == confirmOnCommit {
 		if err := o.confirm(context.Background(), settlement.ID); err != nil {
 			o.store.admission.RequireRecovery(err)
+			returned = true
 			return settlement, err
 		}
 		settlement.Synchronized = true
 	}
+	returned = true
 	return settlement, nil
 }
 
-func (o *Owner) readSettlement(ctx context.Context, tx Executor, id SubmissionID, request []byte) (Settlement, error) {
+func (o Owner) readSettlement(ctx context.Context, tx Executor, id SubmissionID, request []byte) (Settlement, error) {
 	if err := o.requireIssued(ctx, tx, id); err != nil {
 		return Settlement{}, err
 	}
@@ -272,8 +305,8 @@ func (o *Owner) readSettlement(ctx context.Context, tx Executor, id SubmissionID
 	return result, err
 }
 
-func (o *Owner) Settlement(ctx context.Context, id SubmissionID, request []byte) (Settlement, error) {
-	if err := o.validate(id); err != nil {
+func (o Owner) Settlement(ctx context.Context, id SubmissionID, request []byte) (Settlement, error) {
+	if err := o.validateSubmission(id); err != nil {
 		return Settlement{}, err
 	}
 	var result Settlement
@@ -291,7 +324,10 @@ func (o *Owner) Settlement(ctx context.Context, id SubmissionID, request []byte)
 // RecoverPrepared is called after this Store acquired the exclusive authority.
 // No transaction from the prior authority can still commit. It does not remove
 // the Host barrier: business projections and execution scopes recover separately.
-func (o *Owner) RecoverPrepared(ctx context.Context) error {
+func (o Owner) RecoverPrepared(ctx context.Context) error {
+	if err := o.validate(); err != nil {
+		return err
+	}
 	return o.store.admission.Maintenance(ctx, func() error {
 		return o.store.transaction(ctx, func(tx Executor) error {
 			_, err := tx.ExecContext(ctx, `UPDATE frame_submissions SET state=? WHERE owner_id=? AND state=?`, submissionNotCommitted, o.id, submissionPrepared)
@@ -300,7 +336,10 @@ func (o *Owner) RecoverPrepared(ctx context.Context) error {
 	})
 }
 
-func (o *Owner) Pending(ctx context.Context) (settlements []Settlement, err error) {
+func (o Owner) Pending(ctx context.Context) (settlements []Settlement, err error) {
+	if err := o.validate(); err != nil {
+		return nil, err
+	}
 	err = o.store.transaction(ctx, func(tx Executor) error {
 		rows, err := tx.QueryContext(ctx, `SELECT sequence,digest,state,evidence,synchronized FROM frame_submissions WHERE owner_id=? AND (state=? OR synchronized=0) ORDER BY sequence`, o.id, submissionPrepared)
 		if err != nil {
@@ -324,14 +363,14 @@ func (o *Owner) Pending(ctx context.Context) (settlements []Settlement, err erro
 	return settlements, err
 }
 
-func (o *Owner) Confirm(ctx context.Context, id SubmissionID) error {
-	if err := o.validate(id); err != nil {
+func (o Owner) Confirm(ctx context.Context, id SubmissionID) error {
+	if err := o.validateSubmission(id); err != nil {
 		return err
 	}
 	return o.store.admission.Maintenance(ctx, func() error { return o.confirm(ctx, id) })
 }
 
-func (o *Owner) confirm(ctx context.Context, id SubmissionID) error {
+func (o Owner) confirm(ctx context.Context, id SubmissionID) error {
 	return o.store.transaction(ctx, func(tx Executor) error {
 		if err := o.requireIssued(ctx, tx, id); err != nil {
 			return err
@@ -351,8 +390,8 @@ func (o *Owner) confirm(ctx context.Context, id SubmissionID) error {
 	})
 }
 
-func (o *Owner) RetainEvidence(ctx context.Context, id SubmissionID, holder string) error {
-	if err := o.validate(id); err != nil {
+func (o Owner) RetainEvidence(ctx context.Context, id SubmissionID, holder string) error {
+	if err := o.validateSubmission(id); err != nil {
 		return err
 	}
 	if !frame.ValidName(holder) {
@@ -369,8 +408,8 @@ func (o *Owner) RetainEvidence(ctx context.Context, id SubmissionID, holder stri
 	})
 }
 
-func (o *Owner) ReleaseEvidence(ctx context.Context, id SubmissionID, holder string) error {
-	if err := o.validate(id); err != nil {
+func (o Owner) ReleaseEvidence(ctx context.Context, id SubmissionID, holder string) error {
+	if err := o.validateSubmission(id); err != nil {
 		return err
 	}
 	return o.store.admission.Maintenance(ctx, func() error {
@@ -381,11 +420,14 @@ func (o *Owner) ReleaseEvidence(ctx context.Context, id SubmissionID, holder str
 	})
 }
 
-func (o *Owner) Compact(ctx context.Context, through uint64) error {
+func (o Owner) Compact(ctx context.Context, through uint64) error {
+	if err := o.validate(); err != nil {
+		return err
+	}
 	return o.store.admission.Maintenance(ctx, func() error { return o.compact(ctx, through) })
 }
 
-func (o *Owner) compact(ctx context.Context, through uint64) error {
+func (o Owner) compact(ctx context.Context, through uint64) error {
 	return o.store.transaction(ctx, func(tx Executor) error {
 		var issued, compacted uint64
 		if err := tx.QueryRowContext(ctx, `SELECT next_sequence,compacted_through FROM frame_owners WHERE id=?`, o.id).Scan(&issued, &compacted); err != nil {
@@ -414,18 +456,24 @@ func (o *Owner) compact(ctx context.Context, through uint64) error {
 
 // CompactSettled reclaims only the contiguous prefix whose original owners
 // confirmed synchronization and whose evidence is no longer retained.
-func (o *Owner) CompactSettled(ctx context.Context) error {
+func (o Owner) CompactSettled(ctx context.Context) error {
+	if err := o.validate(); err != nil {
+		return err
+	}
 	return o.store.admission.Maintenance(ctx, func() error { return o.compactSettled(ctx) })
 }
 
-func (o *Owner) CompactSettledUnder(ctx context.Context) error {
+func (o Owner) CompactSettledUnder(ctx context.Context) error {
+	if err := o.validate(); err != nil {
+		return err
+	}
 	if err := o.store.admission.CheckAdmitted(ctx); err != nil {
 		return err
 	}
 	return o.compactSettled(ctx)
 }
 
-func (o *Owner) compactSettled(ctx context.Context) error {
+func (o Owner) compactSettled(ctx context.Context) error {
 	var through uint64
 	err := o.store.transaction(ctx, func(tx Executor) error {
 		return tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT MIN(sequence)-1 FROM frame_submissions s WHERE owner_id=? AND (state=? OR synchronized=0 OR EXISTS(SELECT 1 FROM frame_evidence_references r WHERE r.owner_id=s.owner_id AND r.sequence=s.sequence))),next_sequence) FROM frame_owners WHERE id=?`, o.id, submissionPrepared, o.id).Scan(&through)
@@ -436,14 +484,34 @@ func (o *Owner) compactSettled(ctx context.Context) error {
 	return o.compact(ctx, through)
 }
 
-func (o *Owner) validate(id SubmissionID) error {
+func (o Owner) validate() error {
+	if o.store == nil {
+		return frame.ErrInvalid
+	}
+	return nil
+}
+
+func (o Owner) validateSubmission(id SubmissionID) error {
+	if err := o.validate(); err != nil {
+		return err
+	}
 	if id.Store != o.store.id || id.Owner != o.id || id.Sequence == 0 {
 		return ErrUnknownSubmission
 	}
 	return nil
 }
 
-func (o *Owner) requireIssued(ctx context.Context, tx Executor, id SubmissionID) error {
+func (o Owner) validateRequest(request []byte) error {
+	if len(request) == 0 {
+		return fmt.Errorf("%w: sqlite submission request is empty", frame.ErrInvalid)
+	}
+	if len(request) > o.store.maxRequestBytes {
+		return fmt.Errorf("%w: sqlite submission request exceeds its byte limit", frame.ErrCapacity)
+	}
+	return nil
+}
+
+func (o Owner) requireIssued(ctx context.Context, tx Executor, id SubmissionID) error {
 	var issued, compacted uint64
 	if err := tx.QueryRowContext(ctx, `SELECT next_sequence,compacted_through FROM frame_owners WHERE id=?`, o.id).Scan(&issued, &compacted); err != nil {
 		return err
@@ -457,7 +525,7 @@ func (o *Owner) requireIssued(ctx context.Context, tx Executor, id SubmissionID)
 	return nil
 }
 
-func (o *Owner) settlePrepared(ctx context.Context, id SubmissionID, request []byte) (Settlement, error) {
+func (o Owner) settlePrepared(ctx context.Context, id SubmissionID, request []byte) (Settlement, error) {
 	var result Settlement
 	err := o.store.transaction(ctx, func(tx Executor) error {
 		var err error
@@ -479,7 +547,10 @@ func (o *Owner) settlePrepared(ctx context.Context, id SubmissionID, request []b
 
 // Update admits a transition whose original business row already identifies
 // the operation. The row's compare-and-set predicate determines if it can advance.
-func (o *Owner) Update(ctx context.Context, apply func(context.Context, Executor) error) error {
+func (o Owner) Update(ctx context.Context, apply func(context.Context, Executor) error) error {
+	if err := o.validate(); err != nil {
+		return err
+	}
 	if apply == nil {
 		return errors.New("sqlite: business update is required")
 	}

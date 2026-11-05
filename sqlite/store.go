@@ -79,8 +79,8 @@ type Store struct {
 	admission            *frame.Admission
 	id                   string
 	epoch                uint64
-	owners               map[string]*Owner
-	control              *Owner
+	owners               map[string]Owner
+	control              Owner
 	maxRequestBytes      int
 	maxSubmissions       int
 	maxRealmHistoryBytes int64
@@ -98,6 +98,8 @@ type Store struct {
 	projectInstallation func(context.Context, Executor, frame.InstallationChange) error
 }
 
+// Owner is a value capability for an admitted schema. Copies keep that original
+// authority even when a caller reassigns its handle after registering it.
 type Owner struct {
 	store      *Store
 	id         string
@@ -165,19 +167,22 @@ func readSchemaShape(ctx context.Context, executor interface {
 
 func (s *Store) ID() string    { return s.id }
 func (s *Store) Epoch() uint64 { return s.epoch }
-func (s *Store) Owner(id string) (*Owner, error) {
+func (s *Store) Owner(id string) (Owner, error) {
 	owner, ok := s.owners[id]
 	if !ok {
-		return nil, fmt.Errorf("sqlite: required owner %q is unavailable", id)
+		return Owner{}, fmt.Errorf("sqlite: required owner %q is unavailable", id)
 	}
 	return owner, nil
 }
 
-func (o *Owner) ID() string { return o.id }
+func (o Owner) ID() string { return o.id }
 
 // Held starts a new read after admission. It must not be called from an owner
 // mutation callback; that callback already has the current transaction.
-func (o *Owner) Held(ctx context.Context, installation frame.InstallationID) ([]frame.Dependency, error) {
+func (o Owner) Held(ctx context.Context, installation frame.InstallationID) ([]frame.Dependency, error) {
+	if err := o.validate(); err != nil {
+		return nil, err
+	}
 	var dependencies []frame.Dependency
 	err := o.store.Read(ctx, func(tx Reader) error {
 		var err error

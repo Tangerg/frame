@@ -13,6 +13,7 @@ var (
 	errConcurrentDelivery = errors.New("process: concurrent chunk delivery")
 	errPendingDelivery    = errors.New("process: stream ended with pending delivery")
 	errConsumerPanic      = errors.New("process: stream consumer panicked")
+	errConsumerExited     = errors.New("process: stream consumer exited without returning")
 )
 
 // Each endpoint owns its accepted deliveries. A producer's final result cannot
@@ -55,9 +56,13 @@ func (s *streamCall) deliver(wait context.Context, emit func(context.Context) er
 	}
 	s.pending = make(chan struct{})
 	s.mu.Unlock()
+	returned := false
 	defer func() {
-		if recover() != nil {
-			err = errConsumerPanic
+		if recovered := recover(); recovered != nil {
+			cause, _ := recovered.(error)
+			err = errors.Join(errConsumerPanic, cause)
+		} else if !returned && err == nil {
+			err = errConsumerExited
 		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -80,7 +85,9 @@ func (s *streamCall) deliver(wait context.Context, emit func(context.Context) er
 	stop := context.AfterFunc(wait, func() { cancel(context.Cause(wait)) })
 	defer stop()
 	defer cancel(nil)
-	return errors.Join(emit(ctx), cancellation.Err(ctx))
+	err = emit(ctx)
+	returned = true
+	return errors.Join(err, cancellation.Err(ctx))
 }
 
 func (s *streamCall) finish(err error) error {

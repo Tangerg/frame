@@ -121,6 +121,110 @@ function fixture(units: readonly Unit[], preparationCapacity = 2) {
 }
 
 describe("control pump ownership", () => {
+  it("joins the original poll when its control adapter reenters synchronization", async () => {
+    const f = fixture([]);
+    const poll = vi.mocked(f.control.poll).getMockImplementation()!;
+    let reentered: Promise<void> | undefined;
+    vi.mocked(f.control.poll).mockImplementationOnce(() => {
+      reentered = f.pump.synchronize();
+      return poll();
+    });
+
+    const polling = f.pump.synchronize();
+    await polling;
+    await reentered;
+    expect(f.control.poll).toHaveBeenCalledOnce();
+    expect(reentered).toBe(polling);
+    await f.pump.close();
+  });
+
+  it("owns the running loop before its control adapter can start another", async () => {
+    const f = fixture([]);
+    const stop = new AbortController();
+    const poll = vi.mocked(f.control.poll).getMockImplementation()!;
+    let reentered: Promise<void> | undefined;
+    vi.mocked(f.control.poll).mockImplementationOnce(() => {
+      reentered = f.pump.run(stop.signal);
+      void reentered.catch(() => {});
+      return poll();
+    });
+
+    const running = f.pump.run(stop.signal);
+    stop.abort();
+    await running;
+    await expect(reentered).rejects.toMatchObject({ code: "invalid_plan" });
+  });
+
+  it("joins the original shutdown when a resource abort listener reenters close", async () => {
+    let reentered: Promise<void> | undefined;
+    const f = fixture([
+      defineUnit({
+        id: "original",
+        imports: {},
+        exports: {},
+        setup({ lifetime }) {
+          lifetime.signal.addEventListener(
+            "abort",
+            () => {
+              reentered = f.pump.close();
+            },
+            { once: true },
+          );
+          return {};
+        },
+      }),
+    ]);
+    await f.runtime.prepare(plan("original"));
+    const closeRuntime = vi.spyOn(f.runtime, "close");
+
+    const closing = f.pump.close();
+    await closing;
+    await reentered;
+    expect(closeRuntime).toHaveBeenCalledOnce();
+    expect(reentered).toBe(closing);
+  });
+
+  it("stops synchronization when its proof adapter closes the pump", async () => {
+    const f = fixture([
+      defineUnit({
+        id: "original",
+        imports: {},
+        exports: {},
+        setup: () => ({}),
+      }),
+    ]);
+    const execution = await f.runtime.prepare(plan("original"));
+    await execution.close();
+    const prove = vi.mocked(f.control.prove).getMockImplementation()!;
+    let closing: Promise<void> | undefined;
+    vi.mocked(f.control.prove).mockImplementationOnce((proof) => {
+      closing = f.pump.close();
+      void closing.catch(() => {});
+      return prove(proof);
+    });
+
+    await f.pump.synchronize();
+    await closing;
+    expect(f.control.poll).not.toHaveBeenCalled();
+    expect(f.runtime.pendingProofs).toEqual([]);
+  });
+
+  it("joins a pending poll when its control adapter closes the pump", async () => {
+    const f = fixture([]);
+    const poll = vi.mocked(f.control.poll).getMockImplementation()!;
+    let closing: Promise<void> | undefined;
+    vi.mocked(f.control.poll).mockImplementationOnce(() => {
+      closing = f.pump.close();
+      void closing.catch(() => {});
+      return poll();
+    });
+
+    await f.pump.synchronize();
+    await closing;
+    expect(f.control.poll).toHaveBeenCalledOnce();
+    expect(f.runtime.connection).toBe("closed");
+  });
+
   it("reports only the original setup failure while its proof awaits acknowledgement", async () => {
     const failure = new Error(
       "partial setup failed after reserving a resource",

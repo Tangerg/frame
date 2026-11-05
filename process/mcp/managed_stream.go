@@ -62,9 +62,12 @@ func (d *managedDelivery) receive(wait context.Context, sequence uint64, chunk v
 	d.pending = make(chan struct{})
 	maxBytes, previous := d.maxBytes, d.received
 	d.mu.Unlock()
+	returned := false
 	defer func() {
-		if recover() != nil {
-			err = errors.New("mcp: managed stream consumer panicked")
+		if recovered := recover(); recovered != nil {
+			err = newCallbackPanic("mcp: managed stream consumer panicked", recovered)
+		} else if !returned && err == nil {
+			err = errors.New("mcp: managed stream consumer exited without returning")
 		}
 		d.mu.Lock()
 		defer d.mu.Unlock()
@@ -98,7 +101,9 @@ func (d *managedDelivery) receive(wait context.Context, sequence uint64, chunk v
 	stop := context.AfterFunc(wait, func() { cancel(context.Cause(wait)) })
 	defer stop()
 	defer cancel(nil)
-	return errors.Join(d.emit(ctx, chunk), cancellation.Err(ctx))
+	err = d.emit(ctx, chunk)
+	returned = true
+	return errors.Join(err, cancellation.Err(ctx))
 }
 
 func (d *managedDelivery) checkBytes(size int) error {

@@ -86,10 +86,13 @@ export class ProofOutbox {
     acknowledged: (proof: CloseProof) => void,
   ): Promise<void> {
     if (this.#sending) return this.#sending;
-    this.#sending = this.#flush(control, authority, acknowledged).finally(
-      () => {
-        this.#sending = undefined;
-      },
+    const completion = Promise.withResolvers<void>();
+    this.#sending = completion.promise.finally(() => {
+      this.#sending = undefined;
+    });
+    this.#flush(control, authority, acknowledged).then(
+      completion.resolve,
+      completion.reject,
     );
     return this.#sending;
   }

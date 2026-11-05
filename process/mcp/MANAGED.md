@@ -6,6 +6,11 @@ Use `mcp.ManagedProtocol` for a process implementing Qimu's `portable/1` operati
 
 Read the trusted capability descriptor from the approved package or contract catalog. `ParseManagedContract` admits its schemas once and projects the Frame capability and Qimu wire identity. Qimu includes scope and composition in its capability fingerprint. Descriptions remain presentation text. The package source owns which physical export implements each Frame export.
 
+Capability and method lookups are detached projections. The adapter captures a
+managed export before retaining it, and callback grants retain their admitted
+method independently of the author's or broker's handle. Replacing a projection
+cannot alter validation behind an already published identity.
+
 ```go
 contract, err := mcp.ParseManagedContract(descriptor)
 if err != nil {
@@ -73,6 +78,14 @@ Use `mcp.WithInvocation` when the caller owns invocation and target evidence. In
 For a loopback route use `mcp.NewCallbackReceiver` with explicit call count, request and response bytes, and read timeout. Its `Grant` method can authorize one admitted host operation. The application selects the exact handler and verifies domain access. A host with an existing Qimu broker may implement the same hooks. It must bind its ACL to the original setup or call, authenticate the credential and call token, and bound its work.
 
 A `ManagedCallback` contains an endpoint, two ephemeral tokens and a response budget. `Revoke` requests retirement. Close `Released` only after the route and every admitted callback have exited. Frame reserves a lifetime resource before the grant is issued. Unconfirmed callback cleanup keeps that instance pending even after the runner proves process exit. Never serialize credentials into a package, command argument or business input.
+
+An issuing broker that panics or exits without returning cannot establish that no
+grant escaped. The reserved resource stays unconfirmed. If revocation is
+interrupted, the lease continues observing its original `Released` evidence.
+A stream consumer that exits without returning cannot acknowledge its chunk.
+Callback panic errors preserve an error-valued cause through local `errors.Is`
+and `errors.As`, while their diagnostic text remains redacted. An embedded
+`Refusal` in a panic is not a business reply and cannot be sent to the backend.
 
 The Qimu provider address carries installation, release and contribution. Frame also has a unit ID. The adapter rejects ambiguous projections before launch. Catalogs must map each managed dependency to its original Frame slot. Hosts must explicitly provide background and reverse-operation authorization for packages that require them. Agent tools, prompts, filesystem paths, Flame roles, browser UI components and package installation rules remain application-owned.
 

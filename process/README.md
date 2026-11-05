@@ -40,6 +40,8 @@ profile with evidence for that larger resource set.
 Go plugins call `ServeStdio` with a `process.Unit`. Setup receives exact imported
 services and a structured Lifetime. Preparation, activation and accepted calls
 belong to that Lifetime; retirement joins them before cleaning up their resources.
+Serve captures the unit's capabilities before the handshake. Replacing an author
+capability or a method lookup result cannot change the described instance's contract.
 `Service.Invoke` and `StreamingService.Stream`
 accept a `portable.Invocation`. Construct queries with `NewQueryInvocation` and
 commands with `NewCommandInvocation`; the business caller supplies the original

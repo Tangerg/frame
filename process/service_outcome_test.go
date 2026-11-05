@@ -47,7 +47,7 @@ func TestStreamFailureCannotBeErasedByProducerSuccess(t *testing.T) {
 	consumerFailure := errors.New("consumer rejected the chunk")
 	input, _ := value.EncodeJSON("content")
 	invalid, _ := value.EncodeJSON(1)
-	for _, failure := range []string{"consumer-error", "consumer-panic", "invalid-chunk"} {
+	for _, failure := range []string{"consumer-error", "consumer-panic", "consumer-error-panic", "invalid-chunk"} {
 		t.Run(failure, func(t *testing.T) {
 			implementation := testStream{func(ctx context.Context, in value.JSON, emit Emit) (value.JSON, error) {
 				chunk := in
@@ -66,6 +66,8 @@ func TestStreamFailureCannotBeErasedByProducerSuccess(t *testing.T) {
 					return consumerFailure
 				case "consumer-panic":
 					panic("consumer failed")
+				case "consumer-error-panic":
+					panic(consumerFailure)
 				default:
 					t.Error("invalid chunk reached the consumer")
 					return nil
@@ -74,7 +76,7 @@ func TestStreamFailureCannotBeErasedByProducerSuccess(t *testing.T) {
 			if err == nil || result.Validate() == nil || !errors.Is(err, ErrOutcomeUnknown) {
 				t.Fatalf("failed delivery became a successful final result: %s %v", result.String(), err)
 			}
-			if failure == "consumer-error" && !errors.Is(err, consumerFailure) {
+			if (failure == "consumer-error" || failure == "consumer-error-panic") && !errors.Is(err, consumerFailure) {
 				t.Fatalf("original consumer failure was lost: %v", err)
 			}
 			if failure == "consumer-panic" && !errors.Is(err, errConsumerPanic) {

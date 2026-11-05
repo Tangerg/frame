@@ -111,7 +111,9 @@ there is no independently advanced Host close flag. Each Watch is a resource
 of that Lifetime, so a live subscription consumes both `HostLimits.MaxWatches`
 and one `LifetimeLimits.MaxResources` entry. Closing the Watch closes its
 channel and then returns both capacities. A Host with no Watches reserves no
-subscription resource.
+subscription resource. Public Watch handles refer to one private subscription;
+copying or replacing a caller's handle cannot create a second close transition
+or change the subscription retained by the catalog and Lifetime.
 
 Closing a Use's original Lifetime also starts that Use's original retirement.
 `Use.WaitRetired` joins actual release, durable settlement and removal of Host
@@ -126,6 +128,24 @@ resource there, retaining its instance dependencies on that same handle.
 `Work` is a handle to a private interval. Copies share its completion and
 resource-admission state under the original Lifetime mutex; a copied handle
 cannot return capacity twice or acquire resources after completion.
+
+Access handles likewise share one private borrow interval. Returning from the
+callback closes every copy before finishing the original work; an independently
+open Use cannot prolong an expired Access.
+
+Setup and activation complete their original preparation even when a callback
+calls `runtime.Goexit`. Failed preparation retires its own resources and never
+publishes partial exports. Resource cleanup that exits without returning settles
+as unconfirmed; only an original ResourceHandle proof can then establish release.
+Cancellation callbacks are joined separately so one Goexit cannot abandon the
+remaining cancellations or the original retirement.
+
+A protected Use keeps its original settlement when ReleaseUse panics or exits
+without returning. The failure fences admission and is reported to the waiting
+close. Only a later explicit Close requests another settlement attempt; a failure
+that first occurs during one Close cannot make that same Close silently retry.
+Each failure owns one retry signal. Overlapping closes can join that request but
+cannot preauthorize a retry for a later failure that they have not observed.
 
 `CloseOutcome` is bounded evidence, with at most 32 diagnostic failures and
 2,048 UTF-8 bytes per resource label and detail. Resource names are diagnostic
@@ -144,6 +164,11 @@ returned error. To inspect causes across asynchronous shutdown or late release
 proof, retain `causes := lifetime.ObserveCloseCauses()` before starting closure,
 then inspect `causes.Err()` after observing the original close. The Lifetime is
 the only writer. Concurrent observers share its current local capability.
+An error raised by a local callback panic remains in that original cause chain;
+bounded terminal diagnostics do not replace its inspectable identity.
+Formatting those diagnostics is joined separately because an Error method may
+itself call Goexit. An interrupted projection cannot change the original cleanup
+conclusion or discard a ResourceHandle's release proof.
 
 The caller owns this opt-in retention of original errors and any objects they
 reference. Lifetime retains the capability weakly and terminal handles retain

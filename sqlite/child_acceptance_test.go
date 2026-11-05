@@ -23,7 +23,7 @@ var errParentFinal = errors.New("jobs: parent is final")
 
 type childAcceptanceFixture struct {
 	store     *Store
-	owner     *Owner
+	owner     Owner
 	admission *frame.Admission
 	host      *frame.Host
 	parent    frame.ExportRef

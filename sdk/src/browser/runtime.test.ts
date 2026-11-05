@@ -1318,6 +1318,28 @@ describe("approved browser execution", () => {
     expect(f.proofs.get(proof.proofId)).toEqual(proof);
   });
 
+  it("joins the original proof delivery when its control adapter reenters flushing", async () => {
+    const f = fixture({ reader });
+    const execution = await f.runtime.prepare(
+      plan("original", [
+        unit("reader", "reader", [{ name: "files", contract: files.ref }]),
+      ]),
+    );
+    await execution.close();
+    const prove = vi.mocked(f.control.prove).getMockImplementation()!;
+    let reentered: Promise<void> | undefined;
+    vi.mocked(f.control.prove).mockImplementationOnce((proof) => {
+      reentered = f.runtime.flushProofs();
+      return prove(proof);
+    });
+
+    await f.runtime.flushProofs();
+    await reentered;
+    expect(f.control.prove).toHaveBeenCalledOnce();
+    expect(f.runtime.pendingProofs).toEqual([]);
+    await f.runtime.close();
+  });
+
   it("invalidates concurrent old polls when a manual execution settles during their observation", async () => {
     const f = fixture({ reader }, 1);
     const original = plan("original", [

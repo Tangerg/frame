@@ -127,7 +127,7 @@ func (s *ManagedService) grantCallback(ctx context.Context, method *portable.Met
 	}
 	finish = func() error { return lease.finish(ctx) }
 	grant, err := lease.issue(func() (*ManagedCallback, error) {
-		return s.openCall(ctx, s.session, ManagedCall{Source: s.source, Method: method, Input: invocation.Input(), CommandID: invocation.CommandID()})
+		return s.openCall(ctx, s.session, ManagedCall{Source: s.source, Method: new(*method), Input: invocation.Input(), CommandID: invocation.CommandID()})
 	})
 	if err != nil || grant == nil {
 		return finish, err
@@ -154,7 +154,8 @@ func (s *ManagedService) dispatch(ctx context.Context, method *portable.Method, 
 
 func managedDispatchError(err error) error {
 	if err != nil {
-		if _, refused := errors.AsType[*Refusal](err); !refused {
+		_, interrupted := errors.AsType[*callbackPanic](err)
+		if _, refused := errors.AsType[*Refusal](err); !refused || interrupted {
 			return errors.Join(process.ErrOutcomeUnknown, err)
 		}
 	}

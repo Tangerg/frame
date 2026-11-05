@@ -234,15 +234,20 @@ func Serve(ctx context.Context, channel io.ReadWriteCloser, unit Unit) error {
 	if ctx == nil || nilness.Is(channel) || unit.ID.Validate() != nil || unit.Prepare == nil {
 		return frame.ErrInvalid
 	}
+	unit.Imports = maps.Clone(unit.Imports)
+	unit.Exports = maps.Clone(unit.Exports)
 	for _, set := range []map[string]*portable.Capability{unit.Imports, unit.Exports} {
 		for name, contract := range set {
 			if !frame.ValidName(name) || contract == nil {
 				return frame.ErrInvalid
 			}
+			captured := new(*contract)
+			if captured.Identity().Validate() != nil {
+				return frame.ErrInvalid
+			}
+			set[name] = captured
 		}
 	}
-	unit.Imports = maps.Clone(unit.Imports)
-	unit.Exports = maps.Clone(unit.Exports)
 	s := &server{unit: unit, life: frame.NewLifetime(ctx)}
 	s.peer = newPeer(channel, wire.MaxFrameBytes, s.handle)
 	s.peer.start()

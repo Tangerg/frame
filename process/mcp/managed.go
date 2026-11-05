@@ -79,6 +79,7 @@ func (b *managedBuilder) add(export frame.ExportDeclaration, source ManagedExpor
 	if source.Contract == nil || source.Contract.capability == nil || !managedExportName.MatchString(source.Name) {
 		return fmt.Errorf("%w: missing managed export %q", frame.ErrContractMismatch, export.Name)
 	}
+	source.Contract = new(*source.Contract)
 	if err := b.checkContract(export, source); err != nil {
 		return err
 	}

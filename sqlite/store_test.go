@@ -36,7 +36,7 @@ func testConfig(path string, admission *frame.Admission) Config {
 	}}}}
 }
 
-func testStore(t *testing.T) (*Store, *Owner, *frame.Admission) {
+func testStore(t *testing.T) (*Store, Owner, *frame.Admission) {
 	t.Helper()
 	admission := frame.NewAdmission()
 	store, err := Open(context.Background(), testConfig(filepath.Join(t.TempDir(), "store.db"), admission))

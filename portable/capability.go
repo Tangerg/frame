@@ -94,10 +94,11 @@ func (c *Capability) Descriptor() CapabilityDescriptor {
 
 func (c *Capability) Identity() value.JSON { return c.identity }
 
+// Replacing a lookup result cannot change the validation behind the published identity.
 func (c *Capability) Method(name string) (*Method, bool) {
 	for _, method := range c.methods {
 		if method.Name() == name {
-			return method, true
+			return new(*method), true
 		}
 	}
 	return nil, false

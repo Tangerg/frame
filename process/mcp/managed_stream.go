@@ -52,7 +52,7 @@ func (d *managedDelivery) receive(wait context.Context, sequence uint64, chunk v
 		return errors.New("mcp: managed stream is closed")
 	}
 	if d.pending != nil {
-		d.failLocked(errors.New("mcp: concurrent managed stream delivery"))
+		_ = d.failLocked(errors.New("mcp: concurrent managed stream delivery"))
 	}
 	if d.failure != nil {
 		err = d.failure
@@ -145,7 +145,7 @@ func (d *managedDelivery) finish(raw jsontext.Value, err error) error {
 	d.closed = true
 	pending := d.pending
 	if pending != nil {
-		d.failLocked(errors.New("mcp: managed stream ended with pending delivery"))
+		_ = d.failLocked(errors.New("mcp: managed stream ended with pending delivery"))
 	}
 	d.mu.Unlock()
 	if pending != nil {

@@ -150,7 +150,7 @@ func (s *patternScanner) escape() error {
 		return s.hexEscape()
 	}
 	boundary := escape == 'b' || escape == 'B'
-	if s.inClass && boundary || !strings.ContainsRune(patternEscapes+patternLiteralEscapes, rune(escape)) && !(s.inClass && escape == '-') {
+	if s.inClass && boundary || !strings.ContainsRune(patternEscapes+patternLiteralEscapes, rune(escape)) && (!s.inClass || escape != '-') {
 		return errors.New("portable: unsupported pattern escape")
 	}
 	s.repeatable = !boundary

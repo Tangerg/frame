@@ -18,7 +18,7 @@ import (
 type recoveryBudgetCause struct {
 	detail  string
 	onError func()
-	data    [4096]byte
+	_       [4096]byte
 }
 
 func (e *recoveryBudgetCause) Error() string {

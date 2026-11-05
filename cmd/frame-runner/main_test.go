@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -115,7 +114,7 @@ func TestExecutableRetainsOriginalWaitAuthorityUntilJournalRecovers(t *testing.T
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	executable := filepath.Join(t.TempDir(), "frame-runner")
-	build := exec.CommandContext(ctx, filepath.Join(runtime.GOROOT(), "bin", "go"), "build", "-o", executable, ".")
+	build := exec.CommandContext(ctx, "go", "build", "-o", executable, ".")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build executable: %v\n%s", err, output)
 	}

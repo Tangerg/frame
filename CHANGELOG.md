@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Add `mcp.NewTransport` and `mcp.Transport` so a custom `process.Protocol` can
+  connect its own MCP client through the frame admission and write
+  cancellation that `mcp.Tools` and `mcp.ManagedProtocol` use. The transport
+  rejects a missing channel or a non-positive frame budget with `frame.ErrInvalid`.
+- `@frame/sdk/browser` accepts a control endpoint or module lease URL only when
+  it is potentially trustworthy: HTTPS or HTTP to a loopback host, plus `file:`
+  and `data:` for module leases. Plain HTTP to any other host is refused, since
+  it would expose the realm credential or let the network replace module code
+  that the approved digest cannot verify.
+- `make check` and CI run golangci-lint with `.golangci.yml`: errcheck, govet,
+  ineffassign, staticcheck and unused. An ignored write, sync or commit error now
+  fails the build; closing a read handle and test cleanup follow the
+  std-error-handling convention.
+
 ## v0.1.1 — 2026-11-05
 
 - Dispose the original SQLite connection when BEGIN is not acknowledged, so

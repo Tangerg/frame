@@ -145,9 +145,11 @@ func goDefinitionSource(key string) (pkg, name string) {
 }
 
 func importPath(value string) bool {
-	return value != "" && !strings.ContainsFunc(value, func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("./-_~+", r))
-	})
+	return value != "" && !strings.ContainsFunc(value, func(r rune) bool { return !importPathRune(r) })
+}
+
+func importPathRune(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("./-_~+", r)
 }
 
 // Every contract, tool and point must derive the same name for a Go type.

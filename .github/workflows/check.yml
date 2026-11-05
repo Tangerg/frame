@@ -17,6 +17,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
       - run: go generate ./...
       - name: Verify generated outputs in a clean checkout
         run: test -z "$(git status --porcelain --untracked-files=all)"

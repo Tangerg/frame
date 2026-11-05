@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -18,7 +17,7 @@ func TestDaemonKeepsTheOriginalProcessAuthorityAndJoinsItsExit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	executable := filepath.Join(t.TempDir(), "frame-runner")
-	build := exec.CommandContext(ctx, filepath.Join(runtime.GOROOT(), "bin", "go"), "build", "-o", executable, "../../cmd/frame-runner")
+	build := exec.CommandContext(ctx, "go", "build", "-o", executable, "../../cmd/frame-runner")
 	build.Env = append(os.Environ(), "GOWORK=off")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build runner: %v\n%s", err, output)

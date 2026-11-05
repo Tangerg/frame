@@ -19,7 +19,7 @@ type projectionWireFields struct {
 	ID      string        `json:"job-id"`
 	Count   int           `json:"count,omitzero"`
 	Ignored chan struct{} `json:"-"`
-	private func()
+	private func()        //nolint:unused // The projection test asserts that this unexported field never reaches the wire.
 }
 
 type recursiveProjection struct {

@@ -11,8 +11,12 @@ import (
 )
 
 type recursiveEmbedding struct{ *recursiveEmbedding }
-type anonymousScalar string
-type scalarEmbedding struct{ anonymousScalar }
+
+//nolint:unused // ValidateType is tested by reflection on an embedded scalar no code reads.
+type (
+	anonymousScalar string
+	scalarEmbedding struct{ anonymousScalar }
+)
 type recursivePointer *recursivePointer
 type mutualPointerLeft *mutualPointerRight
 type mutualPointerRight *mutualPointerLeft

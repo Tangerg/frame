@@ -1,6 +1,6 @@
 # Development
 
-Use the version in go.mod with GOWORK=off. Use Node 24+ with npm and the checked-in lockfile. Install and build from the repository root. The managed local runner and exclusive file-store profiles require a supported Unix filesystem and local sockets.
+Use the version in go.mod with GOWORK=off and golangci-lint v2.14.0, the version CI installs. Use Node 24+ with npm and the checked-in lockfile. Install and build from the repository root. The managed local runner and exclusive file-store profiles require a supported Unix filesystem and local sockets.
 
 ```sh
 npm ci

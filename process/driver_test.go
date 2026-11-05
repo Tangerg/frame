@@ -28,13 +28,6 @@ func echoContract() (*portable.Method, *portable.Capability, error) {
 	return method, contract, err
 }
 
-type activation struct{ directory string }
-
-func (a activation) Start() error {
-	return os.WriteFile(filepath.Join(a.directory, "activated"), []byte("once"), 0600)
-}
-func (activation) Close() error { return nil }
-
 func TestLocalProcessHelper(t *testing.T) {
 	directory := os.Getenv("FRAME_PROCESS_HELPER")
 	if directory == "" {

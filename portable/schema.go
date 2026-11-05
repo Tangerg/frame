@@ -206,9 +206,10 @@ func (g *schemaGraph) visitChild(index int, field any, path string, edge SchemaE
 	if err != nil {
 		return err
 	}
-	if edge == SchemaDescend {
+	switch edge {
+	case SchemaDescend:
 		g.nodes[index].descend = append(g.nodes[index].descend, child)
-	} else if edge == SchemaSame {
+	case SchemaSame:
 		g.nodes[index].same = append(g.nodes[index].same, child)
 	}
 	return nil

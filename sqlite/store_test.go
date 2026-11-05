@@ -540,7 +540,7 @@ func TestProtectionQueriesDoNotReadReleasedHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	pending, err := store.PendingAttempts(ctx)
-	if err != nil || len(pending) != 1 || !(pending[0].State == AttemptHandoff) {
+	if err != nil || len(pending) != 1 || pending[0].State != AttemptHandoff {
 		t.Fatalf("pending handoff=%+v %v", pending, err)
 	}
 	if err := store.ReleaseAttempt(ctx, active.ID, proof); err != nil {

@@ -88,7 +88,7 @@ func (s *streamCall) finish(err error) error {
 	s.closed = true
 	pending := s.pending
 	if pending != nil {
-		s.failLocked(errPendingDelivery)
+		_ = s.failLocked(errPendingDelivery)
 	}
 	s.mu.Unlock()
 	if pending != nil {

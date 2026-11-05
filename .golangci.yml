@@ -1,0 +1,54 @@
+# Lint policy for the Go module. `make check` runs it with GOWORK=off. The gate
+# guards against ignored write, sync and commit failures and dead code; closing a
+# read handle and test cleanup follow the std-error-handling convention.
+version: "2"
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  settings:
+    errcheck:
+      # Explicit blank assignments document intentionally ignored errors.
+      check-type-assertions: false
+      check-blank: false
+    staticcheck:
+      # Naming an explicit list replaces the default, so it repeats golangci-lint's
+      # own opt-out set before adding this module's single exception.
+      checks:
+        - all
+        - -ST1000
+        - -ST1003
+        - -ST1016
+        - -ST1020
+        - -ST1021
+        - -ST1022
+        # Naming an embedded field states which part of a composite value an
+        # operation targets; promoting the selector would hide it.
+        - -QF1008
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+        path: _test\.go
+    paths:
+      - node_modules
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: lax
+    paths:
+      - node_modules

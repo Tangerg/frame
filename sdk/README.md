@@ -40,6 +40,10 @@ Construct a `Service<T>`, `Point<Metadata, Value>`, or `Event<Payload>` from tha
 published identity. `optional(service)` declares explicit absence. Equal
 TypeScript types alone never make two contract identities interchangeable.
 
+Contract and Unit constructors capture declaration fields and optional import
+wrappers before validation. Their frozen declarations retain that same capture;
+later changes to caller-owned objects cannot relabel an admitted identity or slot.
+
 ```ts
 import { defineUnit, Service } from "@frame/sdk";
 

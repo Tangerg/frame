@@ -1,5 +1,9 @@
 import { acquire, FrameError, sameContract, type Acquired } from "@frame/sdk";
-import { projectNumber } from "@frame/sdk/json";
+import {
+  compareJSONNumbers,
+  isJSONInteger,
+  isJSONNumber,
+} from "@frame/sdk/json";
 import {
   select,
   isControlRefusal,
@@ -197,11 +201,15 @@ function documentSelections(snapshot: Snapshot): AcquireRequest["selections"] {
         .slice(0, 1),
     (value) => {
       const metadata = value as { format?: unknown; priority?: unknown };
-      if (typeof metadata.format !== "string")
+      if (
+        typeof metadata.format !== "string" ||
+        !isJSONNumber(metadata.priority) ||
+        !isJSONInteger(metadata.priority)
+      )
         throw new TypeError("invalid Converter metadata");
       return {
         format: metadata.format,
-        priority: projectNumber(metadata.priority),
+        priority: metadata.priority,
       };
     },
   );
@@ -210,14 +218,18 @@ function documentSelections(snapshot: Snapshot): AcquireRequest["selections"] {
     validators,
     validationOrderRule,
     (choices) =>
-      [...choices].sort(
-        (left, right) => left.metadata.order - right.metadata.order,
+      [...choices].sort((left, right) =>
+        compareJSONNumbers(left.metadata.order, right.metadata.order),
       ),
     (value) => {
       const metadata = value as { name?: unknown; order?: unknown };
-      if (typeof metadata.name !== "string")
+      if (
+        typeof metadata.name !== "string" ||
+        !isJSONNumber(metadata.order) ||
+        !isJSONInteger(metadata.order)
+      )
         throw new TypeError("invalid Validator metadata");
-      return { name: metadata.name, order: projectNumber(metadata.order) };
+      return { name: metadata.name, order: metadata.order };
     },
   );
   if (conversion.candidates.length !== 1 || validation.candidates.length === 0)

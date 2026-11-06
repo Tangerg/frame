@@ -127,9 +127,9 @@ describe("Go-owned portable profile budgets", () => {
       stream: schema,
     });
     for (const validate of [
-      contract.validateInput,
-      contract.validateOutput,
-      contract.validateChunk!,
+      contract.admitInput,
+      contract.admitOutput,
+      contract.admitChunk!,
     ]) {
       expect(() => validate(nestedObject(3))).not.toThrow();
       expect(() =>
@@ -162,8 +162,8 @@ describe("Go-owned portable profile budgets", () => {
       new ExactNumber("1e" + PORTABLE_LIMITS.maxAbsExponent),
       new ExactNumber("9".repeat(PORTABLE_LIMITS.maxNumberBytes)),
     ]) {
-      expect(() => contract.validateOutput(number)).not.toThrow();
-      expect(() => contract.validateChunk!(number)).not.toThrow();
+      expect(() => contract.admitOutput(number)).not.toThrow();
+      expect(() => contract.admitChunk!(number)).not.toThrow();
     }
     for (const raw of [
       "1e1000000000",
@@ -172,11 +172,11 @@ describe("Go-owned portable profile budgets", () => {
       "9".repeat(PORTABLE_LIMITS.maxNumberBytes + 1),
     ]) {
       const number = new ExactNumber(raw);
-      expect(() => contract.validateInput({ revision: number })).toThrow(
+      expect(() => contract.admitInput({ revision: number })).toThrow(
         /profile limit/,
       );
-      expect(() => contract.validateOutput(number)).toThrow(/profile limit/);
-      expect(() => contract.validateChunk!(number)).toThrow(/profile limit/);
+      expect(() => contract.admitOutput(number)).toThrow(/profile limit/);
+      expect(() => contract.admitChunk!(number)).toThrow(/profile limit/);
       for (const source of [
         { minimum: number },
         { maximum: number },

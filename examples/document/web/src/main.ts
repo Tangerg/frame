@@ -1,5 +1,12 @@
-import { FrameError, Lifetime, Point, type Unit } from "@frame/sdk";
-import { parseJSON, projectNumber, stringifyJSON } from "@frame/sdk/json";
+import { Lifetime, Point, type Unit } from "@frame/sdk";
+import {
+  compareJSONNumbers,
+  isJSONInteger,
+  isJSONNumber,
+  parseJSON,
+  projectNumber,
+  stringifyJSON,
+} from "@frame/sdk/json";
 import {
   ControlPump,
   readResponseBytes,
@@ -13,8 +20,6 @@ import type {
   AcquireRequest,
   ContractRef,
   Execution,
-  Snapshot,
-  SnapshotRequest,
 } from "@frame/sdk/protocol";
 import type {
   Converted,
@@ -22,7 +27,11 @@ import type {
   PreviewMetadata,
   TaskView,
 } from "./api.generated.ts";
+import { PreviewSnapshots } from "./preview-capture.ts";
 import "./style.css";
+
+const maximumApplicationResponseBytes = 32 * 1024 * 1024;
+const maximumPreviewModuleBytes = 1024 * 1024;
 
 interface Preview {
   mount(
@@ -45,7 +54,7 @@ let execution: Execution | undefined;
 let point: Point<PreviewMetadata, Preview> | undefined;
 let mounted: Use | undefined;
 let pendingAdmission: AcquireRequest | undefined;
-let pendingSnapshot: SnapshotRequest | undefined;
+let previewSnapshots: PreviewSnapshots | undefined;
 let pump: ControlPump | undefined;
 let pumpWork: Promise<void> | undefined;
 let opening: { operationId: string; resumeToken: string } | undefined;
@@ -65,7 +74,7 @@ async function api<T>(path: string, input?: unknown): Promise<T> {
       ...(input === undefined ? {} : { body: stringifyJSON(input) }),
     });
     const text = new TextDecoder("utf-8", { fatal: true }).decode(
-      await readResponseBytes(response, 32 * 1024 * 1024),
+      await readResponseBytes(response, maximumApplicationResponseBytes),
     );
     const value = parseJSON(text) as T & { error?: string };
     if (!response.ok)
@@ -98,6 +107,7 @@ async function connect(): Promise<void> {
   control = hostControl(credentials);
   const contracts = await api<{ previews: ContractRef }>("/api/contracts");
   point = new Point<PreviewMetadata, Preview>(contracts.previews);
+  previewSnapshots = new PreviewSnapshots(point.ref.name);
   const modules = new RealmModules(async (unit, signal) => {
     const response = await fetch(unit.module.path, {
       signal,
@@ -105,7 +115,7 @@ async function connect(): Promise<void> {
       redirect: "error",
     });
     if (!response.ok) throw new Error("approved module is unavailable");
-    const bytes = await readResponseBytes(response, 1024 * 1024);
+    const bytes = await readResponseBytes(response, maximumPreviewModuleBytes);
     const digest = [
       ...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
     ]
@@ -193,22 +203,6 @@ async function acquirePreview(
   }
 }
 
-async function capturePreview(
-  channel: HTTPControl,
-  pointName: string,
-): Promise<Snapshot> {
-  pendingSnapshot ??= { operationId: crypto.randomUUID(), points: [pointName] };
-  try {
-    const snapshot = await channel.snapshot(pendingSnapshot);
-    pendingSnapshot = undefined;
-    return snapshot;
-  } catch (error) {
-    if (error instanceof FrameError && error.code !== "outcome_unknown")
-      pendingSnapshot = undefined;
-    throw error;
-  }
-}
-
 async function closeMounted(owner: Runtime): Promise<void> {
   if (!mounted) return;
   const outcome = await mounted.close();
@@ -234,6 +228,7 @@ async function mountPreview(task: TaskView): Promise<void> {
     !runtime ||
     !control ||
     !point ||
+    !previewSnapshots ||
     !execution
   )
     return;
@@ -241,7 +236,7 @@ async function mountPreview(task: TaskView): Promise<void> {
     channel = control;
   await recoverPreview(owner, channel);
   await closeMounted(owner);
-  const snapshot = await capturePreview(channel, point.ref.name);
+  const snapshot = await previewSnapshots.capture(channel);
   let choice;
   try {
     choice = select(
@@ -251,15 +246,21 @@ async function mountPreview(task: TaskView): Promise<void> {
       (choices) =>
         [...choices]
           .filter((choice) => choice.metadata.format === "html")
-          .sort((a, b) => b.metadata.priority - a.metadata.priority)
+          .sort((a, b) =>
+            compareJSONNumbers(b.metadata.priority, a.metadata.priority),
+          )
           .slice(0, 1),
       (value) => {
         const metadata = value as { format?: unknown; priority?: unknown };
-        if (typeof metadata.format !== "string")
+        if (
+          typeof metadata.format !== "string" ||
+          !isJSONNumber(metadata.priority) ||
+          !isJSONInteger(metadata.priority)
+        )
           throw new TypeError("invalid preview metadata");
         return {
           format: metadata.format,
-          priority: projectNumber(metadata.priority),
+          priority: metadata.priority,
         };
       },
     );
@@ -401,7 +402,7 @@ action("close", async () => {
   credentials = undefined;
   mounted = undefined;
   pendingAdmission = undefined;
-  pendingSnapshot = undefined;
+  previewSnapshots = undefined;
   execution = undefined;
   opening = undefined;
   element<HTMLButtonElement>("connect").disabled = true;

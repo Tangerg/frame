@@ -263,6 +263,12 @@ func (h *Host) changeInstallation(ctx context.Context, id InstallationID, prepar
 	}
 	state := CommitRejected
 	var retired []*Instance
+	// Confirmation can interrupt after withdrawal; the original retirement must still start.
+	defer func() {
+		for _, instance := range retired {
+			instance.beginRetire()
+		}
+	}()
 	err := h.admitInstallation(ctx, func(admitted context.Context) error {
 		transition, err := h.planInstallationTransition(id, prepare)
 		if err != nil || transition == nil {
@@ -293,9 +299,6 @@ func (h *Host) changeInstallation(ctx context.Context, id InstallationID, prepar
 		retired = h.applyInstallationTransition(id, next)
 		return errors.Join(commitErr, h.confirmInstallation(admitted, id))
 	})
-	for _, instance := range retired {
-		instance.beginRetire()
-	}
 	return installationFailure(id, state, err)
 }
 
@@ -378,7 +381,14 @@ func (h *Host) commitInstallation(ctx context.Context, change InstallationChange
 	if h.store == nil {
 		return CommitSucceeded, nil
 	}
+	returned := false
+	defer func() {
+		if !returned {
+			h.admission.RequireRecovery(fmt.Errorf("%w: installation commit interrupted", ErrRecoveryRequired))
+		}
+	}()
 	state, err := h.store.CommitInstallation(ctx, change)
+	returned = true
 	switch state {
 	case CommitSucceeded:
 		return CommitSucceeded, err
@@ -397,7 +407,15 @@ func (h *Host) confirmInstallation(ctx context.Context, id InstallationID) error
 	if h.store == nil {
 		return nil
 	}
-	if err := h.store.ConfirmInstallation(ctx, id); err != nil {
+	returned := false
+	defer func() {
+		if !returned {
+			h.admission.RequireRecovery(fmt.Errorf("%w: installation confirmation interrupted", ErrRecoveryRequired))
+		}
+	}()
+	err := h.store.ConfirmInstallation(ctx, id)
+	returned = true
+	if err != nil {
 		h.admission.RequireRecovery(err)
 		return errors.Join(ErrRecoveryRequired, err)
 	}

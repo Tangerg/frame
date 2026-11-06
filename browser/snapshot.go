@@ -50,7 +50,6 @@ func newSnapshotLease(id string, authority Authority, realm Realm, original *fra
 	return lease, nil
 }
 
-// capturedFor reports a completed capture that realm may consume.
 func (s *snapshotLease) capturedFor(realm Realm) bool {
 	return s != nil && s.original != nil && s.realm == realm
 }
@@ -110,6 +109,9 @@ func (b *Bridge) Snapshot(ctx context.Context, token string, request SnapshotReq
 	if replay {
 		return b.replaySnapshot(ctx, request.OperationID, identity, operation)
 	}
+	// Metadata codecs may panic or exit this goroutine. Only a completed capture
+	// and response copy can replace this failure with a successful receipt.
+	returned = fmt.Errorf("%w: snapshot capture interrupted", frame.ErrUnavailable)
 	defer func() {
 		if returned != nil {
 			b.mu.Lock()
@@ -173,13 +175,12 @@ func (b *Bridge) replaySnapshot(ctx context.Context, id string, request controlR
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	lease := b.snapshots[id]
-	if lease == nil {
+	if !lease.capturedFor(request.Realm) {
 		return Snapshot{}, frame.ErrClosed
 	}
 	return copyWire(lease.projection), nil
 }
 
-// ownsSnapshot accepts a capture or close of a Snapshot made by realm.
 func (o *controlOperation) ownsSnapshot(realm Realm) error {
 	if o.Realm != realm {
 		return frame.ErrFenced

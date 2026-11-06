@@ -77,7 +77,6 @@ type artifact struct {
 	body []byte
 }
 
-// standardInput names the descriptor source read from os.Stdin.
 const standardInput = "-"
 
 // A stage directory holds the next file and a link to the original one.

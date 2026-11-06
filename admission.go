@@ -21,6 +21,11 @@ type UseOwner interface {
 	Held(context.Context, InstallationID) ([]Dependency, error)
 }
 
+type registeredUseOwner struct {
+	id     string
+	source UseOwner
+}
+
 // RetainedDependency identifies the original business owner that still requires
 // an exact release. It is a fresh read projection, not another retention record.
 type RetainedDependency struct {
@@ -45,7 +50,7 @@ type Admission struct {
 	limits AdmissionLimits
 
 	mu           sync.Mutex
-	owners       map[string]UseOwner
+	owners       map[string]registeredUseOwner
 	ownersSealed bool
 	scopes       map[scopeKey]scopeState
 	// barrier counts every recovery report. recovery is the first cause of the
@@ -101,7 +106,7 @@ func NewAdmissionWithLimits(limits AdmissionLimits) (*Admission, error) {
 	return &Admission{
 		slot:   make(chan struct{}, 1),
 		limits: limits,
-		owners: make(map[string]UseOwner),
+		owners: make(map[string]registeredUseOwner),
 		scopes: make(map[scopeKey]scopeState),
 	}, nil
 }
@@ -241,15 +246,19 @@ func (a *Admission) RegisterUseOwner(owner UseOwner) error {
 }
 
 func (a *Admission) registerUseOwners(owners []UseOwner) error {
-	pending := make(map[string]UseOwner, len(owners))
+	pending := make(map[string]registeredUseOwner, len(owners))
 	for _, owner := range owners {
-		if nilness.Is(owner) || !ValidName(owner.ID()) {
+		if nilness.Is(owner) {
 			return ErrInvalid
 		}
-		if _, exists := pending[owner.ID()]; exists {
-			return fmt.Errorf("%w: duplicate use owner %s", ErrInvalid, owner.ID())
+		id := owner.ID()
+		if !ValidName(id) {
+			return ErrInvalid
 		}
-		pending[owner.ID()] = owner
+		if _, exists := pending[id]; exists {
+			return fmt.Errorf("%w: duplicate use owner %s", ErrInvalid, id)
+		}
+		pending[id] = registeredUseOwner{id: id, source: owner}
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -287,29 +296,29 @@ func (a *Admission) Retained(ctx context.Context, id InstallationID) ([]Retained
 			return nil, err
 		}
 		for _, value := range CompactDependencies(values) {
-			result = append(result, RetainedDependency{OwnerID: owner.ID(), Dependency: value})
+			result = append(result, RetainedDependency{OwnerID: owner.id, Dependency: value})
 		}
 	}
 	return result, nil
 }
 
-func (a *Admission) sortedOwners() []UseOwner {
+func (a *Admission) sortedOwners() []registeredUseOwner {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	owners := make([]UseOwner, 0, len(a.owners))
+	owners := make([]registeredUseOwner, 0, len(a.owners))
 	for _, owner := range a.owners {
 		owners = append(owners, owner)
 	}
-	slices.SortFunc(owners, func(x, y UseOwner) int { return cmp.Compare(x.ID(), y.ID()) })
+	a.mu.Unlock()
+	slices.SortFunc(owners, func(x, y registeredUseOwner) int { return cmp.Compare(x.id, y.id) })
 	return owners
 }
 
 // held reads one owner. Any answer it cannot trust requires recovery, except a
 // failure caused only by this request's own cancellation.
-func (a *Admission) held(ctx context.Context, owner UseOwner, id InstallationID) ([]Dependency, error) {
-	values, err := owner.Held(ctx, id)
+func (a *Admission) held(ctx context.Context, owner registeredUseOwner, id InstallationID) ([]Dependency, error) {
+	values, err := owner.source.Held(ctx, id)
 	if err != nil {
-		failure := fmt.Errorf("frame: read retained dependencies from %s: %w", owner.ID(), err)
+		failure := fmt.Errorf("frame: read retained dependencies from %s: %w", owner.id, err)
 		if onlyRequestCancellation(ctx, err) {
 			return nil, failure
 		}
@@ -317,10 +326,10 @@ func (a *Admission) held(ctx context.Context, owner UseOwner, id InstallationID)
 	}
 	for _, value := range values {
 		if err := value.Validate(); err != nil {
-			return nil, a.untrusted(fmt.Errorf("frame: invalid retained dependency from %s: %w", owner.ID(), err))
+			return nil, a.untrusted(fmt.Errorf("frame: invalid retained dependency from %s: %w", owner.id, err))
 		}
 		if value.InstallationID != id {
-			return nil, a.untrusted(fmt.Errorf("%w: use owner %s returned another installation", ErrInvalid, owner.ID()))
+			return nil, a.untrusted(fmt.Errorf("%w: use owner %s returned another installation", ErrInvalid, owner.id))
 		}
 	}
 	return values, nil

@@ -1,4 +1,5 @@
 import { FrameError, Lifetime, type Unit } from "@frame/sdk";
+import { projectNumber } from "@frame/sdk/json";
 import {
   ControlPump,
   readResponseBytes,
@@ -22,7 +23,7 @@ export function connect(bootstrap: Bootstrap) {
   const control = new HTTPControl({
     endpoint: new URL("/frame/control", bootstrap.origin).href,
     credential: bootstrap.credentials.token,
-    maximumMessageBytes: bootstrap.credentials.maxMessageBytes,
+    maximumMessageBytes: projectNumber(bootstrap.credentials.maxMessageBytes),
     lifetime: transport,
   });
   const modules = new RealmModules(async (unit, signal) => {

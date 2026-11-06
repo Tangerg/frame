@@ -88,3 +88,50 @@ func TestCanonicalBindingRetainsSharedProviderIdentity(t *testing.T) {
 	_, err = use.Close(ctx)
 	must(err)
 }
+
+func TestBindingIdentitySurvivesPublicJSONRoundTrip(t *testing.T) {
+	host := testHost(t, frame.HostConfig{})
+	service, err := frame.NewContract[string]("binding.text", "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Register(service); err != nil {
+		t.Fatal(err)
+	}
+	plugin := installNative(t, host, "provider", frame.Unit{
+		Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "text", Contract: service.Ref()}}},
+		Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
+			return []frame.ExportValue{frame.Provide("text", service, "value")}, nil
+		},
+	})
+	plan, err := host.Plan(t.Context(), source("provider", plugin, "main", "text", service.Ref()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := plan.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := original.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unitRoots := range [][]frame.UnitRef{nil, {}} {
+		original.UnitRoots = unitRoots
+		encoded, err := value.EncodeJSON(original)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := frame.ParseBinding(encoded.Bytes())
+		if err != nil {
+			t.Fatal(err)
+		}
+		after, err := decoded.Identity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if before != after {
+			t.Fatalf("public serialization changed binding identity: before=%s, after=%s", before, after)
+		}
+	}
+}

@@ -8,8 +8,13 @@ import (
 
 // RunningUnit is one start handle of an instance. Only the final handle
 // requests retirement, so independent clients of the same grant cannot stop
-// each other. A stopped handle retains only the instance's completion.
+// each other. Copies share the original claim, and a stopped claim retains only
+// the instance's identity and completion.
 type RunningUnit struct {
+	claim *startClaim
+}
+
+type startClaim struct {
 	id       string
 	instance *Instance
 	once     sync.Once
@@ -17,25 +22,48 @@ type RunningUnit struct {
 }
 
 func (h *Host) StartUnit(ctx context.Context, grant ScopeGrant, root UnitRef) (*RunningUnit, error) {
-	use, err := h.AcquireUnit(ctx, root, UseConfig{Owner: h.lifetime, Scope: grant})
+	plan, err := h.PlanUnit(ctx, "", root, nil)
 	if err != nil {
 		return nil, err
 	}
-	instance, err := use.start(ctx, root)
+	use, err := h.acquireActivated(ctx, UseConfig{Owner: h.lifetime, Scope: grant}, "", h.startBinding(plan, grant))
+	if err != nil {
+		return nil, err
+	}
+	handle, err := use.start(ctx, root)
 	// A start handle controls retirement, but is not an active borrow. Keeping
 	// that temporary Use alive would prevent a host-initiated disable from draining.
 	_, closeErr := use.Close(context.WithoutCancel(ctx))
 	if err != nil {
 		return nil, errors.Join(err, closeErr)
 	}
-	handle := &RunningUnit{id: instance.id, instance: instance}
 	if closeErr != nil {
 		return nil, errors.Join(closeErr, handle.Stop(ctx))
 	}
 	return handle, nil
 }
 
-func (u *Use) start(ctx context.Context, root UnitRef) (*Instance, error) {
+func (h *Host) startBinding(plan *BindingPlan, grant ScopeGrant) activationBinding {
+	bind := h.plannedBinding(plan)
+	return func(admitted context.Context) (BindingSnapshot, []bindingRead, error) {
+		binding, reads, err := bind(admitted)
+		if err != nil {
+			return BindingSnapshot{}, nil, err
+		}
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		for _, root := range binding.UnitRoots {
+			if instance := h.instances[instanceKey{source: root, realm: plan.realm}]; instance != nil {
+				if err := instance.validateStartLocked(grant); err != nil {
+					return BindingSnapshot{}, nil, err
+				}
+			}
+		}
+		return binding, reads, nil
+	}
+}
+
+func (u *Use) start(ctx context.Context, root UnitRef) (*RunningUnit, error) {
 	work, err := u.enter(ctx)
 	if err != nil {
 		return nil, err
@@ -45,14 +73,28 @@ func (u *Use) start(ctx context.Context, root UnitRef) (*Instance, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	instance := u.instance(root)
-	switch {
-	case instance == nil:
+	if instance == nil {
 		return nil, ErrContractMismatch
-	case instance.retiring:
-		return nil, ErrStaleBinding
 	}
-	instance.starts++
-	return instance, nil
+	return instance.claimStartLocked(u.scope)
+}
+
+func (i *Instance) validateStartLocked(grant ScopeGrant) error {
+	if i.retiring {
+		return ErrStaleBinding
+	}
+	if !i.startGrant.issued() || i.startGrant != grant {
+		return ErrFenced
+	}
+	return nil
+}
+
+func (i *Instance) claimStartLocked(grant ScopeGrant) (*RunningUnit, error) {
+	if err := i.validateStartLocked(grant); err != nil {
+		return nil, err
+	}
+	i.starts++
+	return &RunningUnit{claim: &startClaim{id: i.id, instance: i}}, nil
 }
 
 func (i *Instance) releaseStart() <-chan struct{} {
@@ -71,24 +113,30 @@ func (i *Instance) releaseStart() <-chan struct{} {
 	return i.closed
 }
 
-func (r *RunningUnit) ID() string { return r.id }
+func (r *RunningUnit) ID() string {
+	if r == nil || r.claim == nil {
+		return ""
+	}
+	return r.claim.id
+}
 
 func (r *RunningUnit) Stop(ctx context.Context) error {
-	if ctx == nil {
+	if ctx == nil || r == nil || r.claim == nil {
 		return ErrInvalid
 	}
-	r.once.Do(func() {
-		r.retired = r.instance.releaseStart()
-		r.instance = nil
+	claim := r.claim
+	claim.once.Do(func() {
+		claim.retired = claim.instance.releaseStart()
+		claim.instance = nil
 	})
-	if r.retired == nil {
+	if claim.retired == nil {
 		return nil
 	}
 	select {
-	case <-r.retired:
+	case <-claim.retired:
 		return nil
 	case <-ctx.Done():
-		if isClosed(r.retired) {
+		if isClosed(claim.retired) {
 			return nil
 		}
 		return contextError(ctx)

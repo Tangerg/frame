@@ -10,7 +10,7 @@ import {
   type Setup,
   type Unit,
 } from "../index.js";
-import { canonicalJSON, freezeJSON, parseJSON } from "../json.js";
+import { freezeJSON, parseJSON } from "../json.js";
 import type {
   AcquireRequest,
   Authority,
@@ -19,18 +19,14 @@ import type {
   Import,
   LocalPlan,
   ObjectRef,
-  PlanAdmissionDecision,
   PlannedUnit,
   Poll,
-  PreparedContribution,
-  PublicationRequest,
-  PublicationResult,
   Realm,
   RouteGrant,
   UseGrant,
 } from "../protocol.generated.js";
 import { PROTOCOL } from "../protocol.generated.js";
-import { isControlRefusal, type HostControl } from "./control.js";
+import type { HostControl } from "./control.js";
 import {
   sameAuthority,
   sameExecution,
@@ -38,14 +34,17 @@ import {
   sameRealm,
 } from "./identity.js";
 import {
-  PublicationReceipt,
-  publicationView,
+  Publication,
+  type PublicationChannel,
   type PublicationHandle,
-  type PublicationState,
 } from "./publication.js";
 import { ProofOutbox } from "./outbox.js";
 import { UseAdmission } from "./admission.js";
-import { PreparationAdmission, ReadySubmission } from "./preparation.js";
+import {
+  ExecutionResources,
+  type ObjectResource,
+  type UnitResource,
+} from "./execution.js";
 
 export interface RuntimeOptions {
   readonly authority: Authority;
@@ -81,30 +80,10 @@ export interface EventRoute<T> {
   close(signal?: AbortSignal): Promise<CloseOutcome>;
 }
 
-// Public handles capture only their original resource state. Constructing them
-// inside a Runtime method would share its lexical context with bookkeeping
-// callbacks and could retain the Runtime after every resource has exited.
-function executionView(
-  identity: Execution,
-  objects: ReadonlyMap<string, ObjectEntry>,
-  lifetime: Lifetime,
-): ExecutionHandle {
-  return Object.freeze({
-    identity,
-    get objects() {
-      return Object.freeze(
-        [...objects.values()].map((entry) => entry.reference),
-      );
-    },
-    close: (signal?: AbortSignal) => lifetime.close(signal),
-    wait: (signal?: AbortSignal) => lifetime.wait(signal),
-  });
-}
-
 function useView(
   grant: UseGrant,
   owner: Lifetime,
-  objects: ReadonlyMap<string, ObjectEntry>,
+  objects: ReadonlyMap<string, ObjectResource>,
 ): Use {
   return Object.freeze({
     id: grant.id,
@@ -156,168 +135,6 @@ function eventRouteView<T>(
   });
 }
 
-interface ObjectEntry {
-  readonly reference: ObjectRef;
-  readonly lifetime: Lifetime;
-  value: unknown;
-}
-
-interface UnitEntry {
-  readonly unit: PlannedUnit;
-  readonly lifetime: Lifetime;
-}
-
-interface ExecutionEntry {
-  readonly plan: LocalPlan;
-  readonly fingerprint: string;
-  readonly lifetime: Lifetime;
-  readonly admission: PreparationAdmission;
-  readonly ordered: readonly PlannedUnit[];
-  readonly units: Map<string, UnitEntry>;
-  readonly objects: Map<string, ObjectEntry>;
-  readonly preparations: PreparedContribution[];
-  readonly view: ExecutionHandle;
-  prepared?: Promise<ExecutionHandle>;
-  ready?: ReadySubmission;
-}
-
-/**
- * Checks one approved import and returns the planned unit providing a local
- * import, which may belong to this plan or to an earlier execution.
- */
-function checkImport(
-  binding: Import,
-  planned: ReadonlyMap<string, PlannedUnit>,
-  external: ReadonlyMap<string, UnitEntry>,
-): PlannedUnit | undefined {
-  switch (binding.kind) {
-    case "local":
-      return localProvider(binding, planned, external);
-    case "remote":
-      if (
-        !binding.remote ||
-        binding.local ||
-        binding.contract.mode !== "portable" ||
-        !sameContract(binding.remote.source.contract, binding.contract)
-      )
-        throw new FrameError(
-          "contract_mismatch",
-          "remote import requires an exact portable binding",
-        );
-      return undefined;
-    case "absent":
-      if (binding.local || binding.remote)
-        throw new FrameError("invalid_plan", "invalid import kind");
-      return undefined;
-    default:
-      throw new FrameError("invalid_plan", "invalid import kind");
-  }
-}
-
-function localProvider(
-  binding: Import,
-  planned: ReadonlyMap<string, PlannedUnit>,
-  external: ReadonlyMap<string, UnitEntry>,
-): PlannedUnit {
-  const local = binding.local;
-  if (
-    !local ||
-    binding.remote ||
-    !sameContract(binding.contract, local.contract)
-  )
-    throw new FrameError(
-      "contract_mismatch",
-      "local import differs from its approved contract",
-    );
-  const provider =
-    planned.get(local.instanceId) ?? external.get(local.instanceId)?.unit;
-  const exported = provider?.exports.some(
-    (entry) =>
-      entry.name === local.name &&
-      sameContract(entry.contract, binding.contract),
-  );
-  if (!provider || !exported)
-    throw new FrameError(
-      "invalid_plan",
-      "local import does not identify an exact planned export",
-    );
-  return provider;
-}
-
-function orderUnits(
-  plan: LocalPlan,
-  external: ReadonlyMap<string, UnitEntry>,
-): readonly PlannedUnit[] {
-  const byId = new Map(plan.units.map((unit) => [unit.instance.id, unit]));
-  if (!plan.units.length || byId.size !== plan.units.length)
-    throw new FrameError(
-      "invalid_plan",
-      "execution must contain unique instances",
-    );
-  const visiting = new Set<string>();
-  const visited = new Set<string>();
-  const ordered: PlannedUnit[] = [];
-  const visit = (unit: PlannedUnit): void => {
-    const id = unit.instance.id;
-    if (visiting.has(id))
-      throw new FrameError(
-        "invalid_plan",
-        "approved execution has a dependency cycle",
-      );
-    if (visited.has(id)) return;
-    visiting.add(id);
-    const slots = new Set<string>();
-    for (const binding of unit.imports) {
-      if (slots.has(binding.slot))
-        throw new FrameError("invalid_plan", "import slot was approved twice");
-      slots.add(binding.slot);
-      const provider = checkImport(binding, byId, external);
-      if (provider && byId.has(provider.instance.id)) visit(provider);
-    }
-    visiting.delete(id);
-    visited.add(id);
-    ordered.push(unit);
-  };
-  for (const unit of plan.units) visit(unit);
-  return ordered;
-}
-
-function checkDeclaredExports(unit: PlannedUnit, definition: Unit): void {
-  if (Object.keys(definition.exports).length !== unit.exports.length)
-    throw new FrameError(
-      "contract_mismatch",
-      "module exports differ from the approved declaration",
-    );
-  for (const declared of unit.exports) {
-    const exported = definition.exports[declared.name];
-    if (
-      !Object.hasOwn(definition.exports, declared.name) ||
-      !exported ||
-      !sameContract(exported.ref, declared.contract)
-    )
-      throw new FrameError(
-        "contract_mismatch",
-        "module exports an unapproved contract",
-      );
-  }
-}
-
-/** A prepared Point member pairs its metadata with its value. */
-function pointExport(exported: unknown): { metadata: unknown; value: unknown } {
-  if (
-    typeof exported !== "object" ||
-    exported === null ||
-    !Object.hasOwn(exported, "metadata") ||
-    !Object.hasOwn(exported, "value")
-  )
-    throw new FrameError(
-      "contract_mismatch",
-      "point export requires metadata and a value",
-    );
-  return exported as { metadata: unknown; value: unknown };
-}
-
-/** Executes approved plans. Installation, discovery, and selection stay in Go. */
 export class Runtime {
   readonly #realm: Realm;
   #authority: Authority;
@@ -328,9 +145,9 @@ export class Runtime {
   #connection: "connected" | "paused" | "cleanupOnly" | "closed" = "connected";
   #connectionRevision = 0;
   #executionProjectionRevision = 0;
-  #executions = new Map<string, ExecutionEntry>();
-  #instances = new Map<string, UnitEntry>();
-  #objects = new Map<string, ObjectEntry>();
+  #executions = new Map<string, ExecutionResources>();
+  readonly #instances = new Map<string, UnitResource>();
+  readonly #objects = new Map<string, ObjectResource>();
   #uses = new Map<string, UseAdmission>();
   #admissions = new Map<string, UseAdmission>();
 
@@ -375,21 +192,16 @@ export class Runtime {
 
   async prepare(received: LocalPlan): Promise<ExecutionHandle> {
     const plan = freezeJSON(received);
-    const fingerprint = canonicalJSON(plan);
     const existing = this.#executions.get(plan.execution.id);
     if (existing) {
-      if (existing.fingerprint !== fingerprint)
-        throw new FrameError(
-          "stale_binding",
-          "execution identity cannot be relabeled or restarted",
-        );
-      if (existing.prepared) return existing.prepared;
+      existing.verify(plan);
+      if (existing.preparing) return existing.preparing;
       if (existing.admission.pending)
         return this.#resumePreparation(existing, this.#connectionRevision);
       if (existing.lifetime.closing)
         throw new FrameError("stale_binding", "original execution is closing");
       this.#assertConnected();
-      if (!existing.ready)
+      if (!existing.prepared)
         throw new FrameError(
           "invalid_plan",
           "execution has no prepared report",
@@ -413,85 +225,31 @@ export class Runtime {
         "permission_denied",
         "execution belongs to another authority or realm",
       );
-    const ordered = orderUnits(plan, this.#instances);
-    if (ordered.some((unit) => this.#instances.has(unit.instance.id)))
-      throw new FrameError(
-        "invalid_plan",
-        "a different execution already owns this instance",
-      );
-    this.#outbox.reserve(`execution:${plan.execution.id}`);
-    const lifetime = new Lifetime(`execution:${plan.execution.id}`);
-    const objects = new Map<string, ObjectEntry>();
-    const units = new Map<string, UnitEntry>();
-    const view = executionView(plan.execution, objects, lifetime);
-    const admission = new PreparationAdmission(plan, lifetime, (decision) =>
-      this.#settlePreparation(entry, decision),
-    );
-    const entry: ExecutionEntry = {
+    const entry = new ExecutionResources(
       plan,
-      fingerprint,
-      lifetime,
-      admission,
-      ordered,
-      units,
-      objects,
-      preparations: [],
-      view,
-    };
+      this.#instances,
+      this.#objects,
+      this.#outbox,
+      (settled) => this.#forgetExecution(settled),
+    );
     this.#executions.set(plan.execution.id, entry);
     return this.#resumePreparation(entry, this.#connectionRevision);
   }
 
   #resumePreparation(
-    entry: ExecutionEntry,
+    entry: ExecutionResources,
     revision: number,
   ): Promise<ExecutionHandle> {
-    const work = entry.ready
-      ? this.#submitReady(entry, revision)
-      : this.#prepare(entry, entry.ordered, revision);
-    entry.prepared = work.finally(() => {
-      entry.prepared = undefined;
+    return entry.prepare(async () => {
+      if (!entry.prepared) await this.#prepare(entry, revision);
+      this.#assertRevision(revision);
+      const view = await entry.submitReady(this.#control);
+      this.#assertRevision(revision);
+      return view;
     });
-    return entry.prepared;
   }
 
-  #settlePreparation(
-    entry: ExecutionEntry,
-    decision: PlanAdmissionDecision,
-  ): void {
-    const reservation = `execution:${entry.plan.execution.id}`;
-    switch (decision) {
-      case "notAdmitted":
-      case "settled":
-        this.#outbox.cancelReservation(reservation);
-        this.#forgetExecution(entry);
-        entry.lifetime.beginClose();
-        return;
-      case "admitted":
-      case "cleanupRequired":
-        this.#observeExit(
-          entry,
-          entry.lifetime,
-          reservation,
-          "execution",
-          entry.plan.execution.id,
-          entry.ordered.map((unit) => unit.instance.id),
-        );
-        if (decision === "cleanupRequired") entry.lifetime.beginClose();
-        return;
-      default:
-        throw new FrameError(
-          "outcome_unknown",
-          "host has not settled the original preparation admission",
-        );
-    }
-  }
-
-  async #prepare(
-    entry: ExecutionEntry,
-    ordered: readonly PlannedUnit[],
-    revision: number,
-  ): Promise<ExecutionHandle> {
+  async #prepare(entry: ExecutionResources, revision: number): Promise<void> {
     const admit = () => entry.admission.resolve(this.#control, this.#authority);
     const decision = await (entry.lifetime.closing
       ? admit()
@@ -506,9 +264,9 @@ export class Runtime {
     try {
       this.#assertRevision(revision);
       entry.lifetime.assertOpen();
-      this.#ownUnits(entry, ordered);
+      entry.ownUnits();
       await entry.lifetime.run(async () => {
-        for (const unit of ordered)
+        for (const unit of entry.ordered)
           await this.#prepareUnit(entry, unit, revision);
       });
       this.#assertRevision(revision);
@@ -516,50 +274,15 @@ export class Runtime {
       await entry.lifetime.close();
       throw error;
     }
-    entry.lifetime.assertOpen();
-    entry.ready = new ReadySubmission(
-      freezeJSON({
-        operationId: crypto.randomUUID(),
-        authority: entry.plan.authority,
-        realm: this.#realm,
-        execution: entry.plan.execution,
-        objects: entry.view.objects,
-        contributions: entry.preparations,
-      }),
-      entry.lifetime,
-    );
-    return this.#submitReady(entry, revision);
-  }
-
-  /**
-   * Gives each unit its own Lifetime, after the providers in this execution
-   * that it imports, so a provider cannot close beneath its consumer.
-   */
-  #ownUnits(entry: ExecutionEntry, ordered: readonly PlannedUnit[]): void {
-    for (const unit of ordered) {
-      const owned = {
-        unit,
-        lifetime: entry.lifetime.branch(`instance:${unit.instance.id}`),
-      };
-      entry.units.set(unit.instance.id, owned);
-      this.#instances.set(unit.instance.id, owned);
-    }
-    for (const owned of entry.units.values()) {
-      for (const binding of owned.unit.imports) {
-        if (binding.kind === "local")
-          owned.lifetime.dependsOn(
-            this.#instances.get(binding.local!.instanceId)!.lifetime,
-          );
-      }
-    }
+    entry.finishPreparation();
   }
 
   async #prepareUnit(
-    entry: ExecutionEntry,
+    entry: ExecutionResources,
     unit: PlannedUnit,
     revision: number,
   ): Promise<void> {
-    const owner = entry.units.get(unit.instance.id)!.lifetime;
+    const owner = entry.unit(unit.instance.id)!.lifetime;
     const live = () => {
       this.#assertRevision(revision);
       owner.assertOpen();
@@ -569,13 +292,8 @@ export class Runtime {
       this.#load(unit, owner, entry.plan),
     );
     live();
-    if (definition.id !== unit.instance.source.unitId)
-      throw new FrameError(
-        "contract_mismatch",
-        "module does not declare the approved unit",
-      );
+    entry.verifyDefinition(unit, definition);
     const imports = await this.#bindImports(unit, definition, owner, live);
-    checkDeclaredExports(unit, definition);
     const context: Setup<typeof definition.imports> = Object.freeze({
       imports: Object.freeze(imports),
       configuration: parseJSON(unit.configurationJson),
@@ -589,11 +307,9 @@ export class Runtime {
         "contract_mismatch",
         "actual export set differs from its declaration",
       );
-    for (const declared of unit.exports)
-      this.#stageExport(entry, unit, definition, declared, exports, owner);
+    entry.stageExports(unit, definition, exports);
   }
 
-  /** Resolves every approved import of unit against the module's slots. */
   async #bindImports(
     unit: PlannedUnit,
     definition: Unit,
@@ -652,114 +368,6 @@ export class Runtime {
     return object.value;
   }
 
-  /** Stages one prepared export: a Point member with metadata, or an object. */
-  #stageExport(
-    entry: ExecutionEntry,
-    unit: PlannedUnit,
-    definition: Unit,
-    declared: PlannedUnit["exports"][number],
-    exports: Record<string, unknown>,
-    owner: Lifetime,
-  ): void {
-    if (!Object.hasOwn(exports, declared.name))
-      throw new FrameError(
-        "contract_mismatch",
-        "declared export was not prepared",
-      );
-    const exported = exports[declared.name];
-    if (declared.contract.kind === "point") {
-      const { metadata, value } = pointExport(exported);
-      const object = this.#stage(
-        entry,
-        unit.instance.id,
-        definition.exports[declared.name] as Point<unknown, unknown>,
-        declared.name,
-        value,
-        owner,
-      );
-      entry.preparations.push(
-        freezeJSON({
-          object: object.reference,
-          metadataJson: canonicalJSON(metadata),
-        }),
-      );
-      return;
-    }
-    if (declared.contract.kind === "service" && exported == null)
-      throw new FrameError(
-        "contract_mismatch",
-        "service implementation is missing",
-      );
-    const reference: ObjectRef = freezeJSON({
-      export: {
-        instanceId: unit.instance.id,
-        name: declared.name,
-        contract: declared.contract,
-      },
-      objectId: crypto.randomUUID(),
-    });
-    const object: ObjectEntry = { reference, value: exported, lifetime: owner };
-    entry.objects.set(reference.objectId, object);
-    this.#objects.set(reference.objectId, object);
-  }
-
-  async #submitReady(
-    entry: ExecutionEntry,
-    revision: number,
-  ): Promise<ExecutionHandle> {
-    this.#assertRevision(revision);
-    entry.lifetime.assertOpen();
-    await entry.ready!.submit(this.#control);
-    this.#assertRevision(revision);
-    entry.lifetime.assertOpen();
-    return entry.view;
-  }
-
-  #stage<M, V>(
-    entry: ExecutionEntry,
-    instanceId: string,
-    point: Point<M, V>,
-    key: string,
-    value: V,
-    owner: Lifetime,
-  ): ObjectEntry {
-    owner.assertOpen();
-    if (value == null)
-      throw new FrameError(
-        "contract_mismatch",
-        "point implementation is missing",
-      );
-    const unit = entry.units.get(instanceId)?.unit;
-    if (
-      !unit ||
-      !unit.exports.some((item) => sameContract(item.contract, point.ref))
-    )
-      throw new FrameError(
-        "permission_denied",
-        "unit did not declare this public contribution contract",
-      );
-    if (
-      !key ||
-      [...entry.objects.values()].some(
-        (item) =>
-          item.reference.export.instanceId === instanceId &&
-          item.reference.export.name === key,
-      )
-    )
-      throw new FrameError(
-        "invalid_plan",
-        "contribution key is empty or already prepared",
-      );
-    const reference: ObjectRef = freezeJSON({
-      export: { instanceId, name: key, contract: point.ref },
-      objectId: crypto.randomUUID(),
-    });
-    const object: ObjectEntry = { reference, lifetime: owner, value };
-    entry.objects.set(reference.objectId, object);
-    this.#objects.set(reference.objectId, object);
-    return object;
-  }
-
   hasPendingAcquisition(operationId: string): boolean {
     const admission = this.#admissions.get(operationId);
     return !!admission && !admission.use && !admission.lifetime.closing;
@@ -808,7 +416,7 @@ export class Runtime {
     return use;
   }
 
-  #useExecution(execution: Execution): ExecutionEntry {
+  #useExecution(execution: Execution): ExecutionResources {
     const entry = this.#executions.get(execution.id);
     if (!entry || !sameExecution(entry.plan.execution, execution))
       throw new FrameError("stale_binding", "use requires an owned execution");
@@ -817,7 +425,7 @@ export class Runtime {
 
   #admission(
     identity: Pick<AcquireRequest, "operationId" | "parentUseId" | "execution">,
-    entry: ExecutionEntry,
+    entry: ExecutionResources,
   ): UseAdmission {
     if (!identity.operationId)
       throw new FrameError(
@@ -865,7 +473,7 @@ export class Runtime {
 
   async #materializeGrant(
     received: UseGrant,
-    entry: ExecutionEntry,
+    entry: ExecutionResources,
     admission: UseAdmission,
     revision: number,
   ): Promise<Use> {
@@ -893,22 +501,11 @@ export class Runtime {
       );
     const owner = admission.lifetime;
     const closing = revision !== this.#connectionRevision || owner.closing;
-    const objects = new Map<string, ObjectEntry>();
+    const objects = new Map<string, ObjectResource>();
     const use = useView(grant, owner, objects);
     admission.materialize(grant, use);
     this.#uses.set(grant.id, admission);
-    this.#observeExit(
-      entry,
-      owner,
-      admission.reservation,
-      "use",
-      grant.id,
-      [
-        ...new Set(
-          grant.objects.map((reference) => reference.export.instanceId),
-        ),
-      ].sort(),
-    );
+    this.#observeUseExit(entry, owner, admission.reservation, grant);
     owner.observeExit((outcome) => {
       if (outcome.status === "released") objects.clear();
     });
@@ -951,115 +548,21 @@ export class Runtime {
         "stale_binding",
         "publication execution is unavailable",
       );
-    const unit = entry.units.get(instanceId);
-    if (!unit)
-      throw new FrameError(
-        "permission_denied",
-        "publication instance is outside this execution",
-      );
-    const operationId = crypto.randomUUID();
-    const reservation = `publication:${operationId}`;
-    const metadataJson = canonicalJSON(metadata);
-    this.#outbox.reserve(reservation);
-    let owner: Lifetime | undefined;
-    let object: ObjectEntry;
-    try {
-      owner = unit.lifetime.branch(reservation);
-      object = this.#stage(entry, instanceId, point, key, value, owner);
-    } catch (error) {
-      owner?.beginClose();
-      this.#outbox.cancelReservation(reservation);
-      throw error;
-    }
-    const request: PublicationRequest = freezeJSON({
-      operationId,
-      authority: entry.plan.authority,
-      realm: this.#realm,
-      execution,
-      object: object.reference,
-      metadataJson,
-    });
-    const receipt = new PublicationReceipt(operationId, object.reference);
-    const state: PublicationState = { receipt };
-    const receive = (result: PublicationResult): PublicationResult => {
-      const observed = receipt.receive(result);
-      if (observed.decision === "rejected") owner.beginClose();
-      return observed;
+    return Publication.start(
+      entry,
+      { instanceId, point, key, metadata, value },
+      this.#outbox,
+      () => this.#publicationChannel(),
+    );
+  }
+
+  #publicationChannel(): PublicationChannel {
+    if (this.#connection !== "cleanupOnly") this.#assertConnected();
+    return {
+      control: this.#control,
+      authority: this.#authority,
+      mode: this.#connection === "cleanupOnly" ? "cleanupOnly" : "connected",
     };
-    state.observe = async () => {
-      if (this.#connection === "cleanupOnly") return receipt.outcome;
-      this.#assertConnected();
-      return receive(await this.#control.publication(operationId));
-    };
-    state.withdraw = async () => {
-      this.#assertConnected();
-      if (receipt.outcome.decision !== "accepted")
-        receive(await this.#control.publication(operationId));
-      const accepted = receipt.acceptedPublication;
-      if (!accepted) return { decision: "unknown" };
-      const result = await this.#control.withdraw({
-        authority: this.#authority,
-        publicationId: accepted.id,
-      });
-      if (result.decision === "accepted") {
-        receipt.acknowledgeWithdrawal();
-        await owner.close();
-      }
-      return result;
-    };
-    owner.observeExit((outcome) => {
-      if (outcome.status !== "released") return;
-      entry.objects.delete(object.reference.objectId);
-      this.#objects.delete(object.reference.objectId);
-      object.value = undefined;
-      state.observe = undefined;
-      state.withdraw = undefined;
-      const publicationId = receipt.withdrawnPublicationId;
-      if (publicationId) {
-        this.#outbox.record(
-          reservation,
-          freezeJSON({
-            closeId: outcome.closeId,
-            proofId: crypto.randomUUID(),
-            authority: entry.plan.authority,
-            realm: entry.plan.realm,
-            execution: entry.plan.execution,
-            scopeId: entry.plan.scopeId,
-            scopeGeneration: entry.plan.scopeGeneration,
-            scopeKind: "publication",
-            publicationId,
-            instances: [object.reference.export.instanceId],
-            status: "released",
-          }),
-        );
-      } else {
-        // Only an acknowledged Host withdrawal has an independent publication
-        // exit. Execution retirement covers its original objects, including an
-        // accepted or uncertain publication that was not separately withdrawn.
-        // The execution reservation remains until that whole exit is proven.
-        this.#outbox.cancelReservation(reservation);
-      }
-    });
-    const handle = publicationView(state);
-    let result: PublicationResult;
-    try {
-      result = await owner.run(() => this.#control.publish(request));
-    } catch (cause) {
-      if (isControlRefusal(cause)) {
-        await owner.close();
-        throw cause;
-      }
-      // The original operation remains observable after an uncertain acknowledgement.
-      return handle;
-    }
-    try {
-      receive(result);
-    } catch (cause) {
-      // A malformed acknowledgement leaves the original operation observable.
-      receipt.uncertain(cause);
-    }
-    if (receipt.outcome.decision === "rejected") await owner.close();
-    return handle;
   }
 
   async route<T>(
@@ -1099,47 +602,38 @@ export class Runtime {
     });
   }
 
-  #observeExit(
-    entry: ExecutionEntry,
+  #observeUseExit(
+    entry: ExecutionResources,
     lifetime: Lifetime,
     reservation: string,
-    targetKind: "execution" | "use",
-    targetId: string,
-    instances: readonly string[],
+    grant: UseGrant,
   ): void {
     lifetime.observeExit((outcome) => {
       if (outcome.status !== "released") return;
-      const proof: CloseProof = freezeJSON({
-        closeId: outcome.closeId,
-        proofId: crypto.randomUUID(),
-        authority: entry.plan.authority,
-        realm: entry.plan.realm,
-        execution: entry.plan.execution,
-        scopeId: entry.plan.scopeId,
-        scopeGeneration: entry.plan.scopeGeneration,
-        scopeKind: targetKind,
-        ...(targetKind === "use" ? { useId: targetId } : {}),
-        instances,
-        status: "released",
-      });
-      this.#outbox.record(reservation, proof);
-      if (targetKind === "execution") {
-        for (const object of entry.objects.values()) {
-          object.value = undefined;
-          this.#objects.delete(object.reference.objectId);
-        }
-        for (const instanceId of entry.units.keys())
-          this.#instances.delete(instanceId);
-        entry.objects.clear();
-        entry.units.clear();
-        entry.preparations.length = 0;
-        entry.prepared = undefined;
-        entry.ready = undefined;
-      }
+      this.#outbox.record(
+        reservation,
+        freezeJSON({
+          closeId: outcome.closeId,
+          proofId: crypto.randomUUID(),
+          authority: entry.plan.authority,
+          realm: entry.plan.realm,
+          execution: entry.plan.execution,
+          scopeId: entry.plan.scopeId,
+          scopeGeneration: entry.plan.scopeGeneration,
+          scopeKind: "use",
+          useId: grant.id,
+          instances: [
+            ...new Set(
+              grant.objects.map((reference) => reference.export.instanceId),
+            ),
+          ].sort(),
+          status: "released",
+        }),
+      );
     });
   }
 
-  #forgetExecution(entry: ExecutionEntry): void {
+  #forgetExecution(entry: ExecutionResources): void {
     if (this.#executions.get(entry.plan.execution.id) !== entry) return;
     this.#executions.delete(entry.plan.execution.id);
     // Poll creates no execution obligation. Invalidating its older projection
@@ -1245,10 +739,7 @@ export class Runtime {
       );
   }
 
-  /**
-   * Selects new and still-pending plans. A stale projection schedules only the
-   * admissions this Runtime already reserved, which must not be lost.
-   */
+  // Stale observations cannot create executions, but already reserved admissions remain owned.
   #schedulablePlans(pending: Poll, projectionRevision: number): LocalPlan[] {
     const plans =
       this.#connection === "connected" &&

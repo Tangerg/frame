@@ -60,8 +60,8 @@ type Instance struct {
 	providerHolds []*Work
 	stops         []func() bool
 
-	// startGrant and starts belong to StartUnit handles. Only the final
-	// handle retires the instance, and only under the grant that started it.
+	// startGrant is fixed before preparation; an empty grant is installation-scoped.
+	// Only matching start claims may request retirement of a scoped instance.
 	startGrant ScopeGrant
 	starts     int
 

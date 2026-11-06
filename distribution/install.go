@@ -25,17 +25,21 @@ type Installation struct {
 // Slow profile validation cannot relinquish content before the Host accepts
 // or rejects the original release.
 func (l *Lease) Install(ctx context.Context, host *frame.Host, config Installation) (record frame.InstallationRecord, err error) {
-	if l == nil || host == nil || host.Admission() != l.store.admission {
+	if l == nil || l.claim == nil || host == nil {
 		return record, frame.ErrInvalid
 	}
-	l.mu.Lock()
-	if l.closed {
-		l.mu.Unlock()
+	claim := l.claim
+	claim.mu.Lock()
+	store := claim.store
+	digest := claim.release.Digest
+	claim.mu.Unlock()
+	if store == nil {
 		return record, frame.ErrClosed
 	}
-	digest := l.release.Digest
-	l.mu.Unlock()
-	pin, err := l.store.Acquire(ctx, digest)
+	if host.Admission() != store.admission {
+		return record, frame.ErrInvalid
+	}
+	pin, err := store.Acquire(ctx, digest)
 	if err != nil {
 		return record, err
 	}

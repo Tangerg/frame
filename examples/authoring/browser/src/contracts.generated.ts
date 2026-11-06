@@ -48,11 +48,11 @@ export interface Converted {
 
 export interface ConverterMetadata {
   readonly format: string;
-  readonly priority: number;
+  readonly priority: import("@frame/sdk/json").JSONNumber;
 }
 
 export interface Credentials {
-  readonly maxMessageBytes: number;
+  readonly maxMessageBytes: import("@frame/sdk/json").JSONNumber;
   readonly authority: Authority;
   readonly realm: Realm;
   readonly token: string;
@@ -94,7 +94,7 @@ export type UnitID = string;
 
 export interface ValidatorMetadata {
   readonly name: string;
-  readonly order: number;
+  readonly order: import("@frame/sdk/json").JSONNumber;
 }
 
 export const documentContracts = {

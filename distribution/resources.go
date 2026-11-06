@@ -50,7 +50,7 @@ func (d *ResourceDriver) Prepare(ctx context.Context, setup *frame.Setup) ([]fra
 		return nil, errors.Join(err, lease.Close())
 	}
 	declaration := setup.Unit()
-	manifest := lease.release.Manifest
+	manifest := lease.Snapshot().Manifest
 	declared, found := manifest.unit(declaration.ID)
 	if !found || declared.Profile != frame.StaticResource || len(declaration.Imports) != 0 || !slices.Equal(declared.Exports, declaration.Exports) {
 		return nil, frame.ErrContractMismatch

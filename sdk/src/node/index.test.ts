@@ -31,6 +31,45 @@ const numbers = new Capability({
 });
 
 describe("local process author", () => {
+  it("validates and retains one capture of a unit and its import cardinality", () => {
+    let idReads = 0;
+    let importReads = 0;
+    let contractReads = 0;
+    let cardinalityReads = 0;
+    const declaration = {
+      get contract() {
+        contractReads++;
+        return numbers;
+      },
+      get cardinality(): "optional" | "many" {
+        return ++cardinalityReads === 1 ? "optional" : "many";
+      },
+    };
+    const unit = defineProcessUnit({
+      get id() {
+        return ++idReads === 1 ? "consumer" : "";
+      },
+      get imports() {
+        importReads++;
+        return { numbers: declaration };
+      },
+      exports: {},
+      setup: () => ({}),
+    });
+    expect(unit.id).toBe("consumer");
+    expect(unit.imports.numbers).toEqual({
+      contract: numbers,
+      cardinality: "optional",
+    });
+    expect({ idReads, importReads, contractReads, cardinalityReads }).toEqual({
+      idReads: 1,
+      importReads: 1,
+      contractReads: 1,
+      cardinalityReads: 1,
+    });
+    expect(Object.isFrozen(unit.imports.numbers)).toBe(true);
+  });
+
   it("pins the export contract, streams with acknowledgement and joins shutdown", async () => {
     const input = new PassThrough(),
       output = new PassThrough();
@@ -242,6 +281,54 @@ async function connectUnit<
   await host.request(wire.methods.activate, {}, new AbortController().signal);
   return host;
 }
+
+it("prepares callable handlers from one private capture of the exported service tables", async () => {
+  let serviceReads = 0;
+  let handlerReads = 0;
+  let calls = 0;
+  const original = () => {
+    calls++;
+    return 7;
+  };
+  const members = {
+    get count() {
+      return ++handlerReads === 1 ? original : () => 99;
+    },
+  };
+  const handlers = {
+    get numbers() {
+      serviceReads++;
+      return members;
+    },
+  };
+  const peer = await connectUnit(
+    defineProcessUnit({
+      id: "captured-handlers",
+      imports: {},
+      exports: { numbers },
+      setup: () => handlers,
+    }),
+  );
+  Object.defineProperty(members, "count", { value: () => 99 });
+  Object.defineProperty(handlers, "numbers", { value: { count: () => 55 } });
+  expect(
+    await peer.request(
+      wire.methods.call,
+      {
+        handle: "numbers",
+        member: "count",
+        input: 1,
+        stream: "original",
+      },
+      new AbortController().signal,
+    ),
+  ).toBe(7);
+  expect({ serviceReads, handlerReads, calls }).toEqual({
+    serviceReads: 1,
+    handlerReads: 1,
+    calls: 1,
+  });
+});
 
 function serviceBinding(slot: string, contract: ServiceContract) {
   return {

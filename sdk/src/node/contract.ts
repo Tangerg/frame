@@ -50,7 +50,6 @@ export interface Shape {
   readonly optional: readonly string[];
 }
 
-/** Admits an object carrying exactly the shape's members. */
 export function admitShape(
   value: unknown,
   shape: Shape,
@@ -78,9 +77,9 @@ export function exactFields(
 export class Method {
   readonly descriptor: MethodDescriptor;
   readonly identity: string;
-  readonly validateInput: (value: unknown) => void;
-  readonly validateOutput: (value: unknown) => void;
-  readonly validateChunk?: (value: unknown) => void;
+  readonly admitInput: (value: unknown) => unknown;
+  readonly admitOutput: (value: unknown) => unknown;
+  readonly admitChunk?: (value: unknown) => unknown;
 
   constructor(source: MethodDescriptor) {
     const descriptor = freezeJSON(captureDescriptor(source));
@@ -93,23 +92,23 @@ export class Method {
     )
       throw new Error("plugin: invalid method contract");
     this.descriptor = descriptor;
-    this.validateInput = compileSchema(descriptor.input);
+    this.admitInput = compileSchema(descriptor.input);
     let admitsNull = true;
     try {
-      this.validateInput(null);
+      this.admitInput(null);
     } catch (cause) {
       if (!(cause instanceof SchemaMismatch)) throw cause;
       admitsNull = false;
     }
     if (admitsNull) throw new Error("plugin: method input must exclude null");
-    this.validateOutput = compileSchema(descriptor.output);
+    this.admitOutput = compileSchema(descriptor.output);
     if (Object.hasOwn(descriptor, "stream"))
-      this.validateChunk = compileSchema(descriptor.stream);
+      this.admitChunk = compileSchema(descriptor.stream);
     this.identity = digestJSON({ ...descriptor, description: "" });
     Object.freeze(this);
   }
 
-  validateInvocation(input: unknown, commandID: unknown): void {
+  admitInvocation(input: unknown, commandID: unknown): unknown {
     if (this.descriptor.kind === "command") {
       if (
         typeof commandID !== "string" ||
@@ -124,7 +123,7 @@ export class Method {
     } else if (commandID !== undefined) {
       throw new TypeError("plugin: query must not carry a command identity");
     }
-    this.validateInput(input);
+    return this.admitInput(input);
   }
 }
 
@@ -166,6 +165,7 @@ export interface ServiceContract {
   readonly descriptor: CapabilityDescriptor;
   readonly identity: string;
   method(name: string): Method;
+  implement(handlers: unknown): Readonly<Record<string, unknown>>;
 }
 type Described<C extends ServiceContract> = C["descriptor"]["methods"][number];
 export interface RequestOptions<C = unknown> {
@@ -240,12 +240,23 @@ export class Capability<
     Object.freeze(this);
   }
   implement(handlers: Handlers<Capability<D>>): Handlers<Capability<D>> {
+    if (
+      handlers === null ||
+      typeof handlers !== "object" ||
+      Array.isArray(handlers)
+    )
+      throw new TypeError("plugin: method implementation must be an object");
+    const captured = { ...handlers };
     exactFields(
-      handlers,
+      captured,
       this.descriptor.methods.map((method) => method.name),
     );
-    Object.freeze(handlers);
-    return handlers;
+    if (
+      Object.values(captured).some((handler) => typeof handler !== "function")
+    )
+      throw new TypeError("required member is not callable");
+    Object.freeze(captured);
+    return captured;
   }
 
   method(name: string): Method {

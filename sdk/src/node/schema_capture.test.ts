@@ -80,8 +80,8 @@ describe("portable JSON admission capture", () => {
     expect(reads).toBe(1);
     expect(method.descriptor).toEqual(stable);
     expect(method.identity).toBe(new Method(stable).identity);
-    expect(() => method.validateInput("accepted")).not.toThrow();
-    expect(() => method.validateInput(1)).toThrow(SchemaMismatch);
+    expect(() => method.admitInput("accepted")).not.toThrow();
+    expect(() => method.admitInput(1)).toThrow(SchemaMismatch);
   });
 
   it("checks and retains the same capability reference", () => {

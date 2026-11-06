@@ -21,7 +21,7 @@ func (s *Store) publishHeld(ctx context.Context, staged *staging, source Source)
 	if err := sealContents(staged.root); err != nil {
 		return nil, err
 	}
-	lease := &Lease{store: s, release: release}
+	var lease *Lease
 	var existing fs.FileInfo
 	err = s.admission.Under(ctx, func() error {
 		destination := release.Digest.String()
@@ -48,9 +48,7 @@ func (s *Store) publishHeld(ctx context.Context, staged *staging, source Source)
 		}
 		// Publication and its original content claim are one admission. No
 		// collector can remove a candidate between publication and installation.
-		s.mu.Lock()
-		s.leases[release.Digest]++
-		s.mu.Unlock()
+		lease = s.claimRelease(release)
 		return nil
 	})
 	if err != nil {
@@ -67,7 +65,7 @@ func (s *Store) publishHeld(ctx context.Context, staged *staging, source Source)
 		if err != nil {
 			return nil, err
 		}
-		lease.release = cached
+		lease.claim.release = cached
 	}
 	return lease, nil
 }

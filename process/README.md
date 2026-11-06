@@ -58,6 +58,11 @@ implementation of `Service` or `StreamingService` matching the published descrip
 Typed implementations retain `ErrOutcomeUnknown` when their handler fails or its
 result cannot be encoded, including direct calls within the same process. Input
 decoding failures occur before dispatch and retain only their original cause.
+Typed callers check cancellation before encoding and before handing off to a
+service. Typed implementations check again after decoding, before entering the
+handler. Cancellation at these boundaries retains its cause without claiming an
+unknown effect. After dispatch, a handler failure remains unknown; cancellation
+does not discard a validated success or authorize another execution.
 
 Typed schema derivation and decoding share `value.ValidateType` admission.
 JSON field declarations own presence and representation; schema tags can narrow

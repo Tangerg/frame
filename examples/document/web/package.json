@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test:workflow": "node --test workflow.test.mjs",
+    "test:unit": "node --test preview-capture.test.mjs",
     "lint": "oxlint src --deny-warnings",
     "format:check": "prettier --check *.mjs src package.json tsconfig.json vite.config.ts index.html",
     "check": "npm run typecheck && npm run lint && npm run format:check && npm run build",

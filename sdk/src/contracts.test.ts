@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { Service } from "./contracts";
+import { Event, Point, Service } from "./contracts";
 import { defineUnit } from "./unit";
 import { MAX_NAME_BYTES, type ContractRef } from "./protocol.generated";
 
@@ -55,3 +55,37 @@ it.each([
     defineUnit({ id: name, imports: {}, exports: {}, setup: () => ({}) }).id,
   ).toBe(name);
 });
+
+it.each(["service", "point", "event"] as const)(
+  "retains the exact %s identity captured before validation",
+  (kind) => {
+    let nameReads = 0;
+    let kindReads = 0;
+    const source: ContractRef = {
+      ...reference,
+      get name() {
+        return ++nameReads === 1 ? "example.captured" : "";
+      },
+      get kind() {
+        return ++kindReads === 1
+          ? kind
+          : kind === "event"
+            ? "service"
+            : "event";
+      },
+    };
+    const contract =
+      kind === "service"
+        ? new Service(source)
+        : kind === "point"
+          ? new Point(source)
+          : new Event(source);
+    expect(contract.ref).toEqual({
+      ...reference,
+      name: "example.captured",
+      kind,
+    });
+    expect({ nameReads, kindReads }).toEqual({ nameReads: 1, kindReads: 1 });
+    expect(Object.isFrozen(contract.ref)).toBe(true);
+  },
+);

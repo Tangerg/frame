@@ -74,7 +74,7 @@ describe("shared Go and Node schema profile", () => {
       "toString",
       "hasOwnProperty",
     ]) {
-      expect(() => method.validateInput(parseJSON(`{"${name}":7}`))).toThrow();
+      expect(() => method.admitInput(parseJSON(`{"${name}":7}`))).toThrow();
     }
   });
 
@@ -89,9 +89,9 @@ describe("shared Go and Node schema profile", () => {
       stream: excludesNull,
     });
     for (const validate of [
-      method.validateInput,
-      method.validateOutput,
-      method.validateChunk!,
+      method.admitInput,
+      method.admitOutput,
+      method.admitChunk!,
     ]) {
       for (const value of [{}, 1, "ok"])
         expect(() => validate(value)).not.toThrow();

@@ -4,6 +4,7 @@ import (
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"errors"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -75,7 +76,7 @@ func TestTypeScriptProjectionUsesJSONFieldOwnership(t *testing.T) {
 	if err := WriteTypeScriptTypes(&out, reflect.TypeFor[projectionWireFields]()); err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{`readonly "job-id": string;`, "readonly count?: number;"} {
+	for _, field := range []string{`readonly "job-id": string;`, `readonly count?: import("@frame/sdk/json").JSONNumber;`} {
 		if !strings.Contains(out.String(), field) {
 			t.Fatalf("missing field %q in %s", field, out.String())
 		}
@@ -248,14 +249,11 @@ func TestTypeScriptProjectionPreservesTheCodecsNullPolicy(t *testing.T) {
 }
 
 func TestGeneratedTypeScriptConsumerPreservesCodecAndNullContracts(t *testing.T) {
-	directory := t.TempDir()
 	var out strings.Builder
 	if err := WriteTypeScriptTypes(&out, reflect.TypeFor[nestedWireDTO](), reflect.TypeFor[modeledWireDTO](), reflect.TypeFor[nonnullWireJSON]()); err != nil {
 		t.Fatal(err)
 	}
-	for name, source := range map[string]string{
-		"types.generated.ts": out.String(),
-		"consumer.ts": `import type { nestedWireDTO, modeledWireDTO, nonnullWireJSON } from "./types.generated.js";
+	checkTypeScriptConsumer(t, out.String(), `import type { nestedWireDTO, modeledWireDTO, nonnullWireJSON } from "./types.generated.js";
 const required: nestedWireDTO = {rows: [], content: "text", title: "title"};
 const modeled: modeledWireDTO = {code: "code", number: 9007199254740993n, payload: null};
 const opaqueValues: nonnullWireJSON[] = ["text", 42, [], {}];
@@ -270,8 +268,13 @@ const opaqueNull: nonnullWireJSON = null;
 // @ts-expect-error Undefined has no JSON value spelling.
 const opaqueUndefined: nonnullWireJSON = undefined;
 void [required, modeled, opaqueValues, nullTitle, privateCode, privateNumber, opaqueNull, opaqueUndefined];
-`,
-	} {
+`)
+}
+
+func checkTypeScriptConsumer(t *testing.T, generated, consumer string) {
+	t.Helper()
+	directory := t.TempDir()
+	for name, source := range map[string]string{"types.generated.ts": generated, "consumer.ts": consumer} {
 		if err := os.WriteFile(filepath.Join(directory, name), []byte(source), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -305,6 +308,173 @@ void [required, modeled, opaqueValues, nullTitle, privateCode, privateNumber, op
 	}
 	command := exec.CommandContext(t.Context(), filepath.Join(root, "node_modules", ".bin", "tsc"), "-p", path)
 	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("generated TypeScript consumer: %s\n%v", output, err)
+		t.Fatalf("generated TypeScript consumer: %s\n%v\n%s", output, err, generated)
+	}
+}
+
+type integerWireDTO struct {
+	Signed         int64  `json:"signed"`
+	Unsigned       uint64 `json:"unsigned"`
+	Native         int    `json:"native"`
+	NativeUnsigned uint   `json:"nativeUnsigned"`
+	Small          int32  `json:"small"`
+	SmallUnsigned  uint32 `json:"smallUnsigned"`
+}
+
+func TestTypeScriptIntegerProjectionPreservesWideAndSafeValues(t *testing.T) {
+	var out strings.Builder
+	if err := WriteTypeScriptTypes(&out, reflect.TypeFor[integerWireDTO]()); err != nil {
+		t.Fatal(err)
+	}
+	checkTypeScriptConsumer(t, out.String(), `import type { integerWireDTO } from "./types.generated.js";
+import { ExactNumber } from "@frame/sdk/json";
+const wide: integerWireDTO = {signed: -9223372036854775808n, unsigned: 18446744073709551615n, native: 9007199254740993n, nativeUnsigned: 9007199254740993n, small: -2147483648, smallUnsigned: 4294967295};
+const safe: integerWireDTO = {...wide, signed: 42, unsigned: 42, native: 42, nativeUnsigned: 42};
+const exponent: integerWireDTO = {...wide, signed: new ExactNumber("9007199254740993.0")};
+// @ts-expect-error Wide integers remain numeric wire values, not strings.
+const text: integerWireDTO = {...wide, unsigned: "18446744073709551615"};
+// @ts-expect-error A fixed-width safe integer retains its JavaScript number representation.
+const bigintSmall: integerWireDTO = {...wide, small: 1n};
+// @ts-expect-error Numeric projection cannot introduce null.
+const nullWide: integerWireDTO = {...wide, signed: null};
+void [wide, safe, exponent, text, bigintSmall, nullWide];
+`)
+	encoded, err := value.EncodeJSON(integerWireDTO{Signed: math.MinInt64, Unsigned: math.MaxUint64, Native: 42, NativeUnsigned: 42, Small: math.MinInt32, SmallUnsigned: math.MaxUint32})
+	if err != nil {
+		t.Fatal(err)
+	}
+	module, err := filepath.Abs("../sdk/src/json.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.CommandContext(t.Context(), "node", "--input-type=module", "-e", `
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const { parseJSON } = await import(pathToFileURL(process.argv[1]));
+const value = parseJSON(readFileSync(0, "utf8"));
+assert.deepEqual(value, {signed: -9223372036854775808n, unsigned: 18446744073709551615n, native: 42, nativeUnsigned: 42, small: -2147483648, smallUnsigned: 4294967295});
+`, module)
+	command.Stdin = strings.NewReader(encoded.String())
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("generated integer DTO does not match SDK decoding: %s\n%v", output, err)
+	}
+}
+
+type genericWireEnvelope[T any] struct {
+	Value    T                        `json:"value"`
+	Children []genericWireEnvelope[T] `json:"children,omitempty"`
+}
+
+type genericWireDTO struct {
+	Text   genericWireEnvelope[string]                      `json:"text"`
+	Count  genericWireEnvelope[int32]                       `json:"count"`
+	Nested genericWireEnvelope[genericWireEnvelope[string]] `json:"nested"`
+}
+
+func TestTypeScriptProjectionNamesGenericDeclarationsAndReferences(t *testing.T) {
+	roots := []reflect.Type{reflect.TypeFor[genericWireDTO](), reflect.TypeFor[genericWireEnvelope[string]]()}
+	var out strings.Builder
+	if err := WriteTypeScriptTypes(&out, roots...); err != nil {
+		t.Fatal(err)
+	}
+	checkTypeScriptConsumer(t, out.String(), `import type { genericWireDTO, genericWireEnvelope_string, genericWireEnvelope_int32 } from "./types.generated.js";
+const text: genericWireEnvelope_string = {value: "text", children: [{value: "child"}]};
+const count: genericWireEnvelope_int32 = {value: 42};
+const values: genericWireDTO = {text, count, nested: {value: text}};
+// @ts-expect-error Independent instantiations retain their own value types.
+const swapped: genericWireDTO = {...values, text: count};
+// @ts-expect-error Recursive references retain their instantiated type.
+const wrongChild: genericWireEnvelope_string = {value: "text", children: [count]};
+void [text, count, values, swapped, wrongChild];
+`)
+	slices.Reverse(roots)
+	var reordered strings.Builder
+	if err := WriteTypeScriptTypes(&reordered, roots...); err != nil {
+		t.Fatal(err)
+	}
+	if reordered.String() != out.String() {
+		t.Fatal("root ordering changed the generated names")
+	}
+}
+
+type genericWireEnvelope_string struct {
+	Value bool `json:"value"`
+}
+
+func TestTypeScriptProjectionRejectsCollidingGenericNamesBeforePublication(t *testing.T) {
+	roots := []reflect.Type{reflect.TypeFor[genericWireEnvelope[string]](), reflect.TypeFor[genericWireEnvelope_string]()}
+	for range 2 {
+		var out strings.Builder
+		if err := WriteTypeScriptTypes(&out, roots...); err == nil || out.Len() != 0 {
+			t.Fatalf("colliding projected names published output: %s, %v", out.String(), err)
+		}
+		slices.Reverse(roots)
+	}
+}
+
+type enum string
+
+func (enum) Values() []string { return []string{"ready", "closed"} }
+
+type enum_Values struct {
+	Label string `json:"label"`
+}
+
+func TestTypeScriptProjectionPreservesLegalDeclarationNamespaces(t *testing.T) {
+	type number int32
+	type await struct {
+		Value string `json:"value"`
+	}
+	type private struct {
+		Value string `json:"value"`
+	}
+	type async struct {
+		Value string `json:"value"`
+	}
+	type readonly struct {
+		Value string `json:"value"`
+	}
+	type infer int32
+	type keyof int32
+	type unique int32
+	type declarationNames struct {
+		State    enum     `json:"state"`
+		Count    number   `json:"count"`
+		Waiting  await    `json:"waiting"`
+		Hidden   private  `json:"hidden"`
+		Async    async    `json:"async"`
+		Readonly readonly `json:"readonly"`
+		Infer    infer    `json:"infer"`
+		Keyof    keyof    `json:"keyof"`
+		Unique   unique   `json:"unique"`
+	}
+	var out strings.Builder
+	if err := WriteTypeScriptTypes(&out, reflect.TypeFor[declarationNames](), reflect.TypeFor[enum_Values]()); err != nil {
+		t.Fatal(err)
+	}
+	checkTypeScriptConsumer(t, out.String(), `import { enum_Values, type enum_, type number_, type await_, type private_, type async, type readonly_, type declarationNames, type enum_Values as ValuesDTO } from "./types.generated.js";
+const state: enum_ = enum_Values[0];
+const listProjection: ValuesDTO = {label: "independent type namespace"};
+const count: number_ = 42;
+const waiting: await_ = {value: "waiting"};
+const hidden: private_ = {value: "hidden"};
+const contextual: async = {value: "async"};
+const readable: readonly_ = {value: "readonly"};
+const composed: declarationNames = {state, count, waiting, hidden, async: contextual, readonly: readable, infer: 1, keyof: 2, unique: 3};
+// @ts-expect-error Target names preserve the original numeric shape.
+const wrongCount: number_ = "42";
+// @ts-expect-error The type sharing the enum list's value name remains independent.
+const wrongListProjection: ValuesDTO = enum_Values;
+void [state, listProjection, count, waiting, hidden, contextual, readable, composed, wrongCount, wrongListProjection];
+`)
+}
+
+func TestTypeScriptProjectionRejectsReservedNameCollisionsBeforePublication(t *testing.T) {
+	type number int32
+	type number_ string
+	var out strings.Builder
+	if err := WriteTypeScriptTypes(&out, reflect.TypeFor[number](), reflect.TypeFor[number_]()); err == nil || out.Len() != 0 {
+		t.Fatalf("reserved declaration name collided after publication: %s, %v", out.String(), err)
 	}
 }

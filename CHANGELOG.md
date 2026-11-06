@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Preserve original ownership across interrupted installation persistence,
+  browser Snapshot capture, copied Go handles, and uncertain preview requests.
+  Installation callback interruption requires recovery; an incomplete Snapshot
+  cannot be replayed as a successful capture.
+- Scoped `StartUnit` handles require the instance's original start grant.
+  Installation-scoped service providers remain shareable, but an eager
+  installation activation cannot become a scoped root by acquiring a new handle.
+- Capture use-owner identities and SDK declarations once at admission. Node
+  method admission returns the captured input, output or chunk that was actually
+  validated, and callers transmit that value. The old void-returning method
+  validators are removed.
+- Keep Lifetime failure diagnostics bounded even when inspecting a thrown value
+  fails. Browser execution and dynamic publication lifecycles have concrete
+  owners instead of externally advanced mutable records.
+- Canonicalize empty binding unit roots, preserve exact wide-integer values in
+  generated TypeScript, and reject conflicting generated type names. Typed local
+  process calls reject cancellation before dispatching handler effects.
+
 - Add `mcp.NewTransport` and `mcp.Transport` so a custom `process.Protocol` can
   connect its own MCP client through the frame admission and write
   cancellation that `mcp.Tools` and `mcp.ManagedProtocol` use. The transport

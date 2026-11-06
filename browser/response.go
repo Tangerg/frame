@@ -73,7 +73,7 @@ func (e *typeScriptEmitter) validateWireType(t reflect.Type, value string) (stri
 		return e.validateWireType(t.Elem(), value)
 	}
 	if t.PkgPath() != "" && t.Name() != "" {
-		return "matchesWire" + t.Name() + "(" + value + ")", nil
+		return "matchesWire" + typeScriptTypeName(t) + "(" + value + ")", nil
 	}
 	return e.validateWireModel(t, t, value)
 }
@@ -83,7 +83,8 @@ func (e *typeScriptEmitter) validateWireModel(source, model reflect.Type, value 
 		if model.Kind() != reflect.String {
 			return "", fmt.Errorf("control: string enum %s requires a string encoding model", source)
 		}
-		return fmt.Sprintf("typeof %s === \"string\" && %s%s.includes(%s as %s)", value, source.Name(), enumValuesSuffix, value, source.Name()), nil
+		name := typeScriptTypeName(source)
+		return fmt.Sprintf("typeof %s === \"string\" && %s%s.includes(%s as %s)", value, name, enumValuesSuffix, value, name), nil
 	}
 	if source == reflect.TypeFor[framevalue.Digest]() {
 		return fmt.Sprintf("typeof %s === \"string\" && wireDigest.test(%s)", value, value), nil

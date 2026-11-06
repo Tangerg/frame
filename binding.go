@@ -425,6 +425,9 @@ func (b BindingSnapshot) CanonicalJSON() ([]byte, error) {
 		return nil, err
 	}
 	value := b.Clone()
+	if value.UnitRoots == nil {
+		value.UnitRoots = []UnitRef{}
+	}
 	slices.SortFunc(value.Units, func(a, b UnitBinding) int { return compareUnit(a.Source, b.Source) })
 	for i := range value.Units {
 		value.Units[i] = value.Units[i].canonical()

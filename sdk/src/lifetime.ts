@@ -1,11 +1,11 @@
-import { FrameError } from "./errors.js";
+import { FrameError, isErrorCode, type ErrorCode } from "./errors.js";
 import type { ReleaseState } from "./protocol.generated.js";
 
 export type Awaitable<T> = T | PromiseLike<T>;
 
 export interface Failure {
   readonly phase: "task" | "cleanup" | "child";
-  readonly category: string;
+  readonly category: ErrorCode | "exception" | "thrown_value";
 }
 
 export type Release =
@@ -59,15 +59,20 @@ function boundedLifetimeText(value: string, label: string): string {
 
 function failure(phase: Failure["phase"], error: unknown): Failure {
   // Long-lived reports never retain thrown values, messages, or plugin closures.
-  return Object.freeze({
-    phase,
-    category:
-      error instanceof FrameError
-        ? error.code
-        : error instanceof Error
-          ? "exception"
-          : "thrown_value",
-  });
+  return Object.freeze({ phase, category: failureCategory(error) });
+}
+
+function failureCategory(error: unknown): Failure["category"] {
+  try {
+    if (error instanceof FrameError) {
+      const code = error.code;
+      return isErrorCode(code) ? code : "exception";
+    }
+    return error instanceof Error ? "exception" : "thrown_value";
+  } catch {
+    // Thrown proxies and accessors cannot interrupt the original resource's exit.
+    return "thrown_value";
+  }
 }
 
 function abortReason(signal: AbortSignal): unknown {
@@ -215,7 +220,6 @@ class OwnedResource {
     notify?.();
   }
 
-  /** Detaches a released resource from its owner. */
   forget(): void {
     this.#onConfirm = undefined;
   }
@@ -250,11 +254,16 @@ export class Lifetime {
 
   constructor(label: string, limits: LifetimeLimits = DEFAULT_LIMITS) {
     this.label = boundedLifetimeText(label, "lifetime label");
-    for (const value of [limits.tasks, limits.resources, limits.children]) {
+    const captured = {
+      tasks: limits.tasks,
+      resources: limits.resources,
+      children: limits.children,
+    };
+    for (const value of Object.values(captured)) {
       if (!Number.isSafeInteger(value) || value < 1)
         throw new TypeError("lifetime limits must be positive safe integers");
     }
-    this.#limits = Object.freeze({ ...limits });
+    this.#limits = Object.freeze(captured);
   }
 
   get signal(): AbortSignal {
@@ -414,7 +423,7 @@ export class Lifetime {
     });
   }
 
-  /** Releases resources in reverse acquisition order, stopping at the first unproven one. */
+  // Earlier resources may be providers; retain them until dependent release is proven.
   async #releaseResources(): Promise<void> {
     while (this.#resources.length) {
       const resource = this.#resources[this.#resources.length - 1]!;

@@ -216,7 +216,7 @@ func TestRejectedInstallationReclaimsItsPrivateSubmissionCapacity(t *testing.T) 
 	}
 }
 
-func TestInstallationProjectionPanicReleasesItsSettledPrivateReceipt(t *testing.T) {
+func TestInstallationProjectionPanicReleasesReceiptBeforeHostRecovery(t *testing.T) {
 	admission := frame.NewAdmission()
 	config := testConfig(filepath.Join(t.TempDir(), "private-receipts.db"), admission)
 	config.MaxSubmissionsPerOwner = 1
@@ -250,8 +250,32 @@ func TestInstallationProjectionPanicReleasesItsSettledPrivateReceipt(t *testing.
 			t.Fatalf("projection panic lost its original cause: %v", recovered)
 		}
 		records, err := store.Installations(t.Context())
-		if err != nil || len(records) != 0 || admission.RecoveryError() != nil {
-			t.Fatalf("settled panic left installation facts or recovery debt: records=%v error=%v recovery=%v", records, err, admission.RecoveryError())
+		if err != nil || len(records) != 0 {
+			t.Fatalf("rolled-back projection retained installation facts: records=%v error=%v", records, err)
+		}
+		var receipts int
+		if err := store.Read(t.Context(), func(reader Reader) error {
+			return reader.QueryRowContext(t.Context(), `SELECT count(*) FROM frame_submissions WHERE owner_id=?`, store.control.id).Scan(&receipts)
+		}); err != nil || receipts != 0 {
+			t.Fatalf("settled panic retained its private receipt before recovery: count=%d error=%v", receipts, err)
+		}
+		if !errors.Is(admission.RecoveryError(), frame.ErrRecoveryRequired) {
+			t.Fatalf("interrupted Host boundary remained open: %v", admission.RecoveryError())
+		}
+		// The Host did not observe SQLite's rollback acknowledgement. Restore the
+		// original store's facts before allowing another installation attempt.
+		records, err = store.RecoverInstallations(t.Context())
+		if err != nil || len(records) != 0 {
+			t.Fatalf("recovery changed the original rollback: records=%v error=%v", records, err)
+		}
+		if err := host.Restore(t.Context(), records, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.ConfirmRestoredInstallations(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if err := admission.Recover(t.Context(), func() error { return nil }); err != nil {
+			t.Fatal(err)
 		}
 	}
 	panics = false

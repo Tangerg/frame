@@ -1,9 +1,9 @@
 import {
   type ContractValue,
-  type Event,
+  Event,
   type Optional,
-  type Point,
-  type Service,
+  Point,
+  Service,
 } from "./contracts.js";
 import { identity } from "./identity.js";
 import { type Awaitable, type Lifetime } from "./lifetime.js";
@@ -53,17 +53,40 @@ export interface Unit<
 export function defineUnit<const R extends Imports, const P extends Exports>(
   definition: Unit<R, P>,
 ): Unit<R, P> {
-  identity(definition.id, "unit id");
-  if (typeof definition.setup !== "function")
+  const id = definition.id;
+  const declaredImports = { ...definition.imports };
+  const exports = Object.freeze({ ...definition.exports });
+  const setup = definition.setup;
+  identity(id, "unit id");
+  if (typeof setup !== "function")
     throw new TypeError("unit setup must be a function");
-  for (const name of [
-    ...Object.keys(definition.imports),
-    ...Object.keys(definition.exports),
-  ])
+  const imports: Record<string, Service<unknown> | Optional<Service<unknown>>> =
+    Object.create(null);
+  for (const [name, declared] of Object.entries(declaredImports)) {
     identity(name, "unit slot");
+    if (declared instanceof Service) {
+      imports[name] = declared;
+      continue;
+    }
+    const contract = declared.contract;
+    const optional = declared.optional;
+    if (!(contract instanceof Service) || optional !== true)
+      throw new TypeError("unit import must declare a service");
+    imports[name] = Object.freeze({ contract, optional });
+  }
+  for (const [name, contract] of Object.entries(exports)) {
+    identity(name, "unit slot");
+    if (
+      !(contract instanceof Service) &&
+      !(contract instanceof Point) &&
+      !(contract instanceof Event)
+    )
+      throw new TypeError("unit export must declare a native contract");
+  }
   return Object.freeze({
-    ...definition,
-    imports: Object.freeze({ ...definition.imports }),
-    exports: Object.freeze({ ...definition.exports }),
+    id,
+    imports: Object.freeze(imports) as R,
+    exports,
+    setup,
   });
 }

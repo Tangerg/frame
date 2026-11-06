@@ -74,28 +74,41 @@ export function defineProcessUnit<
   const I extends Imports,
   const E extends Exports,
 >(unit: ProcessUnit<I, E>): ProcessUnit<I, E> {
-  if (!validToken(unit.id) || typeof unit.setup !== "function")
+  const id = unit.id;
+  const sourceImports = { ...unit.imports };
+  const exports = Object.freeze({ ...unit.exports });
+  const setup = unit.setup;
+  if (!validToken(id) || typeof setup !== "function")
     throw new TypeError("invalid process unit");
-  for (const [name, token] of Object.entries(unit.imports)) {
+  const imports: Record<string, Import> = Object.create(null);
+  for (const [name, token] of Object.entries(sourceImports)) {
+    if (!validToken(name)) throw new TypeError("invalid import declaration");
+    if (token instanceof Capability) {
+      imports[name] = token;
+      continue;
+    }
+    if (!("contract" in token))
+      throw new TypeError("invalid import declaration");
+    const captured = Object.freeze({
+      contract: token.contract,
+      cardinality: token.cardinality,
+    });
     if (
-      !validToken(name) ||
-      !(
-        token instanceof Capability ||
-        ("contract" in token &&
-          token.contract instanceof Capability &&
-          ["many", "optional"].includes(token.cardinality))
-      )
+      !(captured.contract instanceof Capability) ||
+      (captured.cardinality !== "many" && captured.cardinality !== "optional")
     )
       throw new TypeError("invalid import declaration");
+    imports[name] = captured;
   }
-  for (const [name, contract] of Object.entries(unit.exports)) {
+  for (const [name, contract] of Object.entries(exports)) {
     if (!validToken(name) || !(contract instanceof Capability))
       throw new TypeError("invalid export declaration");
   }
   return Object.freeze({
-    ...unit,
-    imports: Object.freeze({ ...unit.imports }),
-    exports: Object.freeze({ ...unit.exports }),
+    id,
+    imports: Object.freeze(imports) as I,
+    exports,
+    setup,
   });
 }
 
@@ -245,11 +258,11 @@ class Instance<I extends Imports, E extends Exports> {
             async (input: unknown, options: RequestOptions = {}) => {
               this.#expect("active");
               const commandID = options.commandID;
-              method.validateInvocation(input, commandID);
+              const captured = method.admitInvocation(input, commandID);
               const signal = options.signal
                 ? AbortSignal.any([this.lifetime.signal, options.signal])
                 : this.lifetime.signal;
-              if (Boolean(method.validateChunk) !== Boolean(options.onChunk))
+              if (Boolean(method.admitChunk) !== Boolean(options.onChunk))
                 throw new TypeError(
                   "stream receiver differs from the declared method",
                 );
@@ -258,23 +271,27 @@ class Instance<I extends Imports, E extends Exports> {
               if (stream && call) {
                 this.#streams.set(stream, (chunk, wait) =>
                   call.deliver(wait, async () => {
-                    method.validateChunk!(chunk);
-                    await options.onChunk!(chunk);
+                    await options.onChunk!(method.admitChunk!(chunk));
                   }),
                 );
               }
               const invoke = async (active: AbortSignal) => {
                 const result = await this.peer.request(
                   wire.methods.call,
-                  { handle, member: descriptor.name, input, stream, commandID },
+                  {
+                    handle,
+                    member: descriptor.name,
+                    input: captured,
+                    stream,
+                    commandID,
+                  },
                   active,
                 );
                 try {
-                  method.validateOutput(result);
+                  return method.admitOutput(result);
                 } catch (cause) {
                   throw ProcessError.afterDispatch(cause);
                 }
-                return result;
               };
               try {
                 return await this.lifetime.run(() =>
@@ -422,23 +439,22 @@ class Instance<I extends Imports, E extends Exports> {
           },
         }),
       );
-      exactFields(handlers, Object.keys(this.unit.exports));
+      if (
+        handlers === null ||
+        typeof handlers !== "object" ||
+        Array.isArray(handlers)
+      )
+        throw new TypeError("unit implementation must be an object");
+      const captured = { ...handlers };
+      exactFields(captured, Object.keys(this.unit.exports));
       const table: Record<string, Record<string, Handler>> = Object.create(
         null,
       );
       for (const [name, contract] of Object.entries(this.unit.exports)) {
-        const members = handlers[name];
-        exactFields(
-          members,
-          contract.descriptor.methods.map((m) => m.name),
-        );
-        if (
-          Object.values(members).some(
-            (handler) => typeof handler !== "function",
-          )
-        )
-          throw new TypeError("required member is not callable");
-        table[name] = Object.freeze({ ...members }) as Record<string, Handler>;
+        table[name] = contract.implement(captured[name]!) as Record<
+          string,
+          Handler
+        >;
       }
       signal.throwIfAborted();
       this.#expect("preparing");
@@ -513,9 +529,9 @@ class Instance<I extends Imports, E extends Exports> {
       const service = this.unit.exports[params.handle]!;
       const operation = service.method(params.member);
       const handler = this.#exports[params.handle]![params.member]!;
-      operation.validateInvocation(params.input, params.commandID);
+      const input = operation.admitInvocation(params.input, params.commandID);
       if (
-        operation.validateChunk
+        operation.admitChunk
           ? !validToken(params.stream)
           : params.stream !== undefined
       )
@@ -523,7 +539,7 @@ class Instance<I extends Imports, E extends Exports> {
       return {
         operation,
         handler,
-        input: params.input,
+        input,
         stream: params.stream,
         commandID: params.commandID as string | undefined,
       };
@@ -541,7 +557,7 @@ class Instance<I extends Imports, E extends Exports> {
       this.#boundCall(params);
     return this.lifetime.run(async (lifetimeSignal) => {
       const active = AbortSignal.any([lifetimeSignal, signal]);
-      const call = operation.validateChunk ? new StreamCall(active) : undefined;
+      const call = operation.admitChunk ? new StreamCall(active) : undefined;
       const invoke = async (running: AbortSignal) => {
         running.throwIfAborted();
         try {
@@ -549,16 +565,16 @@ class Instance<I extends Imports, E extends Exports> {
             signal: running,
             commandID,
             emit: (chunk) => {
-              if (!call || !operation.validateChunk)
+              if (!call || !operation.admitChunk)
                 return Promise.reject(
                   new TypeError("method does not support chunk delivery"),
                 );
               return call.deliver(running, async (delivery) => {
-                operation.validateChunk!(chunk);
+                const captured = operation.admitChunk!(chunk);
                 if (
                   (await this.peer.request(
                     wire.methods.chunk,
-                    { stream, value: chunk },
+                    { stream, value: captured },
                     delivery,
                   )) !== true
                 )
@@ -566,8 +582,7 @@ class Instance<I extends Imports, E extends Exports> {
               });
             },
           });
-          operation.validateOutput(result);
-          return result;
+          return operation.admitOutput(result);
         } catch (cause) {
           throw ProcessError.afterDispatch(cause);
         }

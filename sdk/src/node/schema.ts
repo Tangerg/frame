@@ -220,7 +220,7 @@ function engineProjection(source: unknown): unknown {
 
 // jsonschema supplies traversal and composition. Its supported instance-local
 // hooks adapt numeric comparison to the public exact JSON representation.
-export function compileSchema(source: unknown): (value: unknown) => void {
+export function compileSchema(source: unknown): (value: unknown) => unknown {
   const document = engineProjection(captureDescriptor(source));
   const budget = schemaWork(document);
   const validator = new Validator() as Validator & {
@@ -361,6 +361,7 @@ export function compileSchema(source: unknown): (value: unknown) => void {
       }).valid
     )
       throw new SchemaMismatch();
+    return captured.value;
   };
   validator.validate(undefined, schema, {
     base,
@@ -495,7 +496,6 @@ function schemaWork(document: unknown): { work: number[]; unique: boolean } {
   return { work, unique };
 }
 
-/** Follows a local JSON Pointer reference through the schema document. */
 function resolveLocalReference(schema: unknown, reference: string): unknown {
   const pointer = decodeURIComponent(reference.slice(1));
   let target = schema;
@@ -508,7 +508,6 @@ function resolveLocalReference(schema: unknown, reference: string): unknown {
   return target;
 }
 
-/** A schema is a boolean or a plain object, never an array or a number. */
 function isSchema(value: unknown): boolean {
   return (
     typeof value === "boolean" ||

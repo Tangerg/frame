@@ -4,9 +4,10 @@ import {
   type ContractRef,
 } from "./protocol.generated.js";
 
-const digestPattern = new RegExp(DIGEST_PATTERN);
 import { FrameError } from "./errors.js";
 import { identity } from "./identity.js";
+
+const digestPattern = new RegExp(DIGEST_PATTERN);
 
 export function sameContract(left: ContractRef, right: ContractRef): boolean {
   return (
@@ -19,19 +20,27 @@ export function sameContract(left: ContractRef, right: ContractRef): boolean {
 }
 
 function checked(ref: ContractRef, kind: ContractRef["kind"]): ContractRef {
-  identity(ref.name, "contract name");
-  identity(ref.version, "contract version");
+  const captured: ContractRef = {
+    name: ref.name,
+    version: ref.version,
+    digest: ref.digest,
+    kind: ref.kind,
+    mode: ref.mode,
+  };
+  identity(captured.name, "contract name");
+  identity(captured.version, "contract version");
   if (
-    !digestPattern.test(ref.digest) ||
-    ref.kind !== kind ||
-    !ContractModeValues.includes(ref.mode)
+    typeof captured.digest !== "string" ||
+    !digestPattern.test(captured.digest) ||
+    captured.kind !== kind ||
+    !ContractModeValues.includes(captured.mode)
   ) {
     throw new FrameError(
       "contract_mismatch",
       "invalid published contract reference",
     );
   }
-  return Object.freeze({ ...ref });
+  return Object.freeze(captured);
 }
 
 export class Service<T> {

@@ -9,6 +9,11 @@ declaration. Custom codecs project their explicit `JSONSchemaModel`, including
 `value.Number` through the SDK's exact `JSONNumber` representation. Pointer
 fields do not introduce null; `value.AllowsNull` owns that distinction for
 decoding and projections. String enum values require a string wire model.
+Native-width and 64-bit integers use `JSONNumber`; fixed-width integers of at
+most 32 bits remain JavaScript numbers. A generated DTO cannot narrow a wide
+Go integer to the JavaScript safe integer range. Instantiated generic types
+receive target-language names shared by declarations and references; colliding
+projected names are refused before publication.
 Malformed, cyclic or unsupported models fail before any output is published.
 
 The application creates the Host and Store, constructs `NewBridge`, and registers
@@ -73,6 +78,9 @@ observe the same capture and candidate tokens. Changing the requested Points
 under that ID is a conflict; a different Realm cannot observe or close it.
 Snapshot is a mutating control operation, so an incomplete response leaves an
 unknown outcome rather than permission to capture again.
+If metadata encoding panics or exits its goroutine, the original operation
+retains a failure receipt and releases its unfinished lease reservation. A retry
+observes that failure; it cannot recapture or report an uncaptured lease as success.
 
 `Acquire` takes the original lease exactly once when its operation is admitted,
 including an attempt whose selection later fails. Repeating that acquisition ID

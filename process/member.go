@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/internal/nilness"
 	"github.com/Tangerg/frame/portable"
 	framevalue "github.com/Tangerg/frame/value"
@@ -47,8 +48,14 @@ func (m Member[Input, Output]) implement(kind portable.MethodKind, handler func(
 		return Implementation{}, frame.ErrContractMismatch
 	}
 	return Implementation{m.method, func(ctx context.Context, invocation portable.Invocation) (framevalue.JSON, error) {
+		if err := cancellation.Err(ctx); err != nil {
+			return framevalue.JSON{}, err
+		}
 		var input Input
 		if err := framevalue.DecodeValue(invocation.Input().Bytes(), &input, m.method.Name()); err != nil {
+			return framevalue.JSON{}, err
+		}
+		if err := cancellation.Err(ctx); err != nil {
 			return framevalue.JSON{}, err
 		}
 		output, err := handler(ctx, invocation.CommandID(), input)
@@ -76,6 +83,9 @@ func (m Member[Input, Output]) invoke(ctx context.Context, service Service, kind
 	if m.method == nil || nilness.Is(service) {
 		return output, frame.ErrInvalid
 	}
+	if err := cancellation.Err(ctx); err != nil {
+		return output, err
+	}
 	raw, err := framevalue.EncodeJSON(input)
 	if err != nil {
 		return output, err
@@ -91,6 +101,9 @@ func (m Member[Input, Output]) invoke(ctx context.Context, service Service, kind
 	}
 	if err := m.method.ValidateInvocation(invocation); err != nil {
 		return output, errors.Join(frame.ErrContractMismatch, err)
+	}
+	if err := cancellation.Err(ctx); err != nil {
+		return output, err
 	}
 	reply, err := service.Invoke(ctx, invocation)
 	if err != nil {

@@ -218,7 +218,6 @@ export class Peer {
     else this.#receiveRequest(value, dispatch);
   }
 
-  /** Settles the single pending call a response answers. */
   #receiveResponse(value: Record<string, unknown>): void {
     const failed = "error" in value;
     admitShape(value, failed ? shapes.failure : shapes.result);
@@ -242,7 +241,6 @@ export class Peer {
       ?.abort(new ProcessError(wire.errors.cancelled, "request cancelled"));
   }
 
-  /** Starts a request; identities must strictly increase. */
   #receiveRequest(value: Record<string, unknown>, dispatch: Dispatch): void {
     admitShape(value, shapes.request);
     const num = sequence(value.id);

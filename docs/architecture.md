@@ -36,9 +36,21 @@ not turn altered cached content into trusted bytes.
 
 A Host.Install error is not sufficient to tell whether a persistence operation committed. InstallationConclusion(err) reads the owning transition's conclusion, including committed with diagnostics, rejected and indeterminate. Inspect the original installation after recovery; do not replay an unknown mutation blindly.
 
+An installation commit or confirmation callback that panics or exits its
+goroutine establishes the Admission recovery barrier before releasing admission.
+The original interruption still propagates; missing acknowledgement cannot prove
+that a durable change did not occur.
+
 ## Execution boundaries
 
 Pass the same Admission, epoch and SQLite Store to the durable Host and its adapters, for both installation persistence and execution protection. The process driver and browser bridge refuse a mismatched authority. An ordinary scope named like an installation cannot fence the Host's internal installation scope. Validate an authorized grant before starting any unit and revalidate after preparation.
+
+`StartUnit` claims only an instance prepared under the same original scope grant.
+An existing installation-scoped root is refused before another preparation can
+begin; retire it explicitly before starting that root under a different authority.
+Installation-scoped providers remain shareable by consumers with independent
+grants. Copies of a `RunningUnit` share one private start claim; independent starts
+have independent claims, and only the final claim requests retirement.
 
 Configure subprocess environments explicitly. An empty environment is the default. Host service grants limit access through Frame, not the process's operating-system rights. Deploy native code only with appropriate OS permissions. Maintain one trusted source for executable artifacts, interpreter pins and dependencies. A local Runner confirms the exit of its direct child, not that child's descendants or effects outside the framework.
 
@@ -49,6 +61,10 @@ portable resource budget. Validation, the retained declaration and its digest
 consume that captured value; getters cannot supply separate versions to each
 step. Arrays are read by index, so sparse entries and a custom iterator cannot
 change which values are counted and encoded.
+
+Method admission returns the captured payload it validated. Input dispatch,
+handler results and stream delivery use that value throughout the call; encoding
+does not reread the caller's original object.
 
 The profile admits only `date`, `time`, `date-time`, `uuid`, `json-pointer` and
 `relative-json-pointer` formats. Unsupported format names are rejected when a
@@ -93,6 +109,13 @@ creates a new membership. No comparison hashes arbitrary Go values or closures.
 Import declaration order is not binding identity. `UnitBinding` canonicalizes
 slots for both serialized identity and live admission equality. Provider order
 within a selected slot remains part of the accepted binding.
+Empty `UnitRoots` have one canonical representation, `[]`, including after a
+public JSON round trip. Unresolved import providers retain their distinct nil
+meaning.
+
+Admission captures a business owner's validated ID once at registration. Later
+retention reads, ordering and diagnostics use that registered identity without
+calling external identity accessors under the Admission state lock.
 
 A Use's owner must be outside the retirement path of its protected instances.
 Admission follows the original resource-owner handles and provider graph, and

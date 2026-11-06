@@ -1,11 +1,18 @@
 import { FrameError } from "../errors.js";
-import { freezeJSON } from "../json.js";
+import { canonicalJSON, freezeJSON } from "../json.js";
+import type { Point } from "../contracts.js";
+import type { CloseOutcome, Lifetime } from "../lifetime.js";
 import {
   DecisionValues,
+  type Authority,
+  type PublicationRequest,
   type ObjectRef,
   type PublicationResult,
 } from "../protocol.generated.js";
 import { sameObject } from "./identity.js";
+import { isControlRefusal, type HostControl } from "./control.js";
+import type { ExecutionResources } from "./execution.js";
+import type { ProofOutbox } from "./outbox.js";
 
 export interface PublicationHandle {
   readonly operationId: string;
@@ -13,12 +20,6 @@ export interface PublicationHandle {
   readonly outcome: PublicationResult;
   observe(): Promise<PublicationResult>;
   withdraw(): Promise<PublicationResult>;
-}
-
-export interface PublicationState {
-  readonly receipt: PublicationReceipt;
-  observe?: () => Promise<PublicationResult>;
-  withdraw?: () => Promise<PublicationResult>;
 }
 
 export class PublicationReceipt {
@@ -42,11 +43,12 @@ export class PublicationReceipt {
 
   // Only an unknown outcome may be refined; a confirmed decision and the
   // publication it names never change.
-  receive(result: PublicationResult): PublicationResult {
+  receive(received: PublicationResult): PublicationResult {
+    const result = freezeJSON(received);
     this.#checkShape(result);
     this.#checkIdentity(result);
     if (result.decision !== "unknown" || this.#outcome.decision === "unknown")
-      this.#outcome = freezeJSON(result);
+      this.#outcome = result;
     return this.#outcome;
   }
 
@@ -94,14 +96,11 @@ export class PublicationReceipt {
       );
   }
 
-  uncertain(cause: unknown): void {
+  uncertain(): void {
     if (this.#outcome.decision !== "unknown") return;
     this.#outcome = Object.freeze({
       decision: "unknown",
-      problem:
-        cause instanceof FrameError
-          ? cause.message
-          : "invalid publication acknowledgement",
+      problem: "invalid publication acknowledgement",
     });
   }
 
@@ -119,20 +118,213 @@ export class PublicationReceipt {
   }
 }
 
-export function publicationView(state: PublicationState): PublicationHandle {
+export interface PublicationChannel {
+  readonly control: HostControl;
+  readonly authority: Authority;
+  readonly mode: "connected" | "cleanupOnly";
+}
+
+interface PublicationContent<M, V> {
+  readonly instanceId: string;
+  readonly point: Point<M, V>;
+  readonly key: string;
+  readonly metadata: M;
+  readonly value: V;
+}
+
+interface ActivePublication {
+  readonly request: PublicationRequest;
+  readonly lifetime: Lifetime;
+  readonly execution: ExecutionResources;
+  readonly outbox: ProofOutbox;
+  readonly reservation: string;
+  readonly channel: () => PublicationChannel;
+}
+
+export class Publication<M, V> {
+  readonly view: PublicationHandle;
+  readonly #receipt: PublicationReceipt;
+  #active?: ActivePublication;
+
+  private constructor(
+    execution: ExecutionResources,
+    content: PublicationContent<M, V>,
+    outbox: ProofOutbox,
+    channel: () => PublicationChannel,
+  ) {
+    const unit = execution.unit(content.instanceId);
+    if (!unit)
+      throw new FrameError(
+        "permission_denied",
+        "publication instance is outside this execution",
+      );
+    const operationId = crypto.randomUUID();
+    const reservation = `publication:${operationId}`;
+    const metadataJson = canonicalJSON(content.metadata);
+    outbox.reserve(reservation);
+    let lifetime: Lifetime | undefined;
+    let object: ObjectRef;
+    try {
+      lifetime = unit.lifetime.branch(reservation);
+      object = execution.stageContribution(
+        content.instanceId,
+        content.point,
+        content.key,
+        content.value,
+        lifetime,
+      ).reference;
+    } catch (error) {
+      lifetime?.beginClose();
+      outbox.cancelReservation(reservation);
+      throw error;
+    }
+    const request: PublicationRequest = freezeJSON({
+      operationId,
+      authority: execution.plan.authority,
+      realm: execution.plan.realm,
+      execution: execution.plan.execution,
+      object,
+      metadataJson,
+    });
+    this.#receipt = new PublicationReceipt(operationId, object);
+    this.#active = {
+      request,
+      lifetime,
+      execution,
+      outbox,
+      reservation,
+      channel,
+    };
+    this.view = publicationView(this.#receipt, this);
+    lifetime.observeExit((outcome) => this.#release(outcome));
+  }
+
+  static start<M, V>(
+    execution: ExecutionResources,
+    content: PublicationContent<M, V>,
+    outbox: ProofOutbox,
+    channel: () => PublicationChannel,
+  ): Promise<PublicationHandle> {
+    return new Publication(execution, content, outbox, channel).#publish();
+  }
+
+  async #publish(): Promise<PublicationHandle> {
+    const active = this.#active!;
+    let result: PublicationResult;
+    try {
+      result = await active.lifetime.run(() =>
+        active.channel().control.publish(active.request),
+      );
+    } catch (cause) {
+      if (isControlRefusal(cause)) {
+        await active.lifetime.close();
+        throw cause;
+      }
+      // The original operation remains observable after an uncertain acknowledgement.
+      return this.view;
+    }
+    try {
+      this.#receive(result);
+    } catch {
+      // A malformed acknowledgement leaves the original operation observable.
+      this.#receipt.uncertain();
+    }
+    if (this.#receipt.outcome.decision === "rejected")
+      await active.lifetime.close();
+    return this.view;
+  }
+
+  #receive(result: PublicationResult): PublicationResult {
+    const observed = this.#receipt.receive(result);
+    if (observed.decision === "rejected") this.#active?.lifetime.beginClose();
+    return observed;
+  }
+
+  async observe(): Promise<PublicationResult> {
+    const active = this.#active;
+    if (!active) return this.#receipt.outcome;
+    const channel = active.channel();
+    if (channel.mode === "cleanupOnly") return this.#receipt.outcome;
+    return this.#receive(
+      await channel.control.publication(this.#receipt.operationId),
+    );
+  }
+
+  async withdraw(): Promise<PublicationResult> {
+    const active = this.#active;
+    if (!active)
+      throw new FrameError("closed", "publication resource has exited");
+    let channel = this.#connectedChannel(active);
+    if (this.#receipt.outcome.decision !== "accepted")
+      this.#receive(
+        await channel.control.publication(this.#receipt.operationId),
+      );
+    const accepted = this.#receipt.acceptedPublication;
+    if (!accepted) return { decision: "unknown" };
+    channel = this.#connectedChannel(active);
+    const result = await channel.control.withdraw({
+      authority: channel.authority,
+      publicationId: accepted.id,
+    });
+    if (result.decision === "accepted") {
+      this.#receipt.acknowledgeWithdrawal();
+      await active.lifetime.close();
+    }
+    return result;
+  }
+
+  #connectedChannel(active: ActivePublication): PublicationChannel {
+    const channel = active.channel();
+    if (channel.mode !== "connected")
+      throw new FrameError(
+        "unavailable",
+        "runtime accepts no new framework work on this control channel",
+      );
+    return channel;
+  }
+
+  #release(outcome: CloseOutcome): void {
+    if (outcome.status !== "released" || !this.#active) return;
+    const { execution, outbox, reservation } = this.#active;
+    execution.forgetReleasedObject(this.#receipt.object);
+    this.#active = undefined;
+    const publicationId = this.#receipt.withdrawnPublicationId;
+    if (publicationId) {
+      outbox.record(
+        reservation,
+        freezeJSON({
+          closeId: outcome.closeId,
+          proofId: crypto.randomUUID(),
+          authority: execution.plan.authority,
+          realm: execution.plan.realm,
+          execution: execution.plan.execution,
+          scopeId: execution.plan.scopeId,
+          scopeGeneration: execution.plan.scopeGeneration,
+          scopeKind: "publication",
+          publicationId,
+          instances: [this.#receipt.object.export.instanceId],
+          status: "released",
+        }),
+      );
+    } else {
+      // Only an acknowledged withdrawal has an independent publication exit.
+      // Execution retirement covers accepted or uncertain objects not withdrawn.
+      outbox.cancelReservation(reservation);
+    }
+  }
+}
+
+function publicationView(
+  receipt: PublicationReceipt,
+  owner: Pick<Publication<unknown, unknown>, "observe" | "withdraw">,
+): PublicationHandle {
   return Object.freeze({
-    operationId: state.receipt.operationId,
-    object: state.receipt.object,
+    operationId: receipt.operationId,
+    object: receipt.object,
     get outcome() {
-      return state.receipt.outcome;
+      return receipt.outcome;
     },
-    observe: () =>
-      state.observe ? state.observe() : Promise.resolve(state.receipt.outcome),
-    withdraw: () =>
-      state.withdraw
-        ? state.withdraw()
-        : Promise.reject(
-            new FrameError("closed", "publication resource has exited"),
-          ),
+    observe: () => owner.observe(),
+    withdraw: () => owner.withdraw(),
   });
 }

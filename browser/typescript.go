@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/portable/contractgen"
@@ -87,9 +88,10 @@ func (e *typeScriptEmitter) collect(t reflect.Type) error {
 	if t == reflect.TypeFor[jsonv1.Number]() {
 		return nil
 	}
-	if existing, found := e.types[t.Name()]; found && t.PkgPath() != "" {
+	name := typeScriptTypeName(t)
+	if existing, found := e.types[name]; found && t.PkgPath() != "" {
 		if existing.source != t {
-			return fmt.Errorf("control: ambiguous generated type %s", t.Name())
+			return fmt.Errorf("control: generated name %s is shared by %s and %s", name, existing.source, t)
 		}
 		return nil
 	}
@@ -101,7 +103,7 @@ func (e *typeScriptEmitter) collect(t reflect.Type) error {
 		return fmt.Errorf("control: unsupported named collection %s", t)
 	}
 	if t.PkgPath() != "" {
-		e.types[t.Name()] = typeScriptDeclaration{source: t, model: model}
+		e.types[name] = typeScriptDeclaration{source: t, model: model}
 	}
 	switch model.Kind() {
 	case reflect.Slice, reflect.Array:
@@ -116,6 +118,31 @@ func (e *typeScriptEmitter) collect(t reflect.Type) error {
 	return nil
 }
 
+func typeScriptTypeName(t reflect.Type) string {
+	name := t.Name()
+	if strings.ContainsRune(name, '[') {
+		name = strings.Map(func(r rune) rune {
+			if r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) {
+				return r
+			}
+			return '_'
+		}, name)
+		name = strings.TrimRight(name, "_")
+	}
+	// Names must work in both module declarations and bare type references.
+	// Type operators cannot be references even when their declarations parse.
+	switch name {
+	case "any", "await", "bigint", "boolean", "break", "case", "catch", "class", "const", "continue",
+		"debugger", "default", "delete", "do", "else", "enum", "export", "extends", "false", "finally", "for", "function",
+		"if", "implements", "import", "in", "infer", "instanceof", "interface", "keyof", "let", "never", "new", "null", "number", "object",
+		"package", "private", "protected", "public", "readonly", "return", "static", "string", "super", "switch", "symbol",
+		"this", "throw", "true", "try", "typeof", "undefined", "unique", "unknown", "var", "void", "while", "with", "yield":
+		return name + "_"
+	default:
+		return name
+	}
+}
+
 func (e *typeScriptEmitter) render(t reflect.Type) (string, error) {
 	if t.Kind() == reflect.Pointer {
 		return e.render(t.Elem())
@@ -124,7 +151,7 @@ func (e *typeScriptEmitter) render(t reflect.Type) (string, error) {
 		return `import("@frame/sdk/json").JSONNumber`, nil
 	}
 	if t.Name() != "" && t.PkgPath() != "" {
-		return t.Name(), nil
+		return typeScriptTypeName(t), nil
 	}
 	return e.renderModel(t)
 }
@@ -140,8 +167,10 @@ func (e *typeScriptEmitter) renderModel(t reflect.Type) (string, error) {
 		return "string", nil
 	case reflect.Bool:
 		return "boolean", nil
-	case reflect.Int, reflect.Uint, reflect.Int8, reflect.Uint8, reflect.Int16, reflect.Uint16, reflect.Int32, reflect.Uint32, reflect.Int64, reflect.Uint64:
+	case reflect.Int8, reflect.Uint8, reflect.Int16, reflect.Uint16, reflect.Int32, reflect.Uint32:
 		return "number", nil
+	case reflect.Int, reflect.Uint, reflect.Int64, reflect.Uint64:
+		return e.render(reflect.TypeFor[jsonv1.Number]())
 	case reflect.Slice, reflect.Array:
 		element, err := e.render(t.Elem())
 		if strings.HasPrefix(element, "readonly ") || strings.Contains(element, " | ") {

@@ -14,7 +14,11 @@ members can satisfy object constraints. Prototype names remain legal contract
 names and validation leaves the caller's descriptor and values unchanged.
 The bounded traversal captures each caller value once. Descriptor checks,
 compilation, retained contracts and identity all use that capture; changing
-getters cannot supply a second schema after admission. Array budgets count every
+getters cannot supply a second schema after admission. Method admission returns
+the captured input, output or chunk; transport encoding and handler delivery use
+that same value. The `admitInput`, `admitOutput`, `admitChunk` and
+`admitInvocation` methods return their admitted capture instead of validating a
+caller-owned object that would later be read again. Array budgets count every
 indexed position, including holes that encode as null, before cloning or schema
 execution can expand them.
 
@@ -27,6 +31,11 @@ unsigned decimal digits, and leap seconds are checked at the end of the UTC day.
 Pattern validation uses the character classes and
 end-of-input semantics exported by Go, including its definitions of `\s`, `.`,
 and `$`, instead of JavaScript's different defaults.
+
+`Capability.implement` captures a private handler table, verifies its exact method
+set and callable values, and freezes the captured table. Unit preparation uses
+the same boundary for every exported service. The caller's original table remains
+unmodified; its getters and later mutations cannot replace an admitted handler.
 
 ## Cancellation and result evidence
 

@@ -194,6 +194,173 @@ function fixture(definitions: Record<string, Unit>, proofCapacity = 128) {
   return { runtime, control, ready, grants, grant, publications, proofs };
 }
 
+it("rejects a slower admission before it can replace an already owned instance", async () => {
+  const definition = defineUnit({
+    id: "provider",
+    imports: {},
+    exports: { files },
+    setup: ({ configuration }) => ({
+      files: { read: () => String(configuration) },
+    }),
+  });
+  const f = fixture({ provider: definition });
+  const admitted = Promise.withResolvers<PlanAdmission>();
+  const requested = Promise.withResolvers<void>();
+  vi.mocked(f.control.admitPlan).mockImplementationOnce(() => {
+    requested.resolve();
+    return admitted.promise;
+  });
+  const slowPlan = plan("slow", [
+    unit(
+      "shared",
+      "provider",
+      [{ name: "files", contract: files.ref }],
+      [],
+      "slow",
+    ),
+  ]);
+  const preparing = f.runtime.prepare(slowPlan);
+  await requested.promise;
+  const original = await f.runtime.prepare(
+    plan("original", [
+      unit(
+        "shared",
+        "provider",
+        [{ name: "files", contract: files.ref }],
+        [],
+        "original",
+      ),
+    ]),
+  );
+  admitted.resolve({
+    authority,
+    realm,
+    execution: slowPlan.execution,
+    decision: "admitted",
+  });
+  await expect(preparing).rejects.toMatchObject({ code: "invalid_plan" });
+  const use = await f.runtime.accept(f.grant("original", original.objects));
+  expect(
+    await use.with(original.objects[0]!, files, (value) => value.read()),
+  ).toBe("original");
+  expect([...f.ready.keys()]).toEqual(["original"]);
+  await use.close();
+  await f.runtime.close();
+});
+
+it("withdraws through the current channel after observing a publication on a retired channel", async () => {
+  const contributor = defineUnit({
+    id: "contributor",
+    imports: {},
+    exports: { additions },
+    setup: () => ({
+      additions: contribution({ title: "base" }, { value: "base" }),
+    }),
+  });
+  const f = fixture({ contributor });
+  const execution = await f.runtime.prepare(
+    plan("original", [
+      unit("contributor", "contributor", [
+        { name: "additions", contract: additions.ref },
+      ]),
+    ]),
+  );
+  vi.mocked(f.control.publish).mockResolvedValueOnce({ decision: "unknown" });
+  const publication = await f.runtime.publish(
+    execution.identity,
+    "contributor",
+    additions,
+    "dynamic",
+    { title: "dynamic" },
+    { value: "owned" },
+  );
+  const observed = Promise.withResolvers<PublicationResult>();
+  vi.mocked(f.control.publication).mockReturnValueOnce(observed.promise);
+  const withdrawing = publication.withdraw();
+  const replacement: HostControl = {
+    ...f.control,
+    withdraw: vi.fn<HostControl["withdraw"]>(async () => ({
+      decision: "accepted",
+    })),
+  };
+  await f.runtime.reconnect(replacement);
+  observed.resolve({
+    decision: "accepted",
+    publication: {
+      id: "original-publication",
+      operationId: publication.operationId,
+      revision: "1",
+      object: publication.object,
+    },
+  });
+  expect((await withdrawing).decision).toBe("accepted");
+  expect(f.control.withdraw).not.toHaveBeenCalled();
+  expect(replacement.withdraw).toHaveBeenCalledExactlyOnceWith({
+    authority,
+    publicationId: "original-publication",
+  });
+  await f.runtime.close();
+});
+
+it.each(["request failure", "malformed acknowledgement"] as const)(
+  "retains an observable publication when %s cannot be inspected",
+  async (phase) => {
+    const contributor = defineUnit({
+      id: "contributor",
+      imports: {},
+      exports: { additions },
+      setup: () => ({
+        additions: contribution({ title: "base" }, { value: "base" }),
+      }),
+    });
+    const f = fixture({ contributor });
+    const execution = await f.runtime.prepare(
+      plan("original", [
+        unit("contributor", "contributor", [
+          { name: "additions", contract: additions.ref },
+        ]),
+      ]),
+    );
+    const thrown = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          throw new Error("diagnostic inspection failed");
+        },
+      },
+    );
+    if (phase === "request failure") {
+      vi.mocked(f.control.publish).mockRejectedValueOnce(thrown);
+    } else {
+      vi.mocked(f.control.publish).mockResolvedValueOnce({
+        get decision(): "unknown" {
+          throw thrown;
+        },
+      });
+    }
+    const publication = await f.runtime.publish(
+      execution.identity,
+      "contributor",
+      additions,
+      "dynamic",
+      { title: "dynamic" },
+      { value: "owned" },
+    );
+    expect(publication.outcome.decision).toBe("unknown");
+    const use = await f.runtime.accept(
+      f.grant("original", [publication.object]),
+    );
+    expect(
+      await use.with(publication.object, additions, (value) => value.value),
+    ).toBe("owned");
+    await use.close();
+    expect((await f.runtime.close())[0]?.status).toBe("released");
+    await expect(publication.withdraw()).rejects.toMatchObject({
+      code: "closed",
+    });
+  },
+);
+
 it.each(["load", "remote"] as const)(
   "joins the unit's pending %s callback before releasing its resources",
   async (phase) => {

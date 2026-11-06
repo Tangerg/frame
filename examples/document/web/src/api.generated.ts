@@ -34,7 +34,7 @@ export interface Converted {
 }
 
 export interface Credentials {
-  readonly maxMessageBytes: number;
+  readonly maxMessageBytes: import("@frame/sdk/json").JSONNumber;
   readonly authority: Authority;
   readonly realm: Realm;
   readonly token: string;
@@ -72,7 +72,7 @@ export type InstallationID = string;
 
 export interface PreviewMetadata {
   readonly format: string;
-  readonly priority: number;
+  readonly priority: import("@frame/sdk/json").JSONNumber;
 }
 
 export interface Realm {

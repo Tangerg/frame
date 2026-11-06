@@ -10,15 +10,20 @@ export type HostControl = {
 
 // A refusal excludes effects from this call, not from earlier uncertain dispatches.
 export function isControlRefusal(error: unknown): boolean {
-  return (
-    error instanceof FrameError &&
-    [
-      "permission_denied",
-      "invalid_plan",
-      "contract_mismatch",
-      "stale_binding",
-      "capacity",
-      "closed",
-    ].includes(error.code)
-  );
+  try {
+    return (
+      error instanceof FrameError &&
+      [
+        "permission_denied",
+        "invalid_plan",
+        "contract_mismatch",
+        "stale_binding",
+        "capacity",
+        "closed",
+      ].includes(error.code)
+    );
+  } catch {
+    // Failed inspection cannot prove that a mutation was refused before dispatch.
+    return false;
+  }
 }

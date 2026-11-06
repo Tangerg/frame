@@ -82,5 +82,9 @@ business and execution protections as appropriate. Storage errors or recovery
 barriers cannot become permission to collect. Closing a lease releases only that
 read; it does not disable an installation or delete application data.
 
+Copies of a Lease share its original content claim. Closing any copy closes that
+claim once, while independent acquisitions keep their own protection. A closed
+Lease retains only its detached release declaration and cannot keep the Store alive.
+
 Example build and validation commands are provided by the Frame author tools.
 Independent consumers can call these public functions without importing Flame.

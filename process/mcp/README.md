@@ -69,7 +69,7 @@ protocol := mcp.Tools{
 }
 ```
 
-The host freezes this choice before the child starts. A server cannot change it by adding or removing its output schema. An MCP `isError` response produces a `*mcp.ToolError`. Its `Result` retains the response content for the caller. A missing or invalid successful reply, or a canceled call after dispatch, carries `process.ErrOutcomeUnknown`. No call is replayed: the SDK's automatic multi-round-trip middleware is disabled, and input-required results retain an unknown outcome. Only the original runner's exit evidence releases a durable process attempt.
+The host freezes this choice before the child starts. A server cannot change it by adding or removing its output schema. An MCP `isError` response produces a `*mcp.ToolError`. Its `Result` retains the response content for the caller. A missing or invalid successful reply, or a canceled call after dispatch, carries `process.ErrOutcomeUnknown`. Frame does not replay a call: the SDK's automatic multi-round-trip middleware is disabled, and input-required results retain an unknown outcome. The SDK itself still resends a `tools/call` once when, under protocol `2026-07-28` or later, the server rejects it with the header-mismatch error (`-32020`) and a refreshed `tools/list` changes the tool's `x-mcp-header` annotations. Stdio carries no such headers, so only a peer that sends this error anyway can cause the second dispatch. Only the original runner's exit evidence releases a durable process attempt.
 
 An already cancelled local context is rejected before SDK handoff and retains
 only its cancellation cause. Once the SDK owns the request, a cancelled wait

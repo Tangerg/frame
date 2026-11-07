@@ -31,8 +31,9 @@ func Fields(owner reflect.Type) []Field {
 }
 
 type wireTagOptions struct {
-	embedded bool
-	optional bool
+	embedded  bool
+	omitEmpty bool
+	omitZero  bool
 }
 
 const (
@@ -53,21 +54,30 @@ func parseFieldTag(field reflect.StructField) (string, wireTagOptions, error) {
 		}
 		return "", wireTagOptions{}, nil
 	}
-	if err := checkSchemaFieldShape(field); err != nil {
-		return "", wireTagOptions{}, err
-	}
 	if !utf8.ValidString(name) || strings.ContainsAny(name, "\\'\"`") {
 		return "", wireTagOptions{}, fmt.Errorf("invalid JSON field name %q", name)
 	}
 	if hasOptions {
-		optional, err := parseOmissionOptions(rest)
-		if err != nil {
+		if err := options.parseOmission(rest); err != nil {
 			return "", wireTagOptions{}, err
 		}
 		if options.embedded {
 			return "", wireTagOptions{}, errors.New("embedded field cannot declare omission options")
 		}
-		options.optional = optional
+	}
+	if err := checkSchemaFieldShape(field); err != nil {
+		return "", wireTagOptions{}, err
+	}
+	if options.omitZero && !options.omitEmpty && (field.Type.Kind() == reflect.Pointer || field.Type.Kind() == reflect.Interface) {
+		model, err := encodingType(field.Type)
+		if err != nil {
+			return "", wireTagOptions{}, err
+		}
+		// omitempty intentionally omits JSON null. With omitzero alone, decoding
+		// null to nil would erase presence before the value's codec can retain it.
+		if model.Kind() == reflect.Interface {
+			return "", wireTagOptions{}, errors.New("omitzero cannot preserve null in a pointer or interface field")
+		}
 	}
 	if options.embedded {
 		return "", options, nil
@@ -80,8 +90,8 @@ func parseFieldTag(field reflect.StructField) (string, wireTagOptions, error) {
 
 // Schema tags may narrow a field, but cannot publish an encoding the field's
 // codec cannot consume.
-// nullableSchemaOption lets a schema admit null, which only an opaque JSON
-// field can decode faithfully.
+// Nullability belongs to the encoding model. A redundant nullable tag adds a
+// competing oneOf branch that rejects null when the model already admits it.
 const nullableSchemaOption = "nullable"
 
 func checkSchemaFieldShape(field reflect.StructField) error {
@@ -91,10 +101,8 @@ func checkSchemaFieldShape(field reflect.StructField) error {
 	}
 	continued := false
 	for tag := range strings.SplitSeq(raw, ",") {
-		if tag == nullableSchemaOption {
-			if !AllowsNull(field.Type) {
-				return errors.New("nullable schema requires an opaque JSON field")
-			}
+		if !continued && tag == nullableSchemaOption {
+			return errors.New("schema nullability must come from the encoding model")
 		}
 		name, _, hasValue := strings.Cut(tag, "=")
 		if hasValue && !continued {
@@ -108,25 +116,24 @@ func checkSchemaFieldShape(field reflect.StructField) error {
 	return nil
 }
 
-func parseOmissionOptions(raw string) (bool, error) {
-	var seenOmitEmpty, seenOmitZero bool
+func (options *wireTagOptions) parseOmission(raw string) error {
 	for option := range strings.SplitSeq(raw, ",") {
 		var duplicate bool
 		switch option {
 		case omitEmptyOption:
-			duplicate, seenOmitEmpty = seenOmitEmpty, true
+			duplicate, options.omitEmpty = options.omitEmpty, true
 		case omitZeroOption:
-			duplicate, seenOmitZero = seenOmitZero, true
+			duplicate, options.omitZero = options.omitZero, true
 		case "":
-			return false, errors.New("empty field option")
+			return errors.New("empty field option")
 		default:
-			return false, fmt.Errorf("unsupported field option %q", option)
+			return fmt.Errorf("unsupported field option %q", option)
 		}
 		if duplicate {
-			return false, fmt.Errorf("duplicate field option %q", option)
+			return fmt.Errorf("duplicate field option %q", option)
 		}
 	}
-	return seenOmitEmpty || seenOmitZero, nil
+	return nil
 }
 
 // Shape is the member set of a JSON object type, the projection another

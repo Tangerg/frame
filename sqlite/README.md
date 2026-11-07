@@ -190,6 +190,10 @@ application tables or execution-protection evidence.
 `ReserveRealmReceipt` fixes the original request digest and returns a
 `ReceiptReservation` before a caller starts the operation. Reusing an identity
 for a different request conflicts even before the first reply exists.
+If the transaction body accepted the request but its commit was not acknowledged,
+the original reservation accompanies the error. The caller must retain and settle
+that handle; `Record` returning `sql.ErrNoRows` proves that the reservation rolled
+back. An unavailable settlement leaves the original identity unresolved.
 `Record` settles only that reservation and cannot replace a
 completed result. A completed reply releases unused envelope bytes in the same
 transaction. Exhaustion returns `frame.ErrCapacity`; replay and completion of an

@@ -13,7 +13,7 @@ type publication struct {
 	source   ExportRef
 	metadata any
 	value    any
-	instance *Instance
+	instance *unitInstance
 	durable  bool
 	visible  bool
 	revision uint64

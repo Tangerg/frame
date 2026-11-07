@@ -152,12 +152,15 @@ export class Runtime {
   #admissions = new Map<string, UseAdmission>();
 
   constructor(options: RuntimeOptions) {
-    this.#realm = freezeJSON(options.realm);
-    this.#authority = freezeJSON(options.authority);
-    this.#control = options.control;
-    this.#load = options.load;
-    this.#remote = options.remote;
-    this.#outbox = new ProofOutbox(options.proofCapacity);
+    const { realm, authority, control, load, remote, proofCapacity } = options;
+    if (typeof load !== "function" || typeof remote !== "function")
+      throw new TypeError("runtime loaders must be functions");
+    this.#realm = freezeJSON(realm);
+    this.#authority = freezeJSON(authority);
+    this.#control = control;
+    this.#load = load.bind(options);
+    this.#remote = remote.bind(options);
+    this.#outbox = new ProofOutbox(proofCapacity);
   }
 
   get authority(): Authority {

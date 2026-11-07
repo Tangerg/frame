@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/sqlite"
 )
 
@@ -421,20 +422,29 @@ func (b *Bridge) forgetExecutionLocked(attempt sqlite.Attempt, entry *browserExe
 	}
 }
 
-// revalidate returns the reported executions when every one of them is still
-// the current plan of this Realm and authority epoch. Anything else leaves the
-// Realm only able to clean up.
-func (b *Bridge) revalidate(ctx context.Context, token string, session *realmSession, request ReconnectRequest) ([]*browserExecution, bool) {
+// An unavailable validation does not prove that the original authority ended.
+// Only an observed stale or closed owner permits sealing the Realm.
+func (b *Bridge) revalidate(ctx context.Context, token string, session *realmSession, request ReconnectRequest) ([]*browserExecution, bool, error) {
+	if err := cancellation.Err(ctx); err != nil {
+		return nil, false, err
+	}
 	entries, current := b.reportedExecutions(session, request)
 	if !current {
-		return nil, false
+		return nil, false, nil
 	}
 	for _, entry := range entries {
-		if b.validateCurrentPlan(ctx, token, entry.plan) != nil {
-			return nil, false
+		err := b.validateCurrentPlan(ctx, token, entry.plan)
+		switch {
+		case err == nil:
+		case cancellation.Err(ctx) != nil || errors.Is(err, frame.ErrRecoveryRequired):
+			return nil, false, err
+		case errors.Is(err, frame.ErrStaleBinding), errors.Is(err, frame.ErrClosed), errors.Is(err, frame.ErrFenced):
+			return nil, false, nil
+		default:
+			return nil, false, err
 		}
 	}
-	return entries, true
+	return entries, true, nil
 }
 
 func (b *Bridge) reportedExecutions(session *realmSession, request ReconnectRequest) ([]*browserExecution, bool) {
@@ -466,7 +476,10 @@ func (b *Bridge) Reconnect(ctx context.Context, token string, request ReconnectR
 		return ReconnectResult{}, frame.ErrInvalid
 	}
 	result := ReconnectResult{Authority: b.authority, Realm: session.realm, Mode: Revalidated, Executions: []RevalidatedExecution{}}
-	entries, revalidated := b.revalidate(ctx, token, session, request)
+	entries, revalidated, err := b.revalidate(ctx, token, session, request)
+	if err != nil {
+		return ReconnectResult{}, err
+	}
 	if !revalidated {
 		if err := b.SealRealm(ctx, token); err != nil {
 			return ReconnectResult{}, err

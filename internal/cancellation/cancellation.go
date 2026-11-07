@@ -8,7 +8,6 @@ import (
 	"errors"
 )
 
-// Err returns nil while ctx is live.
 func Err(ctx context.Context) error {
 	err := ctx.Err()
 	if err == nil {

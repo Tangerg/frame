@@ -20,12 +20,46 @@ type metadataVisit struct {
 	length  int
 }
 
+// Portable metadata retains its admitted wire value. Typed views are decoded
+// afresh; their pointers and codecs never become a second published value.
+type portableMetadata struct {
+	encoded framevalue.JSON
+	target  reflect.Type
+}
+
+func readMetadata[M any](original any) (M, error) {
+	var zero M
+	value, err := snapshotMetadata(original)
+	if err != nil || value == nil {
+		return zero, err
+	}
+	metadata, ok := value.(M)
+	if !ok {
+		return zero, ErrContractMismatch
+	}
+	return metadata, nil
+}
+
+func (m portableMetadata) decoded() (any, error) {
+	if m.target == nil || m.target == reflect.TypeFor[framevalue.JSON]() {
+		return m.encoded, nil
+	}
+	destination := reflect.New(m.target)
+	if err := framevalue.DecodeValue(m.encoded.Bytes(), destination.Interface(), "metadata"); err != nil {
+		return nil, err
+	}
+	return destination.Elem().Interface(), nil
+}
+
 func snapshotMetadata(value any) (any, error) {
 	if value == nil {
 		return nil, nil
 	}
 	if admitted, ok := value.(framevalue.JSON); ok {
 		return admitted, admitted.Validate()
+	}
+	if admitted, ok := value.(portableMetadata); ok {
+		return admitted.decoded()
 	}
 	snapshot := metadataClone{active: make(map[metadataVisit]bool)}
 	cloned, err := snapshot.clone(reflect.ValueOf(value))
@@ -137,18 +171,24 @@ func decodeMetadata(definition *declaration, value framevalue.JSON) (any, error)
 	if err := framevalue.DecodeValue(value.Bytes(), destination.Interface(), "metadata"); err != nil {
 		return nil, err
 	}
+	if definition.metadataSchema != nil {
+		return destination.Elem().Interface(), nil
+	}
 	return snapshotMetadata(destination.Elem().Interface())
 }
 
 func prepareMetadata(definition *declaration, metadata any) (any, error) {
-	if value, ok := metadata.(framevalue.JSON); ok {
-		return decodeMetadata(definition, value)
-	}
 	if definition.metadataSchema != nil {
 		value, err := framevalue.EncodeJSON(metadata)
 		if err != nil {
 			return nil, err
 		}
+		if _, err := decodeMetadata(definition, value); err != nil {
+			return nil, err
+		}
+		return portableMetadata{encoded: value, target: definition.metadataType}, nil
+	}
+	if value, ok := metadata.(framevalue.JSON); ok {
 		return decodeMetadata(definition, value)
 	}
 	if definition.metadataType != nil {

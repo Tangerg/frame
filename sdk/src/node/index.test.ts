@@ -30,7 +30,68 @@ const numbers = new Capability({
   ],
 });
 
+const diagnosticFailures = [
+  {
+    name: "Error.name",
+    fail() {
+      return Object.defineProperty(new Error("consumer failed"), "name", {
+        get() {
+          throw new Error("diagnostic getter failed");
+        },
+      });
+    },
+  },
+  {
+    name: "ProcessError.code",
+    fail() {
+      return new Proxy(new ProcessError(wire.errors.unknown, "failed"), {
+        get() {
+          throw new Error("diagnostic getter failed");
+        },
+      });
+    },
+  },
+  {
+    name: "a throwing prototype",
+    fail() {
+      return new Proxy(
+        {},
+        {
+          getPrototypeOf() {
+            throw new Error("diagnostic prototype failed");
+          },
+        },
+      );
+    },
+  },
+];
+
 describe("local process author", () => {
+  it("keeps a captured setup method on its original class instance", async () => {
+    class Unit implements ProcessUnit<{}, {}> {
+      id = "class-unit";
+      imports = {};
+      exports = {};
+      #prepared = 0;
+
+      setup() {
+        this.#prepared++;
+        return {};
+      }
+
+      get prepared() {
+        return this.#prepared;
+      }
+    }
+    const source = new Unit();
+    const captured = defineProcessUnit(source);
+    source.setup = () => {
+      throw new Error("replacement setup must not run");
+    };
+    await connectUnit(captured);
+    expect(source.prepared).toBe(1);
+  });
+
   it("validates and retains one capture of a unit and its import cardinality", () => {
     let idReads = 0;
     let importReads = 0;
@@ -598,6 +659,75 @@ describe("query and command invocation identity", () => {
 });
 
 describe("stream delivery ownership", () => {
+  it("captures request fields once and keeps the original class consumer after dispatch", async () => {
+    let client!: Client<typeof numbers>;
+    const dispatched = Promise.withResolvers<void>();
+    const deliver = Promise.withResolvers<void>();
+    const controller = new AbortController();
+    class Options implements RequestOptions {
+      #chunks: unknown[] = [];
+      signalReads = 0;
+      consumerReads = 0;
+
+      get signal() {
+        this.signalReads++;
+        return controller.signal;
+      }
+
+      get onChunk() {
+        this.consumerReads++;
+        return this.#consume;
+      }
+
+      #consume(value: unknown) {
+        this.#chunks.push(value);
+      }
+
+      get chunks() {
+        return this.#chunks;
+      }
+    }
+    await connectUnit(
+      defineProcessUnit({
+        id: "captured-consumer",
+        imports: { numbers },
+        exports: {},
+        setup({ imports }) {
+          client = imports.numbers;
+          return {};
+        },
+      }),
+      serviceBinding("numbers", numbers),
+      async (peer, _method, params, signal) => {
+        exactFields(params, ["handle", "member", "input", "stream"]);
+        dispatched.resolve();
+        await deliver.promise;
+        await peer.request(
+          wire.methods.chunk,
+          { stream: params.stream, value: params.input },
+          signal,
+        );
+        return params.input;
+      },
+    );
+    const options = new Options();
+    const pending = client.count(7, options);
+    await dispatched.promise;
+    const replaced: unknown[] = [];
+    Object.defineProperty(options, "onChunk", {
+      value: (value: unknown) => replaced.push(value),
+    });
+    Object.defineProperty(options, "signal", {
+      value: AbortSignal.abort(new Error("replacement signal")),
+    });
+    deliver.resolve();
+    await expect(pending).resolves.toBe(7);
+    expect(options.chunks).toEqual([7]);
+    expect(replaced).toEqual([]);
+    expect(options.signalReads).toBe(1);
+    expect(options.consumerReads).toBe(1);
+  });
+
   it("retains consumer rejection when the remote producer ignores the failed acknowledgement", async () => {
     let client!: Client<typeof numbers>;
     const failure = new Error("original consumer rejected the chunk");
@@ -639,6 +769,97 @@ describe("stream delivery ownership", () => {
       cause: failure,
     });
   });
+
+  it.each(diagnosticFailures)(
+    "retains the first consumer failure when $name inspection throws",
+    async ({ fail }) => {
+      let client!: Client<typeof numbers>;
+      const failure = fail();
+      await connectUnit(
+        defineProcessUnit({
+          id: "failed-diagnostic",
+          imports: { numbers },
+          exports: {},
+          setup({ imports }) {
+            client = imports.numbers;
+            return {};
+          },
+        }),
+        serviceBinding("numbers", numbers),
+        async (peer, _method, params, signal) => {
+          exactFields(params, ["handle", "member", "input", "stream"]);
+          await peer
+            .request(
+              wire.methods.chunk,
+              { stream: params.stream, value: params.input },
+              signal,
+            )
+            .catch(() => {});
+          return params.input;
+        },
+      );
+      const result = await client
+        .count(7, {
+          onChunk() {
+            throw failure;
+          },
+        })
+        .catch((error: unknown) => error);
+      expect(result).toBeInstanceOf(ProcessError);
+      const error = result as ProcessError;
+      expect(error.outcomeUnknown).toBe(true);
+      expect(error.cause === failure).toBe(true);
+      expect(Object.isFrozen(error)).toBe(true);
+    },
+  );
+
+  it.each(diagnosticFailures)(
+    "closes the original streams when a background job throws $name",
+    async ({ fail }) => {
+      const beginFailure = Promise.withResolvers<void>();
+      const dispatched = Promise.withResolvers<void>();
+      let client!: Client<typeof numbers>;
+      const host = await connectUnit(
+        defineProcessUnit({
+          id: "failed-background-diagnostic",
+          imports: { numbers },
+          exports: {},
+          setup({ imports, onActivate }) {
+            client = imports.numbers;
+            onActivate((work) => {
+              work.start(async () => {
+                await beginFailure.promise;
+                throw fail();
+              });
+            });
+            return {};
+          },
+        }),
+        serviceBinding("numbers", numbers),
+        async (_peer, _method, _params, signal) => {
+          dispatched.resolve();
+          if (!signal.aborted)
+            await new Promise<void>((resolve) =>
+              signal.addEventListener("abort", () => resolve(), { once: true }),
+            );
+          return 7;
+        },
+      );
+      const closed = new Promise<void>((resolve) =>
+        host.signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
+      const pending = client.count(7, { onChunk() {} });
+      const rejected = expect(pending).rejects.toMatchObject({
+        outcomeUnknown: true,
+      });
+      await dispatched.promise;
+      beginFailure.resolve();
+      await rejected;
+      await closed;
+      expect(host.input.destroyed).toBe(true);
+      expect(host.output.destroyed).toBe(true);
+    },
+  );
 
   it("joins an accepted consumer when a remote final result overtakes its acknowledgement", async () => {
     const entered = Promise.withResolvers<void>();

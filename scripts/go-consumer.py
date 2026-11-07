@@ -81,7 +81,13 @@ func TestPlugin(t *testing.T) {{
         cached_proxy = os.environ.get("FRAME_DEPENDENCY_PROXY", os.environ.get("GOPROXY", "https://proxy.golang.org"))
         env = dict(os.environ, GOWORK="off", GONOPROXY="none", GONOSUMDB=module, GOMODCACHE=str(temp / "modules"),
                    GOPROXY=proxy.as_uri() + "," + cached_proxy)
-        subprocess.run(["go", "test", "-mod=mod", "-count=1", "."], cwd=consumer, env=env, check=True)
+        authored = consumer / "native"
+        authored.mkdir()
+        source_directory = "examples/authoring/native/"
+        for path in git(root, "ls-tree", "-r", "--name-only", commit, source_directory).splitlines():
+            if path.endswith(".go") and not path.endswith("_test.go"):
+                (authored / Path(path).name).write_text(git(root, "show", commit + ":" + path) + "\n")
+        subprocess.run(["go", "test", "-mod=mod", "-count=1", "./..."], cwd=consumer, env=env, check=True)
         print(f"Verified {module}@{args.version} from {commit[:12]} with an external host.")
 
 

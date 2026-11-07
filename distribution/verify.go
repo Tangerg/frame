@@ -63,11 +63,12 @@ func (s *Store) validate(ctx context.Context, root *os.Root) (Release, error) {
 	if err != nil {
 		return Release{}, err
 	}
-	verifier := artifactVerifier{ctx: ctx, root: root, limits: s.limits, expected: make(map[string]Artifact, len(release.Manifest.Artifacts)), paths: pathInventory{}}
+	verifier := artifactVerifier{ctx: ctx, root: root, limits: s.limits, expected: make(map[string]Artifact, len(release.Manifest.Artifacts))}
 	for _, artifact := range release.Manifest.Artifacts {
 		verifier.expected[artifact.Path] = artifact
 	}
-	if err := fs.WalkDir(root.FS(), ".", verifier.visit); err != nil {
+	paths := pathInventory{}
+	if err := paths.walk(ctx, root, s.limits.Entries, verifier.visit); err != nil {
 		return Release{}, err
 	}
 	if len(verifier.expected) != 0 {
@@ -111,33 +112,13 @@ type artifactVerifier struct {
 	root     *os.Root
 	limits   Limits
 	expected map[string]Artifact
-	paths    pathInventory
 	size     int64
 }
 
-func (v *artifactVerifier) visit(name string, entry fs.DirEntry, walkErr error) error {
-	if walkErr != nil {
-		return walkErr
-	}
-	if err := v.ctx.Err(); err != nil {
-		return err
-	}
-	if name == "." {
-		return nil
-	}
+func (v *artifactVerifier) visit(name string, entry fs.DirEntry) error {
 	info, err := entry.Info()
 	if err != nil {
 		return err
-	}
-	kind := fileEntry
-	if info.IsDir() {
-		kind = directoryEntry
-	}
-	if err := v.paths.admit(name, kind); err != nil {
-		return err
-	}
-	if len(v.paths) > v.limits.Entries {
-		return ErrCapacity
 	}
 	if info.Mode()&specialFileModes != 0 {
 		return ErrInvalid

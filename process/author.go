@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/internal/nilness"
 	"github.com/Tangerg/frame/portable"
 )
@@ -251,7 +252,7 @@ func Serve(ctx context.Context, channel io.ReadWriteCloser, unit Unit) error {
 	s := &server{unit: unit, life: frame.NewLifetime(ctx)}
 	s.peer = newPeer(channel, wire.MaxFrameBytes, s.handle)
 	s.peer.start()
-	stop := context.AfterFunc(ctx, func() { s.peer.end(context.Cause(ctx)) })
+	stop := context.AfterFunc(ctx, func() { s.peer.end(cancellation.Err(ctx)) })
 	<-s.peer.done
 	stop()
 	s.life.BeginClose(context.Cause(s.peer.ctx))

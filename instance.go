@@ -34,11 +34,11 @@ type instanceKey struct {
 	realm  RealmID
 }
 
-// Instance is one actual setup of an exact unit binding. Preparation and
+// unitInstance is one actual setup of an exact unit binding. Preparation and
 // retirement are independent facts: a retirement may be requested while the
 // preparation is still running, and it never rewrites the preparation result.
 // Host.mu guards every mutable field.
-type Instance struct {
+type unitInstance struct {
 	host          *Host
 	id            string
 	generation    uint64
@@ -55,7 +55,7 @@ type Instance struct {
 	preparation []bindingRead
 	lifetime    *Lifetime
 	resource    *ResourceHandle
-	providers   []*Instance
+	providers   []*unitInstance
 	// providerHolds keep each provider from retiring beneath this consumer.
 	providerHolds []*Work
 	stops         []func() bool
@@ -84,18 +84,20 @@ const instanceResourcePrefix = "unit:"
 
 func instanceResourceName(id string) string { return instanceResourcePrefix + id }
 
-func (i *Instance) key() instanceKey { return instanceKey{source: i.binding.Source, realm: i.realm} }
+func (i *unitInstance) key() instanceKey {
+	return instanceKey{source: i.binding.Source, realm: i.realm}
+}
 
 // grant is the authority under which the setup runs: the starting grant of a
 // started unit, otherwise its installation's grant.
-func (i *Instance) grant() ScopeGrant {
+func (i *unitInstance) grant() ScopeGrant {
 	if i.startGrant.issued() {
 		return i.startGrant
 	}
 	return i.scope
 }
 
-func (i *Instance) preparedLocked() (bool, error) {
+func (i *unitInstance) preparedLocked() (bool, error) {
 	select {
 	case <-i.prepared:
 		return true, i.preparationErr
@@ -104,12 +106,12 @@ func (i *Instance) preparedLocked() (bool, error) {
 	}
 }
 
-func (i *Instance) servingLocked() bool {
+func (i *unitInstance) servingLocked() bool {
 	done, err := i.preparedLocked()
 	return done && err == nil && !i.retiring
 }
 
-func (i *Instance) observationLocked() InstanceObservation {
+func (i *unitInstance) observationLocked() InstanceObservation {
 	done, err := i.preparedLocked()
 	state := Preparing
 	switch {
@@ -135,9 +137,9 @@ func (i *Instance) observationLocked() InstanceObservation {
 
 // holdProvidersLocked holds every provider that the binding planned before i,
 // so a provider cannot retire beneath its consumer.
-func (i *Instance) holdProvidersLocked(planned map[UnitRef]*Instance) ([]*ResourceHandle, error) {
+func (i *unitInstance) holdProvidersLocked(planned map[UnitRef]*unitInstance) ([]*ResourceHandle, error) {
 	var resources []*ResourceHandle
-	held := make(map[*Instance]bool)
+	held := make(map[*unitInstance]bool)
 	for _, requirement := range i.binding.Imports {
 		for _, source := range requirement.Providers {
 			if source.Unit() == i.binding.Source {
@@ -165,7 +167,7 @@ func (i *Instance) holdProvidersLocked(planned map[UnitRef]*Instance) ([]*Resour
 
 // releaseProvidersLocked undoes holdProvidersLocked for an instance that never
 // became a Host resource, so a partial graph cannot pin its providers.
-func (i *Instance) releaseProvidersLocked() {
+func (i *unitInstance) releaseProvidersLocked() {
 	for _, stop := range i.stops {
 		stop()
 	}
@@ -177,7 +179,7 @@ func (i *Instance) releaseProvidersLocked() {
 	i.providers = nil
 }
 
-func (i *Instance) prepare() {
+func (i *unitInstance) prepare() {
 	err := errors.New("frame: preparation exited without returning")
 	// Setup and activation may end their goroutine with Goexit. Only this
 	// original preparation completes its waiters and starts failed retirement.
@@ -185,7 +187,7 @@ func (i *Instance) prepare() {
 	err = i.prepareUnit()
 }
 
-func (i *Instance) prepareUnit() error {
+func (i *unitInstance) prepareUnit() error {
 	h := i.host
 	work, err := i.lifetime.Enter(i.lifetime.Context())
 	if err != nil {
@@ -227,7 +229,7 @@ func (i *Instance) prepareUnit() error {
 
 // setupFuncLocked returns the native setup or the registered driver for the
 // unit's profile. A driver never chooses another implementation.
-func (i *Instance) setupFuncLocked() (SetupFunc, error) {
+func (i *unitInstance) setupFuncLocked() (SetupFunc, error) {
 	if i.unit.Profile == NativeGo {
 		return i.setup, nil
 	}
@@ -238,7 +240,7 @@ func (i *Instance) setupFuncLocked() (SetupFunc, error) {
 	return driver.Prepare, nil
 }
 
-func (i *Instance) bindImportsLocked() (map[string][]BoundValue, error) {
+func (i *unitInstance) bindImportsLocked() (map[string][]BoundValue, error) {
 	imports := make(map[string][]BoundValue, len(i.binding.Imports))
 	for _, requirement := range i.binding.Imports {
 		values := make([]BoundValue, 0, len(requirement.Providers))
@@ -258,7 +260,7 @@ func (i *Instance) bindImportsLocked() (map[string][]BoundValue, error) {
 	return imports, nil
 }
 
-func (i *Instance) providerExportLocked(source ExportRef) (*publication, error) {
+func (i *unitInstance) providerExportLocked(source ExportRef) (*publication, error) {
 	for _, provider := range i.providers {
 		if provider.binding.Source == source.Unit() {
 			return provider.setupExportLocked(source)
@@ -269,7 +271,7 @@ func (i *Instance) providerExportLocked(source ExportRef) (*publication, error) 
 
 // A declaration names the original setup export. Live Point membership can
 // withdraw that value, but cannot replace what a new setup would receive.
-func (i *Instance) setupExportLocked(source ExportRef) (*publication, error) {
+func (i *unitInstance) setupExportLocked(source ExportRef) (*publication, error) {
 	export := i.setupExports[source.Export]
 	if export == nil || export.source != source {
 		return nil, ErrContractMismatch
@@ -280,7 +282,7 @@ func (i *Instance) setupExportLocked(source ExportRef) (*publication, error) {
 	return export, nil
 }
 
-func (i *Instance) validateImportsLocked() error {
+func (i *unitInstance) validateImportsLocked() error {
 	for _, requirement := range i.binding.Imports {
 		for _, source := range requirement.Providers {
 			if source.Unit() == i.binding.Source {
@@ -294,7 +296,7 @@ func (i *Instance) validateImportsLocked() error {
 	return nil
 }
 
-func (i *Instance) validateCurrentLocked() error {
+func (i *unitInstance) validateCurrentLocked() error {
 	h := i.host
 	if h.lifetime.isClosing() || i.retiring || h.instances[i.key()] != i || i.lifetime.isClosing() {
 		return ErrStaleBinding
@@ -318,7 +320,7 @@ func (i *Instance) validateCurrentLocked() error {
 	return h.validateBindingReadsLocked(i.preparation)
 }
 
-func (i *Instance) publishPrepared(exports []ExportValue, activate func(context.Context) error) error {
+func (i *unitInstance) publishPrepared(exports []ExportValue, activate func(context.Context) error) error {
 	h := i.host
 	publications, err := h.setupPublications(i, exports)
 	if err != nil {
@@ -344,7 +346,7 @@ func (i *Instance) publishPrepared(exports []ExportValue, activate func(context.
 	})
 }
 
-func (i *Instance) finishPrepare(err error) {
+func (i *unitInstance) finishPrepare(err error) {
 	h := i.host
 	h.mu.Lock()
 	i.preparation = nil
@@ -359,7 +361,7 @@ func (i *Instance) finishPrepare(err error) {
 	}
 }
 
-func (i *Instance) publishSetupLocked(publications []*publication) error {
+func (i *unitInstance) publishSetupLocked(publications []*publication) error {
 	if err := i.validateCurrentLocked(); err != nil {
 		return err
 	}
@@ -378,7 +380,7 @@ func (i *Instance) publishSetupLocked(publications []*publication) error {
 	return nil
 }
 
-func (i *Instance) withdrawLocked() {
+func (i *unitInstance) withdrawLocked() {
 	for _, export := range i.setupExports {
 		i.host.catalog.withdraw(export)
 	}
@@ -389,7 +391,7 @@ func (i *Instance) withdrawLocked() {
 
 // retire drains the consumers holding i before closing its resources. A
 // preparation still running is cancelled; consumers are never cancelled here.
-func (i *Instance) retire(ctx context.Context) (CloseOutcome, error) {
+func (i *unitInstance) retire(ctx context.Context) (CloseOutcome, error) {
 	h := i.host
 	h.mu.Lock()
 	h.retireInstanceLocked(i)
@@ -409,7 +411,7 @@ func (i *Instance) retire(ctx context.Context) (CloseOutcome, error) {
 	return i.lifetime.Close(ctx)
 }
 
-func (i *Instance) beginRetire() {
+func (i *unitInstance) beginRetire() {
 	i.retireOnce.Do(func() {
 		causes := i.lifetime.ObserveCloseCauses()
 		go func() {

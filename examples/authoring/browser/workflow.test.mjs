@@ -50,7 +50,11 @@ test(
       const { connect, sha256, validators } = await import(
         pathToFileURL(join(directory, "dist/client.mjs")).href
       );
-      client = connect(bootstrap);
+      let releasedURL;
+      client = connect(bootstrap, (error) => {
+        if (error?.name === "PartialSetupFailure")
+          releasedURL = error.releasedURL;
+      });
       await client.activate("converter");
       const reference = {
         path: "hello.md",
@@ -321,7 +325,7 @@ test(
             () => client.runtime.pendingProofs.length === 0,
             () => diagnostics,
           );
-          assert.deepEqual(client.errors, []);
+          assert.deepEqual(client.failures, []);
         },
       );
 
@@ -374,12 +378,12 @@ test(
         "partial setup releases the actual staged resource without publication",
         async () => {
           await assert.rejects(client.activate("partial"));
-          const failure = client.errors.find(
+          const failure = client.failures.find(
             (error) => error?.name === "PartialSetupFailure",
           );
-          assert.ok(failure, client.errors.map(String).join("\n"));
-          assert.equal(typeof failure.releasedURL, "string");
-          await assert.rejects(fetch(failure.releasedURL));
+          assert.ok(failure, client.failures.map(String).join("\n"));
+          assert.equal(typeof releasedURL, "string");
+          await assert.rejects(fetch(releasedURL));
           const snapshot = await client.control.snapshot({
             operationId: crypto.randomUUID(),
             points: [validators.ref.name],
@@ -396,9 +400,9 @@ test(
             () => diagnostics,
           );
           assert.deepEqual(
-            client.errors.map((error) => error.name),
+            client.failures.map((error) => error.name),
             ["PartialSetupFailure"],
-            client.errors
+            client.failures
               .map((error) => `${error.code ?? error.name}: ${error.message}`)
               .join("\n"),
           );

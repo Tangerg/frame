@@ -40,7 +40,7 @@ type Use struct {
 	scope         ScopeGrant
 	members       map[string]*publication
 	selections    map[string][]string
-	instances     []*Instance
+	instances     []*unitInstance
 	instanceHolds []*Work
 	stops         []func() bool
 	hostResource  *ResourceHandle
@@ -74,7 +74,7 @@ func (u *Use) enter(ctx context.Context) (*Work, error) {
 	return work, nil
 }
 
-func (u *Use) instance(root UnitRef) *Instance {
+func (u *Use) instance(root UnitRef) *unitInstance {
 	for _, instance := range u.instances {
 		if instance.binding.Source == root {
 			return instance
@@ -149,6 +149,9 @@ func (h *Host) AcquireUnit(ctx context.Context, root UnitRef, config UseConfig) 
 // its parent's execution, realm and scope; another owner would detach
 // protected work from the permission that admitted it.
 func (h *Host) useConfig(config UseConfig) (UseConfig, error) {
+	if config.Owner.authority != nil && config.Owner.authority != h.identity {
+		return config, fmt.Errorf("%w: use owner belongs to another authority", ErrInvalid)
+	}
 	if parent := config.Parent; parent != nil {
 		if parent.authority != h.identity || config.Owner != parent.lifetime {
 			return config, ErrInvalid
@@ -239,7 +242,7 @@ func (h *Host) readyPlan(binding BindingSnapshot, realm RealmID) (*BindingPlan, 
 	return plan, nil
 }
 
-func (h *Host) readyInstanceLocked(source UnitRef, realm RealmID) (*Instance, error) {
+func (h *Host) readyInstanceLocked(source UnitRef, realm RealmID) (*unitInstance, error) {
 	unit, _, err := h.unitLocked(source)
 	if err != nil {
 		return nil, err
@@ -263,7 +266,7 @@ func (h *Host) acquirePrepared(ctx context.Context, plan *BindingPlan, config Us
 		scope:       config.Scope,
 		realm:       config.Realm,
 		binding:     plan.binding.Clone(),
-		lifetime:    NewLifetime(context.WithoutCancel(ctx)),
+		lifetime:    h.newLifetime(context.WithoutCancel(ctx)),
 		initialized: make(chan struct{}),
 		settlement:  newSettlement(),
 		host:        h,
@@ -339,8 +342,8 @@ func (h *Host) attachPlanMembers(use *Use, plan *BindingPlan, owner *Lifetime) e
 	if len(h.uses) >= h.limits.MaxUses {
 		return fmt.Errorf("%w: active uses", ErrCapacity)
 	}
-	attached := make(map[*Instance]bool)
-	attach := func(instance *Instance) {
+	attached := make(map[*unitInstance]bool)
+	attach := func(instance *unitInstance) {
 		if !attached[instance] {
 			attached[instance] = true
 			use.instances = append(use.instances, instance)
@@ -375,7 +378,7 @@ func (h *Host) attachPlanMembers(use *Use, plan *BindingPlan, owner *Lifetime) e
 // holdLocked keeps instance alive for this Use. An instance may have retired
 // and been rebuilt since capture; the Use only accepts the setup binding that
 // was originally admitted for that particular instance.
-func (u *Use) holdLocked(instance *Instance, graph BindingSnapshot) error {
+func (u *Use) holdLocked(instance *unitInstance, graph BindingSnapshot) error {
 	_, identity, err := setupBinding(graph, instance.snapshot.Roots, instance.binding.Source)
 	if err != nil {
 		return errors.Join(ErrStaleBinding, err)
@@ -395,37 +398,41 @@ func (u *Use) holdLocked(instance *Instance, graph BindingSnapshot) error {
 	return nil
 }
 
-// An instance drains its consumers before closing owned resources. Accepting a
-// Use owned by that instance, even through another Use, would make both wait for
-// the other. Follow the original resource handles and provider edges only.
-func (h *Host) validateUseOwnerLocked(owner *Lifetime, instances []*Instance) error {
-	owners := make(map[*Lifetime]bool)
-	for owner != nil && !owners[owner] {
-		owners[owner] = true
-		owner = h.useOwnerLocked(owner)
+// Ownership and held-provider edges come from the original resources. A second
+// dependency ledger could disagree after a Use closes or changes admission.
+func (h *Host) validateUseOwnerLocked(owner *Lifetime, instances []*unitInstance) error {
+	dependencies := make(map[*Lifetime][]*Lifetime)
+	for _, instance := range h.allInstances {
+		for _, provider := range instance.providers {
+			dependencies[instance.lifetime] = append(dependencies[instance.lifetime], provider.lifetime)
+		}
 	}
-	visited := make(map[*Instance]bool)
-	pending := slices.Clone(instances)
-	for len(pending) > 0 {
-		instance := pending[len(pending)-1]
-		pending = pending[:len(pending)-1]
-		if visited[instance] {
+	for _, use := range h.uses {
+		if use.ownerResource == nil {
 			continue
 		}
-		if owners[instance.lifetime] {
-			return fmt.Errorf("%w: use owner protects instance %s", ErrDependencyCycle, instance.id)
+		originalOwner := use.ownerResource.lifetime
+		dependencies[originalOwner] = append(dependencies[originalOwner], use.lifetime)
+		for _, instance := range use.instances {
+			dependencies[use.lifetime] = append(dependencies[use.lifetime], instance.lifetime)
 		}
-		visited[instance] = true
-		pending = append(pending, instance.providers...)
 	}
-	return nil
-}
-
-func (h *Host) useOwnerLocked(l *Lifetime) *Lifetime {
-	for _, use := range h.uses {
-		if use.lifetime == l && use.ownerResource != nil {
-			return use.ownerResource.lifetime
+	pending := make([]*Lifetime, 0, len(instances))
+	for _, instance := range instances {
+		pending = append(pending, instance.lifetime)
+	}
+	visited := make(map[*Lifetime]bool)
+	for len(pending) > 0 {
+		current := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if current == owner {
+			return fmt.Errorf("%w: use owner depends on its held instances", ErrDependencyCycle)
 		}
+		if visited[current] {
+			continue
+		}
+		visited[current] = true
+		pending = append(pending, dependencies[current]...)
 	}
 	return nil
 }

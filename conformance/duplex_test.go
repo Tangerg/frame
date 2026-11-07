@@ -140,7 +140,11 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	driver, err := process.New(process.Config{Runner: runner.Dial(socket), Store: store, MaxFrameBytes: 1 << 20, CloseTimeout: 5 * time.Second, Source: program{process.Program{Command: node, ExecutableDigest: framevalue.Hash(data), Args: []string{entry}, Directory: filepath.Dir(entry)}}})
+	client, err := runner.NewClient(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver, err := process.New(process.Config{Runner: client, Store: store, MaxFrameBytes: 1 << 20, CloseTimeout: 5 * time.Second, Source: program{process.Program{Command: node, ExecutableDigest: framevalue.Hash(data), Args: []string{entry}, Directory: filepath.Dir(entry)}}})
 	if err != nil {
 		t.Fatal(err)
 	}

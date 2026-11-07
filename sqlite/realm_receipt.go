@@ -14,10 +14,15 @@ const realmReceiptSchema = `CREATE TABLE frame_realm_receipts(operation_id TEXT 
 // The row owns both pending capacity and the eventual reply, so completion never
 // competes with another operation for space it was already promised.
 type ReceiptReservation struct {
-	store *Store
-	id    string
+	store        *Store
+	id           string
+	request      value.Digest
+	maximumBytes int64
 }
 
+// A reservation can accompany an error after its transaction body accepted the
+// original request. Record must still settle that identity: a missing row proves
+// rollback, while an unavailable read leaves acceptance unknown.
 func (s *Store) ReserveRealmReceipt(ctx context.Context, id string, request value.Digest, maximumBytes int64) (*ReceiptReservation, error) {
 	if !frame.ValidName(id) || request.Validate() != nil || maximumBytes < 1 {
 		return nil, frame.ErrInvalid
@@ -25,8 +30,9 @@ func (s *Store) ReserveRealmReceipt(ctx context.Context, id string, request valu
 	if maximumBytes > s.maxRealmHistoryBytes-int64(len(id)+len(request.String())) {
 		return nil, frame.ErrCapacity
 	}
+	accepted := false
 	err := s.transaction(ctx, func(tx Executor) error {
-		return recordOnce(func() (bool, error) {
+		err := recordOnce(func() (bool, error) {
 			var reserved int64
 			var original value.Digest
 			err := tx.QueryRowContext(ctx, `SELECT request_digest,reserved_bytes FROM frame_realm_receipts WHERE operation_id=?`, id).Scan(&original, &reserved)
@@ -37,11 +43,13 @@ func (s *Store) ReserveRealmReceipt(ctx context.Context, id string, request valu
 			}
 			return s.checkRealmHistoryCapacity(ctx, tx)
 		})
+		accepted = err == nil
+		return err
 	})
-	if err != nil {
+	if !accepted {
 		return nil, err
 	}
-	return &ReceiptReservation{store: s, id: id}, nil
+	return &ReceiptReservation{store: s, id: id, request: request, maximumBytes: maximumBytes}, err
 }
 
 func (s *Store) checkRealmHistoryCapacity(ctx context.Context, tx Reader) error {
@@ -75,8 +83,12 @@ func (r *ReceiptReservation) Record(ctx context.Context, data []byte) error {
 	return r.store.transaction(ctx, func(tx Executor) error {
 		var prior []byte
 		var reserved int64
-		if err := tx.QueryRowContext(ctx, `SELECT reserved_bytes,receipt FROM frame_realm_receipts WHERE operation_id=?`, r.id).Scan(&reserved, &prior); err != nil {
+		var request value.Digest
+		if err := tx.QueryRowContext(ctx, `SELECT request_digest,reserved_bytes,receipt FROM frame_realm_receipts WHERE operation_id=?`, r.id).Scan(&request, &reserved, &prior); err != nil {
 			return err
+		}
+		if request != r.request || reserved != r.maximumBytes {
+			return ErrConflict
 		}
 		if prior != nil {
 			if !bytes.Equal(data, prior) {

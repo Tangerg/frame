@@ -121,7 +121,10 @@ func newConfiguredEnvironment(t *testing.T, wait bool, protocol process.Protocol
 			t.Error(err)
 		}
 	})
-	client := runner.Dial(filepath.Join(directory, "runner", "socket"))
+	client, err := runner.NewClient(filepath.Join(directory, "runner", "socket"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	admission := frame.NewAdmission()
 	store, err := sqlite.Open(ctx, sqlite.Config{Path: filepath.Join(directory, "state.sqlite"), Admission: admission})
 	if err != nil {

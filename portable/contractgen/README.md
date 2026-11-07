@@ -31,7 +31,13 @@ Open or mixed-member objects preserve their members with exact JSON values.
 Closed objects retain typed fields when their names fit Go's struct encoding;
 other names remain exact map keys. Unions and other shapes without a faithful
 Go structural representation retain an owned `value.JSON`, including nullable
-fields. References to generated object structs use pointers so structural
+fields. Typed decoding and schema admission follow that codec's explicit wire
+model, so named output and chunk wrappers retain the same null semantics.
+Typed authors omit `jsonschema:"nullable"`: nullability already belongs to the
+encoding model, and a second null branch would conflict with it.
+An optional opaque field uses its value form: a pointer or interface with
+`omitzero` would collapse a decoded null into absence and is refused at type
+admission. `omitempty` still intentionally omits JSON null. References to generated object structs use pointers so structural
 recursion remains representable; the descriptor owns nullability and requiredness.
 String formats remain strings: converting an admitted date-time to
 `time.Time` would discard supported precision or reject otherwise valid values.

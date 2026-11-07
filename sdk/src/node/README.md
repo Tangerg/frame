@@ -88,3 +88,13 @@ and decides whether a repeated request observes an existing operation; the SDK
 does not deduplicate business effects.
 
 See `examples/document-indexer` for a runnable process with two imports and no exports.
+
+`defineProcessUnit` captures the original setup method with its receiver, including
+class instances with private fields. Imported calls capture the caller's signal,
+command identity and stream callback once at invocation admission. Later property
+replacement cannot change a dispatched call or redirect its chunks.
+
+Stream consumer failures remain sticky even if the remote producer catches a
+failed chunk acknowledgment and returns a value. Diagnostic error metadata cannot
+interrupt recording that failure or closing pending peer work. The resulting
+`ProcessError` is immutable and retains the original thrown value as its cause.

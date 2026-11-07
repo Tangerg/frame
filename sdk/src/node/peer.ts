@@ -18,21 +18,20 @@ export class ProcessError extends Error {
     this.name = "ProcessError";
     this.outcomeUnknown =
       code === wire.errors.unknown || options?.outcome === "unknown";
+    Object.freeze(this);
   }
 
   static afterDispatch(cause: unknown): ProcessError {
-    if (
-      cause instanceof ProcessError &&
-      cause.outcomeUnknown &&
-      (cause.code === wire.errors.unknown ||
-        cause.code === wire.errors.cancelled)
-    )
-      return cause;
-    if (
-      (cause instanceof ProcessError && cause.code === wire.errors.cancelled) ||
-      (cause instanceof Error && cause.name === "AbortError")
-    )
-      return ProcessError.cancelledAfterDispatch(cause);
+    let cancelled = false;
+    try {
+      cancelled =
+        cause instanceof ProcessError
+          ? cause.code === wire.errors.cancelled
+          : cause instanceof Error && cause.name === "AbortError";
+    } catch {
+      // Diagnostics cannot prevent recording the original failure or closing its peer.
+    }
+    if (cancelled) return ProcessError.cancelledAfterDispatch(cause);
     return new ProcessError(
       wire.errors.unknown,
       "dispatched process request has no confirmed outcome",
@@ -108,10 +107,11 @@ export class Peer {
 
   stop(reason: unknown): void {
     if (this.signal.aborted) return;
+    const failure = ProcessError.afterDispatch(reason);
     this.#ended.abort(reason);
     for (const call of this.#pending.values()) {
       call.dispose();
-      call.reject(ProcessError.afterDispatch(reason));
+      call.reject(failure);
     }
     this.#pending.clear();
     for (const controller of this.#incoming.values()) controller.abort(reason);

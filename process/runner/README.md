@@ -36,7 +36,9 @@ the child and its executable snapshot. Unconfirmed shutdown retains its owner an
 lock even when the caller drops the Server handle. A Wait without an exit
 observation remains Unknown and cannot hand authority to a replacement runner.
 
-The client API is `Dial`, `Identity`, `Fence`, `Launch`, `Attach`, `Inspect`,
+`NewClient` validates the static socket address without connecting. Every control
+operation opens its own connection and verifies the physical authority directory.
+The client API is `NewClient`, `Identity`, `Fence`, `Launch`, `Attach`, `Inspect`,
 `CloseAttempt`, `AcknowledgeExit` and `ProveAbsent`. `Identity` identifies the actual runner incarnation. Record that
 identity as the execution Realm, and verify the returned running observation before
 publishing any plugin export. `Fence` advances the approved Host epoch only after
@@ -64,8 +66,9 @@ Child exit and output-pipe release remain separate resource obligations.
 Launch accepts an absolute executable, its exact SHA-256 digest, explicit arguments,
 working directory and environment, plus configuration and credential revisions.
 Program paths, arguments and environment entries must be valid UTF-8 without NUL.
-Admission rejects unrepresentable text before reserving an attempt, and the control
-encoder never silently replaces malformed bytes with a different character.
+The request owns this admission through `LaunchRequest.Validate`. Both the driver
+and runner validate before recording their respective responsibility, and the
+control encoder never replaces malformed bytes with a different character.
 It copies and verifies the executable into a private read-only snapshot before
 creation. There is no PATH lookup or shell interpretation. Environment values are
 not persisted or included in the journal digest; credential revisions identify a
@@ -78,6 +81,24 @@ creation error. Successful creation transfers cleanup to the original child Wait
 its completion releases the snapshot before publishing the terminal observation.
 Snapshot cleanup diagnostics remain visible in that observation without changing
 the direct-child exit proof.
+
+`Launch` returns a `LaunchResult`. Its observation is the original runner's known
+state; `NotDispatched(request)` is narrower evidence from this particular local
+invocation, bound to its complete request. Cancellation, encoding refusal and a
+failed connection before any write can establish that local fact. Once a write
+starts, missing or interrupted replies remain unknown. A nondispatched retry
+cannot disprove acceptance of an earlier call with the same attempt ID. The
+process driver retains its unique original call and never retries creation to
+obtain a different answer.
+
+`NotCreated` is a durable terminal observation from the original runner. Capacity
+refusal and failures before child creation retain the original request digest and
+proof in the existing receipt store. They consume no active-attempt slot, and the
+same identity remains refused after capacity becomes available or the runner
+restarts. `Exited` requires an actual original child Wait and an exit code. Both
+terminal variants can produce an `ExitReceipt`, whose state is part of its exact
+acknowledgment identity. Receipt or journal persistence failure withholds proof,
+retains the original terminal observation and fences creation.
 
 The attempt record is synchronized to disk before the first creation effect. The
 same attempt never creates twice, including after a failed start or completed exit.
@@ -92,6 +113,10 @@ runner restarts. Reusing the ID with another epoch or request is a conflict.
 A crash between handoff and confirmation is reconciled by repeating that exact
 acknowledgement against the original state directory.
 This journal format and the corresponding private Host schema require fresh state.
+The private control response is one result variant admitted against the requested
+operation: acknowledgment, identity, observation or absence proof. Acknowledgments
+carry explicit `true`; null, missing results and results for another operation
+are refused. Only an observation can accompany a failure response.
 
 A failed journal write does not erase the original Wait observation or a known
 failure before process creation. The Server retains its immutable terminal fact

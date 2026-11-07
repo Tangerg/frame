@@ -21,7 +21,7 @@ func (p *publication) view() Publication {
 	return Publication{ID: p.id, Source: p.source, InstanceID: p.instance.id, Revision: p.revision}
 }
 
-func (i *Instance) exportRef(name string, contract ContractRef) ExportRef {
+func (i *unitInstance) exportRef(name string, contract ContractRef) ExportRef {
 	source := i.binding.Source
 	return ExportRef{InstallationID: source.InstallationID, Release: source.Release, UnitID: source.UnitID, Export: name, Contract: contract}
 }
@@ -34,7 +34,7 @@ func declaresPoint(unit UnitDeclaration, contract ContractRef) bool {
 
 // setupPublications checks a setup's actual exports against its declaration:
 // each declared export exactly once, plus dynamic members of declared Points.
-func (h *Host) setupPublications(instance *Instance, exports []ExportValue) ([]*publication, error) {
+func (h *Host) setupPublications(instance *unitInstance, exports []ExportValue) ([]*publication, error) {
 	actual := make(map[string]bool, len(exports))
 	result := make([]*publication, 0, len(exports))
 	for _, export := range exports {
@@ -76,7 +76,7 @@ func declaredExport(unit UnitDeclaration, name string) (ExportDeclaration, bool)
 
 // prepareExport admits one actual value and a detached metadata snapshot
 // without holding Host.mu, because metadata decoding may be slow.
-func (h *Host) prepareExport(instance *Instance, export ExportValue) (*publication, error) {
+func (h *Host) prepareExport(instance *unitInstance, export ExportValue) (*publication, error) {
 	h.mu.Lock()
 	definition := h.contracts.lookup(export.Contract)
 	h.mu.Unlock()
@@ -104,7 +104,7 @@ func (h *Host) prepareExport(instance *Instance, export ExportValue) (*publicati
 type PublicationRequest struct {
 	owner    *authorityIdentity
 	identity publicationRequestID
-	instance *Instance
+	instance *unitInstance
 	source   ExportRef
 	metadata any
 	value    any
@@ -173,14 +173,14 @@ func (h *Host) Publish(ctx context.Context, operationID string, request *Publica
 	return result, err
 }
 
-func (i *Instance) validatePublicationLocked() error {
+func (i *unitInstance) validatePublicationLocked() error {
 	if done, err := i.preparedLocked(); !done || err != nil {
 		return ErrUnavailable
 	}
 	return i.validateCurrentLocked()
 }
 
-func (i *Instance) publishLocked(operationID string, request *PublicationRequest) (*publication, error) {
+func (i *unitInstance) publishLocked(operationID string, request *PublicationRequest) (*publication, error) {
 	if original := i.publicationOperations[operationID]; original != nil {
 		if original.request != request.identity || !original.publication.visible {
 			return nil, ErrStaleBinding
@@ -202,7 +202,7 @@ func (i *Instance) publishLocked(operationID string, request *PublicationRequest
 	return value, nil
 }
 
-func (i *Instance) publishesLocked(name string) bool {
+func (i *unitInstance) publishesLocked(name string) bool {
 	if export := i.setupExports[name]; export != nil && export.visible {
 		return true
 	}

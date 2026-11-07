@@ -182,6 +182,9 @@ func (b *Bridge) Route(ctx context.Context, token string, grant UseGrant, source
 	if !grant.grants(source) || !grant.grants(receiver) {
 		return RouteGrant{}, frame.ErrStaleBinding
 	}
+	if err := b.checkRouteCapacity(grant, source, receiver); err != nil {
+		return RouteGrant{}, err
+	}
 	retained, err := b.reserveRoute(grant.ID)
 	if err != nil {
 		return RouteGrant{}, err
@@ -199,9 +202,6 @@ func (b *Bridge) Route(ctx context.Context, token string, grant UseGrant, source
 		return RouteGrant{}, err
 	}
 	route = RouteGrant{ID: original.ID(), Use: grant, Source: source, Receiver: receiver}
-	if err := b.checkRequest(validateRouteMethod, route); err != nil {
-		return RouteGrant{}, err
-	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.uses[grant.ID] != retained || retained.released() {

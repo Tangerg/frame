@@ -88,6 +88,14 @@ schema still validates them. Date and time strings keep their original text.
 See [contract generation](../portable/contractgen/README.md) for its public
 surface and projection guarantees.
 
+Portable Point metadata retains one admitted immutable JSON value. Candidate
+and selected-member reads decode fresh Go projections through its declared
+codec; the native metadata cloner does not reinterpret that codec's private
+representation. `Candidate.Metadata()` returns `(M, error)` because decoding
+can fail. Selection policies read each candidate once, propagate any error,
+then compare the detached metadata. Encoding a native candidate similarly uses
+a detached value, so a custom marshaler cannot mutate the publication.
+
 ## Restoring accepted work
 
 A declared export always identifies its original setup value. Dynamic Point
@@ -123,6 +131,12 @@ rejects a direct or nested owner cycle with `ErrDependencyCycle`. An instance
 cannot own a Use of itself or of a consumer that keeps it alive. Application
 consumers own their Uses independently; accepted external Uses can then drain
 before their providers retire.
+
+Setup and Use lifetimes retain their original Host's admission authority. A
+different Host refuses them as a Use owner or Host lifetime before preparing
+work: neither Host can atomically inspect and admit the other's dependency
+graph. An application can compose several Hosts under its own `NewLifetime`,
+which does not originate from a Host's provider graph.
 
 The live execution path admits the original plan. A durable host can configure ReadAcceptedBinding once at composition. Its loader receives the record identity and the request's scope grant, authorizes that record, then reads the binding accepted by the original business transaction. Host.AcquireRecord consumes that evidence. A diagnostic BindingSnapshot on its own cannot be presented to the Host as a newly authorized operation. The document queue is a working example in examples/document/tasks.go.
 

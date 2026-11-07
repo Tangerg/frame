@@ -20,21 +20,25 @@ type ExitReceipt struct {
 	Epoch     uint64 `json:"epoch"`
 	RunnerID  string `json:"runnerId"`
 	ProofID   string `json:"proofId"`
+	State     State  `json:"state"`
 }
 
 func (o Observation) ExitReceipt() (ExitReceipt, error) {
-	receipt := ExitReceipt{AttemptID: o.AttemptID, Epoch: o.Epoch, RunnerID: o.RunnerID, ProofID: o.ProofID}
-	if o.State != Exited || !receipt.valid() {
+	if err := o.validate(); err != nil {
+		return ExitReceipt{}, errors.Join(ErrUnknown, err)
+	}
+	receipt := ExitReceipt{AttemptID: o.AttemptID, Epoch: o.Epoch, RunnerID: o.RunnerID, ProofID: o.ProofID, State: o.State}
+	if !receipt.valid() {
 		return ExitReceipt{}, ErrUnknown
 	}
 	return receipt, nil
 }
 
 func (receipt ExitReceipt) valid() bool {
-	return frame.ValidName(receipt.AttemptID) && receipt.Epoch != 0 && frame.ValidName(receipt.RunnerID) && frame.ValidName(receipt.ProofID)
+	return (receipt.State == Exited || receipt.State == NotCreated) && frame.ValidName(receipt.AttemptID) && receipt.Epoch != 0 && frame.ValidName(receipt.RunnerID) && frame.ValidName(receipt.ProofID)
 }
 func (receipt ExitReceipt) matches(o Observation) bool {
-	return o.State == Exited && o.Epoch == receipt.Epoch && o.RunnerID == receipt.RunnerID && o.ProofID == receipt.ProofID
+	return o.AttemptID == receipt.AttemptID && o.State == receipt.State && o.Epoch == receipt.Epoch && o.RunnerID == receipt.RunnerID && o.ProofID == receipt.ProofID
 }
 func (s *Server) receiptDirectory() string { return filepath.Join(s.config.Directory, "exit-receipts") }
 
@@ -46,6 +50,10 @@ func (s *Server) lookupAttempt(id string) (storedAttempt, bool, error) {
 	if item, ok := s.journal.Attempts[id]; ok {
 		return item, true, nil
 	}
+	return s.readReceipt(id)
+}
+
+func (s *Server) readReceipt(id string) (storedAttempt, bool, error) {
 	data, err := os.ReadFile(s.receiptPath(id))
 	if errors.Is(err, os.ErrNotExist) {
 		return storedAttempt{}, false, nil
@@ -57,10 +65,35 @@ func (s *Server) lookupAttempt(id string) (storedAttempt, bool, error) {
 	if err := json.Unmarshal(data, &item, json.RejectUnknownMembers(true)); err != nil {
 		return storedAttempt{}, false, err
 	}
-	if item.Observation.AttemptID != id || item.Observation.State != Exited || item.Observation.ProofID == "" || item.RequestDigest.Validate() != nil {
+	if _, err := item.Observation.ExitReceipt(); err != nil || item.Observation.AttemptID != id || item.RequestDigest.Validate() != nil {
 		return storedAttempt{}, false, ErrConflict
 	}
 	return item, true, nil
+}
+
+func (s *Server) restoreReceipts() error {
+	for id, outstanding := range s.journal.Attempts {
+		receipt, found, err := s.readReceipt(id)
+		if err != nil {
+			return err
+		}
+		if !found {
+			continue
+		}
+		if receipt.RequestDigest != outstanding.RequestDigest || receipt.Observation.Reference() != outstanding.Observation.Reference() {
+			return ErrConflict
+		}
+		if outstanding.Observation.State == Exited {
+			proof, err := receipt.Observation.ExitReceipt()
+			if err != nil || !proof.matches(outstanding.Observation) {
+				return ErrConflict
+			}
+		}
+		// Receipt persistence precedes removal from the active journal. A crash
+		// between those writes cannot erase the original terminal observation.
+		delete(s.journal.Attempts, id)
+	}
+	return nil
 }
 
 // AcknowledgeExit moves a confirmed exit outside the outstanding-attempt budget.
@@ -91,15 +124,7 @@ func (s *Server) AcknowledgeExit(ctx context.Context, receipt ExitReceipt) error
 	if _, outstanding := s.journal.Attempts[receipt.AttemptID]; !outstanding {
 		return nil
 	}
-	if err := os.MkdirAll(s.receiptDirectory(), localfile.PrivateDirectoryMode); err != nil {
-		return err
-	}
-	if err := storeRecord(s.receiptPath(receipt.AttemptID), item); err != nil {
-		return err
-	}
-	// The receipt directory itself must be durable before the active journal
-	// can omit this ID. Both copies mean the same immutable terminal observation.
-	if err := syncDirectory(s.config.Directory); err != nil {
+	if err := s.storeReceipt(item); err != nil {
 		return err
 	}
 	delete(s.journal.Attempts, receipt.AttemptID)
@@ -109,4 +134,16 @@ func (s *Server) AcknowledgeExit(ctx context.Context, receipt ExitReceipt) error
 		return err
 	}
 	return nil
+}
+
+func (s *Server) storeReceipt(item storedAttempt) error {
+	if err := os.MkdirAll(s.receiptDirectory(), localfile.PrivateDirectoryMode); err != nil {
+		return err
+	}
+	if err := storeRecord(s.receiptPath(item.Observation.AttemptID), item); err != nil {
+		return err
+	}
+	// The receipt directory itself must be durable before the active journal
+	// can omit this ID. Both copies mean the same immutable terminal observation.
+	return syncDirectory(s.config.Directory)
 }

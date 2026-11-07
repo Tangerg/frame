@@ -98,6 +98,15 @@ dependencies are part of that independent project.
 
 ## Author observations
 
+The client exposes `failures` as immutable, bounded text diagnostics and
+`omittedFailures` as the number discarded during a longer outage. It retains at
+most 32 records, with each name and message limited to 512 UTF-16 code units;
+it never keeps the original exception or its cause graph. An optional second
+argument to `connect` can observe the original error synchronously for an
+application-owned sink. An observer's synchronous throw or rejected returned
+Promise or thenable is recorded in the same bounded diagnostics without stopping
+connection recovery. The client does not wait for observers during shutdown.
+
 The maintainer consulted Frame's README, the SDK and Browser README files, the
 public `defineUnit`, `Setup`, `Lifetime`, `acquire`, `select`, `Runtime`,
 `RealmModules`, `ControlPump` and Bridge APIs, and the document contract source.

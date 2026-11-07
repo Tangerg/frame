@@ -32,19 +32,11 @@ func (s *Store) ImportDirectoryHeld(ctx context.Context, directory string) (leas
 		return nil, err
 	}
 	defer func() { err = errors.Join(err, staged.discard()) }()
-	err = fs.WalkDir(input.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
-		switch {
-		case walkErr != nil:
-			return walkErr
-		case ctx.Err() != nil:
-			return ctx.Err()
-		case name == ".":
+	err = staged.paths.walk(ctx, input, staged.limits.Entries, func(name string, entry fs.DirEntry) error {
+		if entry.IsDir() {
 			return nil
-		case entry.IsDir():
-			return staged.admitPath(name, directoryEntry)
-		default:
-			return staged.copyRegular(ctx, input, name, entry)
 		}
+		return staged.copyRegular(ctx, input, name, entry)
 	})
 	if err != nil {
 		return nil, err

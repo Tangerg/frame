@@ -47,31 +47,42 @@ export class HTTPControl implements HostControl {
   readonly #fetch: typeof fetch;
 
   constructor(options: HTTPControlOptions) {
-    const endpoint = new URL(options.endpoint);
+    const {
+      endpoint: endpointValue,
+      credential,
+      maximumMessageBytes,
+      lifetime,
+      fetch: fetchRequest,
+    } = options;
+    const endpoint = new URL(endpointValue);
     if (
       !["https:", "http:"].includes(endpoint.protocol) ||
       !potentiallyTrustworthy(endpoint) ||
       endpoint.username ||
       endpoint.password ||
       endpoint.hash ||
-      !options.credential
+      typeof credential !== "string" ||
+      !credential
     )
       throw new TypeError("control endpoint and realm credential are required");
-    if (
-      !Number.isSafeInteger(options.maximumMessageBytes) ||
-      options.maximumMessageBytes < 1
-    )
+    if (!Number.isSafeInteger(maximumMessageBytes) || maximumMessageBytes < 1)
       throw new TypeError(
         "control message capacity must be a positive safe integer",
       );
+    if (fetchRequest !== undefined && typeof fetchRequest !== "function")
+      throw new TypeError("control fetch must be a function");
     this.#endpoint = endpoint.href;
-    this.#credential = options.credential;
-    this.#maximumMessageBytes = options.maximumMessageBytes;
-    this.#lifetime = options.lifetime;
-    options.lifetime.cleanup(() => {
+    this.#credential = credential;
+    this.#maximumMessageBytes = maximumMessageBytes;
+    this.#lifetime = lifetime;
+    const nativeFetch = globalThis.fetch;
+    this.#fetch =
+      fetchRequest && fetchRequest !== nativeFetch
+        ? fetchRequest.bind(options)
+        : nativeFetch.bind(globalThis);
+    lifetime.cleanup(() => {
       this.#credential = "";
     }, "control-credential");
-    this.#fetch = (options.fetch ?? globalThis.fetch).bind(globalThis);
   }
 
   async #request<K extends keyof ControlInputs>(

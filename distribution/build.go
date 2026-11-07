@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -56,11 +57,8 @@ func (c *releaseContents) readArtifacts(ctx context.Context, input *os.Root, art
 		return ErrCapacity
 	}
 	for i, artifact := range artifacts {
-		if err := paths.admit(artifact.Path, fileEntry); err != nil {
+		if err := paths.admitBounded(artifact.Path, fileEntry, c.limits.Entries); err != nil {
 			return err
-		}
-		if len(paths) > c.limits.Entries {
-			return ErrCapacity
 		}
 		content, err := readRegular(ctx, input, artifact.Path, c.limits.ExpandedBytes-c.total)
 		if err != nil {
@@ -92,10 +90,15 @@ func (c *releaseContents) addMetadata(name string, document any) error {
 // so equal contents always produce equal archive bytes.
 var zipEpoch = time.Date(1980, time.January, 1, 0, 0, 0, 0, time.UTC)
 
-func (c *releaseContents) writeArchive(ctx context.Context, output io.Writer, artifacts []Artifact) error {
+func (c *releaseContents) writeArchive(ctx context.Context, output io.Writer, artifacts []Artifact) (err error) {
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, cancellation.Err(ctx))
+		}
+	}()
 	archive := zip.NewWriter(&limitedWriter{writer: output, remaining: c.limits.ArchiveBytes})
 	for _, name := range slices.Sorted(maps.Keys(c.files)) {
-		if err := ctx.Err(); err != nil {
+		if err := cancellation.Err(ctx); err != nil {
 			return errors.Join(err, archive.Close())
 		}
 		// Stored entries avoid a package tool producing an archive that its own

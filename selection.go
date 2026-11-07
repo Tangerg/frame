@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
 
 	framevalue "github.com/Tangerg/frame/value"
@@ -43,16 +44,8 @@ func (c Candidate[M, V]) ID() string        { return c.member.id }
 
 // Metadata returns a detached copy, so a consumer cannot mutate what other
 // candidates of the same publication observe.
-func (c Candidate[M, V]) Metadata() M {
-	var zero M
-	if c.member.metadata == nil {
-		return zero
-	}
-	value, err := snapshotMetadata(c.member.metadata)
-	if err != nil {
-		panic("frame: admitted metadata became invalid")
-	}
-	return value.(M)
+func (c Candidate[M, V]) Metadata() (M, error) {
+	return readMetadata[M](c.member.metadata)
 }
 
 type CandidateRef struct {
@@ -67,7 +60,14 @@ func (c CandidateRef) MetadataJSON() ([]byte, error) {
 	if value, ok := c.member.metadata.(framevalue.JSON); ok {
 		return value.Bytes(), nil
 	}
-	value, err := framevalue.EncodeJSON(c.member.metadata)
+	if value, ok := c.member.metadata.(portableMetadata); ok {
+		return value.encoded.Bytes(), nil
+	}
+	detached, err := snapshotMetadata(c.member.metadata)
+	if err != nil {
+		return nil, err
+	}
+	value, err := framevalue.EncodeJSON(detached)
 	if err != nil {
 		return nil, err
 	}
@@ -202,7 +202,14 @@ func Candidates[M, V any](snapshot *Snapshot, point Point[M, V]) ([]Candidate[M,
 	result := make([]Candidate[M, V], len(members))
 	for i, member := range members {
 		if member.metadata != nil {
-			if _, ok := member.metadata.(M); !ok {
+			actual := reflect.TypeOf(member.metadata)
+			if portable, ok := member.metadata.(portableMetadata); ok {
+				actual = portable.target
+				if actual == nil {
+					actual = reflect.TypeFor[framevalue.JSON]()
+				}
+			}
+			if actual == nil || !actual.AssignableTo(reflect.TypeFor[M]()) {
 				return nil, ErrContractMismatch
 			}
 		}
@@ -374,7 +381,7 @@ func (h *Host) validatePlanLocked(plan *BindingPlan) error {
 	return nil
 }
 
-func (h *Host) validateServingLocked(instance *Instance) error {
+func (h *Host) validateServingLocked(instance *unitInstance) error {
 	if instance.retiring {
 		return ErrStaleBinding
 	}

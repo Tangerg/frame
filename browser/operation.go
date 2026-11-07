@@ -225,9 +225,11 @@ func (b *Bridge) operationLocked(ctx context.Context, id string) (*controlOperat
 		b.receiptReads[id] = pending
 		b.mu.Unlock()
 		if original != nil {
-			if err := b.archive(ctx, id, original); err != nil {
+			switch err := b.archive(ctx, id, original); {
+			case errors.Is(err, sql.ErrNoRows):
+			case err != nil:
 				pending.err = errors.Join(sqlite.ErrIndeterminate, err)
-			} else {
+			default:
 				pending.operation = original
 			}
 		} else {
@@ -260,15 +262,18 @@ func (b *Bridge) archive(ctx context.Context, id string, o *controlOperation) er
 	if err != nil {
 		return err
 	}
-	if err = o.receiptReservation.Record(ctx, data); err != nil {
+	err = o.receiptReservation.Record(ctx, data)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
+	// Only the reservation owner can prove that an unacknowledged reservation
+	// rolled back. An unavailable settlement must retain this original operation.
 	b.mu.Lock()
 	if b.operations[id] == o {
 		delete(b.operations, id)
 	}
 	b.mu.Unlock()
-	return nil
+	return err
 }
 
 func (b *Bridge) complete(ctx context.Context, id string, o *controlOperation) error {
@@ -281,7 +286,7 @@ func (b *Bridge) complete(ctx context.Context, id string, o *controlOperation) e
 		b.mu.Unlock()
 		return nil
 	}
-	if err := b.archive(context.WithoutCancel(ctx), id, o); err != nil {
+	if err := b.archive(context.WithoutCancel(ctx), id, o); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return errors.Join(sqlite.ErrIndeterminate, err)
 	}
 	return nil

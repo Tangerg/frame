@@ -230,28 +230,49 @@ func (b *Bridge) CloseSnapshot(ctx context.Context, token, snapshotID string) er
 		return nil
 	}
 	identity := controlRequestIdentity{Kind: closeSnapshotOperation, Realm: session.realm}
-	operation, replay, err := b.begin(ctx, snapshotID, identity, func(operation *controlOperation) error {
-		operation.failure = frame.ErrClosed
-		return nil
-	})
-	switch {
-	case err != nil:
-		return err
-	case !replay:
-		if err := b.reserveReceipt(ctx, snapshotID, operation); err != nil {
-			operation.failure = err
-			return errors.Join(err, b.complete(ctx, snapshotID, operation))
+	for {
+		operation, replay, err := b.begin(ctx, snapshotID, identity, func(operation *controlOperation) error {
+			operation.failure = frame.ErrClosed
+			return nil
+		})
+		switch {
+		case err != nil:
+			return err
+		case !replay:
+			if err := b.reserveReceipt(ctx, snapshotID, operation); err != nil {
+				return errors.Join(err, b.complete(ctx, snapshotID, operation))
+			}
+			return b.complete(ctx, snapshotID, operation)
 		}
-		return b.complete(ctx, snapshotID, operation)
+		if err := operation.ownsSnapshot(session.realm); err != nil {
+			return err
+		}
+		if err := operation.wait(ctx); err != nil {
+			return err
+		}
+		b.mu.Lock()
+		original, err := b.operationLocked(ctx, snapshotID)
+		if err != nil {
+			b.mu.Unlock()
+			return err
+		}
+		if original == nil {
+			b.mu.Unlock()
+			// A joined capture may have rolled back its reservation. Close must
+			// claim that now-unowned identity before acknowledging terminal cleanup.
+			continue
+		}
+		if err := original.ownsSnapshot(session.realm); err != nil {
+			b.mu.Unlock()
+			return err
+		}
+		select {
+		case <-original.done:
+			delete(b.snapshots, snapshotID)
+			b.mu.Unlock()
+			return nil
+		default:
+			b.mu.Unlock()
+		}
 	}
-	if err := operation.ownsSnapshot(session.realm); err != nil {
-		return err
-	}
-	if err := operation.wait(ctx); err != nil {
-		return err
-	}
-	b.mu.Lock()
-	delete(b.snapshots, snapshotID)
-	b.mu.Unlock()
-	return nil
 }

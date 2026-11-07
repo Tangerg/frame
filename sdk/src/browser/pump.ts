@@ -10,7 +10,9 @@ export interface PumpOptions {
 /** Pending plans stay at the Host until their original execution settles. */
 export class ControlPump {
   readonly #runtime: Runtime;
-  readonly #options: PumpOptions;
+  readonly #intervalMilliseconds: number;
+  readonly #preparationCapacity: number;
+  readonly #onError: PumpOptions["onError"];
   readonly #stopping = new AbortController();
   readonly #preparations = new Map<string, Promise<void>>();
   #polling?: Promise<void>;
@@ -20,20 +22,19 @@ export class ControlPump {
   #failure?: { error: unknown };
 
   constructor(runtime: Runtime, options: PumpOptions) {
-    if (
-      !Number.isSafeInteger(options.intervalMilliseconds) ||
-      options.intervalMilliseconds < 1
-    )
+    const { intervalMilliseconds, preparationCapacity, onError } = options;
+    if (!Number.isSafeInteger(intervalMilliseconds) || intervalMilliseconds < 1)
       throw new TypeError("poll interval must be a positive safe integer");
-    if (
-      !Number.isSafeInteger(options.preparationCapacity) ||
-      options.preparationCapacity < 1
-    )
+    if (!Number.isSafeInteger(preparationCapacity) || preparationCapacity < 1)
       throw new TypeError(
         "preparation capacity must be a positive safe integer",
       );
+    if (typeof onError !== "function")
+      throw new TypeError("control pump error handler must be a function");
     this.#runtime = runtime;
-    this.#options = Object.freeze({ ...options });
+    this.#intervalMilliseconds = intervalMilliseconds;
+    this.#preparationCapacity = preparationCapacity;
+    this.#onError = onError.bind(options);
   }
 
   synchronize(): Promise<void> {
@@ -55,7 +56,7 @@ export class ControlPump {
       if (this.#stopping.signal.aborted) return;
       for (const plan of plans) {
         if (this.#preparations.has(plan.execution.id)) continue;
-        if (this.#preparations.size >= this.#options.preparationCapacity) break;
+        if (this.#preparations.size >= this.#preparationCapacity) break;
         const preparation = this.#runtime
           .prepare(plan)
           .then(
@@ -91,7 +92,7 @@ export class ControlPump {
   #report(error: unknown): void {
     if (this.#stopping.signal.aborted) return;
     try {
-      this.#options.onError(error);
+      this.#onError(error);
     } catch (error) {
       this.#failure ??= { error };
       this.#stopping.abort(error);
@@ -136,7 +137,7 @@ export class ControlPump {
         } catch (error) {
           this.#report(error);
         }
-        await delay(this.#options.intervalMilliseconds, this.#stopping.signal);
+        await delay(this.#intervalMilliseconds, this.#stopping.signal);
       }
     } finally {
       signal?.removeEventListener("abort", stop);

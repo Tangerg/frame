@@ -12,6 +12,7 @@ import (
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
 	"github.com/Tangerg/frame/distribution"
+	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/internal/localfile"
 	"github.com/Tangerg/frame/value"
 )
@@ -115,7 +116,7 @@ func loadDocument(ctx context.Context, root *os.Root, path string) (Document, er
 	if info.Size() > maximumDocumentBytes {
 		return Document{}, frame.ErrCapacity
 	}
-	if err := ctx.Err(); err != nil {
+	if err := cancellation.Err(ctx); err != nil {
 		return Document{}, err
 	}
 	data, err := io.ReadAll(io.LimitReader(file, maximumDocumentBytes+1))
@@ -125,7 +126,7 @@ func loadDocument(ctx context.Context, root *os.Root, path string) (Document, er
 	if len(data) > maximumDocumentBytes {
 		return Document{}, frame.ErrCapacity
 	}
-	if err := ctx.Err(); err != nil {
+	if err := cancellation.Err(ctx); err != nil {
 		return Document{}, err
 	}
 	return Document{Ref: DocumentRef{Path: path, Revision: value.Hash(data)}, Text: string(data)}, nil

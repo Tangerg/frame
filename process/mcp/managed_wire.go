@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/portable"
 	framevalue "github.com/Tangerg/frame/value"
 	sdk "github.com/Tangerg/go-sdk/mcp"
@@ -80,7 +81,7 @@ func registerManaged(client *sdk.Client) error {
 func managedRaw(ctx context.Context, session *sdk.ClientSession, name string, params *managedParams) (jsontext.Value, error) {
 	result, err := sdk.CallCustomMethod[*managedParams, *managedResult](ctx, session, name, params)
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(err, cancellation.Err(ctx))
 	}
 	return result.unpack()
 }

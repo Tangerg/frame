@@ -143,7 +143,7 @@ func (s *ManagedService) dispatch(ctx context.Context, method *portable.Method, 
 	} else {
 		raw, err = managedRaw(ctx, s.session, managedInvoke, params)
 		if err != nil {
-			err = managedDispatchError(errors.Join(err, cancellation.Err(ctx)))
+			err = managedDispatchError(err)
 		}
 	}
 	if err != nil {

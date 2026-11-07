@@ -11,9 +11,11 @@ type Access struct{ interval *accessInterval }
 
 // All handle copies lose access together before the original work is finished.
 type accessInterval struct {
-	mu  sync.Mutex
-	use *Use
-	ctx context.Context
+	mu      sync.Mutex
+	use     *Use
+	ctx     context.Context
+	work    *Work
+	readers sync.WaitGroup
 }
 
 type Member[M, V any] struct {
@@ -31,8 +33,12 @@ func (a *Access) Context() context.Context {
 
 func (a *accessInterval) close() {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.use = nil
+	work := a.work
+	a.work = nil
+	a.mu.Unlock()
+	a.readers.Wait()
+	work.Finish()
 }
 
 func withAccess(ctx context.Context, use *Use, call func(*Access) error) error {
@@ -43,8 +49,7 @@ func withAccess(ctx context.Context, use *Use, call func(*Access) error) error {
 	if err != nil {
 		return err
 	}
-	defer work.Finish()
-	interval := &accessInterval{use: use, ctx: work.Context()}
+	interval := &accessInterval{use: use, ctx: work.Context(), work: work}
 	defer interval.close()
 	return call(&Access{interval: interval})
 }
@@ -65,11 +70,16 @@ func (s Selection[M, V]) Members(access *Access) ([]Member[M, V], error) {
 		return nil, ErrClosed
 	}
 	interval.mu.Lock()
-	defer interval.mu.Unlock()
 	use := interval.use
 	if use == nil {
+		interval.mu.Unlock()
 		return nil, ErrClosed
 	}
+	// Codecs may reenter this Access. The original work joins admitted reads
+	// before releasing implementations; no state lock crosses user code.
+	interval.readers.Add(1)
+	interval.mu.Unlock()
+	defer interval.readers.Done()
 	ids, ok := use.selections[s.value.id]
 	if !ok {
 		return nil, ErrContractMismatch
@@ -86,17 +96,16 @@ func (s Selection[M, V]) Members(access *Access) ([]Member[M, V], error) {
 		}
 		members[n].Source = publisher.source
 		members[n].Value = value
-		if publisher.metadata != nil {
-			metadata, err := snapshotMetadata(publisher.metadata)
-			if err != nil {
-				return nil, err
-			}
-			v, ok := metadata.(M)
-			if !ok {
-				return nil, ErrContractMismatch
-			}
-			members[n].Metadata = v
+		metadata, err := readMetadata[M](publisher.metadata)
+		if err != nil {
+			return nil, err
 		}
+		members[n].Metadata = metadata
+	}
+	interval.mu.Lock()
+	defer interval.mu.Unlock()
+	if interval.use == nil {
+		return nil, ErrClosed
 	}
 	return members, nil
 }

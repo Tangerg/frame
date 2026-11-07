@@ -46,11 +46,11 @@ type BoundValue struct {
 	Local bool
 }
 
-// Setup is one preparation of an Instance. It ends when the preparation
+// Setup is one preparation of an unitInstance. It ends when the preparation
 // returns; an activation callback registered during it runs after admission.
 type Setup struct {
 	host     *Host
-	instance *Instance
+	instance *unitInstance
 	work     *Work
 	imports  map[string][]BoundValue
 	staged   *stagedExports

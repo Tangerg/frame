@@ -15,15 +15,23 @@ Each creation is protected by a durable attempt before runner dispatch. The
 actual process, handshake, setup and exports belong to the instance Lifetime.
 Failed setup, stale publication and cancellation close that same resource. A
 timeout or lost runner remains unconfirmed and retains its dependency closure.
-Before recording that attempt, the driver checks the Store's complete encoded
-capacity for local non-dispatch, confirmed runner exit and sealed absence.
+Before recording that attempt, the driver validates and freezes the original
+launch request and checks the Store's complete encoded capacity for local
+non-dispatch, confirmed non-creation, confirmed runner exit and sealed absence.
 The persisted runner proof contains its immutable `ExitReceipt`; diagnostic
 reason, PID and exit code remain on the runner's original observation. The same
 receipt identity is acknowledged after durable acceptance, so diagnostic growth
 cannot prevent an admitted process from handing off its actual exit.
-`Reconcile` consumes late Wait evidence only after the original protocol and
-attachment cleanup has completed. It refuses earlier calls before changing the
-attempt or acknowledging its exit. It never launches or cleans up again.
+A unique original `LaunchResult` can prove that its own request was never
+written. The driver retains this exact result; a later nondispatched retry could
+not disprove earlier acceptance. Runner capacity refusal is recorded by the
+original authority as `NotCreated`, preserving the request and proof even when
+all active slots are occupied. Both forms settle current-epoch protection without
+manufacturing an exit from NotFound or a timeout.
+`Reconcile` advances the original close and consumes late terminal evidence only
+after the original protocol and attachment cleanup has completed. It refuses
+earlier calls before changing the attempt or acknowledging its result. It never
+repeats creation or protocol cleanup.
 
 On Host restart, call `Recover` behind the recovery barrier before admitting any
 new work. It fences older creation epochs and retires old attempts. An absent

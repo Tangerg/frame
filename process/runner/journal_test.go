@@ -88,7 +88,7 @@ func TestWaitEvidenceSurvivesJournalFailureAndCompletesHandoff(t *testing.T) {
 	if err != nil || !identity.Fenced || identity.Epoch != request.Epoch {
 		t.Fatalf("evidence recovery changed creation authority: %+v %v", identity, err)
 	}
-	receipt := ExitReceipt{AttemptID: settled.AttemptID, Epoch: settled.Epoch, RunnerID: settled.RunnerID, ProofID: settled.ProofID}
+	receipt := ExitReceipt{AttemptID: settled.AttemptID, Epoch: settled.Epoch, RunnerID: settled.RunnerID, ProofID: settled.ProofID, State: settled.State}
 	if err := client.AcknowledgeExit(ctx, receipt); err != nil {
 		t.Fatalf("creation fence prevented original exit handoff: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestReservationFailureRetainsOriginalNonCreationEvidence(t *testing.T) {
 	original := server.terminalObservations[request.AttemptID].clone()
 	live := len(server.processes)
 	server.mu.Unlock()
-	if original.State != Exited || original.ProofID == "" || original.ExitCode != nil || live != 0 {
+	if original.State != NotCreated || original.ProofID == "" || original.ExitCode != nil || live != 0 {
 		t.Fatalf("reservation failure lost its non-creation fact: %+v, live=%d", original, live)
 	}
 	if err := server.Close(); !errors.Is(err, ErrUnknown) {
@@ -181,7 +181,7 @@ func TestReservationFailureRetainsOriginalNonCreationEvidence(t *testing.T) {
 	}
 	restore()
 	settled, err := server.CloseAttempt(ctx, request.AttemptRef)
-	if err != nil || settled.State != Exited || settled.ProofID != original.ProofID || settled.ExitCode != nil {
+	if err != nil || settled.State != NotCreated || settled.ProofID != original.ProofID || settled.ExitCode != nil {
 		t.Fatalf("storage recovery changed original non-creation evidence: %+v %v", settled, err)
 	}
 	if replayed, err := server.Launch(ctx, request); err != nil || replayed.ProofID != original.ProofID {
@@ -201,10 +201,10 @@ func TestReservationFailureRetainsOriginalNonCreationEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = replacement.Close() })
-	if recovered, err := replacement.Inspect(ctx, request.AttemptID); err != nil || recovered.State != Exited || recovered.ProofID != original.ProofID {
+	if recovered, err := replacement.Inspect(ctx, request.AttemptID); err != nil || recovered.State != NotCreated || recovered.ProofID != original.ProofID {
 		t.Fatalf("authority transfer lost original non-creation evidence: %+v %v", recovered, err)
 	}
-	receipt := ExitReceipt{AttemptID: settled.AttemptID, Epoch: settled.Epoch, RunnerID: settled.RunnerID, ProofID: settled.ProofID}
+	receipt := ExitReceipt{AttemptID: settled.AttemptID, Epoch: settled.Epoch, RunnerID: settled.RunnerID, ProofID: settled.ProofID, State: settled.State}
 	if err := replacement.AcknowledgeExit(ctx, receipt); err != nil {
 		t.Fatalf("original non-creation handoff: %v", err)
 	}

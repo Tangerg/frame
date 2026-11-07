@@ -87,6 +87,6 @@ export function defineUnit<const R extends Imports, const P extends Exports>(
     id,
     imports: Object.freeze(imports) as R,
     exports,
-    setup,
+    setup: setup.bind(definition),
   });
 }

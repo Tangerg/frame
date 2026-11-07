@@ -4,7 +4,7 @@ package native
 
 import (
 	"context"
-	_ "embed"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,22 +18,22 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/examples/document"
-	"github.com/Tangerg/frame/internal/localfile"
 	framevalue "github.com/Tangerg/frame/value"
 )
 
 const (
-	maxSourceBytes             = 1 << 20
-	minimumTitleRunes          = 8
-	nonemptyValidationOrder    = 10
-	titleValidationOrder       = 20
-	uppercaseConverterPriority = 50
-	textFormat                 = "text"
-	contentSlot                = "{{content}}"
+	maxSourceBytes                         = 1 << 20
+	minimumTitleRunes                      = 8
+	nonemptyValidationOrder                = 10
+	titleValidationOrder                   = 20
+	uppercaseConverterPriority             = 50
+	textFormat                             = "text"
+	contentSlot                            = "{{content}}"
+	templateFileMode           fs.FileMode = 0o600
 )
 
-//go:embed plugins.go
-var pluginSource []byte
+//go:embed plugins.go release.go source_flags_*.go
+var pluginSources embed.FS
 
 type Configuration struct {
 	SourceDirectory string               `json:"sourceDirectory"`
@@ -99,7 +99,7 @@ func Plugin(contracts document.Contracts) (*frame.Plugin, error) {
 			return errors.New("authoring: template requires one content slot")
 		}
 		preparedTemplate := filepath.Join(workspace, "template.html")
-		if err := os.WriteFile(preparedTemplate, []byte(template.Text), localfile.PrivateFileMode); err != nil {
+		if err := os.WriteFile(preparedTemplate, []byte(template.Text), templateFileMode); err != nil {
 			return err
 		}
 		convert := document.Converter(func(ctx context.Context, ref document.DocumentRef) (document.Converted, error) {
@@ -113,7 +113,7 @@ func Plugin(contracts document.Contracts) (*frame.Plugin, error) {
 			}
 			content := html.EscapeString(strings.ToUpper(source.Text))
 			output := strings.Replace(string(compiled), contentSlot, content, 1)
-			if err := context.Cause(ctx); err != nil {
+			if err := contextError(ctx); err != nil {
 				return document.Converted{}, err
 			}
 			return document.Converted{Source: ref, HTML: output, Title: strings.TrimSpace(strings.SplitN(source.Text, "\n", 2)[0])}, nil
@@ -145,7 +145,11 @@ func Plugin(contracts document.Contracts) (*frame.Plugin, error) {
 	if err != nil {
 		return nil, err
 	}
-	return frame.Define(frame.Definition{Revision: framevalue.Hash(pluginSource), Units: []frame.Unit{fileUnit, converterUnit, validatorUnit}})
+	revision, err := pluginRevision()
+	if err != nil {
+		return nil, err
+	}
+	return frame.Define(frame.Definition{Revision: revision, Units: []frame.Unit{fileUnit, converterUnit, validatorUnit}})
 }
 
 type validationRule struct {
@@ -155,7 +159,7 @@ type validationRule struct {
 }
 
 func (r validationRule) validate(ctx context.Context, value document.Converted) ([]document.Diagnostic, error) {
-	if err := context.Cause(ctx); err != nil {
+	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
 	if r.violatedBy(value) {
@@ -168,10 +172,10 @@ func readSource(ctx context.Context, root *os.Root, ref document.DocumentRef) (_
 	if !fs.ValidPath(ref.Path) || ref.Path == "." || ref.Revision.Validate() != nil {
 		return document.Document{}, errors.New("authoring: exact source identity is required")
 	}
-	if err := context.Cause(ctx); err != nil {
+	if err := contextError(ctx); err != nil {
 		return document.Document{}, err
 	}
-	file, err := localfile.OpenRegularIn(root, ref.Path)
+	file, err := root.OpenFile(ref.Path, os.O_RDONLY|sourceOpenFlags, 0)
 	if err != nil {
 		return document.Document{}, err
 	}
@@ -179,6 +183,9 @@ func readSource(ctx context.Context, root *os.Root, ref document.DocumentRef) (_
 	info, err := file.Stat()
 	if err != nil {
 		return document.Document{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return document.Document{}, &fs.PathError{Op: "read source", Path: ref.Path, Err: fs.ErrInvalid}
 	}
 	if info.Size() > maxSourceBytes {
 		return document.Document{}, errors.New("authoring: source byte budget exceeded")
@@ -193,8 +200,15 @@ func readSource(ctx context.Context, root *os.Root, ref document.DocumentRef) (_
 	if framevalue.Hash(data) != ref.Revision {
 		return document.Document{}, document.ErrSourceChanged
 	}
-	if err := context.Cause(ctx); err != nil {
+	if err := contextError(ctx); err != nil {
 		return document.Document{}, err
 	}
 	return document.Document{Ref: ref, Text: string(data)}, nil
+}
+
+func contextError(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return errors.Join(err, context.Cause(ctx))
+	}
+	return nil
 }

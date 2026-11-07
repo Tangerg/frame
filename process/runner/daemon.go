@@ -50,10 +50,11 @@ func NewDaemon(config DaemonConfig) (*Daemon, error) {
 		return nil, errors.New("runner: daemon requires absolute executable and directory and startup limit")
 	}
 	socket := filepath.Join(config.Directory, "control.sock")
-	if err := validateSocketPath(socket); err != nil {
+	client, err := NewClient(socket)
+	if err != nil {
 		return nil, err
 	}
-	return &Daemon{config: config, client: Dial(socket), ready: make(chan struct{}), closeRequests: make(chan chan error), closeDone: make(chan struct{})}, nil
+	return &Daemon{config: config, client: client, ready: make(chan struct{}), closeRequests: make(chan chan error), closeDone: make(chan struct{})}, nil
 }
 
 func (d *Daemon) connect(ctx context.Context) error {
@@ -138,9 +139,9 @@ func (d *Daemon) Fence(ctx context.Context, epoch uint64) error {
 	}
 	return d.client.Fence(ctx, epoch)
 }
-func (d *Daemon) Launch(ctx context.Context, request LaunchRequest) (Observation, error) {
+func (d *Daemon) Launch(ctx context.Context, request LaunchRequest) (LaunchResult, error) {
 	if err := d.connect(ctx); err != nil {
-		return Observation{}, err
+		return notDispatched(request), err
 	}
 	return d.client.Launch(ctx, request)
 }

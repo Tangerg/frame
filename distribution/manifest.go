@@ -542,6 +542,21 @@ func reservedMetadataPaths() pathInventory {
 	return pathInventory{ManifestName: {name: ManifestName, kind: fileEntry}, LockName: {name: LockName, kind: fileEntry}}
 }
 
+func (paths pathInventory) ownsFile(name string) bool {
+	entry, present := paths[strings.ToLower(name)]
+	return present && entry.name == name && entry.kind == fileEntry
+}
+
+func (paths pathInventory) admitBounded(name string, kind entryKind, limit int) error {
+	if err := paths.admit(name, kind); err != nil {
+		return err
+	}
+	if len(paths) > limit {
+		return ErrCapacity
+	}
+	return nil
+}
+
 func (paths pathInventory) admit(name string, kind entryKind) error {
 	if !validPath(name) {
 		return fmt.Errorf("%w: unsafe path", ErrInvalid)

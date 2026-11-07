@@ -10,13 +10,14 @@ import (
 	"sync"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/cancellation"
 )
 
 func execute(ctx context.Context, source SourceRevision, passes []frame.Member[PassMetadata, CompilerPass], analyzers []frame.Member[AnalyzerMetadata, Analyzer], formatter Formatter, around []frame.Member[AroundMetadata, Around]) (Result, error) {
 	base := Next(func(ctx context.Context, input SourceRevision) (Result, error) {
 		result := Result{Source: input, Output: input.Text, Diagnostics: []Diagnostic{}, Failures: []string{}, Trace: []string{}}
 		for _, pass := range passes {
-			if err := ctx.Err(); err != nil {
+			if err := cancellation.Err(ctx); err != nil {
 				return result, err
 			}
 			output, err := pass.Value(ctx, result.Output)
@@ -64,13 +65,13 @@ func execute(ctx context.Context, source SourceRevision, passes []frame.Member[P
 				mu.Unlock()
 				defer running.Done()
 				owned, cancel := context.WithCancelCause(nextCtx)
-				stop := context.AfterFunc(inner, func() { cancel(context.Cause(inner)) })
+				stop := context.AfterFunc(inner, func() { cancel(cancellation.Err(inner)) })
 				defer stop()
 				defer cancel(nil)
-				if err := context.Cause(inner); err != nil {
+				if err := cancellation.Err(inner); err != nil {
 					return Result{}, err
 				}
-				if err := context.Cause(owned); err != nil {
+				if err := cancellation.Err(owned); err != nil {
 					return Result{}, err
 				}
 				return next(owned, nextInput)
@@ -113,13 +114,16 @@ func analyze(ctx context.Context, source SourceRevision, analyzers []frame.Membe
 	results := make([]outcome, len(analyzers))
 	var joined sync.WaitGroup
 	for i, analyzer := range analyzers {
+		results[i].err = errors.New("buildcheck: analyzer exited without returning")
 		joined.Add(1)
 		go func() {
-			defer joined.Done()
+			defer func() {
+				if analyzer.Metadata.Required && results[i].err != nil {
+					cancel(results[i].err)
+				}
+				joined.Done()
+			}()
 			results[i].diagnostics, results[i].err = analyzer.Value(ctx, source)
-			if analyzer.Metadata.Required && results[i].err != nil {
-				cancel(results[i].err)
-			}
 		}()
 	}
 	joined.Wait()
@@ -143,7 +147,7 @@ func analyze(ctx context.Context, source SourceRevision, analyzers []frame.Membe
 		}
 		return strings.Compare(a.Analyzer, b.Analyzer)
 	})
-	return diagnostics, failures, errors.Join(append(required, ctx.Err())...)
+	return diagnostics, failures, errors.Join(append(required, cancellation.Err(ctx))...)
 }
 
 func definitionExports(id frame.InstallationID, plugin *frame.Plugin) []frame.ExportRef {

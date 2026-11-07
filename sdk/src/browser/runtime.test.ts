@@ -15,6 +15,7 @@ import {
   PROTOCOL,
   type CloseProof,
   type ContractRef,
+  type Import,
   type LocalPlan,
   type PlanAdmission,
   type PlannedUnit,
@@ -24,7 +25,7 @@ import {
   type ReadyReport,
   type UseGrant,
 } from "../protocol.generated.js";
-import { Runtime } from "./runtime";
+import { Runtime, type RuntimeOptions } from "./runtime";
 import type { HostControl } from "./control";
 import { HTTPControl } from "./http";
 
@@ -193,6 +194,123 @@ function fixture(definitions: Record<string, Unit>, proofCapacity = 128) {
   }
   return { runtime, control, ready, grants, grant, publications, proofs };
 }
+
+it("captures runtime callbacks once with their original class receiver", async () => {
+  const dependency = new Service<{ read(): string }>({
+    ...files.ref,
+    mode: "portable",
+  });
+  const remoteValue = { read: () => "original proxy" };
+  let imported: unknown;
+  const definition = defineUnit({
+    id: "consumer",
+    imports: { dependency },
+    exports: {},
+    setup({ imports }) {
+      imported = imports.dependency;
+      return {};
+    },
+  });
+  const f = fixture({});
+  class Options implements RuntimeOptions {
+    readonly reads = {
+      authority: 0,
+      realm: 0,
+      control: 0,
+      capacity: 0,
+      load: 0,
+      remote: 0,
+    };
+    readonly loaded: string[] = [];
+    readonly resolved: string[] = [];
+    readonly #definition = definition;
+    readonly #remoteValue = remoteValue;
+
+    get authority() {
+      this.reads.authority++;
+      return authority;
+    }
+    get realm() {
+      this.reads.realm++;
+      return realm;
+    }
+    get control() {
+      this.reads.control++;
+      return f.control;
+    }
+    get proofCapacity() {
+      return ++this.reads.capacity === 1 ? 2 : 0;
+    }
+    get load() {
+      this.reads.load++;
+      return this.#load;
+    }
+    get remote() {
+      this.reads.remote++;
+      return this.#remote;
+    }
+    #load(entry: PlannedUnit) {
+      this.loaded.push(entry.module.path);
+      return this.#definition;
+    }
+    #remote(binding: Import) {
+      this.resolved.push(binding.slot);
+      return this.#remoteValue;
+    }
+  }
+  const options = new Options();
+  const runtime = new Runtime(options);
+  const replaced = vi.fn(() => {
+    throw new Error("replacement callback must not run");
+  });
+  Object.defineProperties(options, {
+    load: { value: replaced },
+    remote: { value: replaced },
+  });
+  try {
+    await runtime.prepare(
+      plan("original", [
+        unit(
+          "consumer",
+          "consumer",
+          [],
+          [
+            {
+              slot: "dependency",
+              kind: "remote",
+              contract: dependency.ref,
+              remote: {
+                token: "approved",
+                source: {
+                  installationId: "provider",
+                  release: digest,
+                  unitId: "provider",
+                  export: "dependency",
+                  contract: dependency.ref,
+                },
+              },
+            },
+          ],
+        ),
+      ]),
+    );
+    expect(imported).toBe(remoteValue);
+    expect(options.loaded).toEqual(["consumer"]);
+    expect(options.resolved).toEqual(["dependency"]);
+    expect(options.reads).toEqual({
+      authority: 1,
+      realm: 1,
+      control: 1,
+      capacity: 1,
+      load: 1,
+      remote: 1,
+    });
+    expect(replaced).not.toHaveBeenCalled();
+  } finally {
+    await runtime.close();
+    await f.runtime.close();
+  }
+});
 
 it("rejects a slower admission before it can replace an already owned instance", async () => {
   const definition = defineUnit({
@@ -367,12 +485,13 @@ it.each(["load", "remote"] as const)(
     const started = Promise.withResolvers<void>();
     const finish = Promise.withResolvers<void>();
     const released = vi.fn();
+    const setup = vi.fn(() => ({}));
     const dependency = new Service({ ...files.ref, mode: "portable" });
     const definition = defineUnit({
       id: "consumer",
       imports: { dependency },
       exports: {},
-      setup: vi.fn(() => ({})),
+      setup,
     });
     const { control } = fixture({});
     const prepareResource = async (owner: Lifetime) => {
@@ -435,7 +554,7 @@ it.each(["load", "remote"] as const)(
       await closing;
     }
     expect(released).toHaveBeenCalledOnce();
-    expect(definition.setup).not.toHaveBeenCalled();
+    expect(setup).not.toHaveBeenCalled();
     expect(control.prove).toHaveBeenCalledOnce();
   },
 );

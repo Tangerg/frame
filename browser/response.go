@@ -95,10 +95,7 @@ func (e *typeScriptEmitter) validateWireModel(source, model reflect.Type, value 
 	case reflect.Bool:
 		return "typeof " + value + " === \"boolean\"", nil
 	case reflect.Interface:
-		if framevalue.AllowsNull(source) {
-			return value + " !== undefined", nil
-		}
-		return value + " !== undefined && " + value + " !== null", nil
+		return value + " !== undefined", nil
 	case reflect.Slice, reflect.Array:
 		item, err := e.validateWireType(model.Elem(), "item")
 		if err != nil {

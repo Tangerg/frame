@@ -220,26 +220,26 @@ func TestTypeScriptProjectionRejectsInvalidModelsWithoutPublishing(t *testing.T)
 	}
 }
 
-type nonnullWireJSON struct{ raw jsontext.Value }
+type nullableWireJSON struct{ raw jsontext.Value }
 
-func (nonnullWireJSON) JSONSchemaModel() any           { return jsontext.Value{} }
-func (v nonnullWireJSON) MarshalJSON() ([]byte, error) { return v.raw, nil }
-func (v *nonnullWireJSON) UnmarshalJSON(raw []byte) error {
+func (nullableWireJSON) JSONSchemaModel() any           { return jsontext.Value{} }
+func (v nullableWireJSON) MarshalJSON() ([]byte, error) { return v.raw, nil }
+func (v *nullableWireJSON) UnmarshalJSON(raw []byte) error {
 	v.raw = append(v.raw[:0], raw...)
 	return nil
 }
 
 func TestTypeScriptProjectionPreservesTheCodecsNullPolicy(t *testing.T) {
 	var out strings.Builder
-	if err := WriteTypeScriptTypes(&out, reflect.TypeFor[nonnullWireJSON]()); err != nil {
+	if err := WriteTypeScriptTypes(&out, reflect.TypeFor[nullableWireJSON]()); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "export type nonnullWireJSON = {};") {
+	if !strings.Contains(out.String(), "export type nullableWireJSON = unknown;") {
 		t.Fatalf("opaque model changed its codec's null policy: %s", out.String())
 	}
-	var decoded nonnullWireJSON
-	if err := value.DecodeValue([]byte("null"), &decoded, "payload"); err == nil {
-		t.Fatal("non-opaque codec admitted null")
+	var decoded nullableWireJSON
+	if err := value.DecodeValue([]byte("null"), &decoded, "payload"); err != nil {
+		t.Fatalf("opaque codec rejected null: %v", err)
 	}
 	for _, raw := range []string{`"text"`, `42`, `[]`, `{}`} {
 		if err := value.DecodeValue([]byte(raw), &decoded, "payload"); err != nil {
@@ -250,24 +250,20 @@ func TestTypeScriptProjectionPreservesTheCodecsNullPolicy(t *testing.T) {
 
 func TestGeneratedTypeScriptConsumerPreservesCodecAndNullContracts(t *testing.T) {
 	var out strings.Builder
-	if err := WriteTypeScriptTypes(&out, reflect.TypeFor[nestedWireDTO](), reflect.TypeFor[modeledWireDTO](), reflect.TypeFor[nonnullWireJSON]()); err != nil {
+	if err := WriteTypeScriptTypes(&out, reflect.TypeFor[nestedWireDTO](), reflect.TypeFor[modeledWireDTO](), reflect.TypeFor[nullableWireJSON]()); err != nil {
 		t.Fatal(err)
 	}
-	checkTypeScriptConsumer(t, out.String(), `import type { nestedWireDTO, modeledWireDTO, nonnullWireJSON } from "./types.generated.js";
+	checkTypeScriptConsumer(t, out.String(), `import type { nestedWireDTO, modeledWireDTO, nullableWireJSON } from "./types.generated.js";
 const required: nestedWireDTO = {rows: [], content: "text", title: "title"};
 const modeled: modeledWireDTO = {code: "code", number: 9007199254740993n, payload: null};
-const opaqueValues: nonnullWireJSON[] = ["text", 42, [], {}];
+const opaqueValues: nullableWireJSON[] = ["text", 42, [], {}, null];
 // @ts-expect-error A required pointer cannot encode absence as null.
 const nullTitle: nestedWireDTO = {...required, title: null};
 // @ts-expect-error The codec's internal storage is not its JSON representation.
 const privateCode: modeledWireDTO = {...modeled, code: {privateValue: "code"}};
 // @ts-expect-error The numeric codec does not encode its private Go structure.
 const privateNumber: modeledWireDTO = {...modeled, number: {document: "1"}};
-// @ts-expect-error The model cannot broaden its original codec's null policy.
-const opaqueNull: nonnullWireJSON = null;
-// @ts-expect-error Undefined has no JSON value spelling.
-const opaqueUndefined: nonnullWireJSON = undefined;
-void [required, modeled, opaqueValues, nullTitle, privateCode, privateNumber, opaqueNull, opaqueUndefined];
+void [required, modeled, opaqueValues, nullTitle, privateCode, privateNumber];
 `)
 }
 

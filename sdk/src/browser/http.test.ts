@@ -5,7 +5,7 @@ import {
   type LocalPlan,
   type ReadyReport,
 } from "../protocol.generated.js";
-import { HTTPControl } from "./http";
+import { HTTPControl, type HTTPControlOptions } from "./http";
 import { readResponseBytes } from "./response";
 
 const ready: ReadyReport = {
@@ -37,27 +37,105 @@ function control(fetch: typeof globalThis.fetch, maximumMessageBytes = 4096) {
 }
 
 describe("authenticated control transport", () => {
-  it("invokes the native fetch with its owning global receiver", async () => {
-    const lifetime = new Lifetime("native browser transport");
-    const fetch = vi.fn(function (this: typeof globalThis) {
-      if (this !== globalThis) throw new TypeError("Illegal invocation");
-      return Promise.resolve(Response.json(emptyPoll));
-    });
-    vi.stubGlobal("fetch", fetch);
+  it("uses one validated options capture for requests, callback receiver and cleanup", async () => {
+    const original = new Lifetime("original transport owner");
+    const replacement = new Lifetime("later getter owner");
+    class Options implements HTTPControlOptions {
+      readonly reads = {
+        endpoint: 0,
+        credential: 0,
+        capacity: 0,
+        lifetime: 0,
+        fetch: 0,
+      };
+      readonly #requests: Parameters<typeof globalThis.fetch>[] = [];
+
+      get endpoint() {
+        return ++this.reads.endpoint === 1
+          ? "http://localhost/control"
+          : "http://invalid.example/control";
+      }
+      get credential() {
+        return ++this.reads.credential === 1
+          ? "captured-secret"
+          : "later-secret";
+      }
+      get maximumMessageBytes() {
+        return ++this.reads.capacity === 1 ? 4096 : 1;
+      }
+      get lifetime() {
+        return ++this.reads.lifetime === 1 ? original : replacement;
+      }
+      get fetch(): typeof globalThis.fetch {
+        this.reads.fetch++;
+        return this.#request;
+      }
+      get requests() {
+        return this.#requests;
+      }
+      #request(...args: Parameters<typeof globalThis.fetch>) {
+        this.#requests.push(args);
+        return Promise.resolve(Response.json(emptyPoll));
+      }
+    }
+    const options = new Options();
+    const transport = new HTTPControl(options);
+    const laterFetch = vi.fn<typeof globalThis.fetch>();
+    Object.defineProperty(options, "fetch", { value: laterFetch });
     try {
-      const transport = new HTTPControl({
-        endpoint: "http://localhost/control",
-        credential: "realm-secret",
-        maximumMessageBytes: 4096,
-        lifetime,
+      await expect(transport.poll()).resolves.toEqual(emptyPoll);
+      expect(options.requests).toHaveLength(1);
+      expect(options.requests[0]).toEqual([
+        "http://localhost/control",
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: "Bearer captured-secret",
+          }),
+          signal: original.signal,
+        }),
+      ]);
+      expect(options.reads).toEqual({
+        endpoint: 1,
+        credential: 1,
+        capacity: 1,
+        lifetime: 1,
+        fetch: 1,
       });
-      await transport.poll();
-      expect(fetch).toHaveBeenCalledOnce();
+      expect(laterFetch).not.toHaveBeenCalled();
+      await original.close();
+      await expect(transport.poll()).rejects.toMatchObject({ code: "closed" });
+      expect(replacement.signal.aborted).toBe(false);
     } finally {
-      await lifetime.close();
-      vi.unstubAllGlobals();
+      await original.close();
+      await replacement.close();
     }
   });
+
+  it.each([false, true])(
+    "invokes native fetch with its global receiver (explicit: %s)",
+    async (explicit) => {
+      const lifetime = new Lifetime("native browser transport");
+      const fetch = vi.fn(function (this: typeof globalThis) {
+        if (this !== globalThis) throw new TypeError("Illegal invocation");
+        return Promise.resolve(Response.json(emptyPoll));
+      });
+      vi.stubGlobal("fetch", fetch);
+      try {
+        const transport = new HTTPControl({
+          endpoint: "http://localhost/control",
+          credential: "realm-secret",
+          maximumMessageBytes: 4096,
+          lifetime,
+          ...(explicit ? { fetch: globalThis.fetch } : {}),
+        });
+        await transport.poll();
+        expect(fetch).toHaveBeenCalledOnce();
+      } finally {
+        await lifetime.close();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
 
   it("sends the explicit realm credential and envelope without cookies or redirects", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () =>

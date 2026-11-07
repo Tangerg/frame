@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync/atomic"
 
 	"github.com/Tangerg/frame/internal/cancellation"
 
@@ -65,15 +66,19 @@ func (p Tools) Prepare(setup *frame.Setup, metadata process.ExportMetadata, maxi
 }
 
 type toolsConnection struct {
-	maximum  int
-	pages    int
-	required map[string][]*toolMember
-	values   []frame.ExportValue
-	session  *sdk.ClientSession
+	maximum     int
+	pages       int
+	required    map[string][]*toolMember
+	values      []frame.ExportValue
+	session     *sdk.ClientSession
+	discovering atomic.Bool
 }
 
 func (c *toolsConnection) Connect(ctx context.Context, channel io.ReadWriteCloser) ([]frame.ExportValue, error) {
-	session, err := connect(ctx, channel, c.maximum, nil)
+	session, err := connect(ctx, channel, c.maximum, func(client *sdk.Client) error {
+		client.AddSendingMiddleware(c.admitCatalogRequests)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -88,14 +93,29 @@ func (c *toolsConnection) Connect(ctx context.Context, channel io.ReadWriteClose
 	return c.values, nil
 }
 
+const listToolsMethod = "tools/list"
+
+func (c *toolsConnection) admitCatalogRequests(next sdk.MethodHandler) sdk.MethodHandler {
+	return func(ctx context.Context, method string, request sdk.Request) (sdk.Result, error) {
+		// HTTP header refresh has no meaning on stdio and must not reopen the
+		// bounded discovery or replay a command after its binding was admitted.
+		if method == listToolsMethod && !c.discovering.Load() {
+			return nil, fmt.Errorf("%w: MCP catalog discovery is closed", frame.ErrClosed)
+		}
+		return next(ctx, method, request)
+	}
+}
+
 // Discovery can verify or refuse the frozen contract, never add a callable name.
 func (c *toolsConnection) discover(ctx context.Context) error {
+	c.discovering.Store(true)
+	defer c.discovering.Store(false)
 	found := make(map[string]bool, len(c.required))
 	cursor := ""
 	for range c.pages {
 		page, err := c.session.ListTools(ctx, &sdk.ListToolsParams{Cursor: cursor})
 		if err != nil {
-			return err
+			return errors.Join(err, cancellation.Err(ctx))
 		}
 		for _, tool := range page.Tools {
 			if tool == nil {

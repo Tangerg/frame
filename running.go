@@ -16,7 +16,7 @@ type RunningUnit struct {
 
 type startClaim struct {
 	id       string
-	instance *Instance
+	instance *unitInstance
 	once     sync.Once
 	retired  <-chan struct{}
 }
@@ -79,7 +79,7 @@ func (u *Use) start(ctx context.Context, root UnitRef) (*RunningUnit, error) {
 	return instance.claimStartLocked(u.scope)
 }
 
-func (i *Instance) validateStartLocked(grant ScopeGrant) error {
+func (i *unitInstance) validateStartLocked(grant ScopeGrant) error {
 	if i.retiring {
 		return ErrStaleBinding
 	}
@@ -89,7 +89,7 @@ func (i *Instance) validateStartLocked(grant ScopeGrant) error {
 	return nil
 }
 
-func (i *Instance) claimStartLocked(grant ScopeGrant) (*RunningUnit, error) {
+func (i *unitInstance) claimStartLocked(grant ScopeGrant) (*RunningUnit, error) {
 	if err := i.validateStartLocked(grant); err != nil {
 		return nil, err
 	}
@@ -97,7 +97,7 @@ func (i *Instance) claimStartLocked(grant ScopeGrant) (*RunningUnit, error) {
 	return &RunningUnit{claim: &startClaim{id: i.id, instance: i}}, nil
 }
 
-func (i *Instance) releaseStart() <-chan struct{} {
+func (i *unitInstance) releaseStart() <-chan struct{} {
 	h := i.host
 	h.mu.Lock()
 	i.starts--

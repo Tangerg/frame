@@ -104,11 +104,13 @@ export function defineProcessUnit<
     if (!validToken(name) || !(contract instanceof Capability))
       throw new TypeError("invalid export declaration");
   }
+  const capturedSetup: ProcessUnit<I, E>["setup"] = (context) =>
+    Reflect.apply(setup, unit, [context]);
   return Object.freeze({
     id,
     imports: Object.freeze(imports) as I,
     exports,
-    setup,
+    setup: capturedSetup,
   });
 }
 
@@ -258,20 +260,29 @@ class Instance<I extends Imports, E extends Exports> {
             async (input: unknown, options: RequestOptions = {}) => {
               this.#expect("active");
               const commandID = options.commandID;
+              const wait = options.signal;
+              const onChunk = options.onChunk;
               const captured = method.admitInvocation(input, commandID);
-              const signal = options.signal
-                ? AbortSignal.any([this.lifetime.signal, options.signal])
-                : this.lifetime.signal;
-              if (Boolean(method.admitChunk) !== Boolean(options.onChunk))
+              const signal =
+                wait === undefined
+                  ? this.lifetime.signal
+                  : AbortSignal.any([this.lifetime.signal, wait]);
+              if (
+                method.admitChunk
+                  ? typeof onChunk !== "function"
+                  : onChunk !== undefined
+              )
                 throw new TypeError(
                   "stream receiver differs from the declared method",
                 );
-              const stream = options.onChunk ? randomUUID() : undefined;
+              const stream = onChunk ? randomUUID() : undefined;
               const call = stream ? new StreamCall(signal) : undefined;
-              if (stream && call) {
+              if (stream && call && onChunk) {
                 this.#streams.set(stream, (chunk, wait) =>
                   call.deliver(wait, async () => {
-                    await options.onChunk!(method.admitChunk!(chunk));
+                    await Reflect.apply(onChunk, options, [
+                      method.admitChunk!(chunk),
+                    ]);
                   }),
                 );
               }

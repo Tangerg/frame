@@ -79,13 +79,13 @@ func (d *managedDelivery) receive(wait context.Context, sequence uint64, chunk v
 		close(d.pending)
 		d.pending = nil
 	}()
-	if err := context.Cause(d.call); err != nil {
+	if err := cancellation.Err(d.call); err != nil {
 		return err
 	}
 	if wait == nil {
 		return frame.ErrInvalid
 	}
-	if err := context.Cause(wait); err != nil {
+	if err := cancellation.Err(wait); err != nil {
 		return err
 	}
 	if maxBytes == 0 || sequence == 0 || sequence != previous+1 {
@@ -98,7 +98,7 @@ func (d *managedDelivery) receive(wait context.Context, sequence uint64, chunk v
 		return err
 	}
 	ctx, cancel := context.WithCancelCause(d.call)
-	stop := context.AfterFunc(wait, func() { cancel(context.Cause(wait)) })
+	stop := context.AfterFunc(wait, func() { cancel(cancellation.Err(wait)) })
 	defer stop()
 	defer cancel(nil)
 	err = d.emit(ctx, chunk)
@@ -135,13 +135,10 @@ func (s *ManagedService) stream(ctx context.Context, method *portable.Method, pa
 	delivery.mu.Lock()
 	delivery.maxBytes = grant.MaxResponseBytes
 	delivery.mu.Unlock()
-	if err := context.Cause(call); err != nil {
+	if err := cancellation.Err(call); err != nil {
 		return nil, err
 	}
 	raw, err = managedRaw(call, s.session, managedInvoke, params)
-	if err != nil {
-		err = errors.Join(err, context.Cause(call))
-	}
 	return raw, managedDispatchError(delivery.finish(raw, err))
 }
 

@@ -93,8 +93,8 @@ type Host struct {
 	installations map[InstallationID]*installed
 	// instances indexes the current instance per unit and realm; allInstances
 	// retains every instance until its retirement has been confirmed.
-	instances      map[instanceKey]*Instance
-	allInstances   map[string]*Instance
+	instances      map[instanceKey]*unitInstance
+	allInstances   map[string]*unitInstance
 	nextGeneration uint64
 	catalog        catalog
 	uses           map[string]*Use
@@ -126,6 +126,9 @@ func NewHost(ctx context.Context, config HostConfig) (_ *Host, err error) {
 			}
 		}()
 	}
+	if config.Lifetime.authority != nil {
+		return nil, fmt.Errorf("%w: host lifetime belongs to another authority", ErrInvalid)
+	}
 	if config.Lifetime.isClosing() {
 		return nil, ErrClosed
 	}
@@ -141,8 +144,8 @@ func NewHost(ctx context.Context, config HostConfig) (_ *Host, err error) {
 		drivers:             make(map[Profile]registeredDriver),
 		contracts:           newContractRegistry(),
 		installations:       make(map[InstallationID]*installed),
-		instances:           make(map[instanceKey]*Instance),
-		allInstances:        make(map[string]*Instance),
+		instances:           make(map[instanceKey]*unitInstance),
+		allInstances:        make(map[string]*unitInstance),
 		catalog:             newCatalog(limits.MaxPublications),
 		uses:                make(map[string]*Use),
 		routes:              make(map[string]*eventRoute),
@@ -156,6 +159,12 @@ func NewHost(ctx context.Context, config HostConfig) (_ *Host, err error) {
 		return nil, err
 	}
 	return h, nil
+}
+
+func (h *Host) newLifetime(ctx context.Context) *Lifetime {
+	lifetime := NewLifetime(ctx)
+	lifetime.authority = h.identity
+	return lifetime
 }
 
 func (h *Host) Admission() *Admission { return h.admission }
@@ -209,7 +218,7 @@ func (h *Host) realmLocked(unit UnitDeclaration, realm RealmID) (RealmID, error)
 
 // retireInstanceLocked is the only transition that withdraws an instance from
 // new work. The caller starts its retirement after releasing Host.mu.
-func (h *Host) retireInstanceLocked(i *Instance) {
+func (h *Host) retireInstanceLocked(i *unitInstance) {
 	i.retiring = true
 	i.withdrawLocked()
 	if h.instances[i.key()] == i {

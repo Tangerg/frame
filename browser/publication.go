@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 
 	"github.com/Tangerg/frame"
@@ -50,6 +51,9 @@ func (b *Bridge) Publish(ctx context.Context, token string, request PublicationR
 		}
 		return b.awaitPublication(ctx, operation)
 	}
+	// A metadata decoder may panic or exit this goroutine before producing a
+	// result. Only a completed publication can replace this failure.
+	returned = fmt.Errorf("%w: publication interrupted", frame.ErrUnavailable)
 	defer func() { returned = b.finish(ctx, request.OperationID, operation, returned) }()
 	if err := b.reserveReceipt(ctx, request.OperationID, operation); err != nil {
 		return PublicationResult{}, err

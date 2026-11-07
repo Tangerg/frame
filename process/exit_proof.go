@@ -12,10 +12,11 @@ import (
 )
 
 const (
-	runnerWaitProofKind    = "runner-wait"
-	undispatchedProofKind  = "not-dispatched"
-	sealedAbsenceProofKind = "sealed-not-started"
-	undispatchedEvidence   = `{"dispatched":false}`
+	runnerWaitProofKind       = "runner-wait"
+	runnerNotCreatedProofKind = "runner-not-created"
+	undispatchedProofKind     = "not-dispatched"
+	sealedAbsenceProofKind    = "sealed-not-started"
+	undispatchedEvidence      = `{"dispatched":false}`
 )
 
 func undispatchedProof(attempt sqlite.Attempt) sqlite.ExitProof {
@@ -26,7 +27,14 @@ func undispatchedProof(attempt sqlite.Attempt) sqlite.ExitProof {
 // retains only the immutable identity that the runner itself acknowledges.
 func runnerExitProof(attempt sqlite.Attempt, receipt runner.ExitReceipt) (sqlite.ExitProof, error) {
 	evidence, err := json.Marshal(receipt)
-	return sqlite.ExitProof{AttemptID: attempt.ID, Realm: attempt.Realm, ExitID: receipt.ProofID, Kind: runnerWaitProofKind, Evidence: evidence}, err
+	return sqlite.ExitProof{AttemptID: attempt.ID, Realm: attempt.Realm, ExitID: receipt.ProofID, Kind: runnerProofKind(receipt.State), Evidence: evidence}, err
+}
+
+func runnerProofKind(state runner.State) string {
+	if state == runner.NotCreated {
+		return runnerNotCreatedProofKind
+	}
+	return runnerWaitProofKind
 }
 
 func absenceExitProof(attempt sqlite.Attempt, proof runner.AbsenceProof) (sqlite.ExitProof, error) {
@@ -39,7 +47,7 @@ func (d *Driver) checkExitCapacity(attempt sqlite.Attempt) error {
 		return err
 	}
 	// HTML-sensitive bytes maximize the stored proof identity's JSON expansion.
-	receipt := runner.ExitReceipt{AttemptID: attempt.ID, Epoch: attempt.Epoch, RunnerID: attempt.Realm, ProofID: strings.Repeat("<", frame.MaxNameBytes)}
+	receipt := runner.ExitReceipt{AttemptID: attempt.ID, Epoch: attempt.Epoch, RunnerID: attempt.Realm, ProofID: strings.Repeat("<", frame.MaxNameBytes), State: runner.NotCreated}
 	exit, err := runnerExitProof(attempt, receipt)
 	if err != nil {
 		return err

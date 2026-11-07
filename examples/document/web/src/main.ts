@@ -169,11 +169,11 @@ function preview(task: TaskView): Promise<void> {
 
 async function closeSnapshotAfterFailure(
   channel: HTTPControl,
-  snapshotId: string,
+  snapshots: PreviewSnapshots,
   failure: unknown,
 ): Promise<never> {
   try {
-    await channel.closeSnapshot(snapshotId);
+    await snapshots.close(channel);
   } catch (cleanup) {
     throw new AggregateError(
       [failure, cleanup],
@@ -186,10 +186,12 @@ async function closeSnapshotAfterFailure(
 async function acquirePreview(
   owner: Runtime,
   channel: HTTPControl,
+  snapshots: PreviewSnapshots,
   request: AcquireRequest,
 ): Promise<Use> {
   try {
     const use = await owner.acquire(request);
+    snapshots.consumed(request.snapshotId);
     pendingAdmission = undefined;
     return use;
   } catch (error) {
@@ -199,7 +201,7 @@ async function acquirePreview(
       throw error;
     }
     pendingAdmission = undefined;
-    return closeSnapshotAfterFailure(channel, request.snapshotId, error);
+    return closeSnapshotAfterFailure(channel, snapshots, error);
   }
 }
 
@@ -216,9 +218,17 @@ async function recoverPreview(
   owner: Runtime,
   channel: HTTPControl,
 ): Promise<void> {
-  if (!pendingAdmission) return;
-  mounted = await acquirePreview(owner, channel, pendingAdmission);
-  await closeMounted(owner);
+  if (!previewSnapshots) return;
+  if (pendingAdmission) {
+    mounted = await acquirePreview(
+      owner,
+      channel,
+      previewSnapshots,
+      pendingAdmission,
+    );
+    await closeMounted(owner);
+  }
+  await previewSnapshots.close(channel);
 }
 
 async function mountPreview(task: TaskView): Promise<void> {
@@ -265,9 +275,9 @@ async function mountPreview(task: TaskView): Promise<void> {
       },
     );
   } catch (error) {
-    return closeSnapshotAfterFailure(channel, snapshot.id, error);
+    return closeSnapshotAfterFailure(channel, previewSnapshots, error);
   }
-  const use = await acquirePreview(owner, channel, {
+  const use = await acquirePreview(owner, channel, previewSnapshots, {
     operationId: crypto.randomUUID(),
     snapshotId: snapshot.id,
     execution,

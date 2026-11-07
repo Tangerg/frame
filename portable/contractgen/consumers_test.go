@@ -61,6 +61,8 @@ func TestGeneratedGoConsumersPreserveAllAdmittedValues(t *testing.T) {
 		{"mixed", `{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}`, `{"id":"id-1","memo":9007199254740993}`},
 		{"nested", `{"type":"object","properties":{"number":{"type":"number"},"body":{"type":"object"},"at":{"type":"string","format":"date-time"}},"required":["number","body","at"],"additionalProperties":false}`, `{"number":2.50,"body":{"memo":"kept"},"at":"2025-01-01T00:00:00.12345678901Z"}`},
 		{"nullable", `{"type":["number","null"]}`, `1e400`},
+		{"nullableNull", `{"type":["number","null"]}`, `null`},
+		{"nullableString", `{"type":["string","null"]}`, `"kept"`},
 		{"union", `{"oneOf":[{"type":"number"},{"type":"string"}]}`, `"kept"`},
 		{"nullableField", `{"type":"object","properties":{"value":{"type":["number","null"]}},"additionalProperties":false}`, `{"value":null}`},
 		{"nullableReferenceField", `{"type":"object","properties":{"value":{"$ref":"#/$defs/Nullable"}},"additionalProperties":false,"$defs":{"Nullable":{"type":["number","null"]}}}`, `{"value":null}`},
@@ -76,7 +78,7 @@ func TestGeneratedGoConsumersPreserveAllAdmittedValues(t *testing.T) {
 	var consumer strings.Builder
 	consumer.WriteString("package consumer\nimport(\"testing\"; json \"encoding/json/v2\"; \"github.com/Tangerg/frame/value\")\nfunc TestRoundTrip(t *testing.T){\n")
 	for _, sample := range samples {
-		fmt.Fprintf(&consumer, "{ var decoded %sOutput; wire:=[]byte(%q); if err:=json.Unmarshal(wire,&decoded);err!=nil{t.Fatal(err)}; got,err:=json.Marshal(decoded);if err!=nil{t.Fatal(err)}; before,err:=value.ParseJSON(wire);if err!=nil{t.Fatal(err)};after,err:=value.ParseJSON(got);if err!=nil{t.Fatal(err)};if before!=after{t.Fatalf(\"roundtrip changed %%s into %%s\",wire,got)} }\n", goFeatureIdentifier(sample.name), sample.wire)
+		fmt.Fprintf(&consumer, "{ var decoded %sOutput; wire:=[]byte(%q); if err:=value.DecodeValue(wire,&decoded,\"output\");err!=nil{t.Fatal(err)}; got,err:=json.Marshal(decoded);if err!=nil{t.Fatal(err)}; before,err:=value.ParseJSON(wire);if err!=nil{t.Fatal(err)};after,err:=value.ParseJSON(got);if err!=nil{t.Fatal(err)};if before!=after{t.Fatalf(\"roundtrip changed %%s into %%s\",wire,got)} }\n", goFeatureIdentifier(sample.name), sample.wire)
 	}
 	consumer.WriteString("}\n")
 	test := filepath.Join(directory, "consumer_test.go")

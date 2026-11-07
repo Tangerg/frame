@@ -271,9 +271,6 @@ func (e *typeScriptEmitter) writeDeclaration(name string, declaration typeScript
 		if err != nil {
 			return err
 		}
-		if t.Kind() == reflect.Interface && !framevalue.AllowsNull(declaration.source) {
-			spelling = "{}"
-		}
 		fmt.Fprintf(e, "export type %s = %s;\n\n", name, spelling)
 		return nil
 	}

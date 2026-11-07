@@ -80,7 +80,7 @@ func (h *Host) acceptedBinding(recordID string, grant ScopeGrant) activationBind
 
 func (h *Host) activate(ctx context.Context, realm RealmID, grant ScopeGrant, bind activationBinding) (BindingSnapshot, error) {
 	var binding BindingSnapshot
-	var selected, created []*Instance
+	var selected, created []*unitInstance
 	err := h.admission.Admit(ctx, func(admitted context.Context) error {
 		if grant.issued() {
 			if err := h.admission.ValidateScope(grant); err != nil {
@@ -98,7 +98,7 @@ func (h *Host) activate(ctx context.Context, realm RealmID, grant ScopeGrant, bi
 		if h.lifetime.isClosing() {
 			return ErrClosed
 		}
-		planned := make(map[UnitRef]*Instance, len(binding.Units))
+		planned := make(map[UnitRef]*unitInstance, len(binding.Units))
 		for _, bound := range binding.Units {
 			instance, isNew, err := h.planInstanceLocked(binding, bound, realm, reads, planned, grant)
 			if err != nil {
@@ -122,7 +122,7 @@ func (h *Host) activate(ctx context.Context, realm RealmID, grant ScopeGrant, bi
 	return binding.Clone(), h.awaitReady(ctx, selected)
 }
 
-func (h *Host) abandon(created []*Instance, cause error) {
+func (h *Host) abandon(created []*unitInstance, cause error) {
 	h.mu.Lock()
 	for _, instance := range created {
 		instance.preparationErr = cause
@@ -135,7 +135,7 @@ func (h *Host) abandon(created []*Instance, cause error) {
 	}
 }
 
-func (h *Host) planInstanceLocked(binding BindingSnapshot, bound UnitBinding, realm RealmID, reads []bindingRead, planned map[UnitRef]*Instance, grant ScopeGrant) (*Instance, bool, error) {
+func (h *Host) planInstanceLocked(binding BindingSnapshot, bound UnitBinding, realm RealmID, reads []bindingRead, planned map[UnitRef]*unitInstance, grant ScopeGrant) (*unitInstance, bool, error) {
 	unit, installation, err := h.unitLocked(bound.Source)
 	if err != nil {
 		return nil, false, err
@@ -165,7 +165,7 @@ func (h *Host) planInstanceLocked(binding BindingSnapshot, bound UnitBinding, re
 		return nil, false, fmt.Errorf("%w: original unit is still retiring", ErrInUse)
 	}
 	h.nextGeneration++
-	instance := &Instance{
+	instance := &unitInstance{
 		host:                  h,
 		id:                    rand.Text(),
 		generation:            h.nextGeneration,
@@ -178,7 +178,7 @@ func (h *Host) planInstanceLocked(binding BindingSnapshot, bound UnitBinding, re
 		identity:              identity,
 		configuration:         bytes.Clone(installation.record.Configuration),
 		setup:                 unit.Setup,
-		lifetime:              NewLifetime(context.WithoutCancel(h.lifetime.Context())),
+		lifetime:              h.newLifetime(context.WithoutCancel(h.lifetime.Context())),
 		setupExports:          make(map[string]*publication),
 		publicationOperations: make(map[string]*publicationOperation),
 		prepared:              make(chan struct{}),
@@ -234,7 +234,7 @@ func setupBinding(graph BindingSnapshot, exports []ExportRef, unit UnitRef) (Bin
 
 // registerInstanceLocked makes instance a Host resource that retires after its
 // consumers, and retires it when a provider, its start grant or itself ends.
-func (h *Host) registerInstanceLocked(instance *Instance, providers []*ResourceHandle) error {
+func (h *Host) registerInstanceLocked(instance *unitInstance, providers []*ResourceHandle) error {
 	causes := instance.lifetime.ObserveCloseCauses()
 	resource, err := h.lifetime.Own(Resource{
 		Name:   instanceResourceName(instance.id),
@@ -267,7 +267,7 @@ func (h *Host) registerInstanceLocked(instance *Instance, providers []*ResourceH
 	return nil
 }
 
-func (h *Host) awaitReady(ctx context.Context, selected []*Instance) error {
+func (h *Host) awaitReady(ctx context.Context, selected []*unitInstance) error {
 	for _, instance := range selected {
 		select {
 		case <-instance.prepared:
@@ -290,7 +290,7 @@ func (h *Host) awaitReady(ctx context.Context, selected []*Instance) error {
 // Retire withdraws every current instance of an installation. Instances keep
 // their resources until their consumers have drained.
 func (h *Host) Retire(ctx context.Context, id InstallationID) error {
-	var retired []*Instance
+	var retired []*unitInstance
 	err := h.admission.Admit(ctx, func(context.Context) error {
 		h.mu.Lock()
 		defer h.mu.Unlock()
@@ -311,7 +311,7 @@ func (h *Host) Retire(ctx context.Context, id InstallationID) error {
 }
 
 func (h *Host) RetireInstance(ctx context.Context, id string) error {
-	var instance *Instance
+	var instance *unitInstance
 	err := h.admission.Maintenance(ctx, func() error {
 		h.mu.Lock()
 		defer h.mu.Unlock()
@@ -343,7 +343,7 @@ func (h *Host) WaitInstanceRetired(ctx context.Context, id string) error {
 
 func (h *Host) WaitRetired(ctx context.Context, id InstallationID) error {
 	h.mu.Lock()
-	var instances []*Instance
+	var instances []*unitInstance
 	for _, instance := range h.allInstances {
 		if instance.binding.Source.InstallationID == id {
 			instances = append(instances, instance)
@@ -358,7 +358,7 @@ func (h *Host) WaitRetired(ctx context.Context, id InstallationID) error {
 	return nil
 }
 
-func awaitClosed(ctx context.Context, instance *Instance) error {
+func awaitClosed(ctx context.Context, instance *unitInstance) error {
 	select {
 	case <-instance.closed:
 		return nil

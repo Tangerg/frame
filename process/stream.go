@@ -72,17 +72,17 @@ func (s *streamCall) deliver(wait context.Context, emit func(context.Context) er
 		close(s.pending)
 		s.pending = nil
 	}()
-	if err := context.Cause(s.ctx); err != nil {
+	if err := cancellation.Err(s.ctx); err != nil {
 		return err
 	}
 	if wait == nil {
 		return errors.New("process: chunk wait context is required")
 	}
-	if err := context.Cause(wait); err != nil {
+	if err := cancellation.Err(wait); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithCancelCause(s.ctx)
-	stop := context.AfterFunc(wait, func() { cancel(context.Cause(wait)) })
+	stop := context.AfterFunc(wait, func() { cancel(cancellation.Err(wait)) })
 	defer stop()
 	defer cancel(nil)
 	err = emit(ctx)

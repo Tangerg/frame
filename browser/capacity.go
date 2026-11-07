@@ -78,6 +78,11 @@ func (b *Bridge) checkPublicationCapacity(plan LocalPlan, request PublicationReq
 	return b.checkExitCapacity(plan, PublicationScope, identity, []string{plan.Execution.ID})
 }
 
+func (b *Bridge) checkRouteCapacity(grant UseGrant, source, receiver LocalExport) error {
+	route := RouteGrant{ID: maximumEncodedName(), Use: grant, Source: source, Receiver: receiver}
+	return b.checkRequest(validateRouteMethod, route)
+}
+
 // A complete pending projection must remain transportable even when every
 // admitted execution changes from a plan to a fence before the next poll.
 // Reservations also cover the complete reconnect request and its response.

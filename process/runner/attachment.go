@@ -63,7 +63,7 @@ func (a *attachment) closeUnconnected() {
 func (s *Server) serveAttachmentControl(ctx context.Context, connection net.Conn, reader io.Reader, ref AttemptRef, release func()) {
 	attached, err := s.attach(ref, connection)
 	if err != nil {
-		_ = s.writeResponse(connection, nil, err)
+		_ = s.writeAcknowledgment(connection, err)
 		return
 	}
 	defer func() {
@@ -72,7 +72,7 @@ func (s *Server) serveAttachmentControl(ctx context.Context, connection net.Conn
 	}()
 	stop := context.AfterFunc(ctx, func() { _ = attached.Close() })
 	defer stop()
-	if err := s.writeResponse(connection, nil, nil); err != nil {
+	if err := s.writeAcknowledgment(connection, nil); err != nil {
 		return
 	}
 	if err := connection.SetDeadline(time.Time{}); err != nil {
@@ -88,13 +88,13 @@ func (s *Server) serveAttachmentControl(ctx context.Context, connection net.Conn
 func (s *Server) serveAttachmentStream(ctx context.Context, connection net.Conn, reader io.Reader, ref AttemptRef, release func()) {
 	attached, err := s.attachStream(ref, connection)
 	if err != nil {
-		_ = s.writeResponse(connection, nil, err)
+		_ = s.writeAcknowledgment(connection, err)
 		return
 	}
 	defer attached.Close()
 	stop := context.AfterFunc(ctx, func() { _ = attached.Close() })
 	defer stop()
-	if err := s.writeResponse(connection, nil, nil); err != nil {
+	if err := s.writeAcknowledgment(connection, nil); err != nil {
 		return
 	}
 	if err := connection.SetDeadline(time.Time{}); err != nil {

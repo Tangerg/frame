@@ -9,21 +9,38 @@ import (
 
 // EventRoute is an opaque authorization to communicate between two exact
 // objects in already admitted Uses. It contains no handler or native payload.
-type EventRoute struct {
+type EventRoute struct{ identity *eventRouteIdentity }
+
+type eventRouteIdentity struct {
 	id        string
 	authority *authorityIdentity
 	source    ExportRef
 	receiver  ExportRef
 }
 
-func (r *EventRoute) ID() string          { return r.id }
-func (r *EventRoute) Source() ExportRef   { return r.source }
-func (r *EventRoute) Receiver() ExportRef { return r.receiver }
+func (r *EventRoute) ID() string {
+	if r == nil || r.identity == nil {
+		return ""
+	}
+	return r.identity.id
+}
+func (r *EventRoute) Source() ExportRef {
+	if r == nil || r.identity == nil {
+		return ExportRef{}
+	}
+	return r.identity.source
+}
+func (r *EventRoute) Receiver() ExportRef {
+	if r == nil || r.identity == nil {
+		return ExportRef{}
+	}
+	return r.identity.receiver
+}
 
 // eventRoute is live while the Host indexes it. It is a resource of both Uses,
 // so closing either one ends the route.
 type eventRoute struct {
-	token            *EventRoute
+	identity         *eventRouteIdentity
 	source           *Use
 	receiver         *Use
 	sourceResource   *ResourceHandle
@@ -48,7 +65,7 @@ func (h *Host) NewEventRoute(ctx context.Context, sourceUse, receiverUse *Use, s
 	if source.Contract.Kind != EventKind || source.Contract != receiver.Contract {
 		return nil, ErrContractMismatch
 	}
-	route := &eventRoute{token: &EventRoute{id: rand.Text(), authority: h.identity, source: source, receiver: receiver}, source: sourceUse, receiver: receiverUse}
+	route := &eventRoute{identity: &eventRouteIdentity{id: rand.Text(), authority: h.identity, source: source, receiver: receiver}, source: sourceUse, receiver: receiverUse}
 	err := h.admission.Admit(ctx, func(context.Context) error {
 		h.mu.Lock()
 		defer h.mu.Unlock()
@@ -60,17 +77,17 @@ func (h *Host) NewEventRoute(ctx context.Context, sourceUse, receiverUse *Use, s
 	if err != nil {
 		return nil, err
 	}
-	return route.token, nil
+	return &EventRoute{identity: route.identity}, nil
 }
 
 func (h *Host) admitRouteLocked(route *eventRoute) error {
 	if err := h.validateRouteUsesLocked(route); err != nil {
 		return err
 	}
-	if !route.source.exports(route.token.source) || !route.receiver.exports(route.token.receiver) {
+	if !route.source.exports(route.identity.source) || !route.receiver.exports(route.identity.receiver) {
 		return ErrContractMismatch
 	}
-	if route.source.realm != route.receiver.realm && route.token.source.Contract.Mode == NativeMode {
+	if route.source.realm != route.receiver.realm && route.identity.source.Contract.Mode == NativeMode {
 		return ErrContractMismatch
 	}
 	if len(h.routes) >= h.limits.MaxEventRoutes {
@@ -80,7 +97,7 @@ func (h *Host) admitRouteLocked(route *eventRoute) error {
 }
 
 func (h *Host) ownRouteLocked(route *eventRoute) error {
-	resource := Resource{Name: eventRoutePrefix + route.token.id, Close: func(context.Context) (ReleaseState, error) {
+	resource := Resource{Name: eventRoutePrefix + route.identity.id, Close: func(context.Context) (ReleaseState, error) {
 		h.releaseEventRoute(route)
 		return ResourceReleased, nil
 	}}
@@ -97,14 +114,14 @@ func (h *Host) ownRouteLocked(route *eventRoute) error {
 		}
 		route.receiverResource = receiverResource
 	}
-	h.routes[route.token.id] = route
+	h.routes[route.identity.id] = route
 	return nil
 }
 
 func (h *Host) releaseEventRoute(route *eventRoute) {
 	h.mu.Lock()
-	if h.routes[route.token.id] == route {
-		delete(h.routes, route.token.id)
+	if h.routes[route.identity.id] == route {
+		delete(h.routes, route.identity.id)
 	}
 	h.mu.Unlock()
 	for _, resource := range []*ResourceHandle{route.sourceResource, route.receiverResource} {
@@ -125,11 +142,11 @@ func (h *Host) validateRouteUsesLocked(route *eventRoute) error {
 }
 
 func (h *Host) liveRouteLocked(token *EventRoute) (*eventRoute, error) {
-	if token == nil || token.authority != h.identity {
+	if token == nil || token.identity == nil || token.identity.authority != h.identity {
 		return nil, ErrInvalid
 	}
-	route := h.routes[token.id]
-	if route == nil || route.token != token {
+	route := h.routes[token.identity.id]
+	if route == nil || route.identity != token.identity {
 		return nil, ErrClosed
 	}
 	return route, h.validateRouteUsesLocked(route)
@@ -148,7 +165,7 @@ func (h *Host) ValidateEventRoute(ctx context.Context, route *EventRoute) error 
 // DeliverEvent registers delivery in both owners before calling application
 // code. A callback may reenter Host; no Host or admission lock crosses it.
 func DeliverEvent[T any](ctx context.Context, host *Host, route *EventRoute, event Event[T], payload T, receive func(context.Context, T) error) error {
-	if host == nil || route == nil || event.value == nil || receive == nil || route.source.Contract != event.Ref() {
+	if host == nil || route == nil || event.value == nil || receive == nil || route.Source().Contract != event.Ref() {
 		return ErrContractMismatch
 	}
 	sourceWork, receiverWork, err := host.enterRoute(ctx, route, event.value)

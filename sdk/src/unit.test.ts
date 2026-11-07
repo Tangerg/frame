@@ -1,6 +1,50 @@
 import { expect, it } from "vitest";
 import { Service } from "./contracts.js";
+import { Lifetime } from "./lifetime.js";
 import { defineUnit, type Setup } from "./unit.js";
+
+it("captures setup once and keeps the class instance that owns its private state", async () => {
+  const answer = new Service<number>({
+    name: "example.answer",
+    version: "1",
+    digest: "a".repeat(64),
+    mode: "native",
+    kind: "service",
+  });
+  class Definition {
+    readonly id = "stateful";
+    readonly imports = {};
+    readonly exports = { answer };
+    readonly #answer = 40;
+    setupReads = 0;
+
+    get setup() {
+      this.setupReads++;
+      return this.#setup;
+    }
+
+    #setup({ configuration }: Setup<Record<string, never>>) {
+      return { answer: this.#answer + Number(configuration) };
+    }
+  }
+  const source = new Definition();
+  const unit = defineUnit(source);
+  Object.defineProperty(source, "setup", {
+    value: () => {
+      throw new Error("replacement setup must not run");
+    },
+  });
+  const lifetime = new Lifetime("captured setup");
+  try {
+    const setup = unit.setup;
+    expect(await setup({ imports: {}, configuration: 2, lifetime })).toEqual({
+      answer: 42,
+    });
+    expect(source.setupReads).toBe(1);
+  } finally {
+    await lifetime.close();
+  }
+});
 
 it("retains each declaration field and slot from its validated capture", () => {
   const service = new Service<number>({
@@ -40,7 +84,7 @@ it("retains each declaration field and slot from its validated capture", () => {
     id: "captured",
     imports: sourceImports,
     exports: sourceExports,
-    setup,
+    setup: expect.any(Function),
   });
   expect({ idReads, importsReads, exportsReads, setupReads }).toEqual({
     idReads: 1,

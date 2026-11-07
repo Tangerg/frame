@@ -140,8 +140,8 @@ func TestControlLaunchPreservesExactEnvironmentWithoutSocketTransport(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			response, err := decodeResponse(raw)
-			if err != nil || response.Observation == nil || response.Observation.Reference() != request.AttemptRef {
+			response, err := decodeResponse(raw, methodLaunch)
+			if err != nil || response == nil || response.(Observation).Reference() != request.AttemptRef {
 				t.Fatalf("control launch changed the original attempt: %+v, %v", response, err)
 			}
 			<-served

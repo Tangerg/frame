@@ -7,8 +7,6 @@ import (
 	"github.com/Tangerg/frame/value"
 )
 
-// AcquirePlan admits a fresh declaration selection. Its preparation reads stay
-// attached until the original Host approves the actual execution.
 // acquirePlanRequest is the canonical identity of an AcquirePlan operation.
 type acquirePlanRequest struct {
 	Binding string

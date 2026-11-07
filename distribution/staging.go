@@ -36,22 +36,12 @@ func (s *staging) discard() error {
 	return errors.Join(s.root.Close(), s.store.removePrivate(s.name, s.identity))
 }
 
-func (s *staging) admitPath(name string, kind entryKind) error {
-	if err := s.paths.admit(name, kind); err != nil {
-		return err
+func (s *staging) writeFile(ctx context.Context, name string, mode fs.FileMode, reader io.Reader) error {
+	if !s.paths.ownsFile(name) {
+		return fmt.Errorf("%w: file path has not been admitted", ErrInvalid)
 	}
-	if len(s.paths) > s.limits.Entries {
-		return ErrCapacity
-	}
-	return nil
-}
-
-func (s *staging) write(ctx context.Context, name string, mode fs.FileMode, reader io.Reader) error {
 	if mode.Type() != 0 || mode&specialFileModes != 0 {
 		return ErrInvalid
-	}
-	if err := s.admitPath(name, fileEntry); err != nil {
-		return err
 	}
 	if err := s.root.MkdirAll(path.Dir(name), privateDirectoryMode); err != nil {
 		return err
@@ -94,7 +84,7 @@ func (s *staging) copyRegular(ctx context.Context, input *os.Root, name string, 
 	if !os.SameFile(info, opened) || !opened.Mode().IsRegular() {
 		return errors.Join(ErrIntegrity, file.Close())
 	}
-	copyErr := s.write(ctx, name, opened.Mode(), file)
+	copyErr := s.writeFile(ctx, name, opened.Mode(), file)
 	after, statErr := file.Stat()
 	if statErr == nil && (!os.SameFile(opened, after) || opened.Size() != after.Size() || !opened.ModTime().Equal(after.ModTime())) {
 		statErr = ErrIntegrity
@@ -108,10 +98,14 @@ func (s *staging) extract(ctx context.Context, archive *zip.Reader, limits Limit
 		if entry.Mode().Type() != 0 && entry.Mode().Type() != fs.ModeDir {
 			return ErrInvalid
 		}
+		kind := fileEntry
 		if entry.Mode().IsDir() {
-			if err := s.admitPath(name, directoryEntry); err != nil {
-				return err
-			}
+			kind = directoryEntry
+		}
+		if err := s.paths.admitBounded(name, kind, s.limits.Entries); err != nil {
+			return err
+		}
+		if kind == directoryEntry {
 			continue
 		}
 		if !limits.admitsExpansion(entry.UncompressedSize64, entry.CompressedSize64) {
@@ -121,7 +115,7 @@ func (s *staging) extract(ctx context.Context, archive *zip.Reader, limits Limit
 		if err != nil {
 			return err
 		}
-		if err := errors.Join(s.write(ctx, name, entry.Mode(), input), input.Close()); err != nil {
+		if err := errors.Join(s.writeFile(ctx, name, entry.Mode(), input), input.Close()); err != nil {
 			return err
 		}
 	}

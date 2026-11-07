@@ -3,7 +3,6 @@ package runner
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -48,13 +47,6 @@ type controlRequest struct {
 	Attempt   *AttemptRef    `json:"attempt,omitempty"`
 }
 
-type controlResponse struct {
-	Observation *Observation  `json:"observation,omitempty"`
-	Identity    *Identity     `json:"identity,omitempty"`
-	Absence     *AbsenceProof `json:"absence,omitempty"`
-	Error       string        `json:"error,omitempty"`
-}
-
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	ctx, owned, err := s.admitServe(ctx, listener)
 	if err != nil {
@@ -78,7 +70,7 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 		connection, err := listener.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
-				return ctx.Err()
+				return cancellation.Err(ctx)
 			}
 			return err
 		}
@@ -102,7 +94,7 @@ func (s *Server) handle(ctx context.Context, connection net.Conn, release func()
 	reader := bufio.NewReaderSize(connection, controlReadBufferBytes)
 	request, err := readRequest(reader)
 	if err != nil {
-		_ = s.writeResponse(connection, nil, err)
+		_ = s.writeAcknowledgment(connection, err)
 		return
 	}
 	if err := connection.SetReadDeadline(time.Time{}); err != nil {
@@ -110,7 +102,7 @@ func (s *Server) handle(ctx context.Context, connection net.Conn, release func()
 	}
 	if request.Operation == methodAttachControl || request.Operation == methodAttachStream {
 		if request.Attempt == nil {
-			_ = s.writeResponse(connection, nil, frame.ErrInvalid)
+			_ = s.writeAcknowledgment(connection, frame.ErrInvalid)
 			return
 		}
 		if request.Operation == methodAttachControl {
@@ -121,10 +113,7 @@ func (s *Server) handle(ctx context.Context, connection net.Conn, release func()
 		return
 	}
 	response, err := s.respond(ctx, request)
-	if err != nil {
-		response.Error = errorCode(err)
-	}
-	_ = s.writeReply(connection, response)
+	_ = s.writeReply(connection, response, err)
 }
 
 func readRequest(reader *bufio.Reader) (controlRequest, error) {
@@ -136,54 +125,55 @@ func readRequest(reader *bufio.Reader) (controlRequest, error) {
 	return request, jsonv2.Unmarshal(line, &request, jsonv2.RejectUnknownMembers(true))
 }
 
-func (s *Server) respond(ctx context.Context, request controlRequest) (controlResponse, error) {
+func (s *Server) respond(ctx context.Context, request controlRequest) (controlResult, error) {
 	switch request.Operation {
 	case methodIdentity:
 		identity, err := s.Identity(ctx)
 		if err != nil {
-			return controlResponse{}, err
+			return nil, err
 		}
-		return controlResponse{Identity: &identity}, nil
+		return identity, nil
 	case methodFence:
-		return controlResponse{}, s.Fence(ctx, request.Epoch)
+		return acknowledged(s.Fence(ctx, request.Epoch))
 	case methodProveAbsent:
 		if request.Attempt == nil {
-			return controlResponse{}, frame.ErrInvalid
+			return nil, frame.ErrInvalid
 		}
 		proof, err := s.ProveAbsent(ctx, *request.Attempt)
 		if err != nil {
-			return controlResponse{}, err
+			return nil, err
 		}
-		return controlResponse{Absence: &proof}, nil
+		return proof, nil
 	case methodAcknowledgeExit:
 		if request.Receipt == nil {
-			return controlResponse{}, frame.ErrInvalid
+			return nil, frame.ErrInvalid
 		}
-		return controlResponse{}, s.AcknowledgeExit(ctx, *request.Receipt)
+		return acknowledged(s.AcknowledgeExit(ctx, *request.Receipt))
 	case methodLaunch:
 		if request.Launch == nil {
-			return controlResponse{}, frame.ErrInvalid
+			return nil, frame.ErrInvalid
 		}
-		return observed(s.Launch(ctx, *request.Launch))
+		result, err := s.Launch(ctx, *request.Launch)
+		return observed(result.Observation, err)
 	case methodInspect:
 		return observed(s.Inspect(ctx, request.AttemptID))
 	case methodClose:
 		if request.Attempt == nil {
-			return controlResponse{}, frame.ErrInvalid
+			return nil, frame.ErrInvalid
 		}
 		return observed(s.CloseAttempt(ctx, *request.Attempt))
 	default:
-		return controlResponse{}, frame.ErrInvalid
+		return nil, frame.ErrInvalid
 	}
 }
 
 // observed reports an observation even beside an error, so a failed close
 // still tells the caller the attempt's current state.
-func observed(observation Observation, err error) (controlResponse, error) {
+func observed(observation Observation, err error) (controlResult, error) {
 	if observation.AttemptID == "" {
-		return controlResponse{}, err
+		return nil, err
 	}
-	return controlResponse{Observation: &observation}, err
+	return observation, err
 }
 
 func (s *Server) attach(ref AttemptRef, control net.Conn) (*attachment, error) {
@@ -241,7 +231,12 @@ func (s *Server) attachableProcess(ref AttemptRef) (*process, error) {
 
 type Client struct{ socket string }
 
-func Dial(socket string) *Client { return &Client{socket: socket} }
+func NewClient(socket string) (*Client, error) {
+	if err := validateSocketPath(socket); err != nil {
+		return nil, err
+	}
+	return &Client{socket: socket}, nil
+}
 
 func validateSocketPath(socket string) error {
 	limit := socketPathLimit()
@@ -258,8 +253,8 @@ func validateSocketPath(socket string) error {
 }
 
 func (c *Client) dial(ctx context.Context) (net.Conn, error) {
-	if err := validateSocketPath(c.socket); err != nil {
-		return nil, err
+	if c == nil || c.socket == "" {
+		return nil, frame.ErrInvalid
 	}
 	directory, err := filepath.EvalSymlinks(filepath.Dir(c.socket))
 	if err != nil {
@@ -272,22 +267,27 @@ func (c *Client) dial(ctx context.Context) (net.Conn, error) {
 }
 
 func (c *Client) Identity(ctx context.Context) (Identity, error) {
-	response, err := c.request(ctx, controlRequest{Operation: methodIdentity})
+	response, _, err := c.request(ctx, controlRequest{Operation: methodIdentity})
 	if err != nil {
 		return Identity{}, err
 	}
-	if response.Identity == nil || !frame.ValidName(response.Identity.ID) {
-		return Identity{}, errors.New("runner: invalid identity response")
-	}
-	return *response.Identity, nil
+	return response.(Identity), nil
 }
 
 func (c *Client) Fence(ctx context.Context, epoch uint64) error {
 	_, err := c.control(ctx, controlRequest{Operation: methodFence, Epoch: epoch})
 	return err
 }
-func (c *Client) Launch(ctx context.Context, request LaunchRequest) (Observation, error) {
-	return c.control(ctx, controlRequest{Operation: methodLaunch, Launch: &request})
+func (c *Client) Launch(ctx context.Context, request LaunchRequest) (LaunchResult, error) {
+	if err := request.Validate(); err != nil {
+		return notDispatched(request), err
+	}
+	response, dispatch, err := c.request(ctx, controlRequest{Operation: methodLaunch, Launch: &request})
+	if dispatch == controlNotDispatched {
+		return notDispatched(request), err
+	}
+	observation, _ := response.(Observation)
+	return LaunchResult{Observation: observation}, err
 }
 func (c *Client) Inspect(ctx context.Context, id string) (Observation, error) {
 	return c.control(ctx, controlRequest{Operation: methodInspect, AttemptID: id})
@@ -302,41 +302,63 @@ func (c *Client) AcknowledgeExit(ctx context.Context, receipt ExitReceipt) error
 }
 
 func (c *Client) ProveAbsent(ctx context.Context, request AttemptRef) (AbsenceProof, error) {
-	response, err := c.request(ctx, controlRequest{Operation: methodProveAbsent, Attempt: &request})
+	response, _, err := c.request(ctx, controlRequest{Operation: methodProveAbsent, Attempt: &request})
 	if err != nil {
 		return AbsenceProof{}, err
 	}
-	if response.Absence == nil || response.Absence.Validate(request) != nil {
+	proof := response.(AbsenceProof)
+	if proof.Validate(request) != nil {
 		return AbsenceProof{}, ErrUnknown
 	}
-	return *response.Absence, nil
+	return proof, nil
 }
 
 func (c *Client) control(ctx context.Context, request controlRequest) (Observation, error) {
-	response, err := c.request(ctx, request)
-	var observation Observation
-	if response.Observation != nil {
-		observation = *response.Observation
-	}
+	response, _, err := c.request(ctx, request)
+	observation, _ := response.(Observation)
 	return observation, err
 }
 
-func (c *Client) request(ctx context.Context, request controlRequest) (controlResponse, error) {
+type controlDispatch uint8
+
+const (
+	controlDispatchUnknown controlDispatch = iota
+	controlNotDispatched
+)
+
+func (c *Client) request(ctx context.Context, request controlRequest) (controlResult, controlDispatch, error) {
+	if err := cancellation.Err(ctx); err != nil {
+		return nil, controlNotDispatched, err
+	}
+	data, err := encodeRequest(request)
+	if err != nil {
+		return nil, controlNotDispatched, err
+	}
 	connection, err := c.dial(ctx)
 	if err != nil {
-		return controlResponse{}, err
+		return nil, controlNotDispatched, errors.Join(err, cancellation.Err(ctx))
 	}
 	defer connection.Close()
+	return exchangeControl(ctx, connection, request.Operation, data)
+}
+
+func exchangeControl(ctx context.Context, connection net.Conn, method controlMethod, data []byte) (controlResult, controlDispatch, error) {
 	stop := context.AfterFunc(ctx, func() { _ = connection.Close() })
 	defer stop()
-	if err := writeRequest(connection, request); err != nil {
-		return controlResponse{}, err
+	if err := cancellation.Err(ctx); err != nil {
+		return nil, controlNotDispatched, err
+	}
+	// Once Write starts, a transport error cannot establish how much the original
+	// runner accepted. Only that runner's observation can settle this invocation.
+	if err := writeControl(connection, data); err != nil {
+		return nil, controlDispatchUnknown, errors.Join(err, cancellation.Err(ctx))
 	}
 	line, err := readLine(bufio.NewReader(connection))
 	if err != nil {
-		return controlResponse{}, err
+		return nil, controlDispatchUnknown, errors.Join(err, cancellation.Err(ctx))
 	}
-	return decodeResponse(line)
+	response, err := decodeResponse(line, method)
+	return response, controlDispatchUnknown, err
 }
 
 type clientAttachment struct {
@@ -384,7 +406,7 @@ func (c *Client) Attach(ctx context.Context, ref AttemptRef) (result io.ReadWrit
 func (c *Client) openAttachmentConnection(ctx context.Context, method controlMethod, ref AttemptRef) (net.Conn, *bufio.Reader, error) {
 	connection, err := c.dial(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.Join(err, cancellation.Err(ctx))
 	}
 	stop := context.AfterFunc(ctx, func() { _ = connection.Close() })
 	if err := writeRequest(connection, controlRequest{Operation: method, Attempt: &ref}); err != nil {
@@ -395,7 +417,7 @@ func (c *Client) openAttachmentConnection(ctx context.Context, method controlMet
 	reader := bufio.NewReader(connection)
 	line, err := readLine(reader)
 	if err == nil {
-		_, err = decodeResponse(line)
+		_, err = decodeResponse(line, method)
 	}
 	stop()
 	if cause := cancellation.Err(ctx); cause != nil {
@@ -426,49 +448,30 @@ func readLine(reader *bufio.Reader) ([]byte, error) {
 }
 
 func writeRequest(writer io.Writer, request controlRequest) error {
-	data, err := jsonv2.Marshal(request)
+	data, err := encodeRequest(request)
 	if err != nil {
 		return err
 	}
-	if len(data)+1 > maxControlBytes {
-		return frame.ErrCapacity
+	return writeControl(writer, data)
+}
+
+func encodeRequest(request controlRequest) ([]byte, error) {
+	data, err := jsonv2.Marshal(request)
+	if err != nil {
+		return nil, err
 	}
-	n, err := writer.Write(append(data, '\n'))
-	if err == nil && n != len(data)+1 {
+	if len(data)+1 > maxControlBytes {
+		return nil, frame.ErrCapacity
+	}
+	return append(data, '\n'), nil
+}
+
+func writeControl(writer io.Writer, data []byte) error {
+	n, err := writer.Write(data)
+	if err == nil && n != len(data) {
 		return io.ErrShortWrite
 	}
 	return err
-}
-
-func (s *Server) writeResponse(writer net.Conn, observation *Observation, err error) error {
-	response := controlResponse{Observation: observation}
-	if err != nil {
-		response.Error = errorCode(err)
-	}
-	return s.writeReply(writer, response)
-}
-
-func (s *Server) writeReply(writer net.Conn, response controlResponse) error {
-	if err := writer.SetWriteDeadline(time.Now().Add(s.config.ControlTimeout)); err != nil {
-		return err
-	}
-	return json.NewEncoder(writer).Encode(response)
-}
-
-func decodeResponse(data []byte) (controlResponse, error) {
-	var response controlResponse
-	if err := jsonv2.Unmarshal(data, &response, jsonv2.RejectUnknownMembers(true)); err != nil {
-		return response, err
-	}
-	if response.Error == "" {
-		return response, nil
-	}
-	for _, category := range controlErrors {
-		if category.code == response.Error {
-			return response, category.err
-		}
-	}
-	return response, errors.New("runner: control request failed")
 }
 
 const unclassifiedControlError = "failed"

@@ -81,6 +81,8 @@ unknown outcome rather than permission to capture again.
 If metadata encoding panics or exits its goroutine, the original operation
 retains a failure receipt and releases its unfinished lease reservation. A retry
 observes that failure; it cannot recapture or report an uncaptured lease as success.
+Dynamic publication preserves the same failure boundary when a metadata decoder
+panics or exits: observation and replay cannot report an empty successful result.
 
 `Acquire` takes the original lease exactly once when its operation is admitted,
 including an attempt whose selection later fails. Repeating that acquisition ID
@@ -97,6 +99,15 @@ snapshots explicitly. Realm sealing and cleanup-only reconnect discard all of
 that Realm's pending leases. Concurrent completion cannot insert a lease after
 sealing. Completed receipts occupy the existing authority-epoch journal rather
 than unbounded in-memory tombstones.
+An unacknowledged receipt reservation retains its original operation until the
+Store settles that exact identity or proves that it rolled back. Closing the
+caller-known Snapshot ID joins this settlement; it never reserves a competing
+close identity. A close that reserved the ID first remains terminal even if its
+reservation acknowledgement was lost.
+
+Reconnect seals a Realm only when its original authority or execution is known
+to be stale or closed. Caller cancellation and an unavailable admission gate
+preserve their original errors and leave the Realm eligible for a later retry.
 
 `SealRealm` revokes new work in one Realm without fencing other windows using the
 same installation. An admitted plan remains protected until its original proof
@@ -149,6 +160,8 @@ before handing responsibility to the Runtime. Each Realm
 also reserves encoded bytes for its complete pending and reconnect projections;
 ready executions retain that reservation until their original release. An
 admission cannot turn a pending backlog into an oversized response.
+Event routes admit the complete validation envelope before allocating a Host
+route, so a transport-capacity refusal cannot retain an inaccessible route slot.
 
 Setup can produce additional contributions and metadata that the Host cannot
 predict before execution. An oversized Ready report is refused before

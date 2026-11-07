@@ -144,7 +144,10 @@ func TestExecutableRetainsOriginalWaitAuthorityUntilJournalRecovers(t *testing.T
 	var exitErr error
 	go func() { exitErr = command.Wait(); close(exited) }()
 	t.Cleanup(func() { _ = command.Process.Kill(); <-exited })
-	client := runner.Dial(socket)
+	client, err := runner.NewClient(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var identity runner.Identity
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()

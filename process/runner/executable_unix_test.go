@@ -19,7 +19,7 @@ func TestFIFOIsRejectedBeforeReading(t *testing.T) {
 		t.Fatal(err)
 	}
 	o, err := c.Launch(ctx, r)
-	if err == nil || o.State != Exited {
+	if err == nil || o.State != NotCreated {
 		t.Fatalf("fifo: %+v %v", o, err)
 	}
 	if _, err := s.Identity(ctx); err != nil {

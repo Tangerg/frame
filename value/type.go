@@ -5,7 +5,6 @@ import (
 	jsonv1 "encoding/json"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
-	"errors"
 	"fmt"
 	"reflect"
 )
@@ -13,40 +12,25 @@ import (
 // Generated projections cannot reproduce shadowing or custom field encodings.
 // Admit one explicit declaration before any consumer walks its field graph.
 func ValidateType(target reflect.Type) error {
-	return validateType(target, make(map[reflect.Type]bool))
+	_, err := validateType(target, make(map[reflect.Type]bool))
+	return err
 }
 
-func validateType(target reflect.Type, visited map[reflect.Type]bool) error {
-	if target == nil {
-		return errors.New("json: value type is required")
+func validateType(target reflect.Type, visited map[reflect.Type]bool) (reflect.Type, error) {
+	model, err := encodingType(target)
+	if err != nil {
+		return nil, err
 	}
-	// Pointer cycles consume no JSON structure; field and element recursion does.
-	pointers := make(map[reflect.Type]bool)
-	for target.Kind() == reflect.Pointer {
-		if pointers[target] {
-			return fmt.Errorf("json: recursive pointer type %s has no value shape", target)
+	if visited[model] {
+		return model, nil
+	}
+	visited[model] = true
+	if !opaqueType(model) {
+		if err := validateShape(model, visited); err != nil {
+			return nil, err
 		}
-		pointers[target] = true
-		target = target.Elem()
 	}
-	if visited[target] {
-		return nil
-	}
-	visited[target] = true
-	if target.Kind() == reflect.Interface && target.NumMethod() != 0 {
-		return fmt.Errorf("json: %s requires a concrete value type", target)
-	}
-	if opaqueType(target) {
-		return nil
-	}
-	encoded, decoded := customEncoder(target), customDecoder(target)
-	if encoded || decoded {
-		if !encoded || !decoded || !target.Implements(reflect.TypeFor[schemaModeler]()) {
-			return fmt.Errorf("json: %s requires an encoder, decoder and value-receiver JSONSchemaModel", target)
-		}
-		return nil
-	}
-	return validateShape(target, visited)
+	return model, nil
 }
 
 func validateShape(target reflect.Type, visited map[reflect.Type]bool) error {
@@ -55,7 +39,8 @@ func validateShape(target reflect.Type, visited map[reflect.Type]bool) error {
 		if target.Elem().Kind() == reflect.Uint8 {
 			return fmt.Errorf("json: %s requires an explicit string or array encoding", target)
 		}
-		return validateType(target.Elem(), visited)
+		_, err := validateType(target.Elem(), visited)
+		return err
 	case reflect.Map:
 		if target.Key().Kind() != reflect.String {
 			return fmt.Errorf("json: %s requires string object keys", target)
@@ -63,14 +48,15 @@ func validateShape(target reflect.Type, visited map[reflect.Type]bool) error {
 		if customEncoder(target.Key()) || customDecoder(target.Key()) {
 			return fmt.Errorf("json: %s requires string keys without custom codecs", target)
 		}
-		return validateType(target.Elem(), visited)
+		_, err := validateType(target.Elem(), visited)
+		return err
 	case reflect.Struct:
 		fields, err := declaredFields(target, make(map[reflect.Type]bool))
 		if err != nil {
 			return err
 		}
 		for _, field := range fields {
-			if err := validateType(field.Type, visited); err != nil {
+			if _, err := validateType(field.Type, visited); err != nil {
 				return fmt.Errorf("json field %s.%s: %w", target, field.Name, err)
 			}
 		}
@@ -87,25 +73,27 @@ func validateShape(target reflect.Type, visited map[reflect.Type]bool) error {
 }
 
 func opaqueType(target reflect.Type) bool {
-	return target == reflect.TypeFor[jsontext.Value]() || target == reflect.TypeFor[jsonv1.RawMessage]() || target == reflect.TypeFor[JSON]() || target.Kind() == reflect.Interface
+	return target == reflect.TypeFor[jsontext.Value]() || target == reflect.TypeFor[jsonv1.RawMessage]() || target.Kind() == reflect.Interface
 }
 
-// Pointers represent omission. Only opaque JSON preserves an explicit null
-// without collapsing it into an absent typed value.
+// Nullability belongs to the encoding model, including a custom codec's model.
+// Field omission is admitted separately because a nil value may lose presence.
 func AllowsNull(target reflect.Type) bool {
-	pointers := make(map[reflect.Type]bool)
-	for target != nil && target.Kind() == reflect.Pointer && !pointers[target] {
-		pointers[target] = true
-		target = target.Elem()
-	}
-	return target != nil && opaqueType(target)
+	model, err := encodingType(target)
+	return err == nil && model.Kind() == reflect.Interface
 }
 
 func customDecoder(target reflect.Type) bool {
+	if jsonDecoder(target) {
+		return true
+	}
+	return target.Implements(reflect.TypeFor[encoding.TextUnmarshaler]()) || reflect.PointerTo(target).Implements(reflect.TypeFor[encoding.TextUnmarshaler]())
+}
+
+func jsonDecoder(target reflect.Type) bool {
 	for _, candidate := range []reflect.Type{target, reflect.PointerTo(target)} {
 		if candidate.Implements(reflect.TypeFor[json.Unmarshaler]()) ||
-			candidate.Implements(reflect.TypeFor[json.UnmarshalerFrom]()) ||
-			candidate.Implements(reflect.TypeFor[encoding.TextUnmarshaler]()) {
+			candidate.Implements(reflect.TypeFor[json.UnmarshalerFrom]()) {
 			return true
 		}
 	}
@@ -113,11 +101,21 @@ func customDecoder(target reflect.Type) bool {
 }
 
 func customEncoder(target reflect.Type) bool {
+	if jsonEncoder(target) {
+		return true
+	}
 	for _, candidate := range []reflect.Type{target, reflect.PointerTo(target)} {
-		if candidate.Implements(reflect.TypeFor[json.Marshaler]()) ||
-			candidate.Implements(reflect.TypeFor[json.MarshalerTo]()) ||
-			candidate.Implements(reflect.TypeFor[encoding.TextMarshaler]()) ||
+		if candidate.Implements(reflect.TypeFor[encoding.TextMarshaler]()) ||
 			candidate.Implements(reflect.TypeFor[encoding.TextAppender]()) {
+			return true
+		}
+	}
+	return false
+}
+
+func jsonEncoder(target reflect.Type) bool {
+	for _, candidate := range []reflect.Type{target, reflect.PointerTo(target)} {
+		if candidate.Implements(reflect.TypeFor[json.Marshaler]()) || candidate.Implements(reflect.TypeFor[json.MarshalerTo]()) {
 			return true
 		}
 	}
@@ -134,11 +132,15 @@ func declaredFields(owner reflect.Type, visiting map[reflect.Type]bool) ([]Field
 	visiting[owner] = true
 	defer delete(visiting, owner)
 	var fields []Field
+	var hasJSONTag, hasJSONField bool
 	for field := range owner.Fields() {
+		_, tagged := field.Tag.Lookup("json")
+		hasJSONTag = hasJSONTag || tagged
 		name, options, err := parseFieldTag(field)
 		if err != nil {
 			return nil, fmt.Errorf("json field %s.%s: %w", owner, field.Name, err)
 		}
+		hasJSONField = hasJSONField || options.embedded || name != ""
 		if options.embedded {
 			embedded := field.Type
 			if embedded.Kind() == reflect.Pointer {
@@ -159,8 +161,11 @@ func declaredFields(owner reflect.Type, visiting map[reflect.Type]bool) ([]Field
 			continue
 		}
 		if name != "" {
-			fields = append(fields, Field{Name: name, Type: field.Type, GoName: field.Name, Optional: options.optional})
+			fields = append(fields, Field{Name: name, Type: field.Type, GoName: field.Name, Optional: options.omitEmpty || options.omitZero})
 		}
+	}
+	if owner.NumField() != 0 && !hasJSONTag && !hasJSONField {
+		return nil, fmt.Errorf("json: %s has no encoded fields; use an explicit codec or ignore its fields", owner)
 	}
 	names := make(map[string]bool, len(fields))
 	selectors := make(map[string]bool, len(fields))

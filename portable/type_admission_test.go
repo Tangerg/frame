@@ -62,8 +62,8 @@ func TestTypedSchemaKeepsOmissionOpaqueNullAndNarrowingConstraints(t *testing.T)
 	opaque := reflect.StructOf([]reflect.StructField{{
 		Name: "Payload", Type: reflect.TypeFor[any](), Tag: `json:"payload" jsonschema:"nullable"`,
 	}})
-	if err := value.ValidateType(opaque); err != nil {
-		t.Fatalf("opaque nullable declaration refused: %v", err)
+	if err := value.ValidateType(opaque); err == nil {
+		t.Fatal("nullable tag created a second nullability declaration")
 	}
 }
 
@@ -106,9 +106,18 @@ func TestTypedSchemaRefusesImplicitNarrowerCodecs(t *testing.T) {
 
 func TestTypedSchemaDoesNotInterpretAnnotationTextAsShape(t *testing.T) {
 	type input struct {
-		Name string `json:"name" jsonschema:"description=literal\\,type=number"`
+		Name string `json:"name" jsonschema:"description=literal\\,type=number\\,nullable"`
 	}
 	if _, err := portable.SchemaFor[input](); err != nil {
 		t.Fatalf("annotation text changed field admission: %v", err)
+	}
+}
+
+func TestTypedSchemaRejectsRedundantOpaqueNullModifiers(t *testing.T) {
+	type input struct {
+		Payload value.JSON `json:"payload" jsonschema:"nullable"`
+	}
+	if _, err := portable.SchemaFor[input](); err == nil {
+		t.Fatal("redundant nullable branch published a schema that rejects null")
 	}
 }

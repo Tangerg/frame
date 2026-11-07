@@ -42,7 +42,6 @@ interface Clock {
   readonly second: number;
 }
 
-/** Reads the leading HH:MM:SS of a time, or undefined when out of range. */
 function clock(value: string): Clock | undefined {
   if (value.length < 9 || value[2] !== ":" || value[5] !== ":")
     return undefined;

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -79,7 +80,7 @@ func ConverterPlugin(contracts Contracts, revision string) (*frame.Plugin, error
 				result := Converted{Source: reference}
 				var output strings.Builder
 				for _, line := range strings.Split(document.Text, "\n") {
-					if err := ctx.Err(); err != nil {
+					if err := cancellation.Err(ctx); err != nil {
 						return Converted{}, err
 					}
 					switch {
@@ -109,7 +110,7 @@ func ValidationPlugin(contracts Contracts) (*frame.Plugin, error) {
 		},
 		Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
 			return []frame.ExportValue{frame.Contribute(titleValidatorExportName, contracts.Validators, ValidatorMetadata{Name: titleRuleName, Order: defaultTitleValidationOrder}, Validator(func(ctx context.Context, converted Converted) ([]Diagnostic, error) {
-				if err := ctx.Err(); err != nil {
+				if err := cancellation.Err(ctx); err != nil {
 					return nil, err
 				}
 				if converted.Title == "" {

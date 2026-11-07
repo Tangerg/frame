@@ -89,6 +89,9 @@ type LifetimeLimits struct {
 }
 
 type Lifetime struct {
+	// Host-created lifetimes stay inside the admission domain that can inspect
+	// their provider dependencies. Application lifetimes have no such affinity.
+	authority       *authorityIdentity
 	mu              sync.Mutex
 	ctx             context.Context
 	cancelContext   context.CancelCauseFunc

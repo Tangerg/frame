@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/internal/nilness"
 	"github.com/Tangerg/frame/process/runner"
 	"github.com/Tangerg/frame/sqlite"
@@ -42,7 +43,7 @@ type Source interface {
 type Runner interface {
 	Identity(context.Context) (runner.Identity, error)
 	Fence(context.Context, uint64) error
-	Launch(context.Context, runner.LaunchRequest) (runner.Observation, error)
+	Launch(context.Context, runner.LaunchRequest) (runner.LaunchResult, error)
 	Attach(context.Context, runner.AttemptRef) (io.ReadWriteCloser, error)
 	Inspect(context.Context, string) (runner.Observation, error)
 	CloseAttempt(context.Context, runner.AttemptRef) (runner.Observation, error)
@@ -69,12 +70,13 @@ type Driver struct {
 type execution struct {
 	driver   *Driver
 	attempt  sqlite.Attempt
+	request  runner.LaunchRequest
 	ready    chan struct{}
 	mu       sync.Mutex
 	cleanup  cleanupPhase
 	session  Connection
 	channel  *attachment
-	started  bool
+	launch   *runner.LaunchResult
 	resource *frame.ResourceHandle
 	cancel   context.CancelCauseFunc
 }
@@ -140,6 +142,15 @@ func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 		return nil, err
 	}
 	attempt := sqlite.Attempt{ID: setup.InstanceID(), Epoch: setup.Epoch(), Source: setup.Binding().Source, Binding: setup.Snapshot(), Realm: realm, Profile: d.profile}
+	request := runner.LaunchRequest{
+		AttemptRef: runnerAttempt(attempt), Command: program.Command,
+		ExecutableDigest: program.ExecutableDigest, Args: slices.Clone(program.Args), Env: slices.Clone(program.Env),
+		Directory: program.Directory, Configuration: setup.Binding().Configuration,
+		CredentialRevision: program.CredentialRevision,
+	}
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
 	if err := d.checkExitCapacity(attempt); err != nil {
 		return nil, err
 	}
@@ -147,9 +158,9 @@ func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 		return nil, err
 	}
 	ownedCtx, cancel := context.WithCancelCause(setup.Lifetime().Context())
-	stopPreparation := context.AfterFunc(ctx, func() { cancel(context.Cause(ctx)) })
+	stopPreparation := context.AfterFunc(ctx, func() { cancel(cancellation.Err(ctx)) })
 	defer stopPreparation()
-	e := &execution{driver: d, attempt: attempt, ready: make(chan struct{}), cancel: cancel}
+	e := &execution{driver: d, attempt: attempt, request: request, ready: make(chan struct{}), cancel: cancel}
 	var dependencies []*frame.ResourceHandle
 	if content != nil {
 		dependencies = append(dependencies, content)
@@ -165,10 +176,10 @@ func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 	d.live[attempt.ID] = e
 	d.mu.Unlock()
 	defer close(e.ready)
-	if err := ownedCtx.Err(); err != nil {
-		return nil, errors.Join(err, context.Cause(ownedCtx))
+	if err := cancellation.Err(ownedCtx); err != nil {
+		return nil, err
 	}
-	return e.start(ownedCtx, setup, program, connection)
+	return e.start(ownedCtx, connection)
 }
 
 // checkUnit admits only Portable contracts: a child process cannot share a
@@ -220,24 +231,21 @@ func (d *Driver) currentRunner(ctx context.Context, epoch uint64) (string, error
 	return identity.ID, nil
 }
 
-// start dispatches the durable attempt to the runner and connects the
-// protocol over the attached child. From here on only the runner's wait
-// result can prove the child's exit.
-func (e *execution) start(ctx context.Context, setup *frame.Setup, program Program, connection Connection) ([]frame.ExportValue, error) {
+func (e *execution) start(ctx context.Context, connection Connection) ([]frame.ExportValue, error) {
 	e.mu.Lock()
-	e.started = true
+	// A zero result is unknown, never permission to release. Keep this original
+	// invocation: an undispatched retry could not negate an earlier acceptance.
+	e.launch = new(runner.LaunchResult)
 	e.mu.Unlock()
 	attempt := runnerAttempt(e.attempt)
-	observation, err := e.driver.config.Runner.Launch(ctx, runner.LaunchRequest{
-		AttemptRef: attempt, Command: program.Command,
-		ExecutableDigest: program.ExecutableDigest, Args: program.Args, Env: program.Env,
-		Directory: program.Directory, Configuration: setup.Binding().Configuration,
-		CredentialRevision: program.CredentialRevision,
-	})
+	result, err := e.driver.config.Runner.Launch(ctx, e.request)
+	e.mu.Lock()
+	*e.launch = result
+	e.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	if observation.Reference() != attempt || observation.State != runner.Running {
+	if result.Reference() != attempt || result.State != runner.Running {
 		return nil, runner.ErrUnknown
 	}
 	attached, err := e.driver.config.Runner.Attach(ctx, attempt)
@@ -262,7 +270,7 @@ func (e *execution) close(ctx context.Context) (frame.ReleaseState, error) {
 	ctx, cancel := context.WithTimeout(ctx, e.driver.config.CloseTimeout)
 	defer cancel()
 	e.mu.Lock()
-	session, channel, started := e.session, e.channel, e.started
+	session, channel := e.session, e.channel
 	e.session, e.channel = nil, nil
 	e.mu.Unlock()
 	var transportErr error
@@ -277,23 +285,22 @@ func (e *execution) close(ctx context.Context) (frame.ReleaseState, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.cleanup = cleanupFinished
-	if !started {
-		proof := undispatchedProof(e.attempt)
-		if err := e.driver.config.Store.ReleaseAttempt(ctx, e.attempt.ID, proof); err != nil {
-			return frame.ResourceUnconfirmed, errors.Join(transportErr, err)
-		}
-		e.driver.forget(e.attempt.ID)
-		return frame.ResourceReleased, transportErr
-	}
-	observed, err := e.driver.config.Runner.CloseAttempt(ctx, runnerAttempt(e.attempt))
-	if err != nil {
-		return frame.ResourceUnconfirmed, errors.Join(transportErr, err)
-	}
-	if err := e.driver.release(ctx, e.attempt, observed); err != nil {
+	if err := e.settle(ctx); err != nil {
 		return frame.ResourceUnconfirmed, errors.Join(transportErr, err)
 	}
 	e.driver.forget(e.attempt.ID)
 	return frame.ResourceReleased, transportErr
+}
+
+func (e *execution) settle(ctx context.Context) error {
+	if e.launch == nil || e.launch.NotDispatched(e.request) {
+		return e.driver.config.Store.ReleaseAttempt(ctx, e.attempt.ID, undispatchedProof(e.attempt))
+	}
+	observed, err := e.driver.config.Runner.CloseAttempt(ctx, runnerAttempt(e.attempt))
+	if err != nil {
+		return err
+	}
+	return e.driver.release(ctx, e.attempt, observed)
 }
 
 func (d *Driver) forget(id string) {
@@ -325,7 +332,7 @@ func (d *Driver) acknowledgeExit(ctx context.Context, attempt sqlite.Attempt, pr
 	if err := json.Unmarshal(proof.Evidence, &receipt, json.RejectUnknownMembers(true)); err != nil {
 		return errors.Join(runner.ErrUnknown, err)
 	}
-	if proof.Kind != runnerWaitProofKind || receipt != (runner.ExitReceipt{AttemptID: attempt.ID, Epoch: attempt.Epoch, RunnerID: attempt.Realm, ProofID: proof.ExitID}) {
+	if proof.Kind != runnerProofKind(receipt.State) || receipt != (runner.ExitReceipt{AttemptID: attempt.ID, Epoch: attempt.Epoch, RunnerID: attempt.Realm, ProofID: proof.ExitID, State: receipt.State}) || (receipt.State != runner.Exited && receipt.State != runner.NotCreated) {
 		return runner.ErrUnknown
 	}
 	if err := d.config.Runner.AcknowledgeExit(ctx, receipt); err != nil {
@@ -348,11 +355,7 @@ func (d *Driver) Reconcile(ctx context.Context, id string) error {
 	if e.cleanup != cleanupFinished {
 		return fmt.Errorf("%w: process reconciliation requires completed local cleanup", frame.ErrInvalid)
 	}
-	observed, err := d.config.Runner.Inspect(ctx, id)
-	if err != nil {
-		return err
-	}
-	if err := d.release(ctx, e.attempt, observed); err != nil {
+	if err := e.settle(ctx); err != nil {
 		return err
 	}
 	if err := e.resource.ConfirmReleased(nil); err != nil {

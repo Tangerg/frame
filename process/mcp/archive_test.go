@@ -28,7 +28,11 @@ func TestInstallToolArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer state.Close()
-	driver, err := process.New(process.Config{Runner: runner.Dial(filepath.Join(t.TempDir(), "unused")), Store: state, Source: fixtureSource{}, CloseTimeout: time.Second, MaxFrameBytes: 1024, Protocol: Tools{MaxCatalogPages: 1}})
+	client, err := runner.NewClient(filepath.Join(t.TempDir(), "unused"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver, err := process.New(process.Config{Runner: client, Store: state, Source: fixtureSource{}, CloseTimeout: time.Second, MaxFrameBytes: 1024, Protocol: Tools{MaxCatalogPages: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}

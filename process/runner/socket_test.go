@@ -27,7 +27,7 @@ func TestInvalidSocketAddressNeverCreatesOrReconnectsAnAuthority(t *testing.T) {
 	if _, err := server.Listen(socket); !errors.Is(err, frame.ErrInvalid) {
 		t.Fatalf("long listener address: %v", err)
 	}
-	if _, err := Dial(socket).Identity(t.Context()); !errors.Is(err, frame.ErrInvalid) || errors.Is(err, os.ErrNotExist) {
+	if _, err := NewClient(socket); !errors.Is(err, frame.ErrInvalid) || errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("unusable address was treated as absent authority: %v", err)
 	}
 	if _, err := os.Stat(directory); !errors.Is(err, os.ErrNotExist) {

@@ -15,6 +15,7 @@ import {
 } from "../index.js";
 import type { Use } from "../browser/index.js";
 import type { ObjectRef } from "../protocol.generated.js";
+import { freezeJSON } from "../json.js";
 
 const Scope = createContext<Lifetime | undefined>(undefined);
 
@@ -43,10 +44,11 @@ export function bindComponent<P>(
       "contract_mismatch",
       "React components require a same-realm native contract",
     );
+  const capturedReference = freezeJSON(reference);
   return Object.freeze({
     owner: use.lifetime,
     with: <R>(work: (component: ComponentType<P>) => Awaitable<R>) =>
-      use.with(reference, contract, work),
+      use.with(capturedReference, contract, work),
   });
 }
 

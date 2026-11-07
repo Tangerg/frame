@@ -11,6 +11,7 @@ import type { Execution } from "@frame/sdk/protocol";
 import type { Bootstrap, DocumentRef } from "./contracts.generated";
 import { sha256 } from "./contracts";
 import { ConversionTask } from "./conversion-task";
+import { ConnectionFailures } from "./failures";
 
 export { converters, validators, sha256 } from "./contracts";
 export { ConversionTask, type RenderedDocument } from "./conversion-task";
@@ -18,7 +19,12 @@ export { ConversionTask, type RenderedDocument } from "./conversion-task";
 const maximumModuleBytes = 16 << 20;
 const maximumConversionTasks = 128;
 
-export function connect(bootstrap: Bootstrap) {
+export function connect(
+  bootstrap: Bootstrap,
+  observeError?: (error: unknown) => unknown,
+) {
+  if (observeError !== undefined && typeof observeError !== "function")
+    throw new TypeError("connection error observer must be a function");
   const transport = new Lifetime("author control transport");
   const control = new HTTPControl({
     endpoint: new URL("/frame/control", bootstrap.origin).href,
@@ -51,7 +57,10 @@ export function connect(bootstrap: Bootstrap) {
   const executions = new Map<string, Execution>();
   const conversions = new Set<ConversionTask>();
   let closing = false;
-  const errors: unknown[] = [];
+  const failures = new ConnectionFailures();
+  const report = (error: unknown) => {
+    failures.report(error, observeError);
+  };
   const runtime = new Runtime({
     authority: bootstrap.credentials.authority,
     realm: bootstrap.credentials.realm,
@@ -77,11 +86,9 @@ export function connect(bootstrap: Bootstrap) {
   const pump = new ControlPump(runtime, {
     intervalMilliseconds: 5,
     preparationCapacity: 4,
-    onError(error) {
-      errors.push(error);
-    },
+    onError: report,
   });
-  const pumping = pump.run().catch((error) => errors.push(error));
+  const pumping = pump.run().catch((error) => failures.record(error));
   const request = async (path: string, input?: unknown): Promise<Response> =>
     fetch(new URL(path, bootstrap.origin), {
       method: input === undefined ? "GET" : "POST",
@@ -95,7 +102,12 @@ export function connect(bootstrap: Bootstrap) {
   return {
     runtime,
     control,
-    errors,
+    get failures() {
+      return failures.records;
+    },
+    get omittedFailures() {
+      return failures.omitted;
+    },
     async activate(unit: string): Promise<void> {
       const response = await request("/activate", { unit });
       if (!response.ok) throw new Error(await response.text());

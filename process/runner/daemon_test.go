@@ -108,7 +108,11 @@ func TestDaemonKeepsTheOriginalProcessAuthorityAndJoinsItsExit(t *testing.T) {
 	if err := original.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Dial(filepath.Join(directory, "control.sock")).Identity(ctx); err == nil {
+	client, err := NewClient(filepath.Join(directory, "control.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Identity(ctx); err == nil {
 		t.Fatal("original runner still served after its Wait completed")
 	}
 }

@@ -161,8 +161,6 @@ func (e *featureGo) reference(node *projectionNode) (string, error) {
 	return name, nil
 }
 
-// stringType declares a string enum: a definition is the enum type itself,
-// an inline enum receives a type named after its path.
 func (e *featureGo) stringType(node *projectionNode, path string, position typePosition) string {
 	values := node.stringEnum()
 	if len(values) == 0 {

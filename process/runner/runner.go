@@ -40,10 +40,11 @@ var (
 type State string
 
 const (
-	Starting State = "starting"
-	Running  State = "running"
-	Exited   State = "exited"
-	Unknown  State = "unknown"
+	Starting   State = "starting"
+	Running    State = "running"
+	NotCreated State = "not_created"
+	Exited     State = "exited"
+	Unknown    State = "unknown"
 )
 
 type LaunchRequest struct {
@@ -55,6 +56,31 @@ type LaunchRequest struct {
 	Directory          string            `json:"directory,omitempty"`
 	Configuration      framevalue.Digest `json:"configuration"`
 	CredentialRevision string            `json:"credentialRevision,omitempty"`
+}
+
+// LaunchResult distinguishes this invocation's undispatched request from an
+// original runner's durable observation. An undispatched retry says nothing
+// about whether an earlier invocation of the same request was accepted.
+type LaunchResult struct {
+	Observation
+	undispatchedRequest *framevalue.Digest
+}
+
+func (result LaunchResult) NotDispatched(request LaunchRequest) bool {
+	if result.Observation != (Observation{}) || result.undispatchedRequest == nil {
+		return false
+	}
+	data, err := jsonv2.Marshal(request)
+	return err == nil && framevalue.Hash(data) == *result.undispatchedRequest
+}
+
+func notDispatched(request LaunchRequest) LaunchResult {
+	data, err := jsonv2.Marshal(request)
+	if err != nil {
+		return LaunchResult{}
+	}
+	digest := framevalue.Hash(data)
+	return LaunchResult{undispatchedRequest: &digest}
 }
 
 type Observation struct {
@@ -70,6 +96,37 @@ type Observation struct {
 
 func (o Observation) Reference() AttemptRef {
 	return AttemptRef{AttemptID: o.AttemptID, RunnerID: o.RunnerID, Epoch: o.Epoch}
+}
+
+func (o Observation) validate() error {
+	if !o.Reference().valid() || o.PID < 0 {
+		return frame.ErrInvalid
+	}
+	switch o.State {
+	case Starting:
+		if o.PID != 0 || o.ExitCode != nil || o.ProofID != "" {
+			return frame.ErrInvalid
+		}
+	case Running:
+		if o.PID == 0 || o.ExitCode != nil || o.ProofID != "" {
+			return frame.ErrInvalid
+		}
+	case NotCreated:
+		if o.PID != 0 || o.ExitCode != nil || !frame.ValidName(o.ProofID) {
+			return frame.ErrInvalid
+		}
+	case Exited:
+		if o.PID == 0 || o.ExitCode == nil || !frame.ValidName(o.ProofID) {
+			return frame.ErrInvalid
+		}
+	case Unknown:
+		if o.ExitCode != nil || o.ProofID != "" {
+			return frame.ErrInvalid
+		}
+	default:
+		return frame.ErrInvalid
+	}
+	return nil
 }
 
 func (o Observation) clone() Observation {
@@ -108,7 +165,7 @@ type storedAttempt struct {
 }
 
 const (
-	journalVersion            = 2
+	journalVersion            = 3
 	journalFilename           = "attempts.json"
 	authorityLockFilename     = "authority.lock"
 	lostWaitReason            = "runner restarted without the original child wait identity"
@@ -173,6 +230,9 @@ func Open(config Config) (_ *Server, err error) {
 		config: config, id: rand.Text(), lock: lock, fenced: true, journal: journal,
 		processes: make(map[string]*process), terminalObservations: make(map[string]Observation),
 	}
+	if err := server.restoreReceipts(); err != nil {
+		return nil, err
+	}
 	if err := server.persist(); err != nil {
 		return nil, err
 	}
@@ -221,7 +281,7 @@ func loadJournal(path string, maxAttempts int) (journal, error) {
 		return journal{}, errors.New("runner: incompatible journal")
 	}
 	for id, attempt := range loaded.Attempts {
-		if id != attempt.Observation.AttemptID || !frame.ValidName(id) || attempt.RequestDigest.Validate() != nil {
+		if id != attempt.Observation.AttemptID || attempt.Observation.validate() != nil || attempt.RequestDigest.Validate() != nil {
 			return journal{}, errors.New("runner: invalid attempt record")
 		}
 		switch attempt.Observation.State {
@@ -262,33 +322,34 @@ func (s *Server) Fence(_ context.Context, epoch uint64) error {
 	return nil
 }
 
-func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ Observation, err error) {
-	if err := validateLaunch(request); err != nil {
-		return Observation{}, err
+func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ LaunchResult, err error) {
+	if err := request.Validate(); err != nil {
+		return notDispatched(request), err
 	}
 	if err := cancellation.Err(ctx); err != nil {
-		return Observation{}, err
+		return notDispatched(request), err
 	}
 	digest, err := requestIdentity(request)
 	if err != nil {
-		return Observation{}, err
+		return notDispatched(request), err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if previous, found, err := s.replayLaunch(request, digest); err != nil || found {
-		return previous, err
+		return LaunchResult{Observation: previous}, err
 	}
 	if s.closed || s.fenced || request.RunnerID != s.id || request.Epoch != s.journal.Epoch {
-		return Observation{}, ErrFenced
+		return notDispatched(request), ErrFenced
 	}
 	if err := cancellation.Err(ctx); err != nil {
-		return Observation{}, err
-	}
-	if len(s.journal.Attempts) >= s.config.MaxAttempts {
-		return Observation{}, frame.ErrCapacity
+		return notDispatched(request), err
 	}
 	observation := Observation{AttemptID: request.AttemptID, Epoch: request.Epoch, RunnerID: s.id, State: Starting}
+	full := len(s.journal.Attempts) >= s.config.MaxAttempts
 	s.journal.Attempts[request.AttemptID] = storedAttempt{Observation: observation, RequestDigest: digest}
+	if full {
+		return s.failedStart(request.AttemptID, "outstanding attempt capacity reached", frame.ErrCapacity)
+	}
 	if err := s.persist(); err != nil {
 		s.fenced = true
 		return s.failedStart(request.AttemptID, "attempt reservation failed", err)
@@ -321,9 +382,9 @@ func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ Observati
 	}
 	go s.wait(request.AttemptID, live, path)
 	if persistErr != nil {
-		return observation, errors.Join(ErrUnknown, persistErr)
+		return LaunchResult{Observation: observation}, errors.Join(ErrUnknown, persistErr)
 	}
-	return observation, nil
+	return LaunchResult{Observation: observation}, nil
 }
 
 // spawn starts the verified executable with only stdin and stdout connected.
@@ -406,7 +467,7 @@ func (s *Server) CloseAttempt(ctx context.Context, ref AttemptRef) (Observation,
 		s.mu.Unlock()
 		return observation, ErrUnknown
 	}
-	if observation.State == Exited {
+	if observation.State == Exited || observation.State == NotCreated {
 		s.mu.Unlock()
 		return observation, nil
 	}
@@ -423,7 +484,12 @@ func (s *Server) CloseAttempt(ctx context.Context, ref AttemptRef) (Observation,
 	s.mu.Unlock()
 	select {
 	case <-ctx.Done():
-		return observation, ctx.Err()
+		select {
+		case <-done:
+			return s.Inspect(context.Background(), ref.AttemptID)
+		default:
+			return observation, cancellation.Err(ctx)
+		}
 	case <-done:
 		return s.Inspect(context.Background(), ref.AttemptID)
 	}
@@ -478,17 +544,18 @@ func releaseExecutable(path string) error {
 	return nil
 }
 
-func (s *Server) failedStart(id, reason string, cause error) (Observation, error) {
+func (s *Server) failedStart(id, reason string, cause error) (LaunchResult, error) {
 	item := s.journal.Attempts[id]
-	item.Observation.State = Exited
+	item.Observation.State = NotCreated
 	item.Observation.ProofID = rand.Text()
 	item.Observation.Reason = reason
 	observed, err := s.publishTerminal(id, item.Observation)
-	return observed, errors.Join(cause, err)
+	return LaunchResult{Observation: observed}, errors.Join(cause, err)
 }
 
 func (s *Server) publishTerminal(id string, observation Observation) (Observation, error) {
-	if _, pending := s.terminalObservations[id]; pending || s.journal.Attempts[id].Observation.State == Exited {
+	state := s.journal.Attempts[id].Observation.State
+	if _, pending := s.terminalObservations[id]; pending || state == Exited || state == NotCreated {
 		return Observation{}, ErrConflict
 	}
 	// Persistence may delay publication, but cannot replace the original Wait's
@@ -557,7 +624,16 @@ func (s *Server) persist() error {
 		for id, observation := range s.terminalObservations {
 			item := projection.Attempts[id]
 			item.Observation = observation
-			projection.Attempts[id] = item
+			if observation.State == NotCreated {
+				// A refusal must remain replayable even when every active slot is
+				// occupied. It uses the same immutable receipt as acknowledged exits.
+				if err := s.storeReceipt(item); err != nil {
+					return err
+				}
+				delete(projection.Attempts, id)
+			} else {
+				projection.Attempts[id] = item
+			}
 		}
 	}
 	if err := storeRecord(filepath.Join(s.config.Directory, journalFilename), projection); err != nil {
@@ -600,7 +676,7 @@ func syncDirectory(path string) error {
 	return errors.Join(directory.Sync(), directory.Close())
 }
 
-func validateLaunch(request LaunchRequest) error {
+func (request LaunchRequest) Validate() error {
 	if !request.AttemptRef.valid() || !filepath.IsAbs(request.Command) || !validProgramText(request.Command) || request.ExecutableDigest.Validate() != nil || request.Configuration.Validate() != nil {
 		return fmt.Errorf("%w: runner requires exact launch identity", frame.ErrInvalid)
 	}

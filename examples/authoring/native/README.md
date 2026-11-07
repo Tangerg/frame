@@ -37,3 +37,11 @@ Point snapshot. Their implementations remain protected while a document view is
 open. The workbench owns source revisions, file limits, validation policy and
 the resulting report. The behavioral tests cover cancellation, cleanup after
 partial preparation, changing sources, and retirement with an outstanding view.
+
+The non-test Go files can be copied together into an independent author module.
+They import only public Frame packages. The author owns its regular-file and
+byte-limit policy; the Unix opener refuses a FIFO without waiting for a writer.
+The release digest includes the plugin implementation and its platform-specific
+source policy. The external-consumer check in `scripts/go-consumer.py` compiles
+these copied files against the committed module artifact without a workspace or
+replace directive.

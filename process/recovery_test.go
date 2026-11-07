@@ -53,7 +53,11 @@ func recoveryRunner(t *testing.T, directory string) *runner.Client {
 			t.Error(err)
 		}
 	})
-	return runner.Dial(socket)
+	client, err := runner.NewClient(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
 }
 
 func TestRecoveryRequiresOriginalSealedNonCreationEvidence(t *testing.T) {
@@ -182,7 +186,7 @@ func TestRecoverOriginalExitHandoffAcrossHostRestart(t *testing.T) {
 			attempt := recordAttempt(t, store, identity)
 			req := runner.LaunchRequest{AttemptRef: runner.AttemptRef{AttemptID: attempt.ID, Epoch: attempt.Epoch, RunnerID: attempt.Realm}, Command: filepath.Join(directory, "missing"), ExecutableDigest: value.Hash([]byte("missing")), Configuration: attempt.Binding.Units[0].Configuration}
 			exit, err := original.Launch(ctx, req)
-			if err == nil || exit.State != runner.Exited {
+			if err == nil || exit.State != runner.NotCreated {
 				t.Fatalf("failed start: %+v %v", exit, err)
 			}
 			receipt, err := exit.ExitReceipt()
@@ -193,7 +197,7 @@ func TestRecoverOriginalExitHandoffAcrossHostRestart(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			proof := sqlite.ExitProof{AttemptID: attempt.ID, Realm: attempt.Realm, ExitID: exit.ProofID, Kind: "runner-wait", Evidence: evidence}
+			proof := sqlite.ExitProof{AttemptID: attempt.ID, Realm: attempt.Realm, ExitID: exit.ProofID, Kind: "runner-not-created", Evidence: evidence}
 			if err := store.AcceptExit(ctx, attempt.ID, proof); err != nil {
 				t.Fatal(err)
 			}

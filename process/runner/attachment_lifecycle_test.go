@@ -70,7 +70,7 @@ func openAttachmentPipe(t *testing.T, server *Server, ctx context.Context, metho
 	reader := bufio.NewReader(host)
 	line, err := readLine(reader)
 	if err == nil {
-		_, err = decodeResponse(line)
+		_, err = decodeResponse(line, method)
 	}
 	return host, reader, done, err
 }

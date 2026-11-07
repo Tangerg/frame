@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -52,7 +53,7 @@ func compilerUnit(point frame.Point[PassMetadata, CompilerPass]) frame.UnitSpec 
 	emit := frame.Offer(emission.Stage, point)
 	return frame.UnitSpec{ID: "compiler", Exports: frame.Exports(normalize, emit), Prepare: func(setup *frame.Setup) error {
 		if err := normalize.Bind(setup, normalization, CompilerPass(func(ctx context.Context, input string) (string, error) {
-			if err := ctx.Err(); err != nil {
+			if err := cancellation.Err(ctx); err != nil {
 				return "", err
 			}
 			return strings.TrimSpace(input), nil
@@ -60,7 +61,7 @@ func compilerUnit(point frame.Point[PassMetadata, CompilerPass]) frame.UnitSpec 
 			return err
 		}
 		return emit.Bind(setup, emission, CompilerPass(func(ctx context.Context, input string) (string, error) {
-			if err := ctx.Err(); err != nil {
+			if err := cancellation.Err(ctx); err != nil {
 				return "", err
 			}
 			return "compiled(" + input + ")", nil
@@ -77,7 +78,7 @@ type lineAnalyzer struct {
 func (a lineAnalyzer) analyze(ctx context.Context, input SourceRevision) ([]Diagnostic, error) {
 	var found []Diagnostic
 	for line, text := range strings.Split(input.Text, "\n") {
-		if err := ctx.Err(); err != nil {
+		if err := cancellation.Err(ctx); err != nil {
 			return nil, err
 		}
 		if a.violatedBy(text) {
@@ -115,7 +116,7 @@ func formatterUnit(point frame.Point[FormatterMetadata, Formatter]) frame.UnitSp
 	identity := frame.Offer(unchanged.Name, point)
 	return frame.UnitSpec{ID: "format", Exports: frame.Exports(trim, identity), Prepare: func(setup *frame.Setup) error {
 		if err := trim.Bind(setup, trimmed, Formatter(func(ctx context.Context, input SourceRevision) (Patch, error) {
-			if err := ctx.Err(); err != nil {
+			if err := cancellation.Err(ctx); err != nil {
 				return Patch{}, err
 			}
 			return Patch{ExpectedRevision: input.Revision, Text: strings.TrimSpace(input.Text) + "\n"}, nil
@@ -123,7 +124,7 @@ func formatterUnit(point frame.Point[FormatterMetadata, Formatter]) frame.UnitSp
 			return err
 		}
 		return identity.Bind(setup, unchanged, Formatter(func(ctx context.Context, input SourceRevision) (Patch, error) {
-			if err := ctx.Err(); err != nil {
+			if err := cancellation.Err(ctx); err != nil {
 				return Patch{}, err
 			}
 			return Patch{ExpectedRevision: input.Revision, Text: input.Text}, nil

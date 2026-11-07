@@ -7,10 +7,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json/jsontext"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
 
+	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/internal/nilness"
 
 	"github.com/Tangerg/frame"
@@ -31,7 +33,11 @@ func connect(ctx context.Context, channel io.ReadWriteCloser, maximum int, confi
 			return nil, err
 		}
 	}
-	return client.Connect(ctx, transport, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		return nil, errors.Join(err, cancellation.Err(ctx))
+	}
+	return session, nil
 }
 
 // Transport carries one MCP session over the stream a process driver attached
@@ -63,7 +69,6 @@ func NewTransport(channel io.ReadWriteCloser, maxFrameBytes int) (*Transport, er
 
 const sdkFrameLimitDisabled = -1
 
-// Connect implements the SDK transport contract for one session.
 func (t *Transport) Connect(ctx context.Context) (sdk.Connection, error) {
 	writer := &frameWriter{channel: t.channel, maximum: t.maximum}
 	transport := &sdk.IOTransport{Reader: newFrameReader(t.channel, t.maximum), Writer: writer, MaxLineLength: sdkFrameLimitDisabled}

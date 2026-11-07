@@ -262,7 +262,7 @@ func (h *Host) changeInstallation(ctx context.Context, id InstallationID, prepar
 		return err
 	}
 	state := CommitRejected
-	var retired []*Instance
+	var retired []*unitInstance
 	// Confirmation can interrupt after withdrawal; the original retirement must still start.
 	defer func() {
 		for _, instance := range retired {
@@ -344,7 +344,7 @@ func (h *Host) usesInstallationLocked(id InstallationID) bool {
 	return false
 }
 
-func (h *Host) applyInstallationTransition(id InstallationID, next *installed) []*Instance {
+func (h *Host) applyInstallationTransition(id InstallationID, next *installed) []*unitInstance {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if next == nil {
@@ -352,7 +352,7 @@ func (h *Host) applyInstallationTransition(id InstallationID, next *installed) [
 	} else {
 		h.installations[id] = next
 	}
-	var retired []*Instance
+	var retired []*unitInstance
 	for _, instance := range h.instances {
 		if instance.snapshot.requiresInstallation(id) {
 			retired = append(retired, instance)

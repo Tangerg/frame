@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/process"
 	"github.com/Tangerg/frame/process/runner"
@@ -69,7 +70,7 @@ func (d *documents) replace(ctx context.Context, invocation portable.Invocation)
 	select {
 	case d.indexed <- request:
 	case <-ctx.Done():
-		return value.JSON{}, context.Cause(ctx)
+		return value.JSON{}, cancellation.Err(ctx)
 	}
 	return value.EncodeJSON(writeResult{true})
 }
@@ -199,7 +200,11 @@ func run(ctx context.Context, entry string) (answer string, returned error) {
 		return "", err
 	}
 	defer func() { returned = errors.Join(returned, store.Close()) }()
-	driver, err := process.New(process.Config{Runner: runner.Dial(socket), Store: store, Source: program, CloseTimeout: closeTimeout, MaxFrameBytes: maxFrameBytes})
+	client, err := runner.NewClient(socket)
+	if err != nil {
+		return "", err
+	}
+	driver, err := process.New(process.Config{Runner: client, Store: store, Source: program, CloseTimeout: closeTimeout, MaxFrameBytes: maxFrameBytes})
 	if err != nil {
 		return "", err
 	}
@@ -238,7 +243,7 @@ func run(ctx context.Context, entry string) (answer string, returned error) {
 		}
 		answer = doc.Text
 	case <-ctx.Done():
-		return "", context.Cause(ctx)
+		return "", cancellation.Err(ctx)
 	}
 	return answer, nil
 }

@@ -8,7 +8,7 @@ import {
   type Poll,
 } from "../protocol.generated.js";
 import type { HostControl } from "./control.js";
-import { ControlPump } from "./pump.js";
+import { ControlPump, type PumpOptions } from "./pump.js";
 import { Runtime } from "./runtime.js";
 
 const authority = { id: "host", epoch: "1" };
@@ -121,6 +121,53 @@ function fixture(units: readonly Unit[], preparationCapacity = 2) {
 }
 
 describe("control pump ownership", () => {
+  it("captures prototype options once and invokes the original private-state handler", async () => {
+    const failure = new Error("original setup failed");
+    const f = fixture([
+      defineUnit({
+        id: "failed",
+        imports: {},
+        exports: {},
+        setup() {
+          throw failure;
+        },
+      }),
+    ]);
+    class Options implements PumpOptions {
+      readonly reads = { interval: 0, capacity: 0, handler: 0 };
+      readonly #failures: unknown[] = [];
+
+      get intervalMilliseconds() {
+        return ++this.reads.interval === 1 ? 1 : 0;
+      }
+      get preparationCapacity() {
+        return ++this.reads.capacity === 1 ? 1 : 0;
+      }
+      get onError() {
+        this.reads.handler++;
+        return this.#report;
+      }
+      get failures() {
+        return this.#failures;
+      }
+      #report(error: unknown) {
+        this.#failures.push(error);
+      }
+    }
+    const options = new Options();
+    const pump = new ControlPump(f.runtime, options);
+    const replacement = vi.fn();
+    Object.defineProperty(options, "onError", { value: replacement });
+    try {
+      await pump.synchronize();
+      await vi.waitFor(() => expect(options.failures).toEqual([failure]));
+      expect(options.reads).toEqual({ interval: 1, capacity: 1, handler: 1 });
+      expect(replacement).not.toHaveBeenCalled();
+    } finally {
+      await pump.close();
+    }
+  });
+
   it("joins the original poll when its control adapter reenters synchronization", async () => {
     const f = fixture([]);
     const poll = vi.mocked(f.control.poll).getMockImplementation()!;

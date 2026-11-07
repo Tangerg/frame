@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 
+	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/internal/localfile"
 )
 
@@ -63,10 +64,14 @@ type contextReader struct {
 }
 
 func (r contextReader) Read(buffer []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
+	if err := cancellation.Err(r.ctx); err != nil {
 		return 0, err
 	}
-	return r.reader.Read(buffer)
+	n, err := r.reader.Read(buffer)
+	if err != nil && !errors.Is(err, io.EOF) {
+		err = errors.Join(err, cancellation.Err(r.ctx))
+	}
+	return n, err
 }
 func readBounded(ctx context.Context, reader io.Reader, limit int64) ([]byte, error) {
 	if limit < 0 {

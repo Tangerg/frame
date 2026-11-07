@@ -5,11 +5,68 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/value"
 )
+
+// External tests compose the public Bridge with the same real SQLite fault
+// boundary as the Store tests, without adding a production injection port.
+func InstallRealmReceiptFault(t *testing.T, store *Store, before, after func(string) error) {
+	t.Helper()
+	installTransactionFault(t, store, transactionFault{beforeExec: before, afterExec: after})
+}
+
+func TestRealmReceiptReservationRetainsItsOriginalCommitOutcome(t *testing.T) {
+	for _, afterCommit := range []bool{false, true} {
+		name := "rollback"
+		if afterCommit {
+			name = "committed"
+		}
+		t.Run(name, func(t *testing.T) {
+			store, _, _ := testStore(t)
+			lost := errors.New("receipt commit acknowledgement lost")
+			var interrupted atomic.Bool
+			fail := func(statement string) error {
+				if statement == "COMMIT" && interrupted.CompareAndSwap(false, true) {
+					return lost
+				}
+				return nil
+			}
+			fault := transactionFault{beforeExec: fail}
+			if afterCommit {
+				fault = transactionFault{afterExec: fail}
+			}
+			installTransactionFault(t, store, fault)
+			digest := value.Hash([]byte("original request"))
+			reservation, err := store.ReserveRealmReceipt(t.Context(), "original", digest, 256)
+			if reservation == nil || !errors.Is(err, lost) {
+				t.Fatalf("original reservation was lost: %v, %v", reservation, err)
+			}
+			result := []byte("original result")
+			if err := reservation.Record(t.Context(), result); !afterCommit {
+				if !errors.Is(err, sql.ErrNoRows) {
+					t.Fatalf("rolled-back reservation acquired a result: %v", err)
+				}
+				if _, err := store.ReserveRealmReceipt(t.Context(), "original", value.Hash([]byte("another request")), 256); err != nil {
+					t.Fatal(err)
+				}
+				if err := reservation.Record(t.Context(), result); !errors.Is(err, ErrConflict) {
+					t.Fatalf("old handle settled another reservation: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("committed reservation could not settle: %v", err)
+				}
+				if data, err := store.RealmReceipt(t.Context(), "original"); err != nil || !bytes.Equal(data, result) {
+					t.Fatalf("original result was not retained: %q, %v", data, err)
+				}
+			}
+		})
+	}
+}
 
 func TestRealmReceiptReservesItsCompletionBeforeCapacityIsExhausted(t *testing.T) {
 	store, err := Open(t.Context(), Config{Path: filepath.Join(t.TempDir(), "history.db"), Admission: frame.NewAdmission(), MaxRealmHistoryBytes: 258})

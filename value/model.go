@@ -2,6 +2,7 @@ package value
 
 import (
 	jsonv1 "encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 )
@@ -11,40 +12,55 @@ type schemaModeler interface{ JSONSchemaModel() any }
 // A codec's explicit model owns its wire shape. Its private Go representation
 // must never become a competing declaration in generated consumers.
 func EncodingModel(target reflect.Type) (reflect.Type, error) {
-	if err := ValidateType(target); err != nil {
-		return nil, err
+	return validateType(target, make(map[reflect.Type]bool))
+}
+
+func encodingType(target reflect.Type) (reflect.Type, error) {
+	if target == nil {
+		return nil, errors.New("json: value type is required")
 	}
 	seen := make(map[reflect.Type]bool)
+	stringOnly := false
 	for {
-		for target != nil && target.Kind() == reflect.Pointer {
-			if seen[target] {
-				return nil, fmt.Errorf("json: recursive encoding model for %s has no value shape", target)
-			}
-			seen[target] = true
-			target = target.Elem()
-		}
-		if target == reflect.TypeFor[jsonv1.Number]() {
-			return target, nil
-		}
-		if err := ValidateType(target); err != nil {
-			return nil, err
-		}
-		if opaqueType(target) {
-			return reflect.TypeFor[any](), nil
-		}
-		if !customEncoder(target) && !customDecoder(target) {
-			return target, nil
-		}
 		if seen[target] {
 			return nil, fmt.Errorf("json: recursive encoding model for %s has no value shape", target)
 		}
 		seen[target] = true
+		if target.Kind() == reflect.Pointer {
+			target = target.Elem()
+			continue
+		}
+		if target.Kind() == reflect.Interface && target.NumMethod() != 0 {
+			return nil, fmt.Errorf("json: %s requires a concrete value type", target)
+		}
+		if opaqueType(target) {
+			target = reflect.TypeFor[any]()
+			break
+		}
+		if target == reflect.TypeFor[jsonv1.Number]() {
+			break
+		}
+		encoded, decoded := customEncoder(target), customDecoder(target)
+		modeled := target.Implements(reflect.TypeFor[schemaModeler]())
+		if !encoded && !decoded && !modeled && !reflect.PointerTo(target).Implements(reflect.TypeFor[schemaModeler]()) {
+			break
+		}
+		if !encoded || !decoded || !modeled {
+			return nil, fmt.Errorf("json: %s requires an encoder, decoder and value-receiver JSONSchemaModel", target)
+		}
+		stringOnly = stringOnly || !jsonEncoder(target) || !jsonDecoder(target)
 		model, err := encodingModel(target)
 		if err != nil {
 			return nil, err
 		}
 		target = model
 	}
+	// Text codecs can only consume and produce JSON strings, even if their model
+	// claims an opaque or numeric shape.
+	if stringOnly && (target.Kind() != reflect.String || target == reflect.TypeFor[jsonv1.Number]()) {
+		return nil, fmt.Errorf("json: text codec requires a string encoding model, got %s", target)
+	}
+	return target, nil
 }
 
 func encodingModel(target reflect.Type) (model reflect.Type, err error) {

@@ -66,7 +66,11 @@ func serveFixture(t *testing.T) (*Server, *Client, context.Context) {
 			t.Error(err)
 		}
 	})
-	return server, Dial(filepath.Join(directory, "socket")), ctx
+	client, err := NewClient(filepath.Join(directory, "socket"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return server, client, ctx
 }
 
 func TestAttemptStartsOnceAndAttachCarriesActualProcessIO(t *testing.T) {
@@ -155,7 +159,7 @@ func TestFailedExecutableIsTerminalAndNeverStartsOnRetry(t *testing.T) {
 	request := launchFixture(t, client, "bad", 1, t.TempDir())
 	request.ExecutableDigest = framevalue.Hash([]byte("not the executable"))
 	first, err := client.Launch(ctx, request)
-	if err == nil || first.State != Exited || first.ProofID == "" {
+	if err == nil || first.State != NotCreated || first.ProofID == "" {
 		t.Fatalf("bad executable: %+v %v", first, err)
 	}
 	second, err := client.Launch(ctx, request)
@@ -195,7 +199,7 @@ func TestFailedProcessCreationReleasesVerifiedExecutable(t *testing.T) {
 				request.Directory = filepath.Join(request.Directory, "missing")
 			}
 			observation, err := client.Launch(ctx, request)
-			if err == nil || observation.State != Exited || observation.ProofID == "" || observation.Reason != "process creation failed" {
+			if err == nil || observation.State != NotCreated || observation.ProofID == "" || observation.Reason != "process creation failed" {
 				t.Fatalf("failed creation: %+v, %v", observation, err)
 			}
 			if paths := executableSnapshots(t, server); len(paths) != 0 {
@@ -287,7 +291,10 @@ func TestSeparateRunnerSurvivesClientAndLosesNoAttemptOnRestart(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	client := Dial(filepath.Join(directory, "socket"))
+	client, err := NewClient(filepath.Join(directory, "socket"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := client.Fence(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +305,10 @@ func TestSeparateRunnerSurvivesClientAndLosesNoAttemptOnRestart(t *testing.T) {
 	}
 	// A new Host connection observes the original process, without receiving any
 	// launch handle or replaying the effect.
-	reconnected := Dial(filepath.Join(directory, "socket"))
+	reconnected, err := NewClient(filepath.Join(directory, "socket"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	seen, err := reconnected.Inspect(ctx, request.AttemptID)
 	if err != nil || seen.PID != first.PID || seen.RunnerID != first.RunnerID {
 		t.Fatalf("reconnected observation: %+v %v", seen, err)
@@ -558,7 +568,7 @@ func TestFailedStartRequiresDurableExitBeforePublishingProof(t *testing.T) {
 		t.Fatalf("close: %+v %v", o, err)
 	}
 	restore()
-	if o, err := c.Launch(ctx, r); err != nil || o.State != Exited || o.ProofID == "" || o.ProofID != original.ProofID {
+	if o, err := c.Launch(ctx, r); err != nil || o.State != NotCreated || o.ProofID == "" || o.ProofID != original.ProofID {
 		t.Fatalf("failed start replay changed the original evidence: %+v %v", o, err)
 	}
 	if _, err := os.Stat(filepath.Join(r.Directory, "created")); !errors.Is(err, os.ErrNotExist) {
@@ -585,7 +595,7 @@ func TestOnlyAcceptedExitReleasesCapacityAndPreventsReplay(t *testing.T) {
 	if _, err := c.Launch(ctx, next); !errors.Is(err, frame.ErrCapacity) {
 		t.Fatalf("unclaimed exit lost protection: %v", err)
 	}
-	receipt := ExitReceipt{AttemptID: o.AttemptID, Epoch: o.Epoch, RunnerID: o.RunnerID, ProofID: o.ProofID}
+	receipt := ExitReceipt{AttemptID: o.AttemptID, Epoch: o.Epoch, RunnerID: o.RunnerID, ProofID: o.ProofID, State: o.State}
 	wrong := receipt
 	wrong.ProofID += "other"
 	if err := c.AcknowledgeExit(ctx, wrong); !errors.Is(err, ErrConflict) {
@@ -596,6 +606,11 @@ func TestOnlyAcceptedExitReleasesCapacityAndPreventsReplay(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	refused, err := c.Launch(ctx, next)
+	if err != nil || refused.State != NotCreated {
+		t.Fatalf("capacity refusal was replayed as creation: %+v %v", refused, err)
+	}
+	next.AttemptID = "third"
 	if _, err := c.Launch(ctx, next); err != nil {
 		t.Fatal(err)
 	}
@@ -641,7 +656,7 @@ func TestHandedOffIdentitySurvivesRunnerRestartAndNewEpoch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	receipt := ExitReceipt{AttemptID: exit.AttemptID, Epoch: exit.Epoch, RunnerID: exit.RunnerID, ProofID: exit.ProofID}
+	receipt := ExitReceipt{AttemptID: exit.AttemptID, Epoch: exit.Epoch, RunnerID: exit.RunnerID, ProofID: exit.ProofID, State: exit.State}
 	if err := first.AcknowledgeExit(ctx, receipt); err != nil {
 		t.Fatal(err)
 	}

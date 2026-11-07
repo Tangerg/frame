@@ -57,7 +57,10 @@ func checkExecution(t *testing.T, protocol process.Protocol, capability *portabl
 		t.Fatal(err)
 	}
 	defer store.Close()
-	client := runner.Dial(socket)
+	client, err := runner.NewClient(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cfg := process.Config{Runner: client, Store: store, Source: fixtureSource{source(t, dir)}, CloseTimeout: 3 * time.Second, MaxFrameBytes: 1 << 20, Protocol: protocol}
 	driver, err := process.New(cfg)
 	if err != nil {

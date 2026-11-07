@@ -41,7 +41,7 @@ func (r *exitCapacityRunner) Fence(_ context.Context, epoch uint64) error {
 	return nil
 }
 
-func (r *exitCapacityRunner) Launch(_ context.Context, request runner.LaunchRequest) (runner.Observation, error) {
+func (r *exitCapacityRunner) Launch(_ context.Context, request runner.LaunchRequest) (runner.LaunchResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.launches++
@@ -49,7 +49,7 @@ func (r *exitCapacityRunner) Launch(_ context.Context, request runner.LaunchRequ
 	r.observation.Epoch = request.Epoch
 	r.observation.RunnerID = request.RunnerID
 	r.observation.State = runner.Running
-	return r.observation, nil
+	return runner.LaunchResult{Observation: r.observation}, nil
 }
 
 type emptyProcessStream struct{ bytes.Buffer }
@@ -73,6 +73,8 @@ func (r *exitCapacityRunner) CloseAttempt(_ context.Context, ref runner.AttemptR
 		return runner.Observation{}, runner.ErrUnknown
 	}
 	r.observation.State = runner.Exited
+	r.observation.PID = 1
+	r.observation.ExitCode = new(0)
 	return r.observation, nil
 }
 
@@ -93,7 +95,7 @@ func (*exitCapacityRunner) ProveAbsent(context.Context, runner.AttemptRef) (runn
 type emptyProcessProgram struct{}
 
 func (emptyProcessProgram) Program(context.Context, frame.UnitBinding) (process.Program, error) {
-	return process.Program{}, nil
+	return process.Program{Command: "/approved/executable", ExecutableDigest: value.Hash(nil)}, nil
 }
 
 func exitCapacityHost(t *testing.T, requestBytes int, authority *exitCapacityRunner) (*frame.Host, *sqlite.Store, frame.UnitRef) {

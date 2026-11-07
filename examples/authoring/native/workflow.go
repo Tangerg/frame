@@ -92,27 +92,11 @@ func (w *Workbench) Prepare(ctx context.Context) (*Prepared, error) {
 	if err != nil {
 		return nil, err
 	}
-	converter, err := frame.SelectOne(snapshot, w.Contracts.Converters, "authoring.text-priority/1", func(values []frame.Candidate[document.ConverterMetadata, document.Converter]) (frame.Candidate[document.ConverterMetadata, document.Converter], error) {
-		values = slices.DeleteFunc(values, func(value frame.Candidate[document.ConverterMetadata, document.Converter]) bool {
-			return value.Metadata().Format != textFormat
-		})
-		slices.SortFunc(values, func(a, b frame.Candidate[document.ConverterMetadata, document.Converter]) int {
-			return cmp.Or(cmp.Compare(b.Metadata().Priority, a.Metadata().Priority), cmp.Compare(a.ID(), b.ID()))
-		})
-		if len(values) == 0 {
-			return frame.Candidate[document.ConverterMetadata, document.Converter]{}, errors.New("authoring: no text converter is available")
-		}
-		return values[0], nil
-	})
+	converter, err := frame.SelectOne(snapshot, w.Contracts.Converters, "authoring.text-priority/1", selectTextConverter)
 	if err != nil {
 		return nil, err
 	}
-	validators, err := frame.SelectMany(snapshot, w.Contracts.Validators, "authoring.validator-order/1", func(values []frame.Candidate[document.ValidatorMetadata, document.Validator]) ([]frame.Candidate[document.ValidatorMetadata, document.Validator], error) {
-		slices.SortFunc(values, func(a, b frame.Candidate[document.ValidatorMetadata, document.Validator]) int {
-			return cmp.Or(cmp.Compare(a.Metadata().Order, b.Metadata().Order), cmp.Compare(a.Metadata().Name, b.Metadata().Name), cmp.Compare(a.ID(), b.ID()))
-		})
-		return values, nil
-	})
+	validators, err := frame.SelectMany(snapshot, w.Contracts.Validators, "authoring.validator-order/1", orderValidators)
 	if err != nil {
 		return nil, err
 	}
@@ -121,6 +105,52 @@ func (w *Workbench) Prepare(ctx context.Context) (*Prepared, error) {
 		return nil, err
 	}
 	return &Prepared{host: w.Host, scope: w.scope, plan: plan, converter: converter, validators: validators, output: w.output}, nil
+}
+
+func selectTextConverter(values []frame.Candidate[document.ConverterMetadata, document.Converter]) (frame.Candidate[document.ConverterMetadata, document.Converter], error) {
+	type converterCandidate struct {
+		candidate frame.Candidate[document.ConverterMetadata, document.Converter]
+		metadata  document.ConverterMetadata
+	}
+	converters := make([]converterCandidate, 0, len(values))
+	for _, candidate := range values {
+		metadata, err := candidate.Metadata()
+		if err != nil {
+			return frame.Candidate[document.ConverterMetadata, document.Converter]{}, err
+		}
+		if metadata.Format == textFormat {
+			converters = append(converters, converterCandidate{candidate, metadata})
+		}
+	}
+	if len(converters) == 0 {
+		return frame.Candidate[document.ConverterMetadata, document.Converter]{}, errors.New("authoring: no text converter is available")
+	}
+	selected := slices.MinFunc(converters, func(a, b converterCandidate) int {
+		return cmp.Or(cmp.Compare(b.metadata.Priority, a.metadata.Priority), cmp.Compare(a.candidate.ID(), b.candidate.ID()))
+	})
+	return selected.candidate, nil
+}
+
+func orderValidators(values []frame.Candidate[document.ValidatorMetadata, document.Validator]) ([]frame.Candidate[document.ValidatorMetadata, document.Validator], error) {
+	type validatorCandidate struct {
+		candidate frame.Candidate[document.ValidatorMetadata, document.Validator]
+		metadata  document.ValidatorMetadata
+	}
+	validators := make([]validatorCandidate, len(values))
+	for index, candidate := range values {
+		metadata, err := candidate.Metadata()
+		if err != nil {
+			return nil, err
+		}
+		validators[index] = validatorCandidate{candidate, metadata}
+	}
+	slices.SortFunc(validators, func(a, b validatorCandidate) int {
+		return cmp.Or(cmp.Compare(a.metadata.Order, b.metadata.Order), cmp.Compare(a.metadata.Name, b.metadata.Name), cmp.Compare(a.candidate.ID(), b.candidate.ID()))
+	})
+	for index, validator := range validators {
+		values[index] = validator.candidate
+	}
+	return values, nil
 }
 
 type Report struct {
@@ -185,7 +215,7 @@ func (p *Prepared) Acquire(ctx context.Context, owner *frame.Lifetime, reference
 	if err != nil {
 		return nil, err
 	}
-	if err := context.Cause(work.Context()); err != nil {
+	if err := contextError(work.Context()); err != nil {
 		return nil, err
 	}
 	return &View{use: use, file: file, size: int64(written), report: report}, nil

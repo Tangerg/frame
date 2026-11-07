@@ -327,35 +327,61 @@ func (a *App) plan(ctx context.Context) (*frame.BindingPlan, error) {
 	if err != nil {
 		return nil, err
 	}
-	converters, err := frame.Candidates(snapshot, a.Contracts.Converters)
+	converter, err := frame.SelectOne(snapshot, a.Contracts.Converters, "documents.markdown-priority/1", selectMarkdownConverter)
 	if err != nil {
 		return nil, err
 	}
-	converters = slices.DeleteFunc(converters, func(candidate frame.Candidate[ConverterMetadata, Converter]) bool {
-		return candidate.Metadata().Format != markdownFormat
-	})
-	slices.SortFunc(converters, func(left, right frame.Candidate[ConverterMetadata, Converter]) int {
-		return cmp.Or(cmp.Compare(right.Metadata().Priority, left.Metadata().Priority), cmp.Compare(left.Source().InstallationID, right.Source().InstallationID))
-	})
-	if len(converters) == 0 {
-		return nil, frame.ErrUnavailable
-	}
-	validators, err := frame.Candidates(snapshot, a.Contracts.Validators)
-	if err != nil {
-		return nil, err
-	}
-	slices.SortFunc(validators, func(left, right frame.Candidate[ValidatorMetadata, Validator]) int {
-		return cmp.Or(cmp.Compare(left.Metadata().Order, right.Metadata().Order), cmp.Compare(left.Metadata().Name, right.Metadata().Name))
-	})
-	converter, err := frame.Select(snapshot, a.Contracts.Converters, "documents.markdown-priority/1", converters[0])
-	if err != nil {
-		return nil, err
-	}
-	validation, err := frame.Select(snapshot, a.Contracts.Validators, "documents.validation-order/1", validators...)
+	validation, err := frame.SelectMany(snapshot, a.Contracts.Validators, "documents.validation-order/1", orderValidators)
 	if err != nil {
 		return nil, err
 	}
 	return frame.Capture(snapshot, converter.Ref(), validation.Ref())
+}
+
+func selectMarkdownConverter(values []frame.Candidate[ConverterMetadata, Converter]) (frame.Candidate[ConverterMetadata, Converter], error) {
+	type converterCandidate struct {
+		candidate frame.Candidate[ConverterMetadata, Converter]
+		metadata  ConverterMetadata
+	}
+	converters := make([]converterCandidate, 0, len(values))
+	for _, candidate := range values {
+		metadata, err := candidate.Metadata()
+		if err != nil {
+			return frame.Candidate[ConverterMetadata, Converter]{}, err
+		}
+		if metadata.Format == markdownFormat {
+			converters = append(converters, converterCandidate{candidate, metadata})
+		}
+	}
+	if len(converters) == 0 {
+		return frame.Candidate[ConverterMetadata, Converter]{}, frame.ErrUnavailable
+	}
+	selected := slices.MinFunc(converters, func(left, right converterCandidate) int {
+		return cmp.Or(cmp.Compare(right.metadata.Priority, left.metadata.Priority), cmp.Compare(left.candidate.Source().InstallationID, right.candidate.Source().InstallationID))
+	})
+	return selected.candidate, nil
+}
+
+func orderValidators(values []frame.Candidate[ValidatorMetadata, Validator]) ([]frame.Candidate[ValidatorMetadata, Validator], error) {
+	type validatorCandidate struct {
+		candidate frame.Candidate[ValidatorMetadata, Validator]
+		metadata  ValidatorMetadata
+	}
+	validators := make([]validatorCandidate, len(values))
+	for index, candidate := range values {
+		metadata, err := candidate.Metadata()
+		if err != nil {
+			return nil, err
+		}
+		validators[index] = validatorCandidate{candidate, metadata}
+	}
+	slices.SortFunc(validators, func(left, right validatorCandidate) int {
+		return cmp.Or(cmp.Compare(left.metadata.Order, right.metadata.Order), cmp.Compare(left.metadata.Name, right.metadata.Name))
+	})
+	for index, validator := range validators {
+		values[index] = validator.candidate
+	}
+	return values, nil
 }
 
 func (a *App) ReplaceConverter(ctx context.Context, version string) error {

@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+- Reject dynamic Use ownership cycles using the original resource and provider
+  edges. Caller-owned EventRoute handles no longer hold the Host's mutable
+  release identity; copies share the same opaque authorization.
+- **Breaking:** a Host-created Setup or Use lifetime cannot own another Host's
+  Use or serve as another Host's lifetime. Its dependency graph belongs to its
+  original admission authority. Application-created lifetimes can still own
+  work across multiple Hosts.
+- Keep portable metadata as one admitted immutable wire value. Typed reads
+  decode detached projections through the original codec model. **Breaking:**
+  `Candidate.Metadata` now returns `(M, error)`; callers must handle decoding
+  failure before ordering or using metadata. Native metadata encoders receive
+  detached values and cannot mutate published state.
+- Resolve typed value admission, nullability and generated schemas from the
+  same codec model. Refuse incomplete codecs, private-only unencodable structs,
+  lossy nullable `omitzero` declarations and a second `jsonschema:"nullable"`
+  declaration. Keep explicit `omitempty` semantics.
+- Close browser publication interruptions, transient reconnect failures,
+  oversized route admission and uncertain Snapshot receipt reservations through
+  their original owners. A lost reservation acknowledgement no longer prevents
+  closing that Snapshot identity.
+- Capture SDK option values and callbacks once, retain their original method
+  receivers, and capture React object identities at binding. Node error
+  diagnostics cannot replace a stream's first failure or prevent Peer closure.
+- Bound directory enumeration before allocation and keep MCP discovery inside
+  the original page budget. Preserve cancellation categories and causes across
+  process, distribution and example boundaries.
+- Keep the document preview's original Snapshot until confirmed consumption or
+  closure; bound author-client diagnostics without retaining thrown objects.
+  Buildcheck records a non-returning analyzer as failure. The native author
+  sources compile in an independent module using only public dependencies.
+- **Breaking:** replace `runner.Dial` with `runner.NewClient(socket)` returning
+  `(*Client, error)`. Construction validates the static socket path; operations
+  still validate the current authority and establish their own connection.
+  Internal unit instances are no longer exported as `frame.Instance`.
+- **Breaking:** runner launch returns `LaunchResult`, preserving the original
+  invocation's nondispatch evidence separately from the runner's observation.
+  Durable `NotCreated` receipts settle definite refusals without consuming an
+  active-attempt slot. `Exited` still requires the original child Wait. Receipt
+  admission shares the observation state rules, including custom Runner results.
+  Control responses use operation-specific result variants and explicit true
+  acknowledgments. Runner journal version 3 requires fresh development state;
+  no old-protocol adapter or persisted-state migration is included.
+
 - Preserve original ownership across interrupted installation persistence,
   browser Snapshot capture, copied Go handles, and uncertain preview requests.
   Installation callback interruption requires recovery; an incomplete Snapshot
@@ -29,7 +72,7 @@
   and `data:` for module leases. Plain HTTP to any other host is refused, since
   it would expose the realm credential or let the network replace module code
   that the approved digest cannot verify.
-- Require `github.com/Tangerg/go-sdk` v1.8.1-scope.4. The SDK now cancels a
+- Require `github.com/Tangerg/go-sdk` v1.8.1-scope.5. The SDK now cancels a
   queued MCP write without sending it and closes the connection when an active
   write is canceled, so `process/mcp` no longer wraps SDK connections to provide
   that itself. Frame admission, strict JSON and the outbound frame budget are

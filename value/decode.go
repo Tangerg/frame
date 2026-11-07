@@ -41,12 +41,14 @@ func (e *ShapeError) Error() string {
 	return e.Field + " " + e.Detail
 }
 
-// validateValueShape keeps typed decoding aligned with the generated schema.
-// Pointers in protocol DTOs represent omission, not nullable JSON fields; the
-// standard decoder otherwise collapses both spellings to nil. Opaque JSON
-// values remain open and may contain null by contract.
+// Standard decoding alone collapses typed null and missing members to zero
+// values. Shape checks retain the encoding model's null and presence boundary.
 func validateValueShape(raw jsontext.Value, target reflect.Type, path string) error {
-	if AllowsNull(target) {
+	model, err := encodingType(target)
+	if err != nil {
+		return err
+	}
+	if model.Kind() == reflect.Interface {
 		return nil
 	}
 	for target.Kind() == reflect.Pointer {

@@ -56,7 +56,9 @@ Only regular files are accepted. Symbolic links, special files, traversal, absol
 paths, platform-reserved names, duplicate destinations and case aliases are refused.
 Portable paths use ASCII to avoid filesystem-dependent Unicode aliases. Executable
 bits are explicit in the inventory; setuid, setgid and sticky bits are rejected.
-`Limits.Entries` counts files, directories and their implicit ancestors. Source
+`Limits.Entries` counts files, directories and their implicit ancestors. Directory
+imports and cache revalidation read bounded batches against that same inventory;
+they refuse excess entries before allocating or sorting the rest of a directory. Source
 and expanded bytes, manifest bytes and compression ratio have explicit configurable
 bounds. ZIP checksums and artifact hashes are both verified.
 Staging belongs to one installation operation and is removed unless atomically

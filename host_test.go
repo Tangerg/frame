@@ -184,12 +184,15 @@ func TestPointReadSetMetadataAndWithdrawal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if candidates[0].Metadata()["label"] != "first" {
+	if view, err := candidates[0].Metadata(); err != nil || view["label"] != "first" {
 		t.Fatal("metadata aliased setup")
 	}
-	copy := candidates[0].Metadata()
+	copy, err := candidates[0].Metadata()
+	if err != nil {
+		t.Fatal(err)
+	}
 	copy["label"] = "consumer mutation"
-	if candidates[0].Metadata()["label"] != "first" {
+	if view, err := candidates[0].Metadata(); err != nil || view["label"] != "first" {
 		t.Fatal("candidate exposes mutable metadata")
 	}
 	selection, err := frame.Select(snapshot, point, "first@1", candidates[0])
@@ -369,7 +372,7 @@ func TestPortablePointHasIndependentMetadataAndValueIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if candidates[0].Metadata().Priority != 2 {
+	if view, err := candidates[0].Metadata(); err != nil || view.Priority != 2 {
 		t.Fatal("portable metadata not decoded through original schema")
 	}
 	if _, err := host.DecodeMetadata(point.Ref(), []byte(`{"priority":"2"}`)); err == nil {

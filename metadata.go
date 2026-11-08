@@ -20,15 +20,18 @@ type metadataVisit struct {
 	length  int
 }
 
-// Portable metadata retains its admitted wire value. Typed views are decoded
-// afresh; their pointers and codecs never become a second published value.
-type portableMetadata struct {
-	encoded framevalue.JSON
-	target  reflect.Type
-}
-
 func readMetadata[M any](original any) (M, error) {
 	var zero M
+	if encoded, ok := original.(framevalue.JSON); ok {
+		if reflect.TypeFor[M]() == reflect.TypeFor[framevalue.JSON]() {
+			return original.(M), nil
+		}
+		var metadata M
+		if err := framevalue.DecodeValue(encoded.Bytes(), &metadata, "metadata"); err != nil {
+			return zero, err
+		}
+		return metadata, nil
+	}
 	value, err := snapshotMetadata(original)
 	if err != nil || value == nil {
 		return zero, err
@@ -40,26 +43,12 @@ func readMetadata[M any](original any) (M, error) {
 	return metadata, nil
 }
 
-func (m portableMetadata) decoded() (any, error) {
-	if m.target == nil || m.target == reflect.TypeFor[framevalue.JSON]() {
-		return m.encoded, nil
-	}
-	destination := reflect.New(m.target)
-	if err := framevalue.DecodeValue(m.encoded.Bytes(), destination.Interface(), "metadata"); err != nil {
-		return nil, err
-	}
-	return destination.Elem().Interface(), nil
-}
-
 func snapshotMetadata(value any) (any, error) {
 	if value == nil {
 		return nil, nil
 	}
 	if admitted, ok := value.(framevalue.JSON); ok {
 		return admitted, admitted.Validate()
-	}
-	if admitted, ok := value.(portableMetadata); ok {
-		return admitted.decoded()
 	}
 	snapshot := metadataClone{active: make(map[metadataVisit]bool)}
 	cloned, err := snapshot.clone(reflect.ValueOf(value))
@@ -155,7 +144,7 @@ func (c *metadataClone) cloneCollection(value reflect.Value) (reflect.Value, err
 	return result, nil
 }
 
-func decodeMetadata(definition *declaration, value framevalue.JSON) (any, error) {
+func decodeMetadata(definition *contractDefinition, metadataType reflect.Type, value framevalue.JSON) (any, error) {
 	if err := value.Validate(); err != nil {
 		return nil, err
 	}
@@ -164,10 +153,10 @@ func decodeMetadata(definition *declaration, value framevalue.JSON) (any, error)
 			return nil, fmt.Errorf("point metadata: %w", err)
 		}
 	}
-	if definition.metadataType == nil || definition.metadataType == reflect.TypeFor[framevalue.JSON]() {
+	if metadataType == nil || metadataType == reflect.TypeFor[framevalue.JSON]() {
 		return value, nil
 	}
-	destination := reflect.New(definition.metadataType)
+	destination := reflect.New(metadataType)
 	if err := framevalue.DecodeValue(value.Bytes(), destination.Interface(), "metadata"); err != nil {
 		return nil, err
 	}
@@ -177,26 +166,29 @@ func decodeMetadata(definition *declaration, value framevalue.JSON) (any, error)
 	return snapshotMetadata(destination.Elem().Interface())
 }
 
-func prepareMetadata(definition *declaration, metadata any) (any, error) {
+func prepareMetadata(definition *contractDefinition, metadataType reflect.Type, metadata any) (any, error) {
 	if definition.metadataSchema != nil {
 		value, err := framevalue.EncodeJSON(metadata)
 		if err != nil {
 			return nil, err
 		}
-		if _, err := decodeMetadata(definition, value); err != nil {
+		if _, err := decodeMetadata(definition, metadataType, value); err != nil {
 			return nil, err
 		}
-		return portableMetadata{encoded: value, target: definition.metadataType}, nil
+		return value, nil
 	}
 	if value, ok := metadata.(framevalue.JSON); ok {
-		return decodeMetadata(definition, value)
+		if _, err := decodeMetadata(definition, metadataType, value); err != nil {
+			return nil, err
+		}
+		return value, nil
 	}
-	if definition.metadataType != nil {
+	if metadataType != nil {
 		if metadata == nil {
-			if definition.metadataType.Kind() != reflect.Interface {
+			if metadataType.Kind() != reflect.Interface {
 				return nil, ErrContractMismatch
 			}
-		} else if !reflect.TypeOf(metadata).AssignableTo(definition.metadataType) {
+		} else if !reflect.TypeOf(metadata).AssignableTo(metadataType) {
 			return nil, ErrContractMismatch
 		}
 	}

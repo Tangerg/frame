@@ -134,10 +134,21 @@ func ParseLock(data []byte) (Lock, error) {
 	if err := jsonv2.Unmarshal(data, &lock, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return lock, errors.Join(ErrInvalid, err)
 	}
-	if lock.SchemaVersion != LockSchemaVersion || !frame.ValidName(lock.Package) || lock.Release.Validate() != nil {
-		return lock, ErrInvalid
+	return lock, lock.Validate()
+}
+
+func (l Lock) Validate() error {
+	if l.SchemaVersion != LockSchemaVersion || !frame.ValidName(l.Package) || l.Release.Validate() != nil {
+		return ErrInvalid
 	}
-	return lock, validateDependencies(lock.Dependencies)
+	if err := validateDependencies(l.Dependencies); err != nil {
+		return err
+	}
+	if _, err := indexArtifacts(l.Artifacts); err != nil {
+		return err
+	}
+	_, err := indexContracts(l.Contracts)
+	return err
 }
 
 func validateDependencies(dependencies []LockedRelease) error {

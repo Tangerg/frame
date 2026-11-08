@@ -56,7 +56,7 @@ func DeclaredCapability(setup *frame.Setup, ref frame.ContractRef) (*portable.Ca
 type ExportMetadata map[string]value.JSON
 
 func (m ExportMetadata) Export(decl frame.ExportDeclaration, service Service) frame.ExportValue {
-	v := frame.ExportValue{Name: decl.Name, Contract: decl.Contract, Value: service, Durable: true}
+	v := frame.ExportValue{Name: decl.Name, Contract: decl.Contract, Value: service}
 	if metadata, exists := m[decl.Name]; exists {
 		v.Metadata = metadata
 	}

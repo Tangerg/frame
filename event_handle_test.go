@@ -19,7 +19,7 @@ func TestEventRouteHandleCopiesRetainOnlyTheirOriginalAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	plugin := installNative(t, host, "event", frame.Unit{Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "source", Contract: event.Ref()}, {Name: "receiver", Contract: event.Ref()}}}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
-		return []frame.ExportValue{{Name: "source", Contract: event.Ref(), Durable: true}, {Name: "receiver", Contract: event.Ref(), Durable: true}}, nil
+		return []frame.ExportValue{{Name: "source", Contract: event.Ref()}, {Name: "receiver", Contract: event.Ref()}}, nil
 	}})
 	sender := source("event", plugin, "main", "source", event.Ref())
 	receiver := source("event", plugin, "main", "receiver", event.Ref())

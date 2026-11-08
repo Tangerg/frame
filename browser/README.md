@@ -22,6 +22,10 @@ one immutable artifact. Opaque installation configuration is withheld by
 default; `PublicConfiguration` must explicitly project data intended for the
 browser. Optional `RemoteSource` adapters bind real Portable transports to exact
 approved imports and register their resources with the original Setup.
+The Host's semantic contract registration is shared across Realms. The Bridge
+validates each host-side `Object` against its exact instance, export and contract;
+a native Go registration of the same reference does not impose a Go value type
+on the JavaScript implementation. Native objects remain in their original Realm.
 
 Bootstrap callers create an operation ID and a random resume token before
 calling `OpenRealm`. The operation-to-Realm mapping and only a credential
@@ -39,6 +43,10 @@ credential or a mismatched verifier is an authentication refusal.
 returns the published control DTO. The application owns TLS, origin policy and
 bootstrap authentication. The bearer credential belongs to a Realm and must
 never appear in plugin configuration, artifact URLs or logs.
+The envelope and method inputs pass through the same `value.DecodeValue` shape
+admission that owns generated field presence and nullability. A missing or null
+collection is refused before dispatch; an explicit empty collection remains valid
+when the method permits it.
 The same Go declarations generate the SDK's executable response checks. Control
 encoding, identity comparisons, capacity reservations and persisted evidence use
 one deterministic JSON policy: nil collections encode as empty collections,

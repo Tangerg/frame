@@ -16,6 +16,13 @@ type Driver interface {
 	Prepare(context.Context, *Setup) ([]ExportValue, error)
 }
 
+// ExportValidator admits a driver's host-side representation when its execution
+// realm cannot expose the contract's local Go implementation. The driver must
+// validate the value against the original instance and export identity.
+type ExportValidator interface {
+	ValidateExport(instanceID string, export ExportValue) error
+}
+
 // RealmDriver creates separate actual instances for each explicitly addressed
 // execution realm. Provider selection remains with Host.
 type RealmDriver interface {
@@ -35,7 +42,6 @@ type ExportValue struct {
 	Contract ContractRef
 	Metadata any
 	Value    any
-	Durable  bool
 }
 
 type BoundValue struct {
@@ -180,11 +186,11 @@ func OptionalImport[T any](setup *Setup, slot string, contract Contract[T]) (T, 
 }
 
 func Provide[T any](name string, contract Contract[T], value T) ExportValue {
-	return ExportValue{Name: name, Contract: contract.Ref(), Value: value, Durable: true}
+	return ExportValue{Name: name, Contract: contract.Ref(), Value: value}
 }
 
 func Contribute[M, V any](name string, point Point[M, V], metadata M, value V) ExportValue {
-	return ExportValue{Name: name, Contract: point.Ref(), Metadata: metadata, Value: value, Durable: true}
+	return ExportValue{Name: name, Contract: point.Ref(), Metadata: metadata, Value: value}
 }
 
 type Unit struct {

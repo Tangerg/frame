@@ -1,8 +1,6 @@
 package mcp
 
 import (
-	"encoding/json/jsontext"
-	"errors"
 	"fmt"
 	"regexp"
 
@@ -80,54 +78,4 @@ func (c *ManagedContract) Capability() *portable.Capability {
 		return nil
 	}
 	return new(*c.capability)
-}
-
-type managedDescription struct {
-	Protocol     string                      `json:"protocol"`
-	Methods      []portable.MethodDescriptor `json:"methods"`
-	Capabilities []struct {
-		Name     string         `json:"name"`
-		Contract jsontext.Value `json:"contract"`
-	} `json:"capabilities"`
-}
-
-func (d managedDescription) verify(expected map[string]*ManagedContract) (*portable.Method, error) {
-	if d.Protocol != managedVersion || len(d.Capabilities) != len(expected) {
-		return nil, fmt.Errorf("%w: managed description differs from admission", frame.ErrContractMismatch)
-	}
-	methods := make(map[string]*portable.Method, len(d.Methods))
-	for _, descriptor := range d.Methods {
-		if methods[descriptor.Name] != nil || descriptor.Target == "" {
-			return nil, frame.ErrContractMismatch
-		}
-		method, err := portable.AdmitMethod(descriptor)
-		if err != nil {
-			return nil, err
-		}
-		methods[method.Name()] = method
-	}
-	seen := make(map[string]bool, len(expected))
-	for _, entry := range d.Capabilities {
-		required := expected[entry.Name]
-		if required == nil || seen[entry.Name] {
-			return nil, fmt.Errorf("%w: unexpected managed export %q", frame.ErrContractMismatch, entry.Name)
-		}
-		seen[entry.Name] = true
-		actual, err := ParseManagedContract(entry.Contract)
-		if err != nil || actual.wire != required.wire {
-			return nil, errors.Join(frame.ErrContractMismatch, err)
-		}
-		for _, member := range required.capability.Descriptor().Methods {
-			published := methods[member.Name]
-			requiredMethod, _ := required.capability.Method(member.Name)
-			if published == nil || published.Identity() != requiredMethod.Identity() {
-				return nil, fmt.Errorf("%w: inconsistent managed method %q", frame.ErrContractMismatch, member.Name)
-			}
-		}
-	}
-	receipt := methods[managedReceipt]
-	if receipt != nil && receipt.Identity().Digest().String() != receiptFingerprint {
-		return nil, fmt.Errorf("%w: unexpected managed receipt contract", frame.ErrContractMismatch)
-	}
-	return receipt, nil
 }

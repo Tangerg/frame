@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"errors"
+	"maps"
+	"slices"
 
 	"github.com/Tangerg/frame"
 )
@@ -85,10 +87,18 @@ func (s *Store) applyInstallation(ctx context.Context, tx Executor, id frame.Ins
 			return err
 		}
 	}
-	if s.projectInstallation == nil {
-		return nil
+	for _, ownerID := range slices.Sorted(maps.Keys(s.owners)) {
+		owner := s.owners[ownerID]
+		if owner.projectInstallation == nil {
+			continue
+		}
+		if err := owner.withinSchema(tx, func(grant Executor) error {
+			return owner.projectInstallation(ctx, grant, cloneChange(change))
+		}); err != nil {
+			return err
+		}
 	}
-	return s.projectInstallation(ctx, tx, cloneChange(change))
+	return nil
 }
 
 func checkInstalled(ctx context.Context, tx Executor, id frame.InstallationID, expected *frame.InstallationRecord) error {

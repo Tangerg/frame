@@ -101,13 +101,17 @@ func (h *Host) ValidateUse(ctx context.Context, use *Use) error {
 }
 
 func (h *Host) Acquire(ctx context.Context, plan *BindingPlan, config UseConfig) (*Use, error) {
-	if ctx == nil || plan == nil || config.Owner == nil {
+	if ctx == nil || plan == nil {
 		return nil, ErrInvalid
 	}
 	config, err := h.useConfig(config)
 	if err != nil {
 		return nil, err
 	}
+	return h.acquirePlan(ctx, plan, config)
+}
+
+func (h *Host) acquirePlan(ctx context.Context, plan *BindingPlan, config UseConfig) (*Use, error) {
 	if config.Realm != plan.realm {
 		return nil, ErrContractMismatch
 	}
@@ -127,7 +131,7 @@ func (h *Host) AcquireChild(ctx context.Context, parent *Use, plan *BindingPlan)
 // AcquireRecord restores the original owner's committed graph without rerunning
 // selection. A serialized plan snapshot alone cannot authorize this path.
 func (h *Host) AcquireRecord(ctx context.Context, recordID string, config UseConfig) (*Use, error) {
-	if ctx == nil || config.Owner == nil || h.readAcceptedBinding == nil || !ValidName(recordID) {
+	if ctx == nil || h.readAcceptedBinding == nil || !ValidName(recordID) {
 		return nil, ErrInvalid
 	}
 	config, err := h.useConfig(config)
@@ -138,17 +142,27 @@ func (h *Host) AcquireRecord(ctx context.Context, recordID string, config UseCon
 }
 
 func (h *Host) AcquireUnit(ctx context.Context, root UnitRef, config UseConfig) (*Use, error) {
+	if ctx == nil {
+		return nil, ErrInvalid
+	}
+	config, err := h.useConfig(config)
+	if err != nil {
+		return nil, err
+	}
 	plan, err := h.PlanUnit(ctx, config.Realm, root, nil)
 	if err != nil {
 		return nil, err
 	}
-	return h.Acquire(ctx, plan, config)
+	return h.acquirePlan(ctx, plan, config)
 }
 
 // useConfig completes a request from its parent. A child must remain inside
 // its parent's execution, realm and scope; another owner would detach
 // protected work from the permission that admitted it.
 func (h *Host) useConfig(config UseConfig) (UseConfig, error) {
+	if config.Owner == nil {
+		return config, ErrInvalid
+	}
 	if config.Owner.authority != nil && config.Owner.authority != h.identity {
 		return config, fmt.Errorf("%w: use owner belongs to another authority", ErrInvalid)
 	}
@@ -181,7 +195,7 @@ func (h *Host) useConfig(config UseConfig) (UseConfig, error) {
 func (h *Host) inherit(config UseConfig, parent *Use) (UseConfig, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.lifetime.isClosing() || h.uses[parent.id] != parent {
+	if h.lifetime.isClosing() || h.uses[parent.id] != parent || parent.lifetime.isClosing() {
 		return config, ErrClosed
 	}
 	if !config.Scope.issued() {
@@ -306,10 +320,19 @@ func (h *Host) acquirePrepared(ctx context.Context, plan *BindingPlan, config Us
 		if err := h.attachPlanMembers(use, plan, config.Owner); err != nil {
 			return err
 		}
+		if err := h.reserveUse(use, config.Owner); err != nil {
+			return err
+		}
 		if err := h.protectUse(admitted, use); err != nil {
 			return err
 		}
-		return h.publishUse(use, config.Owner)
+		if config.Owner.isClosing() || h.lifetime.isClosing() || use.lifetime.isClosing() {
+			return ErrClosed
+		}
+		if err := contextError(admitted); err != nil {
+			return err
+		}
+		return h.admission.RecoveryError()
 	})
 	if err != nil {
 		return nil, err
@@ -467,15 +490,15 @@ func (h *Host) protectUse(admitted context.Context, use *Use) error {
 	return nil
 }
 
-// publishUse makes the Use a resource of both its owner and the Host, the
-// latter after every instance it holds, so Host closure drains it first.
-func (h *Host) publishUse(use *Use, owner *Lifetime) error {
+// The original Use must remain reachable if approval succeeds but publication
+// fails. Both lifetimes reserve its cleanup before durable protection begins.
+func (h *Host) reserveUse(use *Use, owner *Lifetime) error {
 	causes := use.lifetime.ObserveCloseCauses()
 	resource := Resource{
 		Name:   useResourcePrefix + use.id,
 		Cancel: func(cause error) { use.BeginClose(cause) },
 		Close: func(ctx context.Context) (ReleaseState, error) {
-			outcome, err := use.Close(ctx)
+			outcome, err := use.close(ctx, use.settlement.observe())
 			return releaseState(outcome, causes.join(err))
 		},
 	}
@@ -486,19 +509,18 @@ func (h *Host) publishUse(use *Use, owner *Lifetime) error {
 	var ownerDependencies []*ResourceHandle
 	if owner == h.lifetime {
 		ownerDependencies = instances
-	}
-	ownerResource, err := owner.Own(resource, ownerDependencies...)
-	if err != nil {
-		return err
-	}
-	use.ownerResource = ownerResource
-	if owner != h.lifetime {
+	} else {
 		hostResource, err := h.lifetime.Own(resource, instances...)
 		if err != nil {
 			return err
 		}
 		use.hostResource = hostResource
 	}
+	ownerResource, err := owner.Own(resource, ownerDependencies...)
+	if err != nil {
+		return err
+	}
+	use.ownerResource = ownerResource
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.uses[use.id] = use
@@ -514,7 +536,7 @@ func (u *Use) BeginClose(cause error) *Close {
 }
 
 // settleRelease durably releases a protected Use. A failed attempt fences new
-// admission and is retried only when a caller explicitly closes the Use again.
+// admission and only an explicit Use or Host close can request another attempt.
 func (u *Use) settleRelease(proof ReleaseProof) {
 	h := u.host
 	for u.protected {
@@ -564,7 +586,11 @@ func (u *Use) Close(ctx context.Context) (CloseOutcome, error) {
 	if ctx == nil || u == nil {
 		return CloseOutcome{}, ErrInvalid
 	}
-	reports := u.settlement.requestRetry()
+	reports, _ := u.settlement.requestRetry()
+	return u.close(ctx, reports)
+}
+
+func (u *Use) close(ctx context.Context, reports uint64) (CloseOutcome, error) {
 	causes := u.lifetime.ObserveCloseCauses()
 	outcome, err := u.BeginClose(ErrClosed).Wait(ctx)
 	err = causes.join(err)

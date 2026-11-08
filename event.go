@@ -187,7 +187,7 @@ func DeliverEvent[T any](ctx context.Context, host *Host, route *EventRoute, eve
 func (h *Host) enterRoute(ctx context.Context, token *EventRoute, event *declaration) (*Work, *Work, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if !sameDeclaration(h.contracts.lookup(event.ref), event) {
+	if !h.contracts.matches(event) {
 		return nil, nil, ErrContractMismatch
 	}
 	route, err := h.liveRouteLocked(token)

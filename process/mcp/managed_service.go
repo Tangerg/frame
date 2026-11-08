@@ -107,11 +107,7 @@ func (s *ManagedService) invoke(ctx context.Context, invocation portable.Invocat
 	if err := cancellation.Err(ctx); err != nil {
 		return framevalue.JSON{}, err
 	}
-	raw, err := s.dispatch(ctx, method, params, emit)
-	if err != nil {
-		return framevalue.JSON{}, err
-	}
-	return framevalue.ParseJSON(raw)
+	return s.dispatch(ctx, method, params, emit)
 }
 
 // grantCallback lets the backend call back into Frame while this invocation
@@ -135,31 +131,32 @@ func (s *ManagedService) grantCallback(ctx context.Context, method *portable.Met
 	return finish, grant.attach(metadata, managedCallback)
 }
 
-func (s *ManagedService) dispatch(ctx context.Context, method *portable.Method, params *managedParams, emit process.Emit) (jsontext.Value, error) {
-	var raw jsontext.Value
+func (s *ManagedService) dispatch(ctx context.Context, method *portable.Method, params *managedParams, emit process.Emit) (framevalue.JSON, error) {
+	var reply managedReply
 	var err error
 	if emit != nil {
-		raw, err = s.stream(ctx, method, params, emit)
+		reply, err = s.stream(ctx, method, params, emit)
 	} else {
-		raw, err = managedRaw(ctx, s.session, managedInvoke, params)
+		reply, err = requestManaged(ctx, s.session, managedInvoke, params)
 		if err != nil {
-			err = managedDispatchError(err)
+			err = errors.Join(process.ErrOutcomeUnknown, err)
 		}
 	}
-	if err != nil {
-		return nil, err
+	raw, refusal := reply.result()
+	if refusal != nil {
+		return framevalue.JSON{}, errors.Join(refusal, err)
 	}
-	return raw, managedDispatchError(method.ValidateOutput(raw))
-}
-
-func managedDispatchError(err error) error {
-	if err != nil {
-		_, interrupted := errors.AsType[*callbackPanic](err)
-		if _, refused := errors.AsType[*Refusal](err); !refused || interrupted {
-			return errors.Join(process.ErrOutcomeUnknown, err)
-		}
+	if len(raw) == 0 && err != nil {
+		return framevalue.JSON{}, err
 	}
-	return err
+	if validationErr := method.ValidateOutput(raw); validationErr != nil {
+		return framevalue.JSON{}, errors.Join(process.ErrOutcomeUnknown, err, validationErr)
+	}
+	output, parseErr := framevalue.ParseJSON(raw)
+	if parseErr != nil {
+		return framevalue.JSON{}, errors.Join(process.ErrOutcomeUnknown, err, parseErr)
+	}
+	return output, err
 }
 
 // ReadReceipt observes the backend's durable reply for the original admitted
@@ -181,7 +178,11 @@ func (s *ManagedService) ReadReceipt(ctx context.Context, invocation portable.In
 	if err != nil {
 		return framevalue.JSON{}, false, err
 	}
-	raw, err := managedRaw(ctx, s.session, managedInvoke, params)
+	received, err := requestManaged(ctx, s.session, managedInvoke, params)
+	if err != nil {
+		return framevalue.JSON{}, false, err
+	}
+	raw, err := received.result()
 	if err != nil {
 		return framevalue.JSON{}, false, err
 	}
@@ -205,10 +206,13 @@ func (s *ManagedService) ReadReceipt(ctx context.Context, invocation portable.In
 	if err := reply.UnmarshalJSON(receipt.Reply); err != nil {
 		return framevalue.JSON{}, false, err
 	}
-	raw, err = reply.unpack()
+	settled, err := reply.unpack()
 	if err != nil {
-		_, refused := errors.AsType[*Refusal](err)
-		return framevalue.JSON{}, refused, err
+		return framevalue.JSON{}, false, err
+	}
+	raw, err = settled.result()
+	if err != nil {
+		return framevalue.JSON{}, true, err
 	}
 	if err := method.ValidateOutput(raw); err != nil {
 		return framevalue.JSON{}, false, err

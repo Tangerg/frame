@@ -38,7 +38,7 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 	if err != nil {
 		return nil, err
 	}
-	store := &Store{lock: lock, admission: config.Admission, owners: make(map[string]Owner), maxRequestBytes: config.MaxRequestBytes, maxSubmissions: config.MaxSubmissionsPerOwner, maxRealmHistoryBytes: config.MaxRealmHistoryBytes, projectInstallation: config.ProjectInstallation}
+	store := &Store{lock: lock, admission: config.Admission, owners: make(map[string]Owner), maxRequestBytes: config.MaxRequestBytes, maxSubmissions: config.MaxSubmissionsPerOwner, maxRealmHistoryBytes: config.MaxRealmHistoryBytes}
 	store.control = Owner{store: store, id: installationOwnerID}
 	defer func() {
 		if err != nil {
@@ -54,11 +54,14 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 		return nil, err
 	}
 	owners := slices.SortedFunc(slices.Values(config.Owners), func(a, b OwnerSchema) int { return strings.Compare(a.ID, b.ID) })
-	statements, digest, err := store.registerOwners(owners)
+	for index := range owners {
+		owners[index].Statements = slices.Clone(owners[index].Statements)
+	}
+	digest, err := store.registerOwners(owners)
 	if err != nil {
 		return nil, err
 	}
-	expectedShape, err := schemaShape(ctx, statements)
+	expectedShape, err := store.admitSchema(ctx, owners)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: owner schema: %w", err)
 	}
@@ -96,21 +99,19 @@ func (s *Store) resolveLimits() error {
 
 // registerOwners admits the complete owner set. Its declarations, in owner
 // order, are the schema identity a reopened database must match.
-func (s *Store) registerOwners(owners []OwnerSchema) ([]string, framevalue.Digest, error) {
-	statements := []string{schema}
+func (s *Store) registerOwners(owners []OwnerSchema) (framevalue.Digest, error) {
 	declarations := schema
 	for _, owner := range owners {
 		if !frame.ValidName(owner.ID) || strings.HasPrefix(owner.ID, reservedOwnerPrefix) || owner.References == nil {
-			return nil, framevalue.Digest{}, errors.New("sqlite: owner requires an identity and a reference reader")
+			return framevalue.Digest{}, errors.New("sqlite: owner requires an identity and a reference reader")
 		}
 		if _, duplicate := s.owners[owner.ID]; duplicate {
-			return nil, framevalue.Digest{}, errors.New("sqlite: duplicate owner")
+			return framevalue.Digest{}, errors.New("sqlite: duplicate owner")
 		}
-		s.owners[owner.ID] = Owner{store: s, id: owner.ID, references: owner.References}
-		statements = append(statements, owner.Statements...)
+		s.owners[owner.ID] = Owner{store: s, id: owner.ID, references: owner.References, projectInstallation: owner.ProjectInstallation}
 		declarations += "\n-- owner " + owner.ID + "\n" + strings.Join(owner.Statements, ";\n")
 	}
-	return statements, framevalue.Hash([]byte(declarations)), nil
+	return framevalue.Hash([]byte(declarations)), nil
 }
 
 func databasePath(requested string) (string, error) {

@@ -48,12 +48,6 @@ type Credentials struct {
 	ResumeToken     string    `json:"resumeToken"`
 }
 
-// Object is a reference to an actual object owned by the browser Runtime. It is
-// not a cross-runtime implementation of the object's native methods.
-type Object struct {
-	Reference ObjectRef
-}
-
 // Bridge is the browser-js driver and the Host side of every Realm's control
 // channel. Its tables project Host and SQLite owners for one authority epoch.
 type Bridge struct {

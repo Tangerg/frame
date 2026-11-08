@@ -44,7 +44,11 @@ func TestManagedFingerprintIsIndependentOfFrameProjection(t *testing.T) {
 		Name     string         `json:"name"`
 		Contract jsontext.Value `json:"contract"`
 	}{"reader", wire})
-	if _, err := description.verify(map[string]*ManagedContract{"reader": drift}); !errors.Is(err, frame.ErrContractMismatch) {
+	var catalog managedCatalog
+	if err := catalog.admit("service", "reader", drift); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.verify(description); !errors.Is(err, frame.ErrContractMismatch) {
 		t.Fatalf("scope drift: %v", err)
 	}
 	raw.Scope = "installation"
@@ -54,7 +58,11 @@ func TestManagedFingerprintIsIndependentOfFrameProjection(t *testing.T) {
 		t.Fatal("presentation changed the wire identity")
 	}
 	description.Methods[0].Target = "pipeline"
-	if _, err := description.verify(map[string]*ManagedContract{"reader": want}); !errors.Is(err, frame.ErrContractMismatch) {
+	catalog = managedCatalog{}
+	if err := catalog.admit("service", "reader", want); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.verify(description); !errors.Is(err, frame.ErrContractMismatch) {
 		t.Fatalf("member drift: %v", err)
 	}
 }
@@ -230,7 +238,7 @@ func TestManagedCallGrantDistinguishesAliasesOfOnePhysicalExport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := managedConnection{session: session, contracts: map[string]*ManagedContract{"reader": contract},
+	c := managedConnection{session: session,
 		contributions: []managedContribution{{ID: "public", Export: "reader"}, {ID: "private", Export: "reader"}},
 		values:        []frame.ExportValue{{Name: "public", Contract: ref}, {Name: "private", Contract: ref}},
 		openCall: func(_ context.Context, actual *sdk.ClientSession, call ManagedCall) (*ManagedCallback, error) {
@@ -242,6 +250,9 @@ func TestManagedCallGrantDistinguishesAliasesOfOnePhysicalExport(t *testing.T) {
 			}
 			return nil, denied
 		},
+	}
+	if err := c.catalog.admit("public", "reader", contract); err != nil {
+		t.Fatal(err)
 	}
 	lifetime := frame.NewLifetime(t.Context())
 

@@ -7,52 +7,59 @@ import (
 	framevalue "github.com/Tangerg/frame/value"
 )
 
-// contractRegistry admits contract declarations. Within one Host a kind, name
-// and version bind exactly one digest; Host.mu guards it.
+// Contract identity is global; Go types describe only this Host's local view.
+// Descriptor registration cannot replace or suppress that separate binding.
+// Host.mu guards both admissions.
 type contractRegistry struct {
-	declarations map[ContractRef]*declaration
+	declarations map[ContractRef]*contractDefinition
 	digests      map[ContractKey]ContractRef
+	goTypes      map[ContractRef]goContractTypes
 }
 
 func newContractRegistry() contractRegistry {
-	return contractRegistry{declarations: make(map[ContractRef]*declaration), digests: make(map[ContractKey]ContractRef)}
+	return contractRegistry{declarations: make(map[ContractRef]*contractDefinition), digests: make(map[ContractKey]ContractRef), goTypes: make(map[ContractRef]goContractTypes)}
 }
 
-func (r *contractRegistry) lookup(ref ContractRef) *declaration { return r.declarations[ref] }
+func (r *contractRegistry) lookup(ref ContractRef) *contractDefinition { return r.declarations[ref] }
 
-// admit registers definitions atomically. same decides whether a definition
-// repeats an already admitted declaration of the same reference.
-func (r *contractRegistry) admit(definitions []*declaration, same func(admitted, next *declaration) bool) error {
-	batch := contractRegistry{declarations: make(map[ContractRef]*declaration, len(definitions)), digests: make(map[ContractKey]ContractRef, len(definitions))}
+func (r *contractRegistry) admit(definitions []*declaration) error {
+	batch := newContractRegistry()
 	for _, definition := range definitions {
-		if r.conflicts(definition, same) || batch.conflicts(definition, same) {
+		if r.conflicts(definition) || batch.conflicts(definition) {
 			return ErrContractMismatch
 		}
 		batch.add(definition)
 	}
-	for _, definition := range batch.declarations {
-		if r.declarations[definition.ref] == nil {
-			r.add(definition)
-		}
+	for _, definition := range definitions {
+		r.add(definition)
 	}
 	return nil
 }
 
-func (r *contractRegistry) conflicts(definition *declaration, same func(admitted, next *declaration) bool) bool {
+func (r *contractRegistry) conflicts(definition *declaration) bool {
 	if ref, exists := r.digests[definition.ref.Key()]; exists && ref != definition.ref {
 		return true
 	}
-	admitted := r.declarations[definition.ref]
-	return admitted != nil && !same(admitted, definition)
+	if admitted := r.lookup(definition.ref); admitted != nil && !bytes.Equal(admitted.descriptor, definition.descriptor) {
+		return true
+	}
+	local, bound := r.goTypes[definition.ref]
+	return bound && definition.goTypes.value != nil && local != definition.goTypes
 }
 
 func (r *contractRegistry) add(definition *declaration) {
-	r.declarations[definition.ref] = definition
-	r.digests[definition.ref.Key()] = definition.ref
+	if r.lookup(definition.ref) == nil {
+		r.declarations[definition.ref] = definition.contractDefinition
+		r.digests[definition.ref.Key()] = definition.ref
+	}
+	if definition.goTypes.value != nil {
+		r.goTypes[definition.ref] = definition.goTypes
+	}
 }
 
-func sameDescriptor(admitted, next *declaration) bool {
-	return bytes.Equal(admitted.descriptor, next.descriptor)
+func (r *contractRegistry) matches(definition *declaration) bool {
+	admitted := r.lookup(definition.ref)
+	return admitted != nil && bytes.Equal(admitted.descriptor, definition.descriptor) && r.goTypes[definition.ref] == definition.goTypes
 }
 
 func (h *Host) Register(declarations ...Declaration) error {
@@ -68,7 +75,7 @@ func (h *Host) Register(declarations ...Declaration) error {
 	if h.lifetime.isClosing() {
 		return ErrClosed
 	}
-	return h.contracts.admit(definitions, sameDeclaration)
+	return h.contracts.admit(definitions)
 }
 
 // RegisterDescriptor admits a declaration whose native implementation lives in
@@ -83,7 +90,7 @@ func (h *Host) RegisterDescriptor(ref ContractRef, descriptor []byte) error {
 	if h.lifetime.isClosing() {
 		return ErrClosed
 	}
-	return h.contracts.admit([]*declaration{definition}, sameDescriptor)
+	return h.contracts.admit([]*declaration{definition})
 }
 
 func descriptorDeclaration(ref ContractRef, descriptor []byte) (*declaration, error) {
@@ -96,7 +103,7 @@ func descriptorDeclaration(ref ContractRef, descriptor []byte) (*declaration, er
 	if framevalue.Hash(descriptor) != ref.Digest {
 		return nil, ErrContractMismatch
 	}
-	return &declaration{ref: ref, descriptor: bytes.Clone(descriptor)}, nil
+	return &declaration{contractDefinition: &contractDefinition{ref: ref, descriptor: bytes.Clone(descriptor)}}, nil
 }
 
 // ValueContract identifies the callable contract behind a reference: a service
@@ -134,9 +141,10 @@ func (h *Host) DecodeMetadata(contract ContractRef, data []byte) (any, error) {
 	}
 	h.mu.Lock()
 	definition := h.contracts.lookup(contract)
+	types := h.contracts.goTypes[contract]
 	h.mu.Unlock()
 	if definition == nil {
 		return nil, ErrContractMismatch
 	}
-	return decodeMetadata(definition, value)
+	return decodeMetadata(definition, types.metadata, value)
 }

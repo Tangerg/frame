@@ -3,6 +3,7 @@ package frame
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -240,7 +241,22 @@ func (h *Host) Observations() []InstanceObservation {
 }
 
 func (h *Host) Close(ctx context.Context) (CloseOutcome, error) {
+	if ctx == nil {
+		return CloseOutcome{}, ErrInvalid
+	}
+	type releaseRetry struct {
+		settlement *settlement
+		reports    uint64
+	}
+	var retries []releaseRetry
 	causes := h.lifetime.ObserveCloseCauses()
+	h.mu.Lock()
+	for _, use := range h.uses {
+		if reports, pending := use.settlement.requestRetry(); pending {
+			retries = append(retries, releaseRetry{settlement: use.settlement, reports: reports})
+		}
+	}
+	h.mu.Unlock()
 	operation := h.lifetime.BeginClose(ErrClosed)
 	h.mu.Lock()
 	for _, instance := range h.allInstances {
@@ -250,6 +266,10 @@ func (h *Host) Close(ctx context.Context) (CloseOutcome, error) {
 		watch.closeLocked(ErrClosed)
 	}
 	h.mu.Unlock()
+	var releaseErr error
+	for _, retry := range retries {
+		releaseErr = errors.Join(releaseErr, retry.settlement.await(ctx, retry.reports))
+	}
 	outcome, err := operation.Wait(ctx)
-	return outcome, causes.join(err)
+	return outcome, causes.join(errors.Join(err, releaseErr))
 }

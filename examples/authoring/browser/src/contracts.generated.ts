@@ -98,25 +98,32 @@ export interface ValidatorMetadata {
 }
 
 export const documentContracts = {
-  "files": {
-    "name": "documents.file-reader",
-    "version": "1",
-    "digest": "af82ee49de6daa4c31ae98de97351bd246e37fd132d7c7d3b0b629a5a247f57b",
-    "kind": "service",
-    "mode": "native"
+  files: {
+    name: "documents.file-reader",
+    version: "1",
+    digest: "af82ee49de6daa4c31ae98de97351bd246e37fd132d7c7d3b0b629a5a247f57b",
+    kind: "service",
+    mode: "native",
   },
-  "converters": {
-    "name": "documents.converters",
-    "version": "1",
-    "digest": "49c119732d0c198ac18522b7aa6d54209418ca472c7058df7448a7b2786a28fe",
-    "kind": "point",
-    "mode": "native"
+  converters: {
+    name: "documents.converters",
+    version: "1",
+    digest: "49c119732d0c198ac18522b7aa6d54209418ca472c7058df7448a7b2786a28fe",
+    kind: "point",
+    mode: "native",
   },
-  "validators": {
-    "name": "documents.validators",
-    "version": "1",
-    "digest": "4a9e109697820ffc7c7e7c9a51472e4919564ce9becd796bee05c6dbbb7ffd37",
-    "kind": "point",
-    "mode": "native"
-  }
+  validators: {
+    name: "documents.validators",
+    version: "1",
+    digest: "4a9e109697820ffc7c7e7c9a51472e4919564ce9becd796bee05c6dbbb7ffd37",
+    kind: "point",
+    mode: "native",
+  },
+} as const;
+
+export const applicationPaths = {
+  control: "/frame/control",
+  activate: "/activate",
+  activity: "/activity",
+  sealRealm: "/realm/seal",
 } as const;

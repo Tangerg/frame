@@ -124,3 +124,34 @@ func TestNestedReadPanicCannotEraseOriginalDiscardObligation(t *testing.T) {
 		})
 	}
 }
+
+func TestOwnerGrantRestorationFailureRollsBackAndDiscards(t *testing.T) {
+	for _, after := range []bool{false, true} {
+		name := "restore-failed"
+		if after {
+			name = "restore-acknowledgement-lost"
+		}
+		t.Run(name, func(t *testing.T) {
+			store, owner, _ := testStore(t)
+			restoreCause := errors.New("schema grant restoration is unconfirmed")
+			var closed atomic.Int32
+			fault := statementPolicyRestoreFault(after, restoreCause)
+			fault.afterClose = func() { closed.Add(1) }
+			installTransactionFault(t, store, fault)
+			err := owner.Update(t.Context(), func(ctx context.Context, tx Executor) error {
+				_, err := insertFaultDocument(ctx, tx, "must-rollback")
+				return err
+			})
+			if !errors.Is(err, restoreCause) || !errors.Is(err, errStatementPolicyUnconfirmed) || closed.Load() != 1 {
+				t.Fatalf("schema grant lost its cleanup obligation: error=%v closes=%d", err, closed.Load())
+			}
+			var count int
+			if err := store.db.QueryRowContext(t.Context(), `SELECT count(*) FROM documents`).Scan(&count); err != nil || count != 0 {
+				t.Fatalf("uncertain policy committed its mutation: count=%d error=%v", count, err)
+			}
+			if _, err := owner.Prepare(t.Context(), []byte("next original request")); err != nil {
+				t.Fatalf("discarded connection retained authority: %v", err)
+			}
+		})
+	}
+}

@@ -34,7 +34,8 @@ var ErrInvocationConflict = errors.New("invocation identity conflicts with the o
 // ErrInvocationConflict, so no business owner restates it.
 const InvocationConflictCode = "command_conflict"
 
-// Refusal is a known business outcome, independent of transport failure.
+// A Refusal decoded from the original backend reply is a known business outcome.
+// A locally constructed or wrapped Refusal cannot establish that remote fact.
 type Refusal struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`

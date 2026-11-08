@@ -50,23 +50,37 @@ type managedResult struct {
 	Failure jsontext.Value `json:"failure,omitzero"`
 }
 
+// A refusal is evidence only when decoded from the original backend reply.
+// Local errors keep their causes without acquiring that authority.
+type managedReply struct {
+	value   jsontext.Value
+	refusal *Refusal
+}
+
+func (r managedReply) result() (jsontext.Value, error) {
+	if r.refusal != nil {
+		return nil, r.refusal
+	}
+	return r.value, nil
+}
+
 func (r *managedResult) UnmarshalJSON(data []byte) error {
 	type wire managedResult
 	return json.Unmarshal(data, (*wire)(r), json.RejectUnknownMembers(true))
 }
 
-func (r *managedResult) unpack() (jsontext.Value, error) {
+func (r *managedResult) unpack() (managedReply, error) {
 	if r == nil || (len(r.Value) == 0) == (len(r.Failure) == 0) {
-		return nil, errors.New("mcp: managed result requires one value or refusal")
+		return managedReply{}, errors.New("mcp: managed result requires one value or refusal")
 	}
 	if len(r.Failure) != 0 {
 		var failure Refusal
 		if err := framevalue.DecodeValue(r.Failure, &failure, "managed refusal"); err != nil || failure.Code == "" {
-			return nil, errors.Join(errors.New("mcp: invalid managed refusal"), err)
+			return managedReply{}, errors.Join(errors.New("mcp: invalid managed refusal"), err)
 		}
-		return nil, &failure
+		return managedReply{refusal: &failure}, nil
 	}
-	return r.Value, nil
+	return managedReply{value: r.Value}, nil
 }
 
 func registerManaged(client *sdk.Client) error {
@@ -78,10 +92,10 @@ func registerManaged(client *sdk.Client) error {
 	return nil
 }
 
-func managedRaw(ctx context.Context, session *sdk.ClientSession, name string, params *managedParams) (jsontext.Value, error) {
+func requestManaged(ctx context.Context, session *sdk.ClientSession, name string, params *managedParams) (managedReply, error) {
 	result, err := sdk.CallCustomMethod[*managedParams, *managedResult](ctx, session, name, params)
 	if err != nil {
-		return nil, errors.Join(err, cancellation.Err(ctx))
+		return managedReply{}, errors.Join(err, cancellation.Err(ctx))
 	}
 	return result.unpack()
 }
@@ -89,7 +103,11 @@ func managedRaw(ctx context.Context, session *sdk.ClientSession, name string, pa
 const jsonNull = "null"
 
 func managedCall(ctx context.Context, session *sdk.ClientSession, name string, params *managedParams, out any) error {
-	raw, err := managedRaw(ctx, session, name, params)
+	reply, err := requestManaged(ctx, session, name, params)
+	if err != nil {
+		return err
+	}
+	raw, err := reply.result()
 	if err != nil {
 		return err
 	}

@@ -179,7 +179,12 @@ func (m *submissionMutation) execute(ctx context.Context, mutate func(context.Co
 			return nil
 		}
 		m.entered = true
-		evidence, err := mutate(ctx, tx)
+		var evidence []byte
+		err = m.owner.withinSchema(tx, func(grant Executor) error {
+			var err error
+			evidence, err = mutate(ctx, grant)
+			return err
+		})
 		if err != nil {
 			return err
 		}
@@ -555,7 +560,9 @@ func (o Owner) Update(ctx context.Context, apply func(context.Context, Executor)
 		return errors.New("sqlite: business update is required")
 	}
 	return o.store.admission.Admit(ctx, func(admitted context.Context) error {
-		err := o.store.transaction(admitted, func(tx Executor) error { return apply(admitted, tx) })
+		err := o.store.transaction(admitted, func(tx Executor) error {
+			return o.withinSchema(tx, func(grant Executor) error { return apply(admitted, grant) })
+		})
 		if errors.Is(err, errCommitUnresolved) {
 			err = errors.Join(ErrIndeterminate, err)
 		}

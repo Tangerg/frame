@@ -39,7 +39,7 @@ func (p Tools) Prepare(setup *frame.Setup, metadata process.ExportMetadata, maxi
 	if len(unit.Imports) != 0 {
 		return nil, fmt.Errorf("%w: standard MCP tools cannot implement Frame imports", frame.ErrContractMismatch)
 	}
-	c := &toolsConnection{maximum: maximum, pages: p.MaxCatalogPages, required: make(map[string][]*toolMember)}
+	c := &toolsConnection{maximum: maximum, pages: p.MaxCatalogPages, required: make(toolRequirements)}
 	for _, export := range unit.Exports {
 		contract, err := process.DeclaredCapability(setup, export.Contract)
 		if err != nil {
@@ -47,18 +47,12 @@ func (p Tools) Prepare(setup *frame.Setup, metadata process.ExportMetadata, maxi
 		}
 		service := &toolService{connection: c, members: make(map[string]*toolMember)}
 		for _, descriptor := range contract.Descriptor().Methods {
-			if len(descriptor.Stream) != 0 {
-				return nil, fmt.Errorf("%w: MCP tool %q must be unary", frame.ErrContractMismatch, descriptor.Name)
-			}
-			// MCP tool arguments are always a JSON object of named values.
-			var schema struct{ Type portable.SchemaType }
-			if err := json.Unmarshal(descriptor.Input, &schema); err != nil || schema.Type != portable.TypeObject {
-				return nil, fmt.Errorf("%w: MCP tool %q needs an object input schema", frame.ErrContractMismatch, descriptor.Name)
-			}
 			method, _ := contract.Method(descriptor.Name)
 			member := &toolMember{method: method, fullResult: p.FullResult != nil && p.FullResult(export, method.Name())}
+			if err := c.required.admit(export.Name, member); err != nil {
+				return nil, err
+			}
 			service.members[method.Name()] = member
-			c.required[method.Name()] = append(c.required[method.Name()], member)
 		}
 		c.values = append(c.values, metadata.Export(export, service))
 	}
@@ -68,7 +62,7 @@ func (p Tools) Prepare(setup *frame.Setup, metadata process.ExportMetadata, maxi
 type toolsConnection struct {
 	maximum     int
 	pages       int
-	required    map[string][]*toolMember
+	required    toolRequirements
 	values      []frame.ExportValue
 	session     *sdk.ClientSession
 	discovering atomic.Bool
@@ -121,17 +115,15 @@ func (c *toolsConnection) discover(ctx context.Context) error {
 			if tool == nil {
 				return fmt.Errorf("%w: null MCP tool", frame.ErrContractMismatch)
 			}
-			members := c.required[tool.Name]
-			if len(members) == 0 {
+			required, declared := c.required[tool.Name]
+			if !declared {
 				continue
 			}
 			if found[tool.Name] {
 				return fmt.Errorf("%w: duplicate MCP tool %q", frame.ErrContractMismatch, tool.Name)
 			}
-			for _, member := range members {
-				if err := member.bind(tool); err != nil {
-					return err
-				}
+			if err := required.bind(tool); err != nil {
+				return err
 			}
 			found[tool.Name] = true
 		}
@@ -161,29 +153,6 @@ func (c *toolsConnection) Close(context.Context) error {
 type toolMember struct {
 	method     *portable.Method
 	fullResult bool
-}
-
-func (m *toolMember) bind(tool *sdk.Tool) error {
-	d := m.method.Descriptor()
-	if d.Kind == portable.Query && (tool.Annotations == nil || !tool.Annotations.ReadOnlyHint) {
-		return fmt.Errorf("%w: MCP tool %q does not declare read-only operation", frame.ErrContractMismatch, d.Name)
-	}
-	if !matchesSchema(d.Input, tool.InputSchema) {
-		return fmt.Errorf("%w: MCP tool %q input schema differs", frame.ErrContractMismatch, d.Name)
-	}
-	if !m.fullResult && (tool.OutputSchema == nil || !matchesSchema(d.Output, tool.OutputSchema)) {
-		return fmt.Errorf("%w: MCP tool %q output schema differs", frame.ErrContractMismatch, d.Name)
-	}
-	return nil
-}
-
-func matchesSchema(declared []byte, advertised any) bool {
-	want, err := value.ParseJSON(declared)
-	if err != nil {
-		return false
-	}
-	got, err := sdkValue(advertised)
-	return err == nil && want == got
 }
 
 // Preserve the SDK's json.Number and its content-specific wire marshaling.

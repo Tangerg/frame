@@ -126,3 +126,72 @@ func TestContractKindsKeepIndependentNominalIdentities(t *testing.T) {
 		t.Fatalf("distinct contract kinds collided: %v", err)
 	}
 }
+
+func TestDescriptorRegistrationPreservesGoTypeAdmission(t *testing.T) {
+	for _, typedFirst := range []bool{false, true} {
+		name := "descriptor first"
+		if typedFirst {
+			name = "typed first"
+		}
+		t.Run(name, func(t *testing.T) {
+			host := testHost(t, frame.HostConfig{})
+			text, err := frame.NewContract[string]("example.local-type", "1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			registerTyped := func() error { return host.Register(text) }
+			registerDescriptor := func() error { return host.RegisterDescriptor(text.Ref(), text.Descriptor()) }
+			registrations := []func() error{registerDescriptor, registerTyped}
+			if typedFirst {
+				registrations = []func() error{registerTyped, registerDescriptor}
+			}
+			for _, register := range registrations {
+				if err := register(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			number, err := frame.NewContract[int](text.Ref().Name, text.Ref().Version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := host.Register(number); !errors.Is(err, frame.ErrContractMismatch) {
+				t.Fatalf("descriptor registration replaced the Go binding: %v", err)
+			}
+			plugin := installNative(t, host, "invalid", frame.Unit{
+				Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "value", Contract: text.Ref()}}},
+				Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
+					return []frame.ExportValue{{Name: "value", Contract: text.Ref(), Value: 42}}, nil
+				},
+			})
+			if _, err := host.Activate(t.Context(), source("invalid", plugin, "main", "value", text.Ref())); !errors.Is(err, frame.ErrContractMismatch) {
+				t.Fatalf("native value bypassed its local type: %v", err)
+			}
+		})
+	}
+}
+
+func TestGoExportsRequireTheirLocalTypeBinding(t *testing.T) {
+	contract, err := frame.NewContract[string]("example.required-go-type", "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver := realmValueDriver{contract: contract}
+	for _, profile := range []frame.Profile{frame.NativeGo, driver.Profile()} {
+		t.Run(string(profile), func(t *testing.T) {
+			host := testHost(t, frame.HostConfig{Drivers: []frame.Driver{driver}})
+			if err := host.RegisterDescriptor(contract.Ref(), contract.Descriptor()); err != nil {
+				t.Fatal(err)
+			}
+			unit := frame.Unit{Declaration: frame.UnitDeclaration{ID: "main", Profile: profile, Exports: []frame.ExportDeclaration{{Name: "value", Contract: contract.Ref()}}}}
+			if profile == frame.NativeGo {
+				unit.Setup = func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
+					return []frame.ExportValue{frame.Provide("value", contract, "local value")}, nil
+				}
+			}
+			plugin := installNative(t, host, "provider", unit)
+			if _, err := host.Activate(t.Context(), source("provider", plugin, "main", "value", contract.Ref())); !errors.Is(err, frame.ErrContractMismatch) {
+				t.Fatalf("descriptor admitted an unbound Go value: %v", err)
+			}
+		})
+	}
+}

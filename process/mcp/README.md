@@ -27,6 +27,13 @@ if err := host.RegisterDriver(driver); err != nil {
 
 Publish a portable service contract whose member names match the allowed MCP tool names. Declare its Frame export with profile `mcp.ToolsProfile` on the unit. For example, a unit named `backend` can export `documents`, a service with the single method `lookup`. Only `lookup` becomes callable through that service. Other exports can have their own sets of members. The standard profile takes no Frame imports.
 
+Before launching the child, the adapter combines all requirements for each global
+tool name. Shared tools must have one input schema and one output schema across
+the members that require structured results. A full-result view can coexist with
+those members without imposing its envelope schema on the tool. Any query view
+requires the shared tool to advertise read-only operation. Conflicting local
+declarations fail preparation and identify the contributing exports.
+
 At activation the adapter reads the catalog up to the configured page limit. Every declared tool must appear exactly once. Its input schema must match the Frame input schema, including the object root. Member input and output schemas use Frame's portable admission rules. Object key order and whitespace do not affect the comparison. A query requires the tool's `readOnlyHint`. Trust in the executable belongs to the host. A server can misdescribe its own behavior.
 
 ## Call a tool

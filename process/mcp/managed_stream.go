@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json/jsontext"
 	"errors"
 	"sync"
 
@@ -113,13 +112,13 @@ func (d *managedDelivery) checkBytes(size int) error {
 	return nil
 }
 
-func (s *ManagedService) stream(ctx context.Context, method *portable.Method, params *managedParams, emit process.Emit) (raw jsontext.Value, returned error) {
+func (s *ManagedService) stream(ctx context.Context, method *portable.Method, params *managedParams, emit process.Emit) (reply managedReply, returned error) {
 	call, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	delivery := &managedDelivery{call: call, abort: cancel, method: method, emit: emit}
 	lease, err := reserveManagedLease(s.lifetime)
 	if err != nil {
-		return nil, err
+		return managedReply{}, err
 	}
 	grant, err := lease.issue(func() (*ManagedCallback, error) { return issuedGrant(s.openStream(call, s.session, delivery.receive)) })
 	if err == nil && grant == nil {
@@ -127,22 +126,35 @@ func (s *ManagedService) stream(ctx context.Context, method *portable.Method, pa
 	}
 	defer func() { returned = errors.Join(returned, lease.finish(ctx)) }()
 	if err != nil {
-		return nil, err
+		return managedReply{}, err
 	}
 	if err := grant.attach(&params.ParamsBase, managedStreamKey); err != nil {
-		return nil, err
+		return managedReply{}, err
 	}
 	delivery.mu.Lock()
 	delivery.maxBytes = grant.MaxResponseBytes
 	delivery.mu.Unlock()
 	if err := cancellation.Err(call); err != nil {
-		return nil, err
+		return managedReply{}, err
 	}
-	raw, err = managedRaw(call, s.session, managedInvoke, params)
-	return raw, managedDispatchError(delivery.finish(raw, err))
+	reply, err = requestManaged(call, s.session, managedInvoke, params)
+	deliveryErr := delivery.finish()
+	if err != nil {
+		return managedReply{}, errors.Join(process.ErrOutcomeUnknown, err, deliveryErr)
+	}
+	if reply.refusal != nil {
+		return reply, deliveryErr
+	}
+	if deliveryErr != nil {
+		return managedReply{}, errors.Join(process.ErrOutcomeUnknown, deliveryErr)
+	}
+	if err := delivery.checkBytes(len(reply.value)); err != nil {
+		return managedReply{}, errors.Join(process.ErrOutcomeUnknown, err)
+	}
+	return reply, nil
 }
 
-func (d *managedDelivery) finish(raw jsontext.Value, err error) error {
+func (d *managedDelivery) finish() error {
 	d.mu.Lock()
 	d.closed = true
 	pending := d.pending
@@ -155,12 +167,8 @@ func (d *managedDelivery) finish(raw jsontext.Value, err error) error {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	err = errors.Join(err, d.failure)
 	d.abort(errors.New("mcp: managed stream closed"))
-	if err == nil {
-		err = d.checkBytes(len(raw))
-	}
-	return err
+	return d.failure
 }
 
 func (s *ManagedService) Stream(ctx context.Context, invocation portable.Invocation, emit process.Emit) (value.JSON, error) {

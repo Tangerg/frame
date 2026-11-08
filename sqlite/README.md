@@ -22,6 +22,24 @@ directly: reassigning a local variable cannot replace the Store's declaration or
 the reference reader already captured by Admission. A zero Owner refuses all
 operations with `frame.ErrInvalid`; its diagnostic `ID` is empty.
 
+Schema admission derives each owner's write grant from the relations its original
+statements create. There is no separately maintained table allowlist. An owner
+may seed those relations, but cannot modify Frame's tables or another owner's
+schema during initialization. Once Open returns, schema changes are closed;
+business callbacks can only change rows in their admitted relations. Views,
+triggers and foreign-key cascades remain subject to the same physical connection
+authorizer. A view or trigger cannot delegate another owner's write authority.
+SQLite's own catalog and sequence tables never become business write grants.
+Schema declarations cannot create virtual tables: their modules can expose
+physical database pages or other writes outside the declared relation, which
+this grant cannot assign to a business owner.
+
+`OwnerSchema.ProjectInstallation` writes that owner's installation projection in
+the original installation transaction, under the same schema grant as its other
+mutations. Frame alone changes installation state and settles the private
+submission. Projection callbacks run in owner identity order; each grant expires
+and joins its cursors before the next owner receives the connection.
+
 ## Business submission
 
 `Owner.Prepare` allocates a monotonic `SubmissionID` and writes its original request

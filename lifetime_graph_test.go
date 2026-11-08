@@ -2,9 +2,11 @@ package frame_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 
 	"github.com/Tangerg/frame"
 )
@@ -95,6 +97,98 @@ func TestRetirementReleasesSharedProvidersExactlyOnce(t *testing.T) {
 	}
 	if outcome, err := closing.WaitReleased(ctx); err != nil || !outcome.Released || closed.Load() != 1 {
 		t.Fatalf("provider was skipped or released twice: %+v, %v, closes=%d", outcome, err, closed.Load())
+	}
+}
+
+func TestCloseWaitJoinsCleanupUnlockedByLateProof(t *testing.T) {
+	for _, independentPending := range []bool{false, true} {
+		name := "all resources released"
+		if independentPending {
+			name = "independent proof still pending"
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				owner := frame.NewLifetime(t.Context())
+				var providerCloses, consumerCloses atomic.Int64
+				entered, finish := make(chan struct{}), make(chan struct{})
+				provider, err := owner.Own(frame.Resource{Name: "provider", Close: func(context.Context) (frame.ReleaseState, error) {
+					providerCloses.Add(1)
+					close(entered)
+					<-finish
+					return frame.ResourceReleased, nil
+				}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				consumer, err := owner.Own(frame.Resource{Name: "consumer", Close: func(context.Context) (frame.ReleaseState, error) {
+					consumerCloses.Add(1)
+					return frame.ResourceUnconfirmed, nil
+				}}, provider)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var independent *frame.ResourceHandle
+				if independentPending {
+					independent, err = owner.Own(frame.Resource{Name: "independent", Close: func(context.Context) (frame.ReleaseState, error) {
+						return frame.ResourceUnconfirmed, nil
+					}})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				closing := owner.BeginClose(frame.ErrClosed)
+				first, err := closing.Wait(t.Context())
+				if first.Released || !errors.Is(err, frame.ErrUnconfirmedRelease) || providerCloses.Load() != 0 {
+					t.Fatalf("stationary proof did not settle as pending: %+v, %v", first, err)
+				}
+				if _, err := closing.Wait(t.Context()); !errors.Is(err, frame.ErrUnconfirmedRelease) {
+					t.Fatalf("observing pending proof changed its conclusion: %v", err)
+				}
+				if err := consumer.ConfirmReleased(nil); err != nil {
+					t.Fatal(err)
+				}
+				type result struct {
+					outcome frame.CloseOutcome
+					err     error
+				}
+				closed := make(chan result, 1)
+				go func() {
+					outcome, err := closing.Wait(t.Context())
+					closed <- result{outcome: outcome, err: err}
+				}()
+				<-entered
+				synctest.Wait()
+				select {
+				case result := <-closed:
+					t.Errorf("wait returned before the original provider finished: %+v, %v", result.outcome, result.err)
+					closed <- result
+				default:
+				}
+				wait, cancel := context.WithCancel(t.Context())
+				cancel()
+				if outcome, err := closing.Wait(wait); outcome.Released || !errors.Is(err, context.Canceled) {
+					t.Errorf("cancelled wait invented release: %+v, %v", outcome, err)
+				}
+				close(finish)
+				final := <-closed
+				if final.outcome.ID != first.ID || final.outcome.Released == independentPending {
+					t.Errorf("late proof changed close identity or pending evidence: %+v, %v", final.outcome, final.err)
+				}
+				if independentPending {
+					if !errors.Is(final.err, frame.ErrUnconfirmedRelease) {
+						t.Errorf("stationary independent proof did not return promptly: %v", final.err)
+					}
+					if err := independent.ConfirmReleased(nil); err != nil {
+						t.Fatal(err)
+					}
+				} else if final.err != nil {
+					t.Error(final.err)
+				}
+				if outcome, err := closing.WaitReleased(t.Context()); err != nil || !outcome.Released || providerCloses.Load() != 1 || consumerCloses.Load() != 1 {
+					t.Fatalf("late proof repeated or abandoned original cleanup: %+v, %v, providers=%d, consumers=%d", outcome, err, providerCloses.Load(), consumerCloses.Load())
+				}
+			})
+		})
 	}
 }
 

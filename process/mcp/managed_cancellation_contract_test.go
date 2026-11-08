@@ -72,7 +72,7 @@ func TestManagedStreamCancellationPreservesCategoryAndCause(t *testing.T) {
 						},
 					}
 					err := delivery.receive(wait, 1, chunk)
-					err = delivery.finish(nil, err)
+					err = errors.Join(err, delivery.finish())
 					if !errors.Is(err, category) || !errors.Is(err, cause) {
 						t.Fatalf("managed rejection lost cancellation category or cause: %v", err)
 					}

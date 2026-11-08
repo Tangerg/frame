@@ -179,17 +179,25 @@ func TestToolCannotWeakenApprovedContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	member := toolMember{method: method}
+	required := make(toolRequirements)
+	if err := required.admit("service", &member); err != nil {
+		t.Fatal(err)
+	}
 	tool := sdk.Tool{Name: "read", InputSchema: json.RawMessage(inputSchema), OutputSchema: json.RawMessage(outputSchema)}
-	if err := member.bind(&tool); !errors.Is(err, frame.ErrContractMismatch) {
+	if err := required[method.Name()].bind(&tool); !errors.Is(err, frame.ErrContractMismatch) {
 		t.Fatalf("missing read-only hint: %v", err)
 	}
 	tool.Annotations = &sdk.ToolAnnotations{ReadOnlyHint: true}
 	tool.OutputSchema = nil
-	if err := member.bind(&tool); !errors.Is(err, frame.ErrContractMismatch) {
+	if err := required[method.Name()].bind(&tool); !errors.Is(err, frame.ErrContractMismatch) {
 		t.Fatalf("downgraded structured output: %v", err)
 	}
 	member.fullResult = true
-	if err := member.bind(&tool); err != nil {
+	fullResult := make(toolRequirements)
+	if err := fullResult.admit("service", &member); err != nil {
+		t.Fatal(err)
+	}
+	if err := fullResult[method.Name()].bind(&tool); err != nil {
 		t.Fatalf("host-selected result envelope: %v", err)
 	}
 }

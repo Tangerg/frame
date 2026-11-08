@@ -20,6 +20,12 @@ func newSettlement() *settlement {
 	return &settlement{changed: make(chan struct{}), done: make(chan struct{})}
 }
 
+func (s *settlement) observe() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reports
+}
+
 func (s *settlement) fail(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -48,13 +54,13 @@ func (s *settlement) complete() {
 
 // A close can retry only a failure it observed on entry. A first failure during
 // that close must be reported rather than silently starting another attempt.
-func (s *settlement) requestRetry() uint64 {
+func (s *settlement) requestRetry() (reports uint64, pending bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.failure != nil && !isClosed(s.retryRequested) {
 		close(s.retryRequested)
 	}
-	return s.reports
+	return s.reports, s.failure != nil
 }
 
 func (s *settlement) await(ctx context.Context, reports uint64) error {
@@ -64,7 +70,7 @@ func (s *settlement) await(ctx context.Context, reports uint64) error {
 			s.mu.Unlock()
 			return nil
 		}
-		if s.reports > reports && s.failure != nil {
+		if s.failure != nil && (s.reports > reports || !isClosed(s.retryRequested)) {
 			failure := s.failure
 			s.mu.Unlock()
 			return failure

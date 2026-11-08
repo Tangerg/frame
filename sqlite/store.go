@@ -59,6 +59,9 @@ type OwnerSchema struct {
 	ID         string
 	Statements []string
 	References func(context.Context, Reader, frame.InstallationID) ([]frame.Dependency, error)
+	// ProjectInstallation writes this owner's projection in the original
+	// installation transaction, without authority over Frame's state.
+	ProjectInstallation func(context.Context, Executor, frame.InstallationChange) error
 }
 
 type Config struct {
@@ -68,9 +71,6 @@ type Config struct {
 	MaxRequestBytes        int
 	MaxSubmissionsPerOwner int
 	MaxRealmHistoryBytes   int64
-	// ProjectInstallation encodes application-owned indexes or foreign-key
-	// projections in the same commit. It cannot originate an installation change.
-	ProjectInstallation func(context.Context, Executor, frame.InstallationChange) error
 }
 
 type Store struct {
@@ -88,22 +88,23 @@ type Store struct {
 	transactions         sync.WaitGroup
 	closing              bool
 	// sealDatabase is the only transition of these two; lifecycleMu guards them.
-	databaseSealed      bool
-	databaseCloseErr    error
-	unconfirmed         []*sql.Conn
-	closeOnce           sync.Once
-	closeRequests       chan chan error
-	closeDone           chan struct{}
-	closeErr            error
-	projectInstallation func(context.Context, Executor, frame.InstallationChange) error
+	databaseSealed   bool
+	databaseCloseErr error
+	unconfirmed      []*sql.Conn
+	closeOnce        sync.Once
+	closeRequests    chan chan error
+	closeDone        chan struct{}
+	closeErr         error
 }
 
 // Owner is a value capability for an admitted schema. Copies keep that original
 // authority even when a caller reassigns its handle after registering it.
 type Owner struct {
-	store      *Store
-	id         string
-	references func(context.Context, Reader, frame.InstallationID) ([]frame.Dependency, error)
+	store               *Store
+	id                  string
+	references          func(context.Context, Reader, frame.InstallationID) ([]frame.Dependency, error)
+	schema              schemaWriteSet
+	projectInstallation func(context.Context, Executor, frame.InstallationChange) error
 }
 
 const schema = `

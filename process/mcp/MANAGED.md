@@ -38,6 +38,11 @@ driver, err := process.New(cfg)
 
 Pass the driver to `frame.NewHost`, register `service` and declare the logical export `hooks` with `service.Ref()` and the unit profile `mcp.ManagedProfile`. Supply the executable digest, directory and exact environment through the process source. Frame owns installation, grants, process launch and release. The host owns package discovery, credentials and application policy.
 
+Before launch, preparation admits one contract per physical export and one
+identity per global method name. Multiple exports may share a method only when
+its identity agrees, including kind, target and schemas. Conflicting declarations
+fail before the child executes and identify their method and source exports.
+
 After MCP initialization the adapter calls `operations.describe`. It compares the complete set of physical capabilities and their member identities with the frozen declaration. It then sends `operations.setup` with the logical contribution IDs and physical export names. Frame's activation transition alone sends `operations.activate`. A refused setup or a mismatched description fails acquisition. Closing the original session retires the original child.
 
 ## Call semantics
@@ -57,6 +62,19 @@ non-dispatch from a cancelled SDK wait. A validated `*mcp.Refusal` is the backen
 explicit business reply and remains distinct from missing outcome evidence; it
 does not assert that the command was never dispatched or authorize a new command.
 Only the original command's business owner and receipt can settle its effects.
+
+Only decoding the original backend reply can establish a known refusal. A local
+`Refusal` returned by a consumer, used as a cancellation cause or wrapped inside
+another error remains a local failure. Cancellation after a validated reply
+arrives cannot replace that reply. A stream's successful final value additionally
+requires all admitted chunks to have completed without rejection; a final value
+cannot repair a failed or still-pending delivery. An explicit backend refusal
+remains known alongside any separate delivery diagnostic.
+
+Callback retirement is separate from the business outcome. If its release wait
+fails after the result is validated, the result remains available together with
+the cleanup error; that error alone does not add `process.ErrOutcomeUnknown`.
+The original lifetime resource continues waiting for its own release evidence.
 
 | Operation | Calling contract |
 | --- | --- |

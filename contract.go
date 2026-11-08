@@ -74,13 +74,21 @@ func (r ContractRef) Key() ContractKey {
 	return ContractKey{Kind: r.Kind, Name: r.Name, Version: r.Version}
 }
 
-type declaration struct {
+type contractDefinition struct {
 	ref            ContractRef
 	descriptor     []byte
-	valueType      reflect.Type
-	metadataType   reflect.Type
 	valueContract  ContractRef
 	metadataSchema *portable.Schema
+}
+
+type goContractTypes struct {
+	value    reflect.Type
+	metadata reflect.Type
+}
+
+type declaration struct {
+	*contractDefinition
+	goTypes goContractTypes
 }
 
 // Declaration can only be produced by the typed constructors. Ref values
@@ -171,7 +179,7 @@ func pointDeclaration(ref ContractRef, descriptor []byte) (*declaration, error) 
 	if err != nil {
 		return nil, fmt.Errorf("point metadata: %w", err)
 	}
-	return &declaration{ref: ref, descriptor: bytes.Clone(descriptor), valueContract: shape.ValueContract, metadataSchema: &schema}, nil
+	return &declaration{contractDefinition: &contractDefinition{ref: ref, descriptor: bytes.Clone(descriptor), valueContract: shape.ValueContract, metadataSchema: &schema}}, nil
 }
 
 func NewPortablePoint[M, V any](name, version string, metadataSchema []byte, value Contract[V]) (Point[M, V], error) {
@@ -214,7 +222,7 @@ func nativeDeclaration(name, version string, kind ContractKind, valueType, metad
 	if err := ref.Validate(); err != nil {
 		return nil, err
 	}
-	return &declaration{ref: ref, descriptor: descriptor, valueType: valueType, metadataType: metadataType}, nil
+	return &declaration{contractDefinition: &contractDefinition{ref: ref, descriptor: descriptor}, goTypes: goContractTypes{value: valueType, metadata: metadataType}}, nil
 }
 
 func NewContract[T any](name, version string) (Contract[T], error) {
@@ -252,7 +260,7 @@ func BindContract[T any](ref ContractRef, descriptor []byte) (Contract[T], error
 	if ref.Kind != ServiceKind || ref.Mode != PortableMode || framevalue.Hash(descriptor) != ref.Digest {
 		return Contract[T]{}, ErrContractMismatch
 	}
-	return Contract[T]{value: &declaration{ref: ref, descriptor: bytes.Clone(descriptor), valueType: reflect.TypeFor[T]()}}, nil
+	return Contract[T]{value: &declaration{contractDefinition: &contractDefinition{ref: ref, descriptor: bytes.Clone(descriptor)}, goTypes: goContractTypes{value: reflect.TypeFor[T]()}}}, nil
 }
 
 func BindPoint[M, V any](ref ContractRef, descriptor []byte) (Point[M, V], error) {
@@ -260,11 +268,6 @@ func BindPoint[M, V any](ref ContractRef, descriptor []byte) (Point[M, V], error
 	if err != nil {
 		return Point[M, V]{}, err
 	}
-	value.valueType = reflect.TypeFor[V]()
-	value.metadataType = reflect.TypeFor[M]()
+	value.goTypes = goContractTypes{value: reflect.TypeFor[V](), metadata: reflect.TypeFor[M]()}
 	return Point[M, V]{value: value}, nil
-}
-
-func sameDeclaration(a, b *declaration) bool {
-	return a != nil && b != nil && a.ref == b.ref && bytes.Equal(a.descriptor, b.descriptor) && a.valueType == b.valueType && a.metadataType == b.metadataType
 }

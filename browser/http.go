@@ -2,7 +2,6 @@ package browser
 
 import (
 	"encoding/json"
-	jsonv2 "encoding/json/v2"
 	"errors"
 	"io"
 	"net/http"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/sqlite"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 // Handler exposes only an authenticated Realm's control port. The application
@@ -39,7 +39,7 @@ func (b *Bridge) Handler() http.Handler {
 			return
 		}
 		var envelope HTTPEnvelope
-		if err := jsonv2.Unmarshal(body, &envelope, jsonv2.RejectUnknownMembers(true)); err != nil {
+		if err := framevalue.DecodeValue(body, &envelope, "control request"); err != nil {
 			writeProblem(writer, http.StatusBadRequest, invalidProblem.code, "invalid control request")
 			return
 		}
@@ -72,9 +72,9 @@ const (
 
 func decodeInput[T any](input json.RawMessage) (T, error) {
 	var value T
-	err := jsonv2.Unmarshal(input, &value, jsonv2.RejectUnknownMembers(true))
+	err := framevalue.DecodeValue(input, &value, "control input")
 	if err != nil {
-		return value, frame.ErrInvalid
+		return value, errors.Join(frame.ErrInvalid, err)
 	}
 	return value, nil
 }

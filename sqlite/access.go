@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"sync"
+
+	modernc "modernc.org/sqlite"
 )
 
 var errCursorCloseUnconfirmed = errors.New("sqlite: cursor release could not be confirmed")
@@ -88,6 +90,18 @@ func (a *transactionAccess) validate() error {
 		return sql.ErrTxDone
 	}
 	return nil
+}
+
+func (a *transactionAccess) withPolicy(policy modernc.AuthorizerFn, apply func(Executor) error) error {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.executor == nil {
+		return sql.ErrTxDone
+	}
+	return a.scope.restrict(policy, func() error {
+		child := newTransactionAccess(a.scope)
+		return child.run(func() error { return apply(child) })
+	})
 }
 
 func (a *transactionAccess) read(ctx context.Context, read func(*connectionScope) error) (err error) {

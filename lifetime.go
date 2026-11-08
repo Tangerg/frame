@@ -362,6 +362,9 @@ func (c *Close) startReadyLocked() []*resourceEntry {
 		c.running++
 		started = append(started, entry)
 	}
+	if len(ready) > 0 {
+		c.lifetime.signalLocked()
+	}
 	return started
 }
 
@@ -629,13 +632,26 @@ func (c *Close) Wait(ctx context.Context) (CloseOutcome, error) {
 	case <-c.settled:
 	case <-ctx.Done():
 	}
-	// A settled close wins over a simultaneously cancelled wait.
-	select {
-	case <-c.settled:
-		outcome := c.Outcome()
-		return outcome, outcomeError(outcome)
-	default:
-		return c.Outcome(), contextError(ctx)
+	for {
+		l := c.lifetime
+		l.mu.Lock()
+		outcome := l.outcomeLocked(c.id)
+		// Late proof can unlock original dependencies after the first settlement.
+		// Wait for that cleanup, but never wait on a stationary missing proof.
+		idle := c.running == 0 && len(c.ready) == 0 && len(l.resources) > 0
+		settled := isClosed(c.settled) && (l.released || idle)
+		changed := l.changed
+		l.mu.Unlock()
+		if settled {
+			return outcome, outcomeError(outcome)
+		}
+		if err := contextError(ctx); err != nil {
+			return outcome, err
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+		}
 	}
 }
 

@@ -8,7 +8,11 @@ import {
   Runtime,
 } from "@frame/sdk/browser";
 import type { Execution } from "@frame/sdk/protocol";
-import type { Bootstrap, DocumentRef } from "./contracts.generated";
+import {
+  applicationPaths,
+  type Bootstrap,
+  type DocumentRef,
+} from "./contracts.generated";
 import { sha256 } from "./contracts";
 import { ConversionTask } from "./conversion-task";
 import { ConnectionFailures } from "./failures";
@@ -18,6 +22,7 @@ export { ConversionTask, type RenderedDocument } from "./conversion-task";
 
 const maximumModuleBytes = 16 << 20;
 const maximumConversionTasks = 128;
+const noContentStatus = 204;
 
 export function connect(
   bootstrap: Bootstrap,
@@ -25,15 +30,21 @@ export function connect(
 ) {
   if (observeError !== undefined && typeof observeError !== "function")
     throw new TypeError("connection error observer must be a function");
+  const origin = bootstrap.origin;
+  const credential = bootstrap.credentials.token;
+  const maximumMessageBytes = projectNumber(
+    bootstrap.credentials.maxMessageBytes,
+  );
+  const application = new Lifetime("author application requests");
   const transport = new Lifetime("author control transport");
   const control = new HTTPControl({
-    endpoint: new URL("/frame/control", bootstrap.origin).href,
-    credential: bootstrap.credentials.token,
-    maximumMessageBytes: projectNumber(bootstrap.credentials.maxMessageBytes),
+    endpoint: new URL(applicationPaths.control, origin).href,
+    credential,
+    maximumMessageBytes,
     lifetime: transport,
   });
   const modules = new RealmModules(async (unit, signal) => {
-    const response = await fetch(new URL(unit.module.path, bootstrap.origin), {
+    const response = await fetch(new URL(unit.module.path, origin), {
       signal,
       redirect: "error",
       credentials: "omit",
@@ -56,7 +67,7 @@ export function connect(
   // directory or a provider selector. Runtime owns their objects and exits.
   const executions = new Map<string, Execution>();
   const conversions = new Set<ConversionTask>();
-  let closing = false;
+  let closeWork: Promise<void> | undefined;
   const failures = new ConnectionFailures();
   const report = (error: unknown) => {
     failures.report(error, observeError);
@@ -89,15 +100,61 @@ export function connect(
     onError: report,
   });
   const pumping = pump.run().catch((error) => failures.record(error));
-  const request = async (path: string, input?: unknown): Promise<Response> =>
-    fetch(new URL(path, bootstrap.origin), {
-      method: input === undefined ? "GET" : "POST",
-      headers: {
-        Authorization: `Bearer ${bootstrap.credentials.token}`,
-        "Content-Type": "application/json",
-      },
-      ...(input === undefined ? {} : { body: JSON.stringify(input) }),
+  const request = async (
+    owner: Lifetime,
+    path: string,
+    input?: unknown,
+  ): Promise<string> =>
+    owner.run(async (signal) => {
+      let response: Response;
+      let body: string;
+      try {
+        response = await fetch(new URL(path, origin), {
+          method: input === undefined ? "GET" : "POST",
+          signal,
+          redirect: "error",
+          credentials: "omit",
+          headers: {
+            Authorization: `Bearer ${credential}`,
+            "Content-Type": "application/json",
+          },
+          ...(input === undefined ? {} : { body: JSON.stringify(input) }),
+        });
+        body =
+          response.status === noContentStatus && response.body === null
+            ? ""
+            : new TextDecoder("utf-8", { fatal: true }).decode(
+                await readResponseBytes(response, maximumMessageBytes),
+              );
+      } catch (cause) {
+        throw new FrameError(
+          input === undefined ? "unavailable" : "outcome_unknown",
+          "author application response was not observed",
+          { cause },
+        );
+      }
+      if (!response.ok) throw new Error(body);
+      if (
+        input !== undefined &&
+        (response.status !== noContentStatus || body !== "")
+      )
+        throw new FrameError(
+          "outcome_unknown",
+          "author command acknowledgement is invalid",
+        );
+      return body;
     });
+
+  const release = async (): Promise<void> => {
+    await Promise.all([...conversions].map((task) => task.close()));
+    // Cancelling an activation only stops its waiter. Seal the original Realm
+    // before stopping the pump, including plans the Runtime has not observed.
+    await request(transport, applicationPaths.sealRealm, {});
+    await pump.close();
+    await pumping;
+    await application.wait();
+    await transport.close();
+  };
 
   return {
     runtime,
@@ -109,16 +166,13 @@ export function connect(
       return failures.omitted;
     },
     async activate(unit: string): Promise<void> {
-      const response = await request("/activate", { unit });
-      if (!response.ok) throw new Error(await response.text());
+      await request(application, applicationPaths.activate, { unit });
     },
     async activity(): Promise<{ started: number; cancelled: number }> {
-      const response = await request("/activity");
-      if (!response.ok) throw new Error(await response.text());
-      return response.json();
+      return JSON.parse(await request(application, applicationPaths.activity));
     },
     createConversion(reference: DocumentRef): ConversionTask {
-      if (closing) throw new FrameError("closed", "author client is closing");
+      application.assertOpen();
       if (conversions.size >= maximumConversionTasks)
         throw new FrameError(
           "capacity",
@@ -138,12 +192,16 @@ export function connect(
       conversions.add(task);
       return task;
     },
-    async close(): Promise<void> {
-      closing = true;
-      await Promise.all([...conversions].map((task) => task.close()));
-      await pump.close();
-      await pumping;
-      await transport.close();
+    close(): Promise<void> {
+      if (closeWork) return closeWork;
+      const completion = Promise.withResolvers<void>();
+      closeWork = completion.promise.catch((error) => {
+        closeWork = undefined;
+        throw error;
+      });
+      application.beginClose();
+      release().then(completion.resolve, completion.reject);
+      return closeWork;
     },
   };
 }

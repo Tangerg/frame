@@ -78,7 +78,7 @@ func (b *Bridge) Publish(ctx context.Context, token string, request PublicationR
 
 // membershipOf reports a dynamic member of a Point that unit declared.
 func (o ObjectRef) membershipOf(unit PlannedUnit) bool {
-	return o.ObjectID != "" && o.Export.InstanceID == unit.Instance.ID && o.Export.Name != "" &&
+	return o.validIn(unit.Instance.ID) &&
 		o.Export.Contract.Kind == frame.PointKind && declaresContract(unit, o.Export.Contract)
 }
 

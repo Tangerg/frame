@@ -12,6 +12,10 @@ func TestReadyPreservesEachObjectAndItsExactMetadataOwner(t *testing.T) {
 		name   string
 		change func(*browser.ReadyReport)
 	}{
+		{"invalid object identity", func(report *browser.ReadyReport) {
+			report.Objects[0].ObjectID = "invalid object id"
+			report.Contributions[0].Object = report.Objects[0]
+		}},
 		{"shared object identity", func(report *browser.ReadyReport) {
 			report.Objects[1].ObjectID = report.Objects[0].ObjectID
 			report.Contributions = report.Contributions[:1]

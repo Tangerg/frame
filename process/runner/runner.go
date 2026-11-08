@@ -364,6 +364,9 @@ func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ LaunchRes
 			err = errors.Join(err, releaseExecutable(path))
 		}
 	}()
+	if err := cancellation.Err(ctx); err != nil {
+		return s.failedStart(request.AttemptID, "launch canceled before process creation", err)
+	}
 	live, reason, err := spawn(path, request)
 	if err != nil {
 		return s.failedStart(request.AttemptID, reason, err)

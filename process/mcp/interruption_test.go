@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json/jsontext"
 	"errors"
 	"runtime"
 	"strings"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/portable"
-	"github.com/Tangerg/frame/process"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -37,7 +35,7 @@ func TestManagedConsumerGoexitCannotAcknowledgeAChunk(t *testing.T) {
 		_ = delivery.receive(t.Context(), 1, chunk)
 	}()
 	<-exited
-	if err := delivery.finish(jsontext.Value(`"complete"`), nil); err == nil || context.Cause(call) == nil || delivery.received != 0 {
+	if err := delivery.finish(); err == nil || context.Cause(call) == nil || delivery.received != 0 {
 		t.Fatalf("consumer exit acknowledged delivery: sequence=%d error=%v", delivery.received, err)
 	}
 }
@@ -139,8 +137,8 @@ func TestManagedConsumerPanicRetainsItsLocalCauseWithoutExposingIt(t *testing.T)
 			if _, accepted := encodeCallbackReply(value.JSON{}, err, CallbackReceiverLimits{MaxResponseBytes: 1024}); accepted {
 				t.Fatal("private panic cause escaped as a business refusal")
 			}
-			if err := managedDispatchError(err); !errors.Is(err, process.ErrOutcomeUnknown) {
-				t.Fatalf("consumer panic became a confirmed business outcome: %v", err)
+			if err := delivery.finish(); !errors.Is(err, failure) || strings.Contains(err.Error(), failure.Error()) {
+				t.Fatalf("finished delivery lost its private local cause: %v", err)
 			}
 		})
 	}

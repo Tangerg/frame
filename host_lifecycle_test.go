@@ -3,6 +3,7 @@ package frame_test
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Tangerg/frame"
@@ -106,5 +107,49 @@ func TestNewHostRefusesRetiredLifetime(t *testing.T) {
 	}
 	if host, err := frame.NewHost(ctx, frame.HostConfig{Lifetime: lifetime}); host != nil || !errors.Is(err, frame.ErrClosed) {
 		t.Fatalf("retired lifetime created a host: %v, %v", host, err)
+	}
+}
+
+func TestRetirementRemainsAvailableDuringRecovery(t *testing.T) {
+	for _, installation := range []bool{false, true} {
+		name := "instance"
+		if installation {
+			name = "installation"
+		}
+		t.Run(name, func(t *testing.T) {
+			host := testHost(t, frame.HostConfig{})
+			var cleanups atomic.Int32
+			plugin := installNative(t, host, "retiring", frame.Unit{
+				Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.NativeGo},
+				Setup: func(_ context.Context, setup *frame.Setup) ([]frame.ExportValue, error) {
+					_, err := setup.Cleanup("original resource", func() error { cleanups.Add(1); return nil })
+					return nil, err
+				},
+			})
+			root := frame.UnitRef{InstallationID: "retiring", Release: plugin.Revision(), UnitID: "main"}
+			if _, err := host.ActivateUnit(t.Context(), "", root); err != nil {
+				t.Fatal(err)
+			}
+			original := host.Observations()[0].ID
+			host.Admission().RequireRecovery(errors.New("storage requires reconciliation"))
+			var err error
+			if installation {
+				err = host.Retire(t.Context(), root.InstallationID)
+			} else {
+				err = host.RetireInstance(t.Context(), original)
+			}
+			if err != nil {
+				t.Fatalf("recovery blocked original retirement: %v", err)
+			}
+			if err := host.WaitInstanceRetired(testContext(t), original); err != nil {
+				t.Fatal(err)
+			}
+			if cleanups.Load() != 1 {
+				t.Fatalf("original cleanup count = %d", cleanups.Load())
+			}
+			if _, err := host.ActivateUnit(t.Context(), "", root); !errors.Is(err, frame.ErrRecoveryRequired) {
+				t.Fatalf("retirement reopened new admission: %v", err)
+			}
+		})
 	}
 }

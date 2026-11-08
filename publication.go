@@ -45,16 +45,15 @@ func (h *Host) setupPublications(instance *unitInstance, exports []ExportValue) 
 			return nil, fmt.Errorf("%w: duplicate actual export", ErrInvalid)
 		}
 		actual[export.Name] = true
-		switch declared, found := declaredExport(instance.unit, export.Name); {
-		case found && declared.Contract != export.Contract, !found && !declaresPoint(instance.unit, export.Contract):
+		declared, found := declaredExport(instance.unit, export.Name)
+		if found && declared.Contract != export.Contract || !found && !declaresPoint(instance.unit, export.Contract) {
 			return nil, fmt.Errorf("%w: actual export was not declared", ErrContractMismatch)
-		case !found:
-			export.Durable = false
 		}
 		value, err := h.prepareExport(instance, export)
 		if err != nil {
 			return nil, err
 		}
+		value.durable = found
 		result = append(result, value)
 	}
 	for _, declared := range instance.unit.Exports {
@@ -79,23 +78,32 @@ func declaredExport(unit UnitDeclaration, name string) (ExportDeclaration, bool)
 func (h *Host) prepareExport(instance *unitInstance, export ExportValue) (*publication, error) {
 	h.mu.Lock()
 	definition := h.contracts.lookup(export.Contract)
+	types := h.contracts.goTypes[export.Contract]
+	driver := h.drivers[instance.unit.Profile]
 	h.mu.Unlock()
 	if definition == nil {
 		return nil, ErrContractMismatch
 	}
-	if export.Contract.Kind != EventKind {
+	if validator, ok := driver.Driver.(ExportValidator); ok {
+		if err := validator.ValidateExport(instance.id, export); err != nil {
+			return nil, err
+		}
+	} else if export.Contract.Kind != EventKind {
 		if nilness.Is(export.Value) {
 			return nil, fmt.Errorf("%w: nil actual export", ErrContractMismatch)
 		}
-		if definition.valueType != nil && !reflect.TypeOf(export.Value).AssignableTo(definition.valueType) {
+		if types.value == nil {
+			return nil, fmt.Errorf("%w: export has no local type binding", ErrContractMismatch)
+		}
+		if !reflect.TypeOf(export.Value).AssignableTo(types.value) {
 			return nil, ErrContractMismatch
 		}
 	}
-	metadata, err := prepareMetadata(definition, export.Metadata)
+	metadata, err := prepareMetadata(definition, types.metadata, export.Metadata)
 	if err != nil {
 		return nil, err
 	}
-	return &publication{id: rand.Text(), source: instance.exportRef(export.Name, export.Contract), metadata: metadata, value: export.Value, instance: instance, durable: export.Durable}, nil
+	return &publication{id: rand.Text(), source: instance.exportRef(export.Name, export.Contract), metadata: metadata, value: export.Value, instance: instance}, nil
 }
 
 // PublicationRequest fixes one native implementation and metadata snapshot. A
@@ -132,7 +140,6 @@ func (h *Host) PreparePublication(ctx context.Context, instanceID string, value 
 	if err := validateName("export name", value.Name); err != nil {
 		return nil, err
 	}
-	value.Durable = false
 	prepared, err := h.prepareExport(instance, value)
 	if err != nil {
 		return nil, err

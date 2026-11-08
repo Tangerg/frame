@@ -60,9 +60,6 @@ func (c CandidateRef) MetadataJSON() ([]byte, error) {
 	if value, ok := c.member.metadata.(framevalue.JSON); ok {
 		return value.Bytes(), nil
 	}
-	if value, ok := c.member.metadata.(portableMetadata); ok {
-		return value.encoded.Bytes(), nil
-	}
 	detached, err := snapshotMetadata(c.member.metadata)
 	if err != nil {
 		return nil, err
@@ -201,15 +198,10 @@ func Candidates[M, V any](snapshot *Snapshot, point Point[M, V]) ([]Candidate[M,
 	}
 	result := make([]Candidate[M, V], len(members))
 	for i, member := range members {
-		if member.metadata != nil {
+		_, encoded := member.metadata.(framevalue.JSON)
+		if member.metadata != nil && !encoded {
 			actual := reflect.TypeOf(member.metadata)
-			if portable, ok := member.metadata.(portableMetadata); ok {
-				actual = portable.target
-				if actual == nil {
-					actual = reflect.TypeFor[framevalue.JSON]()
-				}
-			}
-			if actual == nil || !actual.AssignableTo(reflect.TypeFor[M]()) {
+			if !actual.AssignableTo(reflect.TypeFor[M]()) {
 				return nil, ErrContractMismatch
 			}
 		}

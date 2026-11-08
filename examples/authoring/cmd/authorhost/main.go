@@ -3,6 +3,7 @@
 package main
 
 //go:generate go run . -generate ../../browser/src/contracts.generated.ts
+//go:generate node ../../../../node_modules/prettier/bin/prettier.cjs --write ../../browser/src/contracts.generated.ts
 
 import (
 	"bytes"
@@ -58,6 +59,15 @@ type Bootstrap struct {
 	Origin      string              `json:"origin"`
 	Credentials browser.Credentials `json:"credentials"`
 }
+
+type applicationPath string
+
+const (
+	controlPath   applicationPath = "/frame/control"
+	activatePath  applicationPath = "/activate"
+	activityPath  applicationPath = "/activity"
+	sealRealmPath applicationPath = "/realm/seal"
+)
 
 type moduleSource struct {
 	release value.Digest
@@ -229,7 +239,7 @@ func closeHost(host *frame.Host) error {
 func routes(host *frame.Host, bridge *browser.Bridge, author author, credentials browser.Credentials) http.Handler {
 	var activity activity
 	mux := http.NewServeMux()
-	mux.Handle("POST /frame/control", bridge.Handler())
+	mux.Handle(http.MethodPost+" "+string(controlPath), bridge.Handler())
 	mux.HandleFunc("GET /plugin.mjs", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/javascript")
 		_, _ = w.Write(author.module)
@@ -250,10 +260,17 @@ func routes(host *frame.Host, bridge *browser.Bridge, author author, credentials
 			next(w, r)
 		}
 	}
-	mux.HandleFunc("POST /activate", application(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(http.MethodPost+" "+string(activatePath), application(func(w http.ResponseWriter, r *http.Request) {
 		activate(w, r, host, browser.RealmID(credentials.Realm), author.plugin.Revision())
 	}))
-	mux.HandleFunc("GET /activity", application(activity.report))
+	mux.HandleFunc(http.MethodPost+" "+string(sealRealmPath), application(func(w http.ResponseWriter, r *http.Request) {
+		if err := bridge.SealRealm(r.Context(), credentials.Token); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	mux.HandleFunc(http.MethodGet+" "+string(activityPath), application(activity.report))
 	return mux
 }
 
@@ -313,6 +330,16 @@ func writeContracts(path string, contracts document.Contracts) error {
 		return err
 	}
 	fmt.Fprintf(&output, "\nexport const documentContracts = %s as const;\n", refs)
+	paths, err := json.MarshalIndent(struct {
+		Control   applicationPath `json:"control"`
+		Activate  applicationPath `json:"activate"`
+		Activity  applicationPath `json:"activity"`
+		SealRealm applicationPath `json:"sealRealm"`
+	}{controlPath, activatePath, activityPath, sealRealmPath}, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(&output, "\nexport const applicationPaths = %s as const;\n", paths)
 	return os.WriteFile(path, output.Bytes(), localfile.PublicFileMode)
 }
 

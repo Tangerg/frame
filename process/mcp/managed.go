@@ -47,7 +47,7 @@ func (p ManagedProtocol) Prepare(setup *frame.Setup, metadata process.ExportMeta
 	if len(unit.Exports) != len(declared) {
 		return nil, fmt.Errorf("%w: managed export declarations differ", frame.ErrContractMismatch)
 	}
-	prepared := &managedConnection{openStream: p.OpenStream, openCall: p.OpenCall, setup: setup, contributions: make([]managedContribution, 0, len(declared)), maxBytes: maxBytes, onActivate: setup.OnActivate, contracts: make(map[string]*ManagedContract)}
+	prepared := &managedConnection{openStream: p.OpenStream, openCall: p.OpenCall, setup: setup, contributions: make([]managedContribution, 0, len(declared)), maxBytes: maxBytes, onActivate: setup.OnActivate}
 	builder := managedBuilder{protocol: p, setup: setup, connection: prepared, imports: make(map[string]frame.ImportDeclaration, len(unit.Imports)), used: make(map[string]bool, len(unit.Imports)), routes: make(managedRoutes)}
 	for _, slot := range unit.Imports {
 		builder.imports[slot.Slot] = slot
@@ -83,7 +83,9 @@ func (b *managedBuilder) add(export frame.ExportDeclaration, source ManagedExpor
 	if err := b.checkContract(export, source); err != nil {
 		return err
 	}
-	b.connection.contracts[source.Name] = source.Contract
+	if err := b.connection.catalog.admit(export.Name, source.Name, source.Contract); err != nil {
+		return err
+	}
 	dependencies, err := projectDependencies(b.setup, b.imports, b.used, b.routes, source.Requires)
 	if err != nil {
 		return err
@@ -103,17 +105,14 @@ func (b *managedBuilder) add(export frame.ExportDeclaration, source ManagedExpor
 	return nil
 }
 
-// checkContract requires the managed contract to be the approved capability,
-// one wire projection per physical export, and reverse delivery for streams.
+// The managed projection cannot weaken the host's approved capability or
+// publish a stream without its reverse-delivery authority.
 func (b *managedBuilder) checkContract(export frame.ExportDeclaration, source ManagedExport) error {
 	capability, err := process.DeclaredCapability(b.setup, export.Contract)
 	if err != nil {
 		return err
 	}
 	if capability.Identity() != source.Contract.capability.Identity() {
-		return frame.ErrContractMismatch
-	}
-	if other := b.connection.contracts[source.Name]; other != nil && other.wire != source.Contract.wire {
 		return frame.ErrContractMismatch
 	}
 	for _, member := range capability.Descriptor().Methods {
@@ -131,7 +130,7 @@ type managedConnection struct {
 	setup         *frame.Setup
 	maxBytes      int
 	onActivate    func(func(context.Context) error) error
-	contracts     map[string]*ManagedContract
+	catalog       managedCatalog
 	contributions []managedContribution
 	values        []frame.ExportValue
 	session       *sdk.ClientSession
@@ -147,7 +146,7 @@ func (c *managedConnection) Connect(ctx context.Context, channel io.ReadWriteClo
 	if err := managedCall(ctx, session, managedDescribe, &managedParams{Protocol: managedVersion}, &description); err != nil {
 		return nil, err
 	}
-	receipt, err := description.verify(c.contracts)
+	receipt, err := c.catalog.verify(description)
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +184,7 @@ func (c *managedConnection) bindExports(unit frame.UnitRef, lifetime *frame.Life
 		published := &c.values[i]
 		source := frame.ExportRef{InstallationID: unit.InstallationID, Release: unit.Release, UnitID: unit.UnitID, Export: published.Name, Contract: published.Contract}
 		published.Value = &ManagedService{
-			session: c.session, source: source, physical: contribution.Export, contract: c.contracts[contribution.Export],
+			session: c.session, source: source, physical: contribution.Export, contract: c.catalog.exports[contribution.Export],
 			receipt: receipt, openStream: c.openStream, openCall: c.openCall, lifetime: lifetime,
 		}
 	}

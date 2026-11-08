@@ -191,7 +191,7 @@ func TestRejectedInstallationReclaimsItsPrivateSubmissionCapacity(t *testing.T) 
 	cfg := testConfig(filepath.Join(t.TempDir(), "state"), a)
 	cfg.MaxSubmissionsPerOwner = 1
 	reject := errors.New("index unavailable")
-	cfg.ProjectInstallation = func(context.Context, Executor, frame.InstallationChange) error { return reject }
+	cfg.Owners[0].ProjectInstallation = func(context.Context, Executor, frame.InstallationChange) error { return reject }
 	store, err := Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -222,7 +222,7 @@ func TestInstallationProjectionPanicReleasesReceiptBeforeHostRecovery(t *testing
 	config.MaxSubmissionsPerOwner = 1
 	cause := errors.New("installation projection panicked")
 	panics := true
-	config.ProjectInstallation = func(context.Context, Executor, frame.InstallationChange) error {
+	config.Owners[0].ProjectInstallation = func(context.Context, Executor, frame.InstallationChange) error {
 		if panics {
 			panic(cause)
 		}

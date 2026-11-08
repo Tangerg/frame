@@ -45,6 +45,17 @@ that a durable change did not occur.
 
 Pass the same Admission, epoch and SQLite Store to the durable Host and its adapters, for both installation persistence and execution protection. The process driver and browser bridge refuse a mismatched authority. An ordinary scope named like an installation cannot fence the Host's internal installation scope. Validate an authorized grant before starting any unit and revalidate after preparation.
 
+Contract descriptors own semantic identity across execution realms. `Host.Register`
+also binds that identity to the Host's local Go value and metadata types;
+`RegisterDescriptor` admits only the descriptor. Either registration order preserves
+the same identity and Go binding. A driver whose realm uses another host-side
+representation implements `ExportValidator` and validates the original instance
+and export identity for setup values and dynamic publications. Drivers without
+that capability require the registered Go value check for service and Point
+values; a descriptor alone cannot authorize an arbitrary Go implementation.
+Native event endpoints keep their nil value representation, with typed payload
+admission at delivery.
+
 `StartUnit` claims only an instance prepared under the same original scope grant.
 An existing installation-scoped root is refused before another preparation can
 begin; retire it explicitly before starting that root under a different authority.
@@ -88,13 +99,16 @@ schema still validates them. Date and time strings keep their original text.
 See [contract generation](../portable/contractgen/README.md) for its public
 surface and projection guarantees.
 
-Portable Point metadata retains one admitted immutable JSON value. Candidate
-and selected-member reads decode fresh Go projections through its declared
-codec; the native metadata cloner does not reinterpret that codec's private
-representation. `Candidate.Metadata()` returns `(M, error)` because decoding
-can fail. Selection policies read each candidate once, propagate any error,
-then compare the detached metadata. Encoding a native candidate similarly uses
-a detached value, so a custom marshaler cannot mutate the publication.
+Portable Point metadata and metadata received as JSON retain one admitted
+immutable JSON value. Candidate and selected-member reads decode fresh Go
+projections through the requested metadata type's codec; the publication does
+not retain a second decoding target. Registering a local Go binding after a
+remote publication cannot change that publication or invalidate an earlier
+snapshot's wire value. Listing candidates does not execute a metadata codec.
+`Candidate.Metadata()` returns `(M, error)` because decoding can fail. Selection
+policies read each candidate once, propagate any error, then compare the detached
+metadata. Native metadata stays a detached native snapshot; encoding a candidate
+uses another detached value, so a custom marshaler cannot mutate the publication.
 
 ## Restoring accepted work
 
@@ -105,6 +119,11 @@ durable reconstruction through that name. Withdrawal prevents a new setup or
 declaration-root use from acquiring the original export; already accepted uses
 and dependent instances retain the object they originally received. Slow setup
 rechecks those original exports before activation and publication.
+
+Reconstruction eligibility is derived from that original setup slot. An
+`ExportValue` supplies the implementation and metadata, not another decision
+about reconstruction. A dynamic member returned during setup remains dynamic
+when its name is outside the declaration.
 
 Native dynamic publication uses `Host.PreparePublication` to freeze metadata
 and retain one implementation in an opaque `PublicationRequest`. Pass that
@@ -132,6 +151,10 @@ cannot own a Use of itself or of a consumer that keeps it alive. Application
 consumers own their Uses independently; accepted external Uses can then drain
 before their providers retire.
 
+Acquisition normalizes its realm, scope and execution identity before planning.
+A child derives omitted fields from its original Parent and rejects conflicting
+fields; `AcquireUnit` and plan-based acquisition use the same rule.
+
 Setup and Use lifetimes retain their original Host's admission authority. A
 different Host refuses them as a Use owner or Host lifetime before preparing
 work: neither Host can atomically inspect and admit the other's dependency
@@ -157,6 +180,11 @@ Closing a Use's original Lifetime also starts that Use's original retirement.
 references regardless of which close entry point was used. Admission publishes
 or refuses the Use before retirement reads its acquired holds.
 
+Before durable approval, the Use reserves capacity in both its owner and the
+Host's existing resource graph. An approved Use remains there even when owner
+closure prevents publishing its user handle. Recovery and Host closure can still
+reach the same settlement, approval identity and provider holds.
+
 That initialization barrier also closes when admission unwinds through a
 panic. An interrupted durable approval requires recovery because its commit
 outcome is unknown. A Use owned directly by the Host Lifetime registers one
@@ -179,16 +207,27 @@ remaining cancellations or the original retirement.
 
 A protected Use keeps its original settlement when ReleaseUse panics or exits
 without returning. The failure fences admission and is reported to the waiting
-close. Only a later explicit Close requests another settlement attempt; a failure
+close. Only a later explicit `Use.Close` or `Host.Close` requests another settlement
+attempt; enclosing resource cleanup only joins the original attempt. A failure
 that first occurs during one Close cannot make that same Close silently retry.
 Each failure owns one retry signal. Overlapping closes can join that request but
 cannot preauthorize a retry for a later failure that they have not observed.
+
+`Host.Retire` and `Host.RetireInstance` use maintenance admission so recovery can
+withdraw original instances and drain their resources. The recovery barrier
+continues to reject new execution and binding admission.
 
 `CloseOutcome` is bounded evidence, with at most 32 diagnostic failures and
 2,048 UTF-8 bytes per resource label and detail. Resource names are diagnostic
 labels; only handles identify resources. `Close.Wait` and `Close.WaitReleased`
 report stable `ErrCloseFailed` and `ErrUnconfirmedRelease` categories from that
 evidence. They do not reconstruct original error chains from diagnostic text.
+
+Late release proof can unlock provider cleanup after the original Close first
+reported pending resources. A later `Close.Wait` joins cleanup now ready or
+running in that same graph, then reports its current outcome. A stationary
+resource without release proof still returns pending; cancelling the wait does
+not cancel that cleanup or create release evidence.
 
 `Close.ReleaseProof` succeeds only after the original Lifetime has released.
 Its compact `ReleaseProof` contains the original Close ID, without diagnostic

@@ -362,7 +362,7 @@ func TestPortablePointHasIndependentMetadataAndValueIdentity(t *testing.T) {
 		if err != nil || actual != valueRef {
 			return nil, errors.New("wrong value contract")
 		}
-		return []frame.ExportValue{{Name: "format", Contract: point.Ref(), Metadata: metadata, Value: func() string { return "ok" }, Durable: true}}, nil
+		return []frame.ExportValue{{Name: "format", Contract: point.Ref(), Metadata: metadata, Value: func() string { return "ok" }}}, nil
 	}})
 	if _, err := host.Activate(ctx, source("portable", plugin, "main", "format", point.Ref())); err != nil {
 		t.Fatal(err)
@@ -517,7 +517,7 @@ func TestActivationRegistrationEndsWhenPreparationReturns(t *testing.T) {
 	prepared := make(chan frame.Setup, 1)
 	plugin := installNative(t, h, "p", frame.Unit{Declaration: frame.UnitDeclaration{ID: "u", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "e", Contract: point.Ref()}}}, Setup: func(_ context.Context, s *frame.Setup) ([]frame.ExportValue, error) {
 		prepared <- *s
-		return []frame.ExportValue{{Name: "e", Contract: point.Ref(), Metadata: metadata, Value: "v", Durable: true}}, nil
+		return []frame.ExportValue{{Name: "e", Contract: point.Ref(), Metadata: metadata, Value: "v"}}, nil
 	}})
 	finished := make(chan error, 1)
 	go func() { _, err := h.Activate(ctx, source("p", plugin, "u", "e", point.Ref())); finished <- err }()

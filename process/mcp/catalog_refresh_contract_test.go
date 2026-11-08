@@ -46,7 +46,11 @@ func connectCatalogOverPipe(t *testing.T, ctx context.Context, server *sdk.Serve
 	}
 	t.Cleanup(func() { _ = serverSession.Close() })
 	member := &toolMember{method: method}
-	connection := &toolsConnection{maximum: 1 << 20, pages: pages, required: map[string][]*toolMember{method.Name(): {member}}}
+	required := make(toolRequirements)
+	if err := required.admit("service", member); err != nil {
+		t.Fatal(err)
+	}
+	connection := &toolsConnection{maximum: 1 << 20, pages: pages, required: required}
 	t.Cleanup(func() { _ = connection.Close(ctx) })
 	_, err = connection.Connect(ctx, clientPipe)
 	return &toolService{connection: connection, members: map[string]*toolMember{method.Name(): member}}, err

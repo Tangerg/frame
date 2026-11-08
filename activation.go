@@ -291,7 +291,7 @@ func (h *Host) awaitReady(ctx context.Context, selected []*unitInstance) error {
 // their resources until their consumers have drained.
 func (h *Host) Retire(ctx context.Context, id InstallationID) error {
 	var retired []*unitInstance
-	err := h.admission.Admit(ctx, func(context.Context) error {
+	err := h.admission.Maintenance(ctx, func() error {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		for key, instance := range h.instances {

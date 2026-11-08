@@ -466,7 +466,7 @@ func (b *Bridge) readyExports(unit PlannedUnit, report ReadyReport) ([]frame.Exp
 			}
 			value = decoded
 		}
-		exports = append(exports, frame.ExportValue{Name: declaration.Name, Contract: declaration.Contract, Metadata: value, Value: Object{Reference: reference}, Durable: true})
+		exports = append(exports, frame.ExportValue{Name: declaration.Name, Contract: declaration.Contract, Metadata: value, Value: Object{Reference: reference}})
 		delete(objects.byExport, declaration.Name)
 	}
 	// Dynamic setup contributions require a declared Point and are returned in
@@ -501,7 +501,7 @@ type readyObjectIndex struct {
 func readyObjects(unit PlannedUnit, references []ObjectRef) (readyObjectIndex, string) {
 	index := readyObjectIndex{byExport: make(map[string]ObjectRef, len(references)), byID: make(map[string]ObjectRef, len(references))}
 	for _, reference := range references {
-		if reference.ObjectID == "" || reference.Export.InstanceID != unit.Instance.ID {
+		if !reference.validIn(unit.Instance.ID) {
 			return readyObjectIndex{}, problemInvalidObjectSource
 		}
 		if _, exists := index.byExport[reference.Export.Name]; exists {

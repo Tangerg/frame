@@ -25,10 +25,11 @@ type connectionScope struct {
 	sealed      bool
 	active      bool
 	unconfirmed error
+	writePolicy modernc.AuthorizerFn
 }
 
 func newConnectionScope(connection *sql.Conn, executor sqlExecutor) *connectionScope {
-	return &connectionScope{connection: connection, executor: executor}
+	return &connectionScope{connection: connection, executor: executor, writePolicy: transactionStatements.authorize}
 }
 
 func (s *connectionScope) authorize(policy modernc.AuthorizerFn) error {
@@ -47,7 +48,7 @@ func (s *connectionScope) enter() error {
 	// A failed acknowledgement can follow successful registration. Cleanup must
 	// remove that same policy even when no callback was admitted.
 	s.active = true
-	return s.authorize(transactionStatements.authorize)
+	return s.authorize(s.writePolicy)
 }
 
 func (s *connectionScope) failure() error {
@@ -94,7 +95,7 @@ func (s *connectionScope) acquireRead(ctx context.Context) error {
 		return nil
 	}
 	if err := s.authorize(readStatements.authorize); err != nil {
-		return errors.Join(err, s.restoreLocked(transactionStatements.authorize))
+		return errors.Join(err, s.restoreLocked(s.writePolicy))
 	}
 	s.readers = 1
 	s.readersDone = make(chan struct{})
@@ -108,10 +109,57 @@ func (s *connectionScope) releaseRead() error {
 	if s.readers != 0 {
 		return nil
 	}
-	err := s.restoreLocked(transactionStatements.authorize)
+	err := s.restoreLocked(s.writePolicy)
 	close(s.readersDone)
 	s.readersDone = nil
 	return err
+}
+
+// The child capability is sealed before restoration. Its accepted readers and
+// physical cursors must finish while the narrower policy is still installed.
+func (s *connectionScope) restrict(policy modernc.AuthorizerFn, apply func() error) (err error) {
+	s.mu.Lock()
+	if s.sealed || s.readers != 0 {
+		s.mu.Unlock()
+		return errors.New("sqlite: schema write grant requires an active writer")
+	}
+	if s.unconfirmed != nil {
+		err := s.unconfirmed
+		s.mu.Unlock()
+		return err
+	}
+	previous := s.writePolicy
+	s.writePolicy = policy
+	err = s.authorize(policy)
+	s.mu.Unlock()
+	defer func() {
+		recovered := recover()
+		restoreErr := s.restoreWritePolicy(previous)
+		if recovered != nil {
+			if restoreErr != nil {
+				panic(errors.Join(panicError(recovered), restoreErr))
+			}
+			panic(recovered)
+		}
+		err = errors.Join(err, restoreErr)
+	}()
+	if err != nil {
+		return err
+	}
+	return apply()
+}
+
+func (s *connectionScope) restoreWritePolicy(previous modernc.AuthorizerFn) error {
+	s.mu.Lock()
+	done := s.readersDone
+	s.mu.Unlock()
+	if done != nil {
+		<-done
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.writePolicy = previous
+	return s.restoreLocked(previous)
 }
 
 func (s *connectionScope) seal() {

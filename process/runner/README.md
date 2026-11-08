@@ -82,6 +82,12 @@ its completion releases the snapshot before publishing the terminal observation.
 Snapshot cleanup diagnostics remain visible in that observation without changing
 the direct-child exit proof.
 
+The runner checks its launch context again after snapshot verification and before
+process creation. Cancellation during preparation settles the already reserved
+attempt as the original runner's durable `NotCreated` observation and releases
+the snapshot. It cannot produce `NotDispatched` evidence for an accepted request.
+After creation, cancellation still requires the original child's close and Wait.
+
 `Launch` returns a `LaunchResult`. Its observation is the original runner's known
 state; `NotDispatched(request)` is narrower evidence from this particular local
 invocation, bound to its complete request. Cancellation, encoding refusal and a

@@ -43,6 +43,20 @@ control pump, so dropping a UI handle cannot discard an uncertain request.
 Closing removes the Blob URL, invalidates subsequent access, cancels active work
 and joins it before the Use's proof can release protection.
 
+Application requests, including their response bodies, belong to a separate
+Lifetime from the cleanup transport. `client.close()` seals local admission,
+cancels those requests and closes the original ConversionTasks. It then asks
+the authenticated application endpoint to seal the original Host Realm before
+stopping the pump, joins requests and Runtime proofs, and closes the transport
+last. Cancelling an activation's HTTP wait cannot prove the Host did not admit
+it; Realm sealing also covers a pending plan the Runtime has not observed.
+Concurrent closes share one attempt. A failed close keeps application admission
+sealed and the cleanup channel available for a retry on the same client.
+The Go application owns endpoint paths and generates their TypeScript projection.
+Application responses share the Host's advertised message budget with control
+responses. `go generate` formats the projection with the locally installed,
+lockfile-pinned Prettier before the workspace format check.
+
 The `partial` Unit demonstrates failed setup after a resource has been reserved
 and a contribution staged. It intentionally throws an error containing its Blob
 URL so the exercise can verify that the original owner actually revoked it. The

@@ -62,7 +62,7 @@ func (d *ResourceDriver) Prepare(ctx context.Context, setup *frame.Setup) ([]fra
 		if err != nil {
 			return nil, err
 		}
-		values = append(values, frame.ExportValue{Name: export.Name, Contract: export.Contract, Metadata: metadata, Value: resources, Durable: true})
+		values = append(values, frame.ExportValue{Name: export.Name, Contract: export.Contract, Metadata: metadata, Value: resources})
 	}
 	return values, nil
 }

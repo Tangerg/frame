@@ -7,7 +7,7 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && node build.mjs",
     "test:workflow": "node --test workflow.test.mjs",
-    "test:unit": "node --test failures.test.mjs",
+    "test:unit": "node build.mjs && node --test failures.test.mjs client.test.mjs",
     "lint": "oxlint src *.mjs --deny-warnings",
     "format:check": "prettier --check src *.mjs package.json tsconfig.json README.md",
     "check": "npm run typecheck && npm run lint && npm run format:check && npm run build"

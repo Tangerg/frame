@@ -78,6 +78,13 @@ protocol := mcp.Tools{
 
 The host freezes this choice before the child starts. A server cannot change it by adding or removing its output schema. An MCP `isError` response produces a `*mcp.ToolError`. Its `Result` retains the response content for the caller. A missing or invalid successful reply, or a canceled call after dispatch, carries `process.ErrOutcomeUnknown`. The SDK's automatic multi-round-trip middleware is disabled, and input-required results retain an unknown outcome. The adapter closes catalog discovery after the original bounded admission. Its SDK sending boundary refuses later `tools/list` requests, including the SDK's implicit header-mismatch refresh. Stdio has no HTTP headers to refresh, so this path never expands the catalog budget or repeats `tools/call`. The original `HeaderMismatch` error remains inspectable with `errors.As`, alongside `process.ErrOutcomeUnknown`; the original command ID is unchanged. Only the original runner's terminal evidence releases a durable process attempt.
 
+Full results and tool errors retain the original response envelope, including
+extension fields and exact numbers. The adapter validates the original required
+`content` array before returning a result; null or absent content cannot become
+an empty successful reply through SDK normalization. The SDK owns request IDs,
+dispatch and completion. A per-call wire projection observes the same first
+response without generating requests or substituting a later response.
+
 An already cancelled local context is rejected before SDK handoff and retains
 only its cancellation cause. Once the SDK owns the request, a cancelled wait
 cannot establish whether the peer received it. An explicit ToolError preserves

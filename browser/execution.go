@@ -492,7 +492,6 @@ func declaresContract(unit PlannedUnit, contract frame.ContractRef) bool {
 	return slices.ContainsFunc(unit.Exports, func(declaration frame.ExportDeclaration) bool { return declaration.Contract == contract })
 }
 
-// readyObjectIndex addresses each reported object by export name and identity.
 type readyObjectIndex struct {
 	byExport map[string]ObjectRef
 	byID     map[string]ObjectRef

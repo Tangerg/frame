@@ -104,6 +104,10 @@ A stream consumer that exits without returning cannot acknowledge its chunk.
 Callback panic errors preserve an error-valued cause through local `errors.Is`
 and `errors.As`, while their diagnostic text remains redacted. An embedded
 `Refusal` in a panic is not a business reply and cannot be sent to the backend.
+The loopback receiver also contains unary handler panics and non-returning
+goroutine exits. The original grant retains their redacted diagnostic and error
+cause until `Revoke` joins the admitted handler. A panic never reaches the default
+HTTP panic logger or becomes a positive callback acknowledgment.
 
 The Qimu provider address carries installation, release and contribution. Frame also has a unit ID. The adapter rejects ambiguous projections before launch. Catalogs must map each managed dependency to its original Frame slot. Hosts must explicitly provide background and reverse-operation authorization for packages that require them. Agent tools, prompts, filesystem paths, Flame roles, browser UI components and package installation rules remain application-owned.
 

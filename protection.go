@@ -57,8 +57,12 @@ func (a UseApproval) Validate() error {
 }
 
 // ExecutionProtection persists an approved range before a surviving execution
-// domain receives it. Release observes the same original use, never a new one.
+// domain receives it. Once approval starts, SettleUse must either durably release
+// that original approval or prove that it cannot commit. Missing or failed
+// acknowledgements never prove non-commit. SettleUse runs only after ApproveUse
+// has returned or its goroutine has exited; neither method may leave a detached
+// writer that can later contradict its settlement.
 type ExecutionProtection interface {
 	ApproveUse(context.Context, UseApproval) error
-	ReleaseUse(context.Context, string, ReleaseProof) error
+	SettleUse(context.Context, string, ReleaseProof) error
 }

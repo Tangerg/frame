@@ -133,34 +133,70 @@ type RequiredKeys<S> = S extends {
   ? K
   : never;
 
-type SchemaValue<S> = S extends { const: infer T }
-  ? T
-  : S extends { enum: readonly (infer T)[] }
-    ? T
-    : S extends { type: "string" }
-      ? string
-      : S extends { type: "boolean" }
-        ? boolean
-        : S extends { type: "integer" | "number" }
-          ? JSONNumber
-          : S extends { type: "null" }
-            ? null
-            : S extends { type: "array"; items: infer T }
-              ? SchemaValue<T>[]
-              : S extends {
-                    type: "object";
-                    properties: infer P;
-                  }
-                ? {
-                    [
-                      N in keyof P as N extends RequiredKeys<S> ? N : never
-                    ]: SchemaValue<P[N]>;
-                  } & {
-                    [
-                      N in keyof P as N extends RequiredKeys<S> ? never : N
-                    ]?: SchemaValue<P[N]>;
-                  }
-                : unknown;
+type LiteralValue<T> = T extends JSONNumber
+  ? JSONNumber
+  : T extends object
+    ? keyof T extends never
+      ? Record<string, never>
+      : { -readonly [K in keyof T]: LiteralValue<T[K]> }
+    : T;
+
+type SchemaProperties<S> = S extends { properties: infer P }
+  ? P
+  : Record<never, never>;
+type AdditionalValue<S> = S extends { patternProperties: unknown }
+  ? unknown
+  : S extends { additionalProperties: infer A }
+    ? SchemaValue<A>
+    : unknown;
+type PropertyValue<
+  S,
+  K extends PropertyKey,
+> = K extends keyof SchemaProperties<S>
+  ? SchemaValue<SchemaProperties<S>[K]>
+  : AdditionalValue<S>;
+type ObjectMembers<S> = {
+  [K in RequiredKeys<S>]: PropertyValue<S, K>;
+} & {
+  [K in Exclude<keyof SchemaProperties<S>, RequiredKeys<S>>]?: PropertyValue<
+    S,
+    K
+  >;
+};
+type ObjectValue<S> = ObjectMembers<S> &
+  (S extends { patternProperties: unknown }
+    ? Record<string, unknown>
+    : S extends { additionalProperties: false }
+      ? [keyof SchemaProperties<S> | RequiredKeys<S>] extends [never]
+        ? Record<string, never>
+        : unknown
+      : Record<
+          string,
+          AdditionalValue<S> | PropertyValue<S, keyof SchemaProperties<S>>
+        >);
+type SchemaKindValue<S, K> = K extends "string"
+  ? string
+  : K extends "boolean"
+    ? boolean
+    : K extends "integer" | "number"
+      ? JSONNumber
+      : K extends "null"
+        ? null
+        : K extends "array"
+          ? S extends { items: infer T }
+            ? SchemaValue<T>[]
+            : unknown[]
+          : K extends "object"
+            ? ObjectValue<S>
+            : unknown;
+type DeclaredTypeValue<S> = S extends { type: infer K }
+  ? SchemaKindValue<S, K extends readonly unknown[] ? K[number] : K>
+  : unknown;
+type SchemaValue<S> = S extends false
+  ? never
+  : DeclaredTypeValue<S> &
+      (S extends { const: infer T } ? LiteralValue<T> : unknown) &
+      (S extends { enum: readonly (infer T)[] } ? LiteralValue<T> : unknown);
 export interface ServiceContract {
   readonly descriptor: CapabilityDescriptor;
   readonly identity: string;
@@ -181,14 +217,22 @@ export interface CallContext<
   readonly commandID: K extends "command" ? string : undefined;
   emit(value: C): Promise<void>;
 }
-type Chunk<M extends MethodDescriptor> = M extends { stream: infer S }
-  ? SchemaValue<S>
+type Chunk<M extends MethodDescriptor> = "stream" extends keyof M
+  ? SchemaValue<M["stream"]>
   : never;
-type RequestArguments<M extends MethodDescriptor> = M["kind"] extends "command"
-  ? [options: RequestOptions<Chunk<M>> & { commandID: string }]
-  : M["kind"] extends "query"
-    ? [options?: RequestOptions<Chunk<M>> & { commandID?: never }]
-    : [options?: RequestOptions<Chunk<M>>];
+type MethodOptions<M extends MethodDescriptor> = Pick<
+  RequestOptions,
+  "signal"
+> &
+  (M extends { stream: unknown }
+    ? { onChunk: (value: Chunk<M>) => Awaitable<void> }
+    : { onChunk?: never }) &
+  (M["kind"] extends "command" ? { commandID: string } : { commandID?: never });
+type RequestArguments<M extends MethodDescriptor> = MethodDescriptor extends M
+  ? [options?: RequestOptions<Chunk<M>>]
+  : M extends { kind: "command" } | { stream: unknown }
+    ? [options: MethodOptions<M>]
+    : [options?: MethodOptions<M>];
 export type Client<C extends ServiceContract> = {
   readonly [M in Described<C> as M["name"]]: (
     input: SchemaValue<M["input"]>,

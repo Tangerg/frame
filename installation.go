@@ -135,17 +135,18 @@ func (h *Host) Install(ctx context.Context, config InstallationConfig) (Installa
 			return err
 		}
 		var commitErr error
-		after := record.Clone()
-		state, commitErr = h.commitInstallation(admitted, InstallationChange{After: &after})
+		entry := &installed{record: record.Clone(), plugin: config.Plugin}
+		transition := &installationTransition{after: entry}
+		state, commitErr = h.commitInstallation(admitted, transition)
 		if state != CommitSucceeded {
 			return commitErr
 		}
-		entry := &installed{record: record.Clone(), plugin: config.Plugin}
-		if err := h.openInstallationScope(entry, commitErr); err != nil {
+		if err := h.projectInstallationScope(transition, commitErr); err != nil {
 			return err
 		}
 		h.mu.Lock()
 		h.installations[record.ID] = entry
+		h.installationTransition = nil
 		h.mu.Unlock()
 		return errors.Join(commitErr, h.confirmInstallation(admitted, record.ID))
 	})
@@ -178,13 +179,16 @@ func (h *Host) checkInstallable(record InstallationRecord) error {
 	return nil
 }
 
-// openInstallationScope grants a newly committed enabled installation. The
+// projectInstallationScope grants a newly committed enabled installation. The
 // commit is already a fact, so a local failure requires recovery.
-func (h *Host) openInstallationScope(entry *installed, commitErr error) error {
-	if !entry.record.Enabled {
+func (h *Host) projectInstallationScope(transition *installationTransition, commitErr error) error {
+	entry := transition.after
+	key := installationScope(transition.id())
+	if entry == nil || !entry.record.Enabled {
+		h.admission.fenceScope(key)
 		return nil
 	}
-	grant, err := h.admission.openScope(installationScope(entry.record.ID))
+	grant, err := h.admission.restoreScope(key, &transition.scopeRevision)
 	if err != nil {
 		h.admission.RequireRecovery(err)
 		return errors.Join(ErrRecoveryRequired, commitErr, err)
@@ -235,10 +239,20 @@ func (h *Host) Uninstall(ctx context.Context, id InstallationID) error {
 	return h.changeInstallation(ctx, id, func(*installed) (*installed, error) { return nil, nil })
 }
 
-// installationTransition replaces one installed record; a nil after removes it.
+// An admitted transition retains its exact intent and scope revision until the
+// durable outcome has been projected. Recovery cannot infer this intent from
+// Enabled alone or reopen a generation fenced after the original admission.
 type installationTransition struct {
-	before *installed
-	after  *installed
+	before        *installed
+	after         *installed
+	scopeRevision scopeRevision
+}
+
+func (t *installationTransition) id() InstallationID {
+	if t.after != nil {
+		return t.after.record.ID
+	}
+	return t.before.record.ID
 }
 
 // destructive transitions invalidate every binding to the original release or
@@ -248,8 +262,11 @@ func (t installationTransition) destructive() bool {
 }
 
 func (t installationTransition) change() InstallationChange {
-	before := t.before.record.Clone()
-	change := InstallationChange{Before: &before}
+	var change InstallationChange
+	if t.before != nil {
+		before := t.before.record.Clone()
+		change.Before = &before
+	}
 	if t.after != nil {
 		after := t.after.record.Clone()
 		change.After = &after
@@ -286,15 +303,12 @@ func (h *Host) changeInstallation(ctx context.Context, id InstallationID, prepar
 			}
 		}
 		var commitErr error
-		state, commitErr = h.commitInstallation(admitted, transition.change())
+		state, commitErr = h.commitInstallation(admitted, transition)
 		if state != CommitSucceeded {
 			return commitErr
 		}
-		h.admission.fenceScope(installationScope(id))
-		if next != nil {
-			if err := h.openInstallationScope(next, commitErr); err != nil {
-				return err
-			}
+		if err := h.projectInstallationScope(transition, commitErr); err != nil {
+			return err
 		}
 		retired = h.applyInstallationTransition(id, next)
 		return errors.Join(commitErr, h.confirmInstallation(admitted, id))
@@ -352,6 +366,7 @@ func (h *Host) applyInstallationTransition(id InstallationID, next *installed) [
 	} else {
 		h.installations[id] = next
 	}
+	h.installationTransition = nil
 	var retired []*unitInstance
 	for _, instance := range h.instances {
 		if instance.snapshot.requiresInstallation(id) {
@@ -368,6 +383,14 @@ func (h *Host) applyInstallationTransition(id InstallationID, next *installed) [
 // if they have yet to create a resource or to publish their local projection.
 func (h *Host) admitInstallation(ctx context.Context, apply func(context.Context) error) error {
 	return h.admission.Admit(ctx, func(admitted context.Context) error {
+		h.mu.Lock()
+		pending := h.installationTransition != nil
+		h.mu.Unlock()
+		if pending {
+			err := fmt.Errorf("%w: original installation transition requires restoration", ErrRecoveryRequired)
+			h.admission.RequireRecovery(err)
+			return err
+		}
 		work, err := h.lifetime.Enter(admitted)
 		if err != nil {
 			return err
@@ -377,7 +400,11 @@ func (h *Host) admitInstallation(ctx context.Context, apply func(context.Context
 	})
 }
 
-func (h *Host) commitInstallation(ctx context.Context, change InstallationChange) (CommitState, error) {
+func (h *Host) commitInstallation(ctx context.Context, transition *installationTransition) (CommitState, error) {
+	transition.scopeRevision = h.admission.scopeRevision(installationScope(transition.id()))
+	h.mu.Lock()
+	h.installationTransition = transition
+	h.mu.Unlock()
 	if h.store == nil {
 		return CommitSucceeded, nil
 	}
@@ -387,12 +414,15 @@ func (h *Host) commitInstallation(ctx context.Context, change InstallationChange
 			h.admission.RequireRecovery(fmt.Errorf("%w: installation commit interrupted", ErrRecoveryRequired))
 		}
 	}()
-	state, err := h.store.CommitInstallation(ctx, change)
+	state, err := h.store.CommitInstallation(ctx, transition.change())
 	returned = true
 	switch state {
 	case CommitSucceeded:
 		return CommitSucceeded, err
 	case CommitRejected:
+		h.mu.Lock()
+		h.installationTransition = nil
+		h.mu.Unlock()
 		if err == nil {
 			err = fmt.Errorf("%w: installation commit rejected", ErrUnavailable)
 		}
@@ -482,11 +512,19 @@ func (h *Host) Restore(ctx context.Context, records []InstallationRecord, plugin
 		if err != nil {
 			return err
 		}
+		transition := h.installationTransition
+		if transition != nil && !transition.acceptsRestoration(restored[transition.id()]) {
+			return ErrStaleBinding
+		}
 		for _, entry := range restored {
 			if !entry.record.Enabled {
 				continue
 			}
-			if entry.scope, err = h.admission.restoreScope(installationScope(entry.record.ID)); err != nil {
+			var revision *scopeRevision
+			if transition != nil && transition.after != nil && transition.after.record.equal(entry.record) {
+				revision = &transition.scopeRevision
+			}
+			if entry.scope, err = h.admission.restoreScope(installationScope(entry.record.ID), revision); err != nil {
 				return err
 			}
 		}
@@ -496,8 +534,18 @@ func (h *Host) Restore(ctx context.Context, records []InstallationRecord, plugin
 			}
 		}
 		h.installations = restored
+		h.installationTransition = nil
 		return nil
 	})
+}
+
+func (t *installationTransition) acceptsRestoration(restored *installed) bool {
+	for _, expected := range []*installed{t.before, t.after} {
+		if restored == nil && expected == nil || restored != nil && expected != nil && restored.record.equal(expected.record) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Host) restoredInstallationsLocked(records []InstallationRecord, definitions map[framevalue.Digest]*Plugin) (map[InstallationID]*installed, error) {

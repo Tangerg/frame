@@ -181,9 +181,14 @@ func (i *unitInstance) releaseProvidersLocked() {
 
 func (i *unitInstance) prepare() {
 	err := errors.New("frame: preparation exited without returning")
-	// Setup and activation may end their goroutine with Goexit. Only this
-	// original preparation completes its waiters and starts failed retirement.
+	// Codecs and driver validation share the original preparation's failure
+	// boundary, including panic and Goexit, before anything becomes visible.
 	defer func() { i.finishPrepare(err) }()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = callbackPanicError("preparation", recovered)
+		}
+	}()
 	err = i.prepareUnit()
 }
 
@@ -215,6 +220,9 @@ func (i *unitInstance) prepareUnit() error {
 	}
 	h.mu.Unlock()
 	if err != nil {
+		return err
+	}
+	if err := i.validateCurrent(work.Context()); err != nil {
 		return err
 	}
 	exports, activate, err := invokeSetup(run, work.Context(), setup)
@@ -320,20 +328,24 @@ func (i *unitInstance) validateCurrentLocked() error {
 	return h.validateBindingReadsLocked(i.preparation)
 }
 
+func (i *unitInstance) validateCurrent(ctx context.Context) error {
+	return i.host.admission.Under(ctx, func() error {
+		i.host.mu.Lock()
+		defer i.host.mu.Unlock()
+		return i.validateCurrentLocked()
+	})
+}
+
 func (i *unitInstance) publishPrepared(exports []ExportValue, activate func(context.Context) error) error {
 	h := i.host
-	publications, err := h.setupPublications(i, exports)
+	publications, err := h.setupPublications(i.lifetime.Context(), i, exports)
 	if err != nil {
 		return err
 	}
 	if activate != nil {
-		err = h.admission.Admit(i.lifetime.Context(), func(context.Context) error {
-			h.mu.Lock()
-			defer h.mu.Unlock()
-			return i.validateCurrentLocked()
-		})
+		err = i.validateCurrent(i.lifetime.Context())
 		if err == nil {
-			err = invokeActivation(activate, i.lifetime.Context())
+			err = activate(i.lifetime.Context())
 		}
 		if err != nil {
 			return err
@@ -443,19 +455,7 @@ func (i *unitInstance) beginRetire() {
 func invokeSetup(setup SetupFunc, ctx context.Context, value *Setup) (exports []ExportValue, activate func(context.Context) error, err error) {
 	defer func() {
 		activate = value.sealPreparation()
-		if recovered := recover(); recovered != nil {
-			err = callbackPanicError("setup", recovered)
-		}
 	}()
 	exports, err = setup(ctx, value)
 	return exports, activate, err
-}
-
-func invokeActivation(activate func(context.Context) error, ctx context.Context) (err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = callbackPanicError("activation", recovered)
-		}
-	}()
-	return activate(ctx)
 }

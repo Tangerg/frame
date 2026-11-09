@@ -3,6 +3,7 @@ package sqlite
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"errors"
@@ -132,7 +133,7 @@ func decodeUse(row protectedRecord) (UseRecord, error) {
 	return record, nil
 }
 
-func (s *Store) ReleaseUse(ctx context.Context, id string, proof frame.ReleaseProof) error {
+func (s *Store) SettleUse(ctx context.Context, id string, proof frame.ReleaseProof) error {
 	if !frame.ValidName(id) || proof.CloseID == 0 {
 		return frame.ErrInvalid
 	}
@@ -143,6 +144,11 @@ func (s *Store) ReleaseUse(ctx context.Context, id string, proof frame.ReleasePr
 	return s.admission.Maintenance(ctx, func() error {
 		return s.fenceUnlessRefused(s.transaction(ctx, func(tx Executor) error {
 			row, err := readProtectionRow(ctx, tx, useByID, id)
+			// The original approval has finished, and this write transaction
+			// excludes every earlier writer. Absence is therefore conclusive.
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
 			if err != nil {
 				return err
 			}

@@ -48,7 +48,7 @@ func TestProtectionSettlementValidatesOriginalRequest(t *testing.T) {
 				id = protectedUse(t, store, attempt).ID
 				corrupt = `UPDATE frame_use_approvals SET request_digest=? WHERE id=?`
 				stateQuery = `SELECT state FROM frame_use_approvals WHERE id=?`
-				settle = func() error { return store.ReleaseUse(t.Context(), id, frame.ReleaseProof{CloseID: 1}) }
+				settle = func() error { return store.SettleUse(t.Context(), id, frame.ReleaseProof{CloseID: 1}) }
 			case "realm use":
 				approval := protectedUse(t, store, attempt)
 				id = approval.ID

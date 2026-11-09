@@ -40,10 +40,11 @@ func (receipt ExitReceipt) valid() bool {
 func (receipt ExitReceipt) matches(o Observation) bool {
 	return o.AttemptID == receipt.AttemptID && o.State == receipt.State && o.Epoch == receipt.Epoch && o.RunnerID == receipt.RunnerID && o.ProofID == receipt.ProofID
 }
-func (s *Server) receiptDirectory() string { return filepath.Join(s.config.Directory, "exit-receipts") }
+
+const receiptDirectory = "exit-receipts"
 
 func (s *Server) receiptPath(id string) string {
-	return filepath.Join(s.receiptDirectory(), value.Hash([]byte(id)).String())
+	return filepath.Join(receiptDirectory, value.Hash([]byte(id)).String())
 }
 
 func (s *Server) lookupAttempt(id string) (storedAttempt, bool, error) {
@@ -54,7 +55,7 @@ func (s *Server) lookupAttempt(id string) (storedAttempt, bool, error) {
 }
 
 func (s *Server) readReceipt(id string) (storedAttempt, bool, error) {
-	data, err := os.ReadFile(s.receiptPath(id))
+	data, err := s.directory.ReadFile(s.receiptPath(id))
 	if errors.Is(err, os.ErrNotExist) {
 		return storedAttempt{}, false, nil
 	}
@@ -137,13 +138,13 @@ func (s *Server) AcknowledgeExit(ctx context.Context, receipt ExitReceipt) error
 }
 
 func (s *Server) storeReceipt(item storedAttempt) error {
-	if err := os.MkdirAll(s.receiptDirectory(), localfile.PrivateDirectoryMode); err != nil {
+	if err := s.directory.MkdirAll(receiptDirectory, localfile.PrivateDirectoryMode); err != nil {
 		return err
 	}
-	if err := storeRecord(s.receiptPath(item.Observation.AttemptID), item); err != nil {
+	if err := storeRecord(s.directory, s.receiptPath(item.Observation.AttemptID), item); err != nil {
 		return err
 	}
 	// The receipt directory itself must be durable before the active journal
 	// can omit this ID. Both copies mean the same immutable terminal observation.
-	return syncDirectory(s.config.Directory)
+	return syncDirectory(s.directory, ".")
 }

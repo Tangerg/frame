@@ -414,6 +414,44 @@ function serviceBinding(slot: string, contract: ServiceContract) {
   };
 }
 
+it("dispatches composed methods with their admitted handler table as receiver", async () => {
+  const composing = new Capability({
+    protocol: PROTOCOL,
+    reference: "composing",
+    methods: ["part", "whole"].map((name) => ({
+      name,
+      kind: "query" as const,
+      description: "",
+      input: { type: "string" as const },
+      output: { type: "string" as const },
+    })),
+  });
+  const source = {
+    part(value: string) {
+      return value + "!";
+    },
+    whole(value: string) {
+      return this.part(value);
+    },
+  };
+  const peer = await connectUnit(
+    defineProcessUnit({
+      id: "composed-handlers",
+      imports: {},
+      exports: { composing },
+      setup: () => ({ composing: source }),
+    }),
+  );
+  source.part = () => "replacement must not run";
+  expect(
+    await peer.request(
+      wire.methods.call,
+      { handle: "composing", member: "whole", input: "kept" },
+      new AbortController().signal,
+    ),
+  ).toBe("kept!");
+});
+
 it("joins an imported stream's local consumer before unit cleanup", async () => {
   const started = Promise.withResolvers<void>();
   const finish = Promise.withResolvers<void>();

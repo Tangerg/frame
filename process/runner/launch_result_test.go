@@ -105,10 +105,10 @@ func TestCapacityRefusalHasAnOriginalDurableReceiptWithoutAnActiveSlot(t *testin
 
 func TestCapacityRefusalWithUnavailableReceiptStorageRemainsUnknown(t *testing.T) {
 	server, request := capacityFixture(t)
-	if err := os.Symlink("unavailable-receipt-parent", server.receiptDirectory()); err != nil {
+	if err := os.Symlink("unavailable-receipt-parent", filepath.Join(server.config.Directory, receiptDirectory)); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(server.receiptDirectory())
+	defer os.Remove(filepath.Join(server.config.Directory, receiptDirectory))
 	result, err := server.Launch(t.Context(), request)
 	if !errors.Is(err, ErrUnknown) || !errors.Is(err, frame.ErrCapacity) || result.State != Unknown || result.ProofID != "" || result.NotDispatched(request) {
 		t.Fatalf("undurable refusal became release evidence: %+v %v", result, err)
@@ -120,7 +120,7 @@ func TestCapacityRefusalWithUnavailableReceiptStorageRemainsUnknown(t *testing.T
 	if observed, err := server.CloseAttempt(t.Context(), request.AttemptRef); !errors.Is(err, ErrUnknown) || observed.ProofID != "" {
 		t.Fatalf("storage failure leaked release proof: %+v %v", observed, err)
 	}
-	if err := os.Remove(server.receiptDirectory()); err != nil {
+	if err := os.Remove(filepath.Join(server.config.Directory, receiptDirectory)); err != nil {
 		t.Fatal(err)
 	}
 	settled, err := server.CloseAttempt(t.Context(), request.AttemptRef)
@@ -213,11 +213,11 @@ func TestDurableNonCreationReceiptSurvivesAnInterruptedJournalProjection(t *test
 		t.Fatalf("journal failure exposed receipt: %+v %v", result, err)
 	}
 	restore()
-	loaded, err := loadJournal(filepath.Join(server.config.Directory, journalFilename), server.config.MaxAttempts)
+	loaded, err := loadJournal(server.directory, server.config.MaxAttempts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	projection := &Server{config: server.config, journal: loaded}
+	projection := &Server{config: server.config, directory: server.directory, journal: loaded}
 	if err := projection.restoreReceipts(); err != nil {
 		t.Fatal(err)
 	}

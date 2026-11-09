@@ -406,10 +406,12 @@ func (l *Lifetime) forgetResourceLocked(entry *resourceEntry) {
 }
 
 func callbackPanicError(callback string, value any) error {
+	// Formatting an arbitrary panic value could reenter plugin code or Goexit.
+	diagnostic := fmt.Errorf("frame: %s panicked", callback)
 	if cause, ok := value.(error); ok {
-		return errors.Join(fmt.Errorf("frame: %s panicked", callback), cause)
+		return errors.Join(diagnostic, cause)
 	}
-	return fmt.Errorf("frame: %s panicked: %v", callback, value)
+	return diagnostic
 }
 
 func invokeCancel(cancel func(error), cause error) error {

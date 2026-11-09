@@ -42,13 +42,14 @@ func (l *controlListener) close() error {
 	}
 	l.closeErr = l.socket.Close()
 	path := l.socket.Addr().String()
-	info, err := os.Lstat(path)
+	name := filepath.Base(path)
+	info, err := l.owner.directory.Lstat(name)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 	case err != nil:
 		l.closeErr = errors.Join(l.closeErr, err)
 	case os.SameFile(l.file, info):
-		l.closeErr = errors.Join(l.closeErr, os.Remove(path))
+		l.closeErr = errors.Join(l.closeErr, l.owner.directory.Remove(name))
 	}
 	return l.closeErr
 }
@@ -88,14 +89,15 @@ func (s *Server) Listen(socket string) (net.Listener, error) {
 	if s.listener != nil && !s.listener.released() {
 		return nil, ErrConflict
 	}
-	if err := verifyAuthorityDirectory(directory); err != nil {
+	if err := s.verifyDirectory(); err != nil {
 		return nil, err
 	}
-	if info, err := os.Lstat(socket); err == nil {
+	name := filepath.Base(socket)
+	if info, err := s.directory.Lstat(name); err == nil {
 		if info.Mode()&os.ModeSocket == 0 {
 			return nil, errors.New("runner: control path is not a socket")
 		}
-		if err := os.Remove(socket); err != nil {
+		if err := s.directory.Remove(name); err != nil {
 			return nil, err
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -105,16 +107,21 @@ func (s *Server) Listen(socket string) (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(socket, localfile.PrivateFileMode); err != nil {
+	listener.SetUnlinkOnClose(false)
+	if err := s.verifyDirectory(); err != nil {
 		_ = listener.Close()
 		return nil, err
 	}
-	info, err := os.Lstat(socket)
+	if err := s.directory.Chmod(name, localfile.PrivateFileMode); err != nil {
+		_ = listener.Close()
+		_ = s.directory.Remove(name)
+		return nil, err
+	}
+	info, err := s.directory.Lstat(name)
 	if err != nil {
 		_ = listener.Close()
 		return nil, err
 	}
-	listener.SetUnlinkOnClose(false)
 	s.listener = &controlListener{owner: s, socket: listener, file: info}
 	return s.listener, nil
 }
@@ -132,17 +139,22 @@ func (s *Server) admitServe(ctx context.Context, listener net.Listener) (context
 	if owned != s.listener || owned.served != nil {
 		return nil, nil, ErrConflict
 	}
-	info, err := os.Lstat(owned.socket.Addr().String())
+	if err := s.verifyDirectory(); err != nil {
+		return nil, nil, err
+	}
+	info, err := s.directory.Lstat(filepath.Base(owned.socket.Addr().String()))
 	if err != nil {
 		return nil, nil, err
 	}
 	if !os.SameFile(owned.file, info) {
 		return nil, nil, ErrConflict
 	}
-	if info.Mode()&os.ModeSocket == 0 || info.Mode().Perm()&0077 != 0 {
+	if info.Mode()&os.ModeSocket == 0 || info.Mode().Perm()&nonOwnerSocketPermissions != 0 {
 		return nil, nil, errors.New("runner: listener must be a private Unix socket")
 	}
 	ctx, owned.cancel = context.WithCancel(ctx)
 	owned.served = make(chan struct{})
 	return ctx, owned, nil
 }
+
+const nonOwnerSocketPermissions os.FileMode = 0077

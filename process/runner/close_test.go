@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -60,8 +59,8 @@ func TestFailedKillRetainsOriginalCloseAndAuthority(t *testing.T) {
 			if err := closeOriginal(); !errors.Is(err, failure) {
 				t.Fatalf("original failed signal was hidden: %v", err)
 			}
-			if lock, err := lockDirectory(filepath.Join(server.config.Directory, "authority.lock")); err == nil {
-				_ = unlockDirectory(lock)
+			if replacement, err := Open(server.config); err == nil {
+				_ = replacement.Close()
 				t.Fatal("failed termination relinquished the original authority")
 			}
 			select {
@@ -82,11 +81,11 @@ func TestFailedKillRetainsOriginalCloseAndAuthority(t *testing.T) {
 			if err := server.Close(); err != nil {
 				t.Fatal(err)
 			}
-			lock, err := lockDirectory(filepath.Join(server.config.Directory, "authority.lock"))
+			replacement, err := Open(server.config)
 			if err != nil {
 				t.Fatalf("confirmed original release retained authority: %v", err)
 			}
-			if err := unlockDirectory(lock); err != nil {
+			if err := replacement.Close(); err != nil {
 				t.Fatal(err)
 			}
 		})

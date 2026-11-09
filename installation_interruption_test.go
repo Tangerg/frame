@@ -141,3 +141,58 @@ func TestInterruptedInstallationWriteRequiresRecovery(t *testing.T) {
 		}
 	}
 }
+
+func TestInterruptedEnableRecoversOriginalTransition(t *testing.T) {
+	for _, interruption := range []struct {
+		name string
+		run  func()
+	}{
+		{name: "panic", run: func() { panic("original enable interrupted") }},
+		{name: "goexit", run: runtime.Goexit},
+	} {
+		t.Run(interruption.name, func(t *testing.T) {
+			store := &interruptedInstallationStore{}
+			host := testHost(t, frame.HostConfig{Installations: store})
+			var prepared atomic.Int64
+			plugin := installNative(t, host, "provider", frame.Unit{
+				Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.NativeGo},
+				Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
+					prepared.Add(1)
+					return nil, nil
+				},
+			})
+			if err := host.SetEnabled(t.Context(), "provider", false); err != nil {
+				t.Fatal(err)
+			}
+			store.commit = interruption.run
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				defer func() { _ = recover() }()
+				_ = host.SetEnabled(t.Context(), "provider", true)
+				t.Error("interrupted enable returned")
+			}()
+			<-done
+			store.commit = nil
+			if err := host.Admission().Recover(t.Context(), func() error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if err := host.SetEnabled(t.Context(), "provider", false); !errors.Is(err, frame.ErrRecoveryRequired) {
+				t.Fatalf("another operation replaced the original unresolved enable: %v", err)
+			}
+			records, err := store.Installations(t.Context())
+			if err != nil || len(records) != 1 || !records[0].Enabled {
+				t.Fatalf("interrupted enable did not actually commit: %+v, %v", records, err)
+			}
+			if err := host.Restore(t.Context(), records, []*frame.Plugin{plugin}); err != nil {
+				t.Fatal(err)
+			}
+			if err := host.Admission().Recover(t.Context(), func() error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := host.ActivateUnit(t.Context(), "", records[0].Unit("main")); err != nil || prepared.Load() != 1 {
+				t.Fatalf("recovered enable retained the old fence: setups=%d, error=%v", prepared.Load(), err)
+			}
+		})
+	}
+}

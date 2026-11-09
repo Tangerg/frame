@@ -11,10 +11,10 @@ import (
 	"github.com/Tangerg/frame/portable"
 )
 
-func TestFeatureConsumerGenerationLeavesPublisherArtifactsUntouched(t *testing.T) {
+func TestFeatureConsumerGenerationAcceptsAnUndocumentedMethod(t *testing.T) {
 	directory := t.TempDir()
 	t.Chdir(directory)
-	method, err := portable.NewMethod[struct{}, string](portable.MethodConfig{Name: "acme/read", Kind: portable.Query, Target: "installation", Description: "Read."})
+	method, err := portable.NewMethod[struct{}, string](portable.MethodConfig{Name: "acme/read", Kind: portable.Query, Target: "installation"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,6 +40,33 @@ func TestFeatureConsumerGenerationLeavesPublisherArtifactsUntouched(t *testing.T
 	entries, err := os.ReadDir(directory)
 	if err != nil || len(entries) != 2 {
 		t.Fatalf("consumer generated publisher artifacts: %v, %v", entries, err)
+	}
+}
+
+func TestFeatureCanonicalDescriptorCanGenerateConsumers(t *testing.T) {
+	method, err := portable.NewMethod[struct{}, string](portable.MethodConfig{Name: "acme/read", Kind: portable.Query, Description: "Read the retained value."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := featureDescriptor(method.Descriptor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, err := portable.ParseCapability(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical := capability.Identity().Bytes()
+	if _, err := portable.ParseCapability(canonical); err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	source := filepath.Join(directory, "capability.json")
+	if err := os.WriteFile(source, canonical, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Generate(source, "", directory, GoOutput{Path: filepath.Join(directory, "types.go"), Package: "consumer"}); err != nil {
+		t.Fatal(err)
 	}
 }
 

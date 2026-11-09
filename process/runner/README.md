@@ -6,7 +6,13 @@ or decide plugin business results. The Host records an exact durable StartAttemp
 before calling Launch.
 
 Build `./cmd/frame-runner` and start it with an absolute private `--directory`
-and `--socket` within that directory. A file lock prevents concurrent runner owners.
+and `--socket` within that directory. The original directory inode is locked to
+prevent concurrent runner owners. There is no separately replaceable lock file.
+Journal, receipt and snapshot operations use that pinned directory; renaming it
+cannot redirect an old runner's writes or cleanup into a new authority. A changed
+directory pathname fences new creation and socket publication while the original
+child handles retain their cleanup and durable exit path. Do not move live state
+directories as an operational handoff: shutdown must release the original owner.
 The Unix socket has mode 0600. Its supported trust boundary is the same local OS
 user; it is not a remote or multi-user service. No TCP listener is exposed.
 The complete socket pathname must fit the platform's Unix address capacity.

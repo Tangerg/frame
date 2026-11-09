@@ -7,7 +7,6 @@ import (
 	"github.com/Tangerg/frame"
 )
 
-// methodName is the wire name of one control method.
 type methodName string
 
 const (

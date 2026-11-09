@@ -185,6 +185,11 @@ Host Use settlement persists the original `frame.ReleaseProof`, projected by its
 confirmed `Close`. Cleanup diagnostics remain on that Lifetime; they cannot grow
 the durable release record or originate another release transition. `ApproveUse`
 checks capacity for that fixed terminal representation before accepting the Use.
+`SettleUse` runs after the original approval callback has ended, including when its
+commit acknowledgement was lost. Its write transaction either persists the
+original release proof or confirms that the approval did not commit. An absent
+row is conclusive only behind that transaction's writer barrier. An unconfirmed
+original connection seals the Store and cannot be mistaken for absent approval.
 
 `Config.MaxRequestBytes` defaults to 1 MiB and bounds complete encoded protection
 records, including proof envelopes. Drivers can compose admission with

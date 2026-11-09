@@ -77,7 +77,7 @@ func TestRunnerRejectsAuthorityDirectoryWithForeignWriters(t *testing.T) {
 		_ = s.Close()
 		t.Fatal("accepted shared state directory")
 	}
-	if _, err := os.Stat(filepath.Join(dir, "authority.lock")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(dir, journalFilename)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("untrusted directory used: %v", err)
 	}
 }

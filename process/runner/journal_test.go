@@ -125,8 +125,8 @@ func TestCloseRetainsAuthorityUntilOriginalWaitIsDurable(t *testing.T) {
 	if err := server.Close(); !errors.Is(err, ErrUnknown) {
 		t.Fatalf("uncommitted Wait completed shutdown: %v", err)
 	}
-	if lock, err := lockDirectory(filepath.Join(server.config.Directory, "authority.lock")); err == nil {
-		_ = unlockDirectory(lock)
+	if replacement, err := Open(server.config); err == nil {
+		_ = replacement.Close()
 		t.Fatal("uncommitted Wait abandoned its original authority")
 	}
 	server.mu.Lock()
@@ -175,8 +175,8 @@ func TestReservationFailureRetainsOriginalNonCreationEvidence(t *testing.T) {
 	if err := server.Close(); !errors.Is(err, ErrUnknown) {
 		t.Fatalf("uncommitted non-creation completed shutdown: %v", err)
 	}
-	if lock, err := lockDirectory(filepath.Join(server.config.Directory, "authority.lock")); err == nil {
-		_ = unlockDirectory(lock)
+	if replacement, err := Open(server.config); err == nil {
+		_ = replacement.Close()
 		t.Fatal("uncommitted non-creation abandoned its original authority")
 	}
 	restore()

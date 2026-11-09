@@ -101,10 +101,10 @@ func TestUseReleasePersistsOriginalCloseWithoutDiagnostics(t *testing.T) {
 	if err != nil || !record.Released || record.Proof == nil || record.Proof.Host == nil || record.Proof.Host.CloseID != outcome.ID {
 		t.Fatalf("durable release lost its original Close: %+v %v", record, err)
 	}
-	if err := store.ReleaseUse(t.Context(), use.ID(), *record.Proof.Host); err != nil {
+	if err := store.SettleUse(t.Context(), use.ID(), *record.Proof.Host); err != nil {
 		t.Fatalf("original release did not replay: %v", err)
 	}
-	if err := store.ReleaseUse(t.Context(), use.ID(), frame.ReleaseProof{CloseID: outcome.ID + 1}); !errors.Is(err, sqlite.ErrConflict) {
+	if err := store.SettleUse(t.Context(), use.ID(), frame.ReleaseProof{CloseID: outcome.ID + 1}); !errors.Is(err, sqlite.ErrConflict) {
 		t.Fatalf("another Close replaced original release: %v", err)
 	}
 }

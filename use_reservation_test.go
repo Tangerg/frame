@@ -11,7 +11,7 @@ import (
 )
 
 type reservedUseProtection struct {
-	approve      func()
+	approve      func() error
 	approval     frame.UseApproval
 	approvals    atomic.Int64
 	releaseCalls atomic.Int64
@@ -24,12 +24,12 @@ func (p *reservedUseProtection) ApproveUse(_ context.Context, approval frame.Use
 	p.approvals.Add(1)
 	p.approval = approval
 	if p.approve != nil {
-		p.approve()
+		return p.approve()
 	}
 	return nil
 }
 
-func (p *reservedUseProtection) ReleaseUse(_ context.Context, id string, proof frame.ReleaseProof) error {
+func (p *reservedUseProtection) SettleUse(_ context.Context, id string, proof frame.ReleaseProof) error {
 	calls := p.releaseCalls.Add(1)
 	p.releases <- recordedUseRelease{id: id, proof: proof}
 	if calls <= p.failures {
@@ -60,12 +60,13 @@ func TestUnpublishedUseKeepsItsOriginalSettlement(t *testing.T) {
 				}
 				failure := errors.New("temporary use release failure")
 				protection := &reservedUseProtection{failures: 2, failure: failure, releases: make(chan recordedUseRelease, 3)}
-				protection.approve = func() {
+				protection.approve = func() error {
 					if scenario.closeHost {
 						lifetime.BeginClose(frame.ErrClosed)
 					} else {
 						owner.BeginClose(frame.ErrClosed)
 					}
+					return nil
 				}
 				host, err := frame.NewHost(t.Context(), frame.HostConfig{Lifetime: lifetime, ExecutionProtection: protection, Limits: frame.HostLimits{MaxUses: 1}})
 				if err != nil {

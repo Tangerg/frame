@@ -40,9 +40,25 @@ type scopeState struct {
 	context    context.Context
 	cancel     context.CancelFunc
 	generation uint64
+	fences     uint64
 }
 
 func (s scopeState) open() bool { return s.context != nil && s.context.Err() == nil }
+
+type scopeRevision struct {
+	generation uint64
+	fences     uint64
+}
+
+func (s scopeState) revision() scopeRevision {
+	return scopeRevision{generation: s.generation, fences: s.fences}
+}
+
+func (a *Admission) scopeRevision(key scopeKey) scopeRevision {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.scopes[key].revision()
+}
 
 type ScopeObservation struct {
 	ID         ScopeID
@@ -116,14 +132,14 @@ func (a *Admission) openScope(key scopeKey) (ScopeGrant, error) {
 	return a.grantLocked(key, state), nil
 }
 
-// Restoring committed enabled state cannot revoke a later local fence. A cold
-// scope has no earlier grant to preserve, so only that case starts a generation.
-func (a *Admission) restoreScope(key scopeKey) (ScopeGrant, error) {
+// A recovered transition may advance only the scope revision it originally
+// admitted. A later fence must survive even when that transition committed.
+func (a *Admission) restoreScope(key scopeKey, admitted *scopeRevision) (ScopeGrant, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	state, exists := a.scopes[key]
-	if !exists {
-		if len(a.scopes) >= a.limits.MaxScopes {
+	if !exists || admitted != nil && state.revision() == *admitted {
+		if !exists && len(a.scopes) >= a.limits.MaxScopes {
 			return ScopeGrant{}, fmt.Errorf("%w: scopes", ErrCapacity)
 		}
 		state = a.nextGenerationLocked(key, state)
@@ -132,7 +148,10 @@ func (a *Admission) restoreScope(key scopeKey) (ScopeGrant, error) {
 }
 
 func (a *Admission) nextGenerationLocked(key scopeKey, previous scopeState) scopeState {
-	next := scopeState{generation: previous.generation + 1}
+	if previous.cancel != nil {
+		previous.cancel()
+	}
+	next := scopeState{generation: previous.generation + 1, fences: previous.fences}
 	next.context, next.cancel = context.WithCancel(context.Background())
 	a.scopes[key] = next
 	return next
@@ -152,6 +171,8 @@ func (a *Admission) fenceScope(key scopeKey) {
 	defer a.mu.Unlock()
 	if state, exists := a.scopes[key]; exists {
 		state.cancel()
+		state.fences++
+		a.scopes[key] = state
 	}
 }
 

@@ -36,6 +36,15 @@ and `$`, instead of JavaScript's different defaults.
 set and callable values, and freezes the captured table. Unit preparation uses
 the same boundary for every exported service. The caller's original table remains
 unmodified; its getters and later mutations cannot replace an admitted handler.
+Remote invocation uses that captured table as the method receiver, so methods can
+compose through `this` without reading a mutable caller-owned table again.
+
+Inferred client and handler types project primitive kinds, object openness,
+required members, arrays and literals from the descriptor. Numeric literals use
+`JSONNumber` so equivalent exact spellings remain representable. TypeScript cannot
+express numeric equality or every JSON Schema predicate; `Method` still validates
+each captured value. Complex reference and composition schemas can use the
+published `portable/contractgen` projections.
 
 ## Cancellation and result evidence
 
@@ -80,6 +89,9 @@ identity to the handler's `CallContext.commandID`, including streaming calls.
 It never substitutes the transport request sequence or generates a replacement
 after an uncertain response. A known command method also requires its identity
 in the TypeScript call signature.
+Streaming queries and commands also require `onChunk` in that signature; unary
+methods refuse it. These types project the same kind and streaming declarations
+that invocation admission checks at runtime.
 
 Command identities must be nonempty valid Unicode strings within the character
 limit exported by `portable.ProfileLimits`. The SDK counts Unicode code points,

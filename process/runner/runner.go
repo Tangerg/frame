@@ -167,7 +167,6 @@ type storedAttempt struct {
 const (
 	journalVersion            = 3
 	journalFilename           = "attempts.json"
-	authorityLockFilename     = "authority.lock"
 	lostWaitReason            = "runner restarted without the original child wait identity"
 	defaultMaxAttempts        = 4096
 	defaultMaxExecutableBytes = 512 << 20
@@ -194,6 +193,7 @@ type process struct {
 type Server struct {
 	config               Config
 	id                   string
+	directory            *os.Root
 	lock                 *os.File
 	mu                   sync.Mutex
 	journal              journal
@@ -213,21 +213,33 @@ func Open(config Config) (_ *Server, err error) {
 	if err != nil {
 		return nil, err
 	}
-	lock, err := lockDirectory(filepath.Join(config.Directory, authorityLockFilename))
+	directory, err := os.OpenRoot(config.Directory)
 	if err != nil {
 		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, directory.Close())
+		}
+	}()
+	lock, err := directory.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	if err := lockDirectory(lock); err != nil {
+		return nil, errors.Join(err, lock.Close())
 	}
 	defer func() {
 		if err != nil {
 			err = errors.Join(err, unlockDirectory(lock))
 		}
 	}()
-	journal, err := loadJournal(filepath.Join(config.Directory, journalFilename), config.MaxAttempts)
+	journal, err := loadJournal(directory, config.MaxAttempts)
 	if err != nil {
 		return nil, err
 	}
 	server := &Server{
-		config: config, id: rand.Text(), lock: lock, fenced: true, journal: journal,
+		config: config, id: rand.Text(), directory: directory, lock: lock, fenced: true, journal: journal,
 		processes: make(map[string]*process), terminalObservations: make(map[string]Observation),
 	}
 	if err := server.restoreReceipts(); err != nil {
@@ -265,9 +277,9 @@ func (c Config) resolve() (Config, error) {
 
 // loadJournal reads the attempts of an earlier runner. A child it was still
 // waiting for becomes Unknown: no later runner holds that wait identity.
-func loadJournal(path string, maxAttempts int) (journal, error) {
+func loadJournal(directory *os.Root, maxAttempts int) (journal, error) {
 	loaded := journal{Version: journalVersion, Attempts: make(map[string]storedAttempt)}
-	data, err := os.ReadFile(path)
+	data, err := directory.ReadFile(journalFilename)
 	if errors.Is(err, os.ErrNotExist) {
 		return loaded, nil
 	}
@@ -307,6 +319,9 @@ func (s *Server) Fence(_ context.Context, epoch uint64) error {
 	if s.closed || epoch < s.journal.Epoch || epoch == 0 {
 		return ErrFenced
 	}
+	if err := s.verifyDirectory(); err != nil {
+		return err
+	}
 	if epoch == s.journal.Epoch {
 		if s.fenced {
 			return ErrFenced
@@ -341,6 +356,9 @@ func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ LaunchRes
 	if s.closed || s.fenced || request.RunnerID != s.id || request.Epoch != s.journal.Epoch {
 		return notDispatched(request), ErrFenced
 	}
+	if err := s.verifyDirectory(); err != nil {
+		return notDispatched(request), err
+	}
 	if err := cancellation.Err(ctx); err != nil {
 		return notDispatched(request), err
 	}
@@ -361,13 +379,16 @@ func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ LaunchRes
 	started := false
 	defer func() {
 		if !started {
-			err = errors.Join(err, releaseExecutable(path))
+			err = errors.Join(err, s.releaseExecutable(path))
 		}
 	}()
 	if err := cancellation.Err(ctx); err != nil {
 		return s.failedStart(request.AttemptID, "launch canceled before process creation", err)
 	}
-	live, reason, err := spawn(path, request)
+	if err := s.verifyDirectory(); err != nil {
+		return s.failedStart(request.AttemptID, "authority directory replaced before process creation", err)
+	}
+	live, reason, err := spawn(filepath.Join(s.config.Directory, path), request)
 	if err != nil {
 		return s.failedStart(request.AttemptID, reason, err)
 	}
@@ -504,7 +525,7 @@ func (s *Server) wait(id string, live *process, path string) {
 	exited := live.command.ProcessState != nil
 	var cleanupErr error
 	if exited {
-		cleanupErr = releaseExecutable(path)
+		cleanupErr = s.releaseExecutable(path)
 	}
 	s.mu.Lock()
 	item := s.journal.Attempts[id]
@@ -540,8 +561,8 @@ func (s *Server) wait(id string, live *process, path string) {
 	s.mu.Unlock()
 }
 
-func releaseExecutable(path string) error {
-	if err := os.Remove(path); err != nil {
+func (s *Server) releaseExecutable(path string) error {
+	if err := s.directory.Remove(path); err != nil {
 		return fmt.Errorf("runner: executable snapshot cleanup failed: %w", err)
 	}
 	return nil
@@ -579,6 +600,12 @@ func (s *Server) commitTerminal(id string) (Observation, error) {
 	return observation.clone(), nil
 }
 
+const (
+	executableSnapshotMode   os.FileMode = 0500
+	executableSnapshotPrefix             = "executable-"
+	temporaryRecordPrefix                = ".record-"
+)
+
 func (s *Server) snapshotExecutable(request LaunchRequest) (_ string, err error) {
 	input, err := localfile.OpenRegular(request.Command)
 	if err != nil {
@@ -592,15 +619,15 @@ func (s *Server) snapshotExecutable(request LaunchRequest) (_ string, err error)
 	if info.Size() > s.config.MaxExecutableBytes {
 		return "", errors.New("runner: invalid executable")
 	}
-	file, err := os.CreateTemp(s.config.Directory, "executable-")
+	name := executableSnapshotPrefix + rand.Text()
+	file, err := s.directory.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_RDWR, localfile.PrivateFileMode)
 	if err != nil {
 		return "", err
 	}
-	name := file.Name()
 	defer func() {
 		err = errors.Join(err, file.Close())
 		if err != nil {
-			err = errors.Join(err, releaseExecutable(name))
+			err = errors.Join(err, s.releaseExecutable(name))
 		}
 	}()
 	hash := sha256.New()
@@ -611,7 +638,7 @@ func (s *Server) snapshotExecutable(request LaunchRequest) (_ string, err error)
 	if n > s.config.MaxExecutableBytes || framevalue.DigestOf([sha256.Size]byte(hash.Sum(nil))) != request.ExecutableDigest {
 		return "", errors.New("runner: executable digest mismatch")
 	}
-	if err := file.Chmod(0500); err != nil {
+	if err := file.Chmod(executableSnapshotMode); err != nil {
 		return "", err
 	}
 	if err := file.Sync(); err != nil {
@@ -639,7 +666,7 @@ func (s *Server) persist() error {
 			}
 		}
 	}
-	if err := storeRecord(filepath.Join(s.config.Directory, journalFilename), projection); err != nil {
+	if err := storeRecord(s.directory, journalFilename, projection); err != nil {
 		return err
 	}
 	s.journal = projection
@@ -647,36 +674,55 @@ func (s *Server) persist() error {
 	return nil
 }
 
-func storeRecord(path string, value any) error {
+func storeRecord(directory *os.Root, path string, value any) (err error) {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
-	file, err := os.CreateTemp(filepath.Dir(path), ".record-")
+	name := filepath.Join(filepath.Dir(path), temporaryRecordPrefix+rand.Text())
+	file, err := directory.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_RDWR, localfile.PrivateFileMode)
 	if err != nil {
 		return err
 	}
-	name := file.Name()
-	defer os.Remove(name)
+	defer func() {
+		if cleanupErr := directory.Remove(name); !errors.Is(cleanupErr, os.ErrNotExist) {
+			err = errors.Join(err, cleanupErr)
+		}
+	}()
 	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
-		return err
+		return errors.Join(err, file.Close())
 	}
 	if err := errors.Join(file.Sync(), file.Close()); err != nil {
 		return err
 	}
-	if err := os.Rename(name, path); err != nil {
+	if err := directory.Rename(name, path); err != nil {
 		return err
 	}
-	return syncDirectory(filepath.Dir(path))
+	return syncDirectory(directory, filepath.Dir(path))
 }
 
-func syncDirectory(path string) error {
-	directory, err := os.Open(path)
+func syncDirectory(root *os.Root, path string) error {
+	directory, err := root.Open(path)
 	if err != nil {
 		return err
 	}
 	return errors.Join(directory.Sync(), directory.Close())
+}
+
+// Directory handles keep persistence and cleanup on the original inode even
+// after a pathname is replaced. Path-based process and socket creation must
+// still refuse a directory that no longer names this authority.
+func (s *Server) verifyDirectory() error {
+	original, err := s.lock.Stat()
+	if err != nil {
+		return err
+	}
+	current, err := os.Lstat(s.config.Directory)
+	if err != nil || !os.SameFile(original, current) {
+		s.fenced = true
+		return errors.Join(ErrFenced, err)
+	}
+	return verifyAuthorityDirectory(s.config.Directory)
 }
 
 func (request LaunchRequest) Validate() error {

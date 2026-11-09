@@ -8,9 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
-
-	"github.com/Tangerg/frame/internal/localfile"
 )
+
+const nonOwnerWritePermissions os.FileMode = 0022
 
 // A writable ancestor can replace the private directory and its authenticated socket.
 // A sticky root-owned temporary directory protects the next component by its owner.
@@ -28,7 +28,7 @@ func verifyAuthorityDirectory(path string) error {
 		if uid != os.Geteuid() && (current == path || uid != 0) {
 			return fmt.Errorf("runner: untrusted directory owner: %s", current)
 		}
-		if info.Mode().Perm()&0022 != 0 && (current == path || info.Mode()&os.ModeSticky == 0) {
+		if info.Mode().Perm()&nonOwnerWritePermissions != 0 && (current == path || info.Mode()&os.ModeSticky == 0) {
 			return fmt.Errorf("runner: writable authority directory: %s", current)
 		}
 		if current == filepath.Dir(current) {
@@ -37,15 +37,8 @@ func verifyAuthorityDirectory(path string) error {
 	}
 }
 
-func lockDirectory(path string) (*os.File, error) {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, localfile.PrivateFileMode)
-	if err != nil {
-		return nil, err
-	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return nil, errors.Join(err, file.Close())
-	}
-	return file, nil
+func lockDirectory(file *os.File) error {
+	return syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 }
 
 func unlockDirectory(file *os.File) error {

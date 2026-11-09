@@ -71,12 +71,20 @@ const maxCallWrites = wire.maxInFlight;
 const maxReplyWrites = wire.maxInFlight;
 // Node retains both the active write and buffered writes until their callbacks settle.
 const maxUnsettledWrites = maxCallWrites + maxReplyWrites;
+const maxRequestSequence = 0xffffffffffffffffn;
+const maxRequestSequenceDigits = maxRequestSequence.toString().length;
+const frameDelimiter = "\n";
+const frameDelimiterBytes = Buffer.byteLength(frameDelimiter);
 
 function sequence(id: unknown): bigint {
-  if (typeof id !== "string" || !/^[1-9][0-9]{0,19}$/.test(id))
+  if (
+    typeof id !== "string" ||
+    id.length > maxRequestSequenceDigits ||
+    !/^[1-9][0-9]*$/.test(id)
+  )
     throw new ProcessError(wire.errors.invalid, "invalid request sequence");
   const result = BigInt(id);
-  if (result > 0xffffffffffffffffn)
+  if (result > maxRequestSequence)
     throw new RangeError("request sequence exhausted");
   return result;
 }
@@ -125,7 +133,7 @@ export class Peer {
 
   #encode(message: unknown): Buffer {
     this.signal.throwIfAborted();
-    const data = Buffer.from(stringifyJSON(message) + "\n");
+    const data = Buffer.from(stringifyJSON(message) + frameDelimiter);
     this.signal.throwIfAborted();
     if (data.length > this.#limit)
       throw new ProcessError(
@@ -205,7 +213,8 @@ export class Peer {
   }
 
   #receive(data: Buffer, dispatch: Dispatch): void {
-    if (data.length + 1 > this.#limit) throw new RangeError("frame too large");
+    if (data.length + frameDelimiterBytes > this.#limit)
+      throw new RangeError("frame too large");
     const parsed = parseJSON(
       new TextDecoder("utf-8", { fatal: true }).decode(data),
     );
@@ -311,16 +320,17 @@ export class Peer {
           : Buffer.from(incoming);
         let start = 0;
         while (start < chunk.length) {
-          const end = chunk.indexOf(10, start);
+          const end = chunk.indexOf(frameDelimiter, start);
           const part = chunk.subarray(start, end < 0 ? chunk.length : end);
           const offset = size;
           size += part.length;
-          if (size + 1 > this.#limit) throw new RangeError("frame too large");
+          if (size + frameDelimiterBytes > this.#limit)
+            throw new RangeError("frame too large");
           part.copy(frame, offset);
           if (end < 0) break;
           this.#receive(frame.subarray(0, size), dispatch);
           size = 0;
-          start = end + 1;
+          start = end + frameDelimiterBytes;
         }
       }
       if (size) throw new TypeError("truncated process frame");

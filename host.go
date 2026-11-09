@@ -88,10 +88,11 @@ type Host struct {
 	protection          ExecutionProtection
 	readAcceptedBinding AcceptedBindingReader
 
-	mu            sync.Mutex
-	drivers       map[Profile]registeredDriver
-	contracts     contractRegistry
-	installations map[InstallationID]*installed
+	mu                     sync.Mutex
+	drivers                map[Profile]registeredDriver
+	contracts              contractRegistry
+	installations          map[InstallationID]*installed
+	installationTransition *installationTransition
 	// instances indexes the current instance per unit and realm; allInstances
 	// retains every instance until its retirement has been confirmed.
 	instances      map[instanceKey]*unitInstance

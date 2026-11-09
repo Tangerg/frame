@@ -21,14 +21,14 @@ type UseConfig struct {
 // may reach until its own Lifetime has released, and a surviving execution's
 // Use stays protected until its release has been durably settled.
 type Use struct {
-	authority   *authorityIdentity
-	id          string
-	parentID    string
-	executionID string
-	realm       RealmID
-	binding     BindingSnapshot
-	lifetime    *Lifetime
-	protected   bool
+	authority       *authorityIdentity
+	id              string
+	parentID        string
+	executionID     string
+	realm           RealmID
+	binding         BindingSnapshot
+	lifetime        *Lifetime
+	approvalStarted bool
 	// initialized is closed once admission has published or refused the Use;
 	// retirement reads no admission-written field before then.
 	initialized chan struct{}
@@ -317,6 +317,9 @@ func (h *Host) acquirePrepared(ctx context.Context, plan *BindingPlan, config Us
 				return err
 			}
 		}
+		if err := h.admission.ValidateScope(config.Scope); err != nil {
+			return err
+		}
 		if err := h.attachPlanMembers(use, plan, config.Owner); err != nil {
 			return err
 		}
@@ -324,6 +327,9 @@ func (h *Host) acquirePrepared(ctx context.Context, plan *BindingPlan, config Us
 			return err
 		}
 		if err := h.protectUse(admitted, use); err != nil {
+			return err
+		}
+		if err := h.admission.ValidateScope(config.Scope); err != nil {
 			return err
 		}
 		if config.Owner.isClosing() || h.lifetime.isClosing() || use.lifetime.isClosing() {
@@ -481,12 +487,13 @@ func (h *Host) protectUse(admitted context.Context, use *Use) error {
 			h.admission.RequireRecovery(fmt.Errorf("%w: use approval interrupted", ErrRecoveryRequired))
 		}
 	}()
+	use.approvalStarted = true
 	err := h.protection.ApproveUse(admitted, approval)
 	concluded = true
 	if err != nil {
+		h.admission.RequireRecovery(err)
 		return err
 	}
-	use.protected = true
 	return nil
 }
 
@@ -539,9 +546,9 @@ func (u *Use) BeginClose(cause error) *Close {
 // admission and only an explicit Use or Host close can request another attempt.
 func (u *Use) settleRelease(proof ReleaseProof) {
 	h := u.host
-	for u.protected {
-		err := joinCallback("use release", func() error {
-			return h.protection.ReleaseUse(context.Background(), u.id, proof)
+	for u.approvalStarted {
+		err := joinCallback("use settlement", func() error {
+			return h.protection.SettleUse(context.Background(), u.id, proof)
 		})
 		if err == nil {
 			return

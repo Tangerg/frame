@@ -5,6 +5,8 @@ remains the callable authority. Its schema bundle and generated Go and
 TypeScript types are consumer projections; neither generated language can
 statically express every format, numeric or cross-field predicate. Validate
 inputs, stream chunks and outputs with their admitted method contract.
+An empty method description remains valid. Consumer code generation adds no
+documentation precondition to an already admitted callable descriptor.
 
 The generator resolves local JSON Pointer references, including escaped names,
 nested subschemas and structural recursion, into one projection graph shared by

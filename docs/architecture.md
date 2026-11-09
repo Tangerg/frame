@@ -41,9 +41,21 @@ goroutine establishes the Admission recovery barrier before releasing admission.
 The original interruption still propagates; missing acknowledgement cannot prove
 that a durable change did not occur.
 
+The Host retains that original transition's request and admitted scope revision
+until restoration projects its durable conclusion. Recovering a committed enable
+advances that exact revision once; a later local fence remains effective. A record
+whose `Enabled` field is true cannot reopen an older fenced grant by itself.
+Clearing the global recovery barrier before this restoration does not authorize
+another installation mutation to replace the unresolved transition.
+
 ## Execution boundaries
 
 Pass the same Admission, epoch and SQLite Store to the durable Host and its adapters, for both installation persistence and execution protection. The process driver and browser bridge refuse a mismatched authority. An ordinary scope named like an installation cannot fence the Host's internal installation scope. Validate an authorized grant before starting any unit and revalidate after preparation.
+
+Accepted-binding reads, provider preparation, export validation and Use approval
+may outlast their original grant. Every following execution or publication
+boundary checks that same grant directly; asynchronous cancellation notifications
+do not authorize a later callback or Use handoff.
 
 Contract descriptors own semantic identity across execution realms. `Host.Register`
 also binds that identity to the Host's local Go value and metadata types;
@@ -181,9 +193,13 @@ references regardless of which close entry point was used. Admission publishes
 or refuses the Use before retirement reads its acquired holds.
 
 Before durable approval, the Use reserves capacity in both its owner and the
-Host's existing resource graph. An approved Use remains there even when owner
-closure prevents publishing its user handle. Recovery and Host closure can still
-reach the same settlement, approval identity and provider holds.
+Host's existing resource graph. Once approval starts, that Use remains there
+even when an error, panic or Goexit hides the commit outcome or owner closure
+prevents publishing its user handle. `ExecutionProtection.SettleUse` resolves
+the original approval: it must durably release the approved Use or prove that
+the original approval cannot commit. Its failure retains the same settlement,
+approval identity and provider holds. The previous `ReleaseUse` method is removed;
+an adapter must implement this stronger reconciliation contract.
 
 That initialization barrier also closes when admission unwinds through a
 panic. An interrupted durable approval requires recovery because its commit
@@ -198,14 +214,15 @@ Access handles likewise share one private borrow interval. Returning from the
 callback closes every copy before finishing the original work; an independently
 open Use cannot prolong an expired Access.
 
-Setup and activation complete their original preparation even when a callback
-calls `runtime.Goexit`. Failed preparation retires its own resources and never
-publishes partial exports. Resource cleanup that exits without returning settles
+Setup, activation, metadata codecs and driver export validation share the original
+preparation's failure boundary, including panic and `runtime.Goexit`. Failed
+preparation retires its own resources and never publishes partial exports.
+Resource cleanup that exits without returning settles
 as unconfirmed; only an original ResourceHandle proof can then establish release.
 Cancellation callbacks are joined separately so one Goexit cannot abandon the
 remaining cancellations or the original retirement.
 
-A protected Use keeps its original settlement when ReleaseUse panics or exits
+A protected Use keeps its original settlement when `SettleUse` panics or exits
 without returning. The failure fences admission and is reported to the waiting
 close. Only a later explicit `Use.Close` or `Host.Close` requests another settlement
 attempt; enclosing resource cleanup only joins the original attempt. A failure

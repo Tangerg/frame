@@ -33,7 +33,7 @@ func connect(ctx context.Context, channel io.ReadWriteCloser, maximum int, confi
 			return nil, err
 		}
 	}
-	session, err := client.Connect(ctx, transport, nil)
+	session, err := client.Connect(ctx, toolResultTransport{transport}, nil)
 	if err != nil {
 		return nil, errors.Join(err, cancellation.Err(ctx))
 	}

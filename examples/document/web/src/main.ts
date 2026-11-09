@@ -47,6 +47,7 @@ const tokenInput = element<HTMLInputElement>("token");
 const taskInput = element<HTMLInputElement>("task");
 const pathInput = element<HTMLInputElement>("path");
 const transport = new Lifetime("document HTTP transport");
+const previewActions = new Lifetime("preview application actions");
 let credentials: Credentials | undefined;
 let runtime: Runtime | undefined;
 let control: HTTPControl | undefined;
@@ -60,11 +61,15 @@ let pumpWork: Promise<void> | undefined;
 let opening: { operationId: string; resumeToken: string } | undefined;
 let realmReleased = false;
 
-async function api<T>(path: string, input?: unknown): Promise<T> {
+async function api<T>(
+  path: string,
+  input?: unknown,
+  wait?: AbortSignal,
+): Promise<T> {
   return transport.run(async (signal) => {
     const response = await fetch(path, {
       method: input === undefined ? "GET" : "POST",
-      signal,
+      signal: wait ? AbortSignal.any([signal, wait]) : signal,
       redirect: "error",
       credentials: "omit",
       headers: {
@@ -77,6 +82,7 @@ async function api<T>(path: string, input?: unknown): Promise<T> {
       await readResponseBytes(response, maximumApplicationResponseBytes),
     );
     const value = parseJSON(text) as T & { error?: string };
+    wait?.throwIfAborted();
     if (!response.ok)
       throw new Error(value.error ?? "application request failed");
     return value;
@@ -92,20 +98,22 @@ function hostControl(session: Credentials): HTTPControl {
   });
 }
 
-async function connect(): Promise<void> {
-  if (runtime)
-    throw new Error(
-      runtime.connection === "closed"
-        ? "reload this page before opening another Realm"
-        : "the current Realm already owns this page",
-    );
+async function connect(signal: AbortSignal): Promise<void> {
+  if (runtime) return reconnect(signal);
   opening ??= {
     operationId: crypto.randomUUID(),
     resumeToken: crypto.randomUUID() + crypto.randomUUID(),
   };
-  credentials = await api<Credentials>("/api/realm/open", opening);
+  const session = await api<Credentials>("/api/realm/open", opening, signal);
+  signal.throwIfAborted();
+  credentials = session;
   control = hostControl(credentials);
-  const contracts = await api<{ previews: ContractRef }>("/api/contracts");
+  const contracts = await api<{ previews: ContractRef }>(
+    "/api/contracts",
+    undefined,
+    signal,
+  );
+  signal.throwIfAborted();
   point = new Point<PreviewMetadata, Preview>(contracts.previews);
   previewSnapshots = new PreviewSnapshots(point.ref.name);
   const modules = new RealmModules(async (unit, signal) => {
@@ -150,21 +158,82 @@ async function connect(): Promise<void> {
     onError: report,
   });
   pumpWork = pump.run().catch(report);
-  await api("/api/preview/activate", credentials);
+  await activatePreview(signal);
+}
+
+async function activatePreview(signal: AbortSignal): Promise<void> {
+  if (!runtime || !credentials || runtime.connection !== "connected")
+    throw new Error("connect the original Realm before activating its preview");
+  // Host activation joins the existing instance in this same Realm after a lost reply.
+  await api("/api/preview/activate", credentials, signal);
+  signal.throwIfAborted();
+  if (!execution)
+    throw new Error(
+      "preview activation has not completed; reconnect its Realm",
+    );
   element("connection-state").textContent =
     `Realm ${credentials.realm.id.slice(0, 12)} / Host epoch ${credentials.authority.epoch}`;
 }
 
+async function reconnect(signal: AbortSignal): Promise<void> {
+  if (!credentials || !runtime) throw new Error("no original Realm exists");
+  if (runtime.connection === "closed")
+    throw new Error("reload this page before opening another Realm");
+  const session = await api<Credentials>(
+    "/api/realm/resume",
+    {
+      realm: credentials.realm,
+      resumeToken: credentials.resumeToken,
+    },
+    signal,
+  );
+  signal.throwIfAborted();
+  credentials = session;
+  control = hostControl(credentials);
+  await runtime.reconnect(control);
+  signal.throwIfAborted();
+  if (runtime.connection === "connected") {
+    const owner = runtime,
+      channel = control;
+    await serializePreview(() => recoverPreview(owner, channel));
+    await activatePreview(signal);
+  }
+  element("connection-state").textContent =
+    `Original Realm: ${runtime.connection}`;
+}
+
+let pendingConnection: Promise<void> = Promise.resolve();
+
+async function serializeConnection(
+  work: (signal: AbortSignal) => Promise<void>,
+): Promise<void> {
+  const previous = pendingConnection;
+  const completion = previewActions.run(async (signal) => {
+    await previous;
+    signal.throwIfAborted();
+    await work(signal);
+  });
+  pendingConnection = completion.catch(() => {});
+  await completion;
+}
+
 let pendingPreview: Promise<void> = Promise.resolve();
 
-function serializePreview(work: () => Promise<void>): Promise<void> {
-  const completion = pendingPreview.then(work);
+async function serializePreview(
+  work: (signal: AbortSignal) => Promise<void>,
+): Promise<void> {
+  const previous = pendingPreview;
+  const completion = previewActions.run(async (signal) => {
+    await previous;
+    signal.throwIfAborted();
+    await work(signal);
+  });
   pendingPreview = completion.catch(() => {});
-  return completion;
+  await completion;
 }
 
 function preview(task: TaskView): Promise<void> {
-  return serializePreview(() => mountPreview(task));
+  return serializePreview((signal) => mountPreview(task, signal));
 }
 
 async function closeSnapshotAfterFailure(
@@ -231,21 +300,24 @@ async function recoverPreview(
   await previewSnapshots.close(channel);
 }
 
-async function mountPreview(task: TaskView): Promise<void> {
-  if (
-    task.id !== taskInput.value ||
-    !task.result ||
-    !runtime ||
-    !control ||
-    !point ||
-    !previewSnapshots ||
-    !execution
-  )
-    return;
+async function mountPreview(
+  task: TaskView,
+  signal: AbortSignal,
+): Promise<void> {
+  if (task.id !== taskInput.value || !task.result) return;
+  if (!runtime || !control || !point || !previewSnapshots)
+    throw new Error(
+      "connect the preview before displaying the converted document",
+    );
+  if (!execution)
+    throw new Error(
+      "preview activation has not completed; reconnect its Realm",
+    );
   const owner = runtime,
     channel = control;
   await recoverPreview(owner, channel);
   await closeMounted(owner);
+  signal.throwIfAborted();
   const snapshot = await previewSnapshots.capture(channel);
   let choice;
   try {
@@ -285,11 +357,13 @@ async function mountPreview(task: TaskView): Promise<void> {
   });
   mounted = use;
   try {
+    signal.throwIfAborted();
     const selected = snapshot.points[0]?.candidates.find(
       (candidate) => candidate.token === choice.candidates[0],
     );
     if (!selected) throw new Error("no approved preview is available");
-    const theme = await api<{ css: string }>("/api/theme");
+    const theme = await api<{ css: string }>("/api/theme", undefined, signal);
+    signal.throwIfAborted();
     const object = use.objects.find(
       (object) =>
         object.export.name === selected.source.export &&
@@ -343,6 +417,8 @@ function taskId(): string {
   return taskInput.value;
 }
 function report(error: unknown): void {
+  if (previewActions.signal.aborted && error === previewActions.signal.reason)
+    return;
   element("error").textContent =
     error instanceof Error ? error.message : String(error);
 }
@@ -354,12 +430,13 @@ function action(id: string, work: () => Promise<void>): void {
     void work()
       .catch(report)
       .finally(() => {
-        button.disabled = false;
+        button.disabled =
+          (id === "connect" || id === "reconnect") && previewActions.closing;
       });
   });
 }
 
-action("connect", connect);
+action("connect", () => serializeConnection(connect));
 action("queue", async () => {
   show(
     await api<TaskView>("/api/queue", { id: taskId(), path: pathInput.value }),
@@ -386,27 +463,26 @@ action("cancel", async () => {
   await api("/api/cancel", command);
   show(await api<TaskView>(`/api/tasks/${encodeURIComponent(command.id)}`));
 });
-action("reconnect", async () => {
-  if (!credentials || !runtime) throw new Error("no original Realm exists");
-  credentials = await api<Credentials>("/api/realm/resume", {
-    realm: credentials.realm,
-    resumeToken: credentials.resumeToken,
-  });
-  control = hostControl(credentials);
-  await runtime.reconnect(control);
-  if (runtime.connection === "connected") {
-    const owner = runtime,
-      channel = control;
-    await serializePreview(() => recoverPreview(owner, channel));
-  }
-  element("connection-state").textContent =
-    `Original Realm: ${runtime.connection}`;
-});
-action("close", async () => {
-  if (!credentials || !runtime) return;
-  await api("/api/realm/seal", { token: credentials.token });
-  await pump?.close();
-  await pumpWork;
+action("reconnect", () => serializeConnection(reconnect));
+async function closePreview(): Promise<void> {
+  const work = previewActions.beginClose();
+  element<HTMLButtonElement>("connect").disabled = true;
+  element<HTMLButtonElement>("reconnect").disabled = true;
+  // Cancellation must precede joining work whose preparation or mount it releases.
+  const settled = await Promise.allSettled([
+    sealPreview(),
+    pump?.close(),
+    pumpWork,
+    work.wait(),
+  ]);
+  const failures = settled.flatMap((result) =>
+    result.status === "rejected" ? [result.reason] : [],
+  );
+  if (failures.length)
+    throw new AggregateError(
+      failures,
+      "original preview release did not complete",
+    );
   await api("/api/recover", {});
   realmReleased = true;
   credentials = undefined;
@@ -419,13 +495,22 @@ action("close", async () => {
   element<HTMLButtonElement>("reload").disabled = false;
   element("connection-state").textContent =
     "Original Realm released and acknowledged";
-});
+}
+
+async function sealPreview(): Promise<void> {
+  // A lost opening reply still belongs to its original operation, even before Runtime exists.
+  const session =
+    credentials ??
+    (opening ? await api<Credentials>("/api/realm/open", opening) : undefined);
+  if (session) await api("/api/realm/seal", { token: session.token });
+}
+action("close", closePreview);
 
 action("reload", async () => {
-  if (!runtime) return;
-  await runtime.reload(() => window.location.reload());
+  if (runtime) await runtime.reload(() => window.location.reload());
+  else window.location.reload();
 });
 
 window.addEventListener("beforeunload", (event) => {
-  if (runtime && !realmReleased) event.preventDefault();
+  if ((runtime || opening) && !realmReleased) event.preventDefault();
 });

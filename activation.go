@@ -93,6 +93,11 @@ func (h *Host) activate(ctx context.Context, realm RealmID, grant ScopeGrant, bi
 		if err != nil {
 			return err
 		}
+		if grant.issued() {
+			if err := h.admission.ValidateScope(grant); err != nil {
+				return err
+			}
+		}
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		if h.lifetime.isClosing() {

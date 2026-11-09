@@ -110,7 +110,7 @@ func (s *Server) advanceClose() error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	closeErr = errors.Join(closeErr, unlockDirectory(s.lock))
+	closeErr = errors.Join(closeErr, unlockDirectory(s.lock), s.directory.Close())
 	s.lock = nil
 	return closeErr
 }

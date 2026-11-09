@@ -26,7 +26,7 @@ func (p *useRetirementProtection) ApproveUse(_ context.Context, approval frame.U
 	return p.approve()
 }
 
-func (p *useRetirementProtection) ReleaseUse(_ context.Context, id string, proof frame.ReleaseProof) error {
+func (p *useRetirementProtection) SettleUse(_ context.Context, id string, proof frame.ReleaseProof) error {
 	p.releaseCalls.Add(1)
 	p.releases <- recordedUseRelease{id: id, proof: proof}
 	return nil

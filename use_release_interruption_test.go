@@ -18,7 +18,7 @@ type interruptedUseRelease struct {
 
 func (*interruptedUseRelease) ApproveUse(context.Context, frame.UseApproval) error { return nil }
 
-func (p *interruptedUseRelease) ReleaseUse(context.Context, string, frame.ReleaseProof) error {
+func (p *interruptedUseRelease) SettleUse(context.Context, string, frame.ReleaseProof) error {
 	if p.calls.Add(1) == 1 {
 		return p.release()
 	}
@@ -93,7 +93,7 @@ type gatedUseRelease struct {
 
 func (*gatedUseRelease) ApproveUse(context.Context, frame.UseApproval) error { return nil }
 
-func (p *gatedUseRelease) ReleaseUse(context.Context, string, frame.ReleaseProof) error {
+func (p *gatedUseRelease) SettleUse(context.Context, string, frame.ReleaseProof) error {
 	p.calls.Add(1)
 	p.entered <- struct{}{}
 	return <-p.result

@@ -34,7 +34,7 @@ func declaresPoint(unit UnitDeclaration, contract ContractRef) bool {
 
 // setupPublications checks a setup's actual exports against its declaration:
 // each declared export exactly once, plus dynamic members of declared Points.
-func (h *Host) setupPublications(instance *unitInstance, exports []ExportValue) ([]*publication, error) {
+func (h *Host) setupPublications(ctx context.Context, instance *unitInstance, exports []ExportValue) ([]*publication, error) {
 	actual := make(map[string]bool, len(exports))
 	result := make([]*publication, 0, len(exports))
 	for _, export := range exports {
@@ -49,7 +49,7 @@ func (h *Host) setupPublications(instance *unitInstance, exports []ExportValue) 
 		if found && declared.Contract != export.Contract || !found && !declaresPoint(instance.unit, export.Contract) {
 			return nil, fmt.Errorf("%w: actual export was not declared", ErrContractMismatch)
 		}
-		value, err := h.prepareExport(instance, export)
+		value, err := h.prepareExport(ctx, instance, export)
 		if err != nil {
 			return nil, err
 		}
@@ -75,7 +75,7 @@ func declaredExport(unit UnitDeclaration, name string) (ExportDeclaration, bool)
 
 // prepareExport admits one actual value and a detached metadata snapshot
 // without holding Host.mu, because metadata decoding may be slow.
-func (h *Host) prepareExport(instance *unitInstance, export ExportValue) (*publication, error) {
+func (h *Host) prepareExport(ctx context.Context, instance *unitInstance, export ExportValue) (*publication, error) {
 	h.mu.Lock()
 	definition := h.contracts.lookup(export.Contract)
 	types := h.contracts.goTypes[export.Contract]
@@ -85,6 +85,9 @@ func (h *Host) prepareExport(instance *unitInstance, export ExportValue) (*publi
 		return nil, ErrContractMismatch
 	}
 	if validator, ok := driver.Driver.(ExportValidator); ok {
+		if err := instance.validateCurrent(ctx); err != nil {
+			return nil, err
+		}
 		if err := validator.ValidateExport(instance.id, export); err != nil {
 			return nil, err
 		}
@@ -98,6 +101,9 @@ func (h *Host) prepareExport(instance *unitInstance, export ExportValue) (*publi
 		if !reflect.TypeOf(export.Value).AssignableTo(types.value) {
 			return nil, ErrContractMismatch
 		}
+	}
+	if err := instance.validateCurrent(ctx); err != nil {
+		return nil, err
 	}
 	metadata, err := prepareMetadata(definition, types.metadata, export.Metadata)
 	if err != nil {
@@ -140,7 +146,7 @@ func (h *Host) PreparePublication(ctx context.Context, instanceID string, value 
 	if err := validateName("export name", value.Name); err != nil {
 		return nil, err
 	}
-	prepared, err := h.prepareExport(instance, value)
+	prepared, err := h.prepareExport(ctx, instance, value)
 	if err != nil {
 		return nil, err
 	}

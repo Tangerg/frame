@@ -91,9 +91,6 @@ func buildFeature(data []byte) (*featureArtifacts, error) {
 		return nil, err
 	}
 	for _, descriptor := range descriptors {
-		if descriptor.Description == "" || !utf8.ValidString(descriptor.Description) {
-			return nil, fmt.Errorf("feature contracts: method description is required for %q", descriptor.Name)
-		}
 		root := roots[descriptor.Name]
 		method := featureMethod{Name: descriptor.Name, Kind: descriptor.Kind, Target: descriptor.Target, Description: descriptor.Description, Input: schemaReference(frameInput.definition(root)), Output: schemaReference(frameOutput.definition(root))}
 		if len(descriptor.Stream) != 0 {

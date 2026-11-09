@@ -80,6 +80,12 @@ test("document CLI, Host control, actual JS preview and durable exit", async () 
       MutationObserver: window.MutationObserver,
     });
     let rejectTheme = true;
+    let activationRequests = 0;
+    let realmOpens = 0;
+    let realmSeals = 0;
+    let suspendTheme = false;
+    let themeSignal;
+    const previewExecutions = new Set();
     let releasedPreviewUses = 0;
     let loseAcquire = false;
     let lostRequest, lostGrant;
@@ -88,13 +94,37 @@ test("document CLI, Host control, actual JS preview and durable exit", async () 
     let prematureSnapshot = false;
     globalThis.fetch = async (input, init) => {
       const url = new URL(input instanceof Request ? input.url : input, origin);
+      if (url.pathname === "/api/realm/open") realmOpens++;
+      if (url.pathname === "/api/realm/seal") realmSeals++;
+      if (url.pathname === "/api/preview/activate") {
+        activationRequests++;
+        if (activationRequests === 1)
+          throw new Error("activation transport failed before dispatch");
+      }
       if (url.pathname === "/api/theme" && rejectTheme) {
         rejectTheme = false;
         return Response.json({ error: "theme failure" }, { status: 500 });
       }
+      if (url.pathname === "/api/theme" && suspendTheme) {
+        themeSignal = init.signal;
+        await new Promise((_resolve, reject) => {
+          const cancel = () => reject(themeSignal.reason);
+          if (themeSignal.aborted) cancel();
+          else themeSignal.addEventListener("abort", cancel, { once: true });
+        });
+      }
       const reply = await originalFetch(url, init);
+      if (
+        url.pathname === "/api/preview/activate" &&
+        activationRequests === 2
+      ) {
+        assert.equal(reply.ok, true);
+        throw new Error("activation acknowledgement lost after host commit");
+      }
       if (url.pathname === "/frame/control" && reply.ok) {
         const message = JSON.parse(init.body);
+        if (message.method === "ready")
+          previewExecutions.add(message.input.execution.id);
         if (message.method === "acquire" && loseAcquire) {
           loseAcquire = false;
           lostRequest = message.input;
@@ -126,9 +156,29 @@ test("document CLI, Host control, actual JS preview and durable exit", async () 
     ).trim();
     element("connect").click();
     await until(
-      () => element("connection-state").textContent.startsWith("Realm "),
+      () => !element("connect").disabled,
       () => element("error").textContent + diagnostics,
     );
+    assert.match(element("error").textContent, /before dispatch/);
+    element("connect").click();
+    await until(
+      () => !element("connect").disabled,
+      () => element("error").textContent + diagnostics,
+    );
+    assert.match(element("error").textContent, /after host commit/);
+    element("reconnect").click();
+    await until(
+      () => !element("reconnect").disabled,
+      () => element("error").textContent + diagnostics,
+    );
+    assert.equal(element("error").textContent, "");
+    assert.equal(
+      element("connection-state").textContent,
+      "Original Realm: connected",
+    );
+    assert.equal(activationRequests, 3);
+    assert.equal(realmOpens, 1);
+    assert.equal(previewExecutions.size, 1);
     element("task").value = "workflow-original";
     element("convert").click();
     await until(
@@ -185,9 +235,10 @@ test("document CLI, Host control, actual JS preview and durable exit", async () 
       await originalFetch(origin + "/api/tasks/workflow-original", request)
     ).json();
     await writeFile(join(documents, "hello.md"), "# Changed source\n");
+    suspendTheme = true;
     element("run").click();
     await until(
-      () => !element("run").disabled,
+      () => themeSignal !== undefined,
       () => element("error").textContent,
     );
     const repeated = await (
@@ -199,6 +250,10 @@ test("document CLI, Host control, actual JS preview and durable exit", async () 
       "the original task must be observed without conversion replay",
     );
     element("close").click();
+    await until(
+      () => realmSeals === 1 && themeSignal.aborted,
+      () => "release is waiting behind the pending preview mount",
+    );
     await until(
       () =>
         element("connection-state").textContent ===
@@ -212,6 +267,9 @@ test("document CLI, Host control, actual JS preview and durable exit", async () 
     assert.equal(element("error").textContent, "");
     assert.equal(element("connect").disabled, true);
     assert.equal(element("reload").disabled, false);
+    assert.equal(element("run").disabled, false);
+    assert.equal(realmOpens, 1);
+    assert.equal(previewExecutions.size, 1);
     completed = true;
   } finally {
     globalThis.fetch = originalFetch;

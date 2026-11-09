@@ -201,28 +201,28 @@ func (s *toolService) Invoke(ctx context.Context, invocation portable.Invocation
 			return value.JSON{}, err
 		}
 	}
-	result, err := s.connection.session.CallTool(ctx, params)
+	projection := new(toolResultProjection)
+	defer projection.release()
+	result, err := s.connection.session.CallTool(context.WithValue(ctx, toolResultProjectionKey{}, projection), params)
 	if err != nil {
 		return value.JSON{}, errors.Join(process.ErrOutcomeUnknown, err, cancellation.Err(ctx))
 	}
 	if result.NeedsInput() {
 		return value.JSON{}, fmt.Errorf("%w: MCP tool requested an unsupported input round", process.ErrOutcomeUnknown)
 	}
-	var payload any = result
+	reply, err := projection.admit()
+	if err != nil {
+		return value.JSON{}, errors.Join(process.ErrOutcomeUnknown, err)
+	}
 	if result.IsError {
-		reply, err := sdkValue(result)
-		if err != nil {
-			return value.JSON{}, errors.Join(process.ErrOutcomeUnknown, err)
-		}
 		return value.JSON{}, &ToolError{Result: reply}
 	}
 	if !member.fullResult {
 		if result.StructuredContent == nil {
 			return value.JSON{}, fmt.Errorf("%w: MCP tool %q omitted structuredContent", process.ErrOutcomeUnknown, name)
 		}
-		payload = result.StructuredContent
+		reply, err = sdkValue(result.StructuredContent)
 	}
-	reply, err := sdkValue(payload)
 	if err == nil {
 		err = member.method.ValidateOutput(reply.Bytes())
 	}

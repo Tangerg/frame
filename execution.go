@@ -105,11 +105,7 @@ func (s *Setup) ValidateCurrent(ctx context.Context) error {
 	if s == nil || s.host == nil || s.instance == nil {
 		return ErrInvalid
 	}
-	return s.host.admission.Under(ctx, func() error {
-		s.host.mu.Lock()
-		defer s.host.mu.Unlock()
-		return s.instance.validateCurrentLocked()
-	})
+	return s.instance.validateCurrent(ctx)
 }
 
 func (s *Setup) OnActivate(activate func(context.Context) error) error {

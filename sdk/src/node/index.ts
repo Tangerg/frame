@@ -539,7 +539,8 @@ class Instance<I extends Imports, E extends Exports> {
         throw new TypeError("unknown bound member");
       const service = this.unit.exports[params.handle]!;
       const operation = service.method(params.member);
-      const handler = this.#exports[params.handle]![params.member]!;
+      const receiver = this.#exports[params.handle]!;
+      const handler = receiver[params.member]!;
       const input = operation.admitInvocation(params.input, params.commandID);
       if (
         operation.admitChunk
@@ -550,6 +551,7 @@ class Instance<I extends Imports, E extends Exports> {
       return {
         operation,
         handler,
+        receiver,
         input,
         stream: params.stream,
         commandID: params.commandID as string | undefined,
@@ -564,7 +566,7 @@ class Instance<I extends Imports, E extends Exports> {
   }
 
   async #call(params: unknown, signal: AbortSignal): Promise<unknown> {
-    const { operation, handler, input, stream, commandID } =
+    const { operation, handler, receiver, input, stream, commandID } =
       this.#boundCall(params);
     return this.lifetime.run(async (lifetimeSignal) => {
       const active = AbortSignal.any([lifetimeSignal, signal]);
@@ -572,7 +574,7 @@ class Instance<I extends Imports, E extends Exports> {
       const invoke = async (running: AbortSignal) => {
         running.throwIfAborted();
         try {
-          const result = await handler(input, {
+          const context: CallContext<unknown> = {
             signal: running,
             commandID,
             emit: (chunk) => {
@@ -592,7 +594,11 @@ class Instance<I extends Imports, E extends Exports> {
                   throw new Error("chunk not acknowledged");
               });
             },
-          });
+          };
+          const result = await Reflect.apply(handler, receiver, [
+            input,
+            context,
+          ]);
           return operation.admitOutput(result);
         } catch (cause) {
           throw ProcessError.afterDispatch(cause);

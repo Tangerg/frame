@@ -256,11 +256,32 @@ func (r *CallbackReceiver) open(ctx context.Context, route callbackRoute) (Manag
 	}
 	life, cancel := context.WithCancel(ctx)
 	l := callbackListener{conn, life, make(chan struct{}, 1)}
+	// The socket slot serializes handlers and joins them before grant release,
+	// so the original grant retains its first interruption without another owner.
+	var callbackErr error
 	server := &http.Server{
 		ReadTimeout:    r.limits.ReadTimeout,
 		MaxHeaderBytes: int(min(r.limits.MaxRequestBytes, int64(http.DefaultMaxHeaderBytes))),
 		BaseContext:    func(net.Listener) context.Context { return life },
-		Handler:        http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { route.serve(w, req, ref, r.limits) }),
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			returned := false
+			defer func() {
+				var interrupted error
+				if recovered := recover(); recovered != nil {
+					interrupted = newCallbackPanic("mcp: callback handler panicked", recovered)
+				} else if !returned {
+					interrupted = errors.New("mcp: callback handler exited without returning")
+				}
+				if interrupted != nil {
+					if callbackErr == nil {
+						callbackErr = interrupted
+					}
+					w.WriteHeader(http.StatusUnprocessableEntity)
+				}
+			}()
+			route.serve(w, req, ref, r.limits)
+			returned = true
+		}),
 		ConnState: func(_ net.Conn, state http.ConnState) {
 			if state == http.StateClosed {
 				<-l.active
@@ -293,7 +314,7 @@ func (r *CallbackReceiver) open(ctx context.Context, route callbackRoute) (Manag
 		// Serve can return while a callback is draining. StateClosed releases the
 		// slot only after the last admitted handler has actually returned.
 		l.active <- struct{}{}
-		closeErr = errors.Join(serveErr, err)
+		closeErr = errors.Join(callbackErr, serveErr, err)
 		<-r.calls
 	}()
 	grant := ref

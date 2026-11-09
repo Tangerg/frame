@@ -13,7 +13,6 @@ import {
   type Bootstrap,
   type DocumentRef,
 } from "./contracts.generated";
-import { sha256 } from "./contracts";
 import { ConversionTask } from "./conversion-task";
 import { ConnectionFailures } from "./failures";
 
@@ -51,15 +50,8 @@ export function connect(
     });
     if (!response.ok) throw new Error("approved module is unavailable");
     const bytes = await readResponseBytes(response, maximumModuleBytes);
-    const digest = await sha256(bytes);
-    // Node's native ESM loader does not import HTTP. This local test loader
-    // imports only the verified original bytes; actual browser evidence lives
-    // in the separate document workbench's browser-engine workflow.
-    let binary = "";
-    for (const value of bytes) binary += String.fromCharCode(value);
     return {
-      url: `data:text/javascript;base64,${btoa(binary)}`,
-      digest,
+      bytes,
       close() {},
     };
   });

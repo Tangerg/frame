@@ -22,6 +22,7 @@ import {
   captureValue,
   exceeded,
   PORTABLE_LIMITS,
+  type JSONSize,
 } from "./limits.js";
 
 type RecordValue = Record<string, unknown>;
@@ -192,14 +193,6 @@ function admitSchema(value: unknown, patterns: Map<string, RegExp>): void {
     admitChoiceConstraints(key, field);
     admitAnnotations(key, field, patterns);
   }
-  if (value.$ref !== undefined) {
-    const ref = localReference(value.$ref);
-    delete value.$ref;
-    value.allOf = [
-      ...((value.allOf as unknown[] | undefined) ?? []),
-      Object.assign(Object.create(null), { $ref: ref }),
-    ];
-  }
 }
 
 // The engine indexes schema maps with ordinary property lookup and may rewrite
@@ -221,8 +214,7 @@ function engineProjection(source: unknown): unknown {
 // jsonschema supplies traversal and composition. Its supported instance-local
 // hooks adapt numeric comparison to the public exact JSON representation.
 export function compileSchema(source: unknown): (value: unknown) => unknown {
-  const document = engineProjection(captureDescriptor(source));
-  const budget = schemaWork(document);
+  const graph = new SchemaGraph(engineProjection(captureDescriptor(source)));
   const validator = new Validator() as Validator & {
     types: Record<string, (value: unknown) => boolean>;
   };
@@ -241,14 +233,12 @@ export function compileSchema(source: unknown): (value: unknown) => unknown {
       ? "not constraint failed"
       : "";
   }) as CustomProperty;
-  const patterns = new Map<string, RegExp>();
   validator.attributes.format = ((value: unknown, schema: Schema) =>
     validateFormat(schema.format!, value)
       ? ""
       : "format constraint failed") as CustomProperty;
   validator.attributes.pattern = ((value: unknown, schema: Schema) =>
-    typeof value !== "string" ||
-    patterns.get(schema.pattern as string)!.test(value)
+    typeof value !== "string" || graph.matches(schema.pattern as string, value)
       ? ""
       : "pattern constraint failed") as CustomProperty;
   validator.attributes.patternProperties = ((value, schema, options, ctx) => {
@@ -268,7 +258,7 @@ export function compileSchema(source: unknown): (value: unknown) => unknown {
       for (const [pattern, subschema] of Object.entries(
         schema.patternProperties ?? {},
       )) {
-        if (patterns.get(pattern)!.test(name)) {
+        if (graph.matches(pattern, name)) {
           matched = true;
           validate(subschema);
         }
@@ -321,41 +311,15 @@ export function compileSchema(source: unknown): (value: unknown) => unknown {
       : "";
   }) as CustomProperty;
 
-  admitSchema(document, patterns);
-  const schema = document as Schema;
-  function checkReferences(value: unknown): void {
-    if (!value || typeof value !== "object") return;
-    if (Array.isArray(value)) {
-      value.forEach(checkReferences);
-      return;
-    }
-    const record = value as RecordValue;
-    if (
-      typeof record.$ref === "string" &&
-      !isSchema(resolveLocalReference(schema, record.$ref))
-    )
-      throw new Error("plugin: schema reference must identify a schema");
-    for (const [name, field] of Object.entries(record)) {
-      for (const child of subschemas(name, field)) checkReferences(child.value);
-    }
-  }
-  checkReferences(schema);
-  const base = "https://frame.invalid/schema";
-  validator.addSchema(schema, base);
+  const schema = graph.schema;
+  validator.addSchema(schema, schemaBase);
   const validate = (value: unknown) => {
     const captured = captureValue(value);
-    const size = captured.size;
-    if (budget.unique && size.equality > PORTABLE_LIMITS.maxEqualityWork)
-      exceeded("schema equality work", PORTABLE_LIMITS.maxEqualityWork);
-    if (
-      budget.work[size.depth]! >
-      PORTABLE_LIMITS.maxValidationWork / (size.nodes + size.keys)
-    )
-      exceeded("schema validation work", PORTABLE_LIMITS.maxValidationWork);
+    graph.admitSize(captured.size);
     const instance = engineProjection(captured.value);
     if (
       !validator.validate(instance, schema, {
-        base,
+        base: schemaBase,
         required: true,
         allowUnknownAttributes: false,
       }).valid
@@ -364,17 +328,71 @@ export function compileSchema(source: unknown): (value: unknown) => unknown {
     return captured.value;
   };
   validator.validate(undefined, schema, {
-    base,
+    base: schemaBase,
     allowUnknownAttributes: false,
   });
   return validate;
 }
 
 interface SchemaNode {
+  schema: unknown;
   same: number[];
   descend: number[];
   local: number;
   unique: boolean;
+  reference?: number;
+}
+
+const schemaBase = "https://frame.invalid/schema";
+
+// The admitted graph owns each reference target. Engine pointers contain only
+// generated indexes, so engine URI decoding cannot select a different schema
+// or introduce a traversal edge absent from the profile's work budget.
+class SchemaGraph {
+  readonly schema: Schema;
+  readonly #patterns = new Map<string, RegExp>();
+  readonly #budget: { work: number[]; unique: boolean };
+
+  constructor(document: unknown) {
+    const nodes = schemaNodes(document);
+    this.#budget = schemaWork(nodes);
+    admitSchema(document, this.#patterns);
+    for (const node of nodes) {
+      if (node.reference === undefined) continue;
+      const schema = node.schema as RecordValue;
+      delete schema.$ref;
+      schema.allOf = [
+        ...((schema.allOf as unknown[] | undefined) ?? []),
+        this.#reference(node.reference),
+      ];
+    }
+    this.schema = Object.assign(Object.create(null), {
+      $defs: Object.fromEntries(
+        nodes.map((node, index) => [index, node.schema]),
+      ),
+      allOf: [this.#reference(0)],
+    });
+  }
+
+  #reference(index: number): Schema {
+    return Object.assign(Object.create(null), {
+      $ref: schemaBase + "#/$defs/" + index,
+    });
+  }
+
+  matches(pattern: string, value: string): boolean {
+    return this.#patterns.get(pattern)!.test(value);
+  }
+
+  admitSize(size: JSONSize): void {
+    if (this.#budget.unique && size.equality > PORTABLE_LIMITS.maxEqualityWork)
+      exceeded("schema equality work", PORTABLE_LIMITS.maxEqualityWork);
+    if (
+      this.#budget.work[size.depth]! >
+      PORTABLE_LIMITS.maxValidationWork / (size.nodes + size.keys)
+    )
+      exceeded("schema validation work", PORTABLE_LIMITS.maxValidationWork);
+  }
 }
 
 function countEqualityWork(
@@ -393,15 +411,19 @@ function countEqualityWork(
   else if (key === "uniqueItems") node.unique = field === true;
 }
 
-// This profile graph only bounds traversal. It never evaluates a predicate or
-// substitutes a verdict for the schema engine. The Go owner uses the same bound.
-function schemaWork(document: unknown): { work: number[]; unique: boolean } {
+function schemaNodes(document: unknown): SchemaNode[] {
   const nodes: SchemaNode[] = [];
   const paths = new Map<string, number>();
   const references: { source: number; path: string }[] = [];
   function visit(value: unknown, path: string): number {
     const index = nodes.length;
-    const node: SchemaNode = { same: [], descend: [], local: 1, unique: false };
+    const node: SchemaNode = {
+      schema: value,
+      same: [],
+      descend: [],
+      local: 1,
+      unique: false,
+    };
     nodes.push(node);
     paths.set(path, index);
     if (typeof value === "boolean") return index;
@@ -431,7 +453,14 @@ function schemaWork(document: unknown): { work: number[]; unique: boolean } {
     if (target === undefined)
       throw new Error("portable: unresolved schema reference");
     nodes[ref.source]!.same.push(target);
+    nodes[ref.source]!.reference = target;
   }
+  return nodes;
+}
+
+// This bound measures graph traversal without evaluating a predicate. The Go
+// profile uses the same bound; engine projections cannot expand references.
+function schemaWork(nodes: SchemaNode[]): { work: number[]; unique: boolean } {
   const state = new Uint8Array(nodes.length);
   const expansion = new Uint32Array(nodes.length);
   const depths = new Uint32Array(nodes.length);
@@ -494,26 +523,4 @@ function schemaWork(document: unknown): { work: number[]; unique: boolean } {
     queue.push(...node.same, ...node.descend);
   }
   return { work, unique };
-}
-
-function resolveLocalReference(schema: unknown, reference: string): unknown {
-  const pointer = decodeURIComponent(reference.slice(1));
-  let target = schema;
-  for (const segment of pointer === "" ? [] : pointer.slice(1).split("/")) {
-    const key = segment.replaceAll("~1", "/").replaceAll("~0", "~");
-    if (!target || typeof target !== "object" || !Object.hasOwn(target, key))
-      throw new Error("plugin: unresolved local schema reference");
-    target = (target as RecordValue)[key];
-  }
-  return target;
-}
-
-function isSchema(value: unknown): boolean {
-  return (
-    typeof value === "boolean" ||
-    (value !== null &&
-      typeof value === "object" &&
-      !Array.isArray(value) &&
-      !numeric(value))
-  );
 }

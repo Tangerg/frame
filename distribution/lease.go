@@ -167,7 +167,7 @@ func (s *Store) readArtifact(ctx context.Context, release Release, name string) 
 	if err != nil {
 		return nil, err
 	}
-	if err := found.verify(content); err != nil {
+	if err := found.verify(content, sealedTree); err != nil {
 		return nil, err
 	}
 	return content.data, nil

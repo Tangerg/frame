@@ -18,7 +18,7 @@ const cases = parseJSON(
     new URL("../../../portable/testdata/schema-profile.json", import.meta.url),
     "utf8",
   ),
-) as ProfileCase[];
+) as unknown as ProfileCase[];
 
 describe("shared Go and Node schema profile", () => {
   for (const sample of cases) {

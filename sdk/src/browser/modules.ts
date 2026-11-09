@@ -7,12 +7,11 @@ import {
   type Unit,
 } from "../index.js";
 import type { LocalPlan, PlannedUnit } from "../protocol.generated.js";
+import { observePromise } from "../promise-observation.js";
 import { sameAuthority } from "./identity.js";
-import { potentiallyTrustworthy } from "./trust.js";
 
 export interface ModuleLease {
-  readonly url: string;
-  readonly digest: string;
+  readonly bytes: Uint8Array<ArrayBuffer>;
   readonly closed?: Promise<void>;
   close(released: Cleanup): Awaitable<void | Release>;
 }
@@ -31,6 +30,7 @@ export class RealmModules {
     signal: AbortSignal,
   ) => Promise<ModuleLease>;
   readonly #evaluated = new Map<string, Evaluation>();
+  readonly #artifacts = new Map<string, Evaluation>();
   readonly #releases = new Map<string, string>();
   #authority?: LocalPlan["authority"];
 
@@ -63,7 +63,7 @@ export class RealmModules {
     const key = JSON.stringify([installation, path]);
     const currentEvaluation = () => {
       assertEvaluationDomain();
-      const current = this.#evaluated.get(key);
+      const current = this.#artifacts.get(key);
       if (current && (current.retired || current.digest !== digest))
         throw new FrameError(
           "reload_required",
@@ -95,49 +95,66 @@ export class RealmModules {
       }
       return result;
     }, `module:${path}`);
-    await owner.run(async (signal) => {
+    const bytes = await owner.run(async (signal) => {
       lease = await this.#open(unit, signal);
       const captured = lease;
+      const bytes = new Uint8Array(captured.bytes);
       if (captured.closed) {
         const ended = () => {
           if (lease === captured) owner.beginClose();
         };
         void captured.closed.then(ended, ended);
       }
+      return bytes;
     });
     owner.assertOpen();
-    if (lease!.digest !== digest)
+    const actualDigest = await owner.run(async () =>
+      Array.from(
+        new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
+        (value) => value.toString(16).padStart(2, "0"),
+      ).join(""),
+    );
+    owner.assertOpen();
+    if (actualDigest !== digest)
       throw new FrameError(
         "contract_mismatch",
-        "leased module does not match the approved artifact digest",
+        "module bytes do not match the approved artifact digest",
       );
-    const url = new URL(lease!.url);
-    if (!potentiallyTrustworthy(url))
+    // Hash and evaluation consume the same detached bytes. Native import must
+    // never fetch a mutable URL after a different response was verified.
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    const url = `data:text/javascript;base64,${btoa(binary)}`;
+    currentEvaluation();
+    evaluation = this.#evaluated.get(url);
+    if (evaluation?.retired)
       throw new FrameError(
-        "permission_denied",
-        "module lease URL must use https, file, data, or http to a loopback host",
+        "reload_required",
+        "evaluated module cannot be revived through another artifact identity",
       );
-    evaluation = currentEvaluation();
     if (!evaluation) {
       // The browser owns ESM evaluation. An attempted evaluation is never made
       // retryable by deleting a Promise or appending a cache-busting query.
-      const promise = import(/* @vite-ignore */ url.href) as Promise<
+      const promise = import(/* @vite-ignore */ url) as Promise<
         Record<string, unknown>
       >;
-      this.#authority ??= authority;
-      this.#releases.set(installation, release);
       evaluation = {
         digest: digest,
         promise,
         leases: 0,
         retired: false,
       };
-      this.#evaluated.set(key, evaluation);
+      this.#evaluated.set(url, evaluation);
     }
+    this.#authority ??= authority;
+    this.#releases.set(installation, release);
+    this.#artifacts.set(key, evaluation);
     evaluation.leases++;
     let exports: Record<string, unknown>;
     try {
-      exports = await observeEvaluation(evaluation.promise, owner.signal);
+      // Native ESM cannot be cancelled or unloaded. Only this execution's
+      // observation ends; the Realm retains its evaluation identity.
+      exports = await observePromise(evaluation.promise, owner.signal);
     } catch (cause) {
       owner.signal.throwIfAborted();
       throw new FrameError(
@@ -169,34 +186,4 @@ export class RealmModules {
       );
     return definition as Unit;
   }
-}
-
-// ESM evaluation belongs to the Realm and cannot be cancelled or unloaded. A
-// retiring execution stops observing it, releases its lease, and refuses late
-// exports. The evaluation remains in the Realm cache until a controlled reload.
-function observeEvaluation<T>(
-  evaluation: Promise<T>,
-  signal: AbortSignal,
-): Promise<T> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(signal.reason);
-      return;
-    }
-    const abort = () => {
-      signal.removeEventListener("abort", abort);
-      reject(signal.reason);
-    };
-    signal.addEventListener("abort", abort, { once: true });
-    evaluation.then(
-      (value) => {
-        signal.removeEventListener("abort", abort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", abort);
-        reject(error);
-      },
-    );
-  });
 }

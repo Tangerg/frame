@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { Lifetime, type Cleanup } from "../index.js";
 import {
   PROTOCOL,
@@ -7,7 +8,12 @@ import {
 } from "../protocol.generated.js";
 import { RealmModules } from "./modules";
 
-const digest = "a".repeat(64);
+const source = new TextEncoder().encode(
+  "export default {id:'preview',imports:{},exports:{},setup(){return {}}}",
+);
+const hash = (bytes: Uint8Array) =>
+  createHash("sha256").update(bytes).digest("hex");
+const digest = hash(source);
 function unit(path = "module.js", release = digest): PlannedUnit {
   return {
     instance: {
@@ -35,25 +41,114 @@ function plan(value: PlannedUnit, epoch = "1"): LocalPlan {
     units: [value],
   };
 }
-const source =
-  "data:text/javascript," +
-  encodeURIComponent(
-    "export default {id:'preview',imports:{},exports:{},setup(){return {}}}",
-  );
 
 describe("Realm module ownership", () => {
-  it("refuses a lease a network attacker could replace before importing it", async () => {
+  it("executes newly approved bytes at a reused artifact path", async () => {
+    let bytes = new TextEncoder().encode("export default 'original bytes'");
+    const modules = new RealmModules(async () => ({ bytes, close() {} }));
+    const first = {
+      ...unit("shared.js"),
+      module: { path: "shared.js", digest: hash(bytes) },
+    };
+    const original = new Lifetime("original");
+    expect((await modules.evaluate(first, original, plan(first))).default).toBe(
+      "original bytes",
+    );
+    await original.close();
+
+    bytes = new TextEncoder().encode("export default 'replacement bytes'");
+    const next = {
+      ...first,
+      instance: {
+        ...first.instance,
+        source: { ...first.instance.source, installationId: "replacement" },
+      },
+      module: { path: "shared.js", digest: hash(bytes) },
+    };
+    const replacement = new Lifetime("replacement");
+    expect(
+      (await modules.evaluate(next, replacement, plan(next))).default,
+    ).toBe("replacement bytes");
+    await replacement.close();
+  });
+
+  it("captures the lease bytes before asynchronous hashing can mutate their source", async () => {
+    const bytes = new TextEncoder().encode(
+      "export default 'captured before hash'",
+    );
+    const entry = {
+      ...unit(),
+      module: { path: "mutable.js", digest: hash(bytes) },
+    };
+    const digest = crypto.subtle.digest.bind(crypto.subtle);
+    const hashBytes = vi
+      .spyOn(crypto.subtle, "digest")
+      .mockImplementation(async (algorithm, captured) => {
+        bytes.fill(0);
+        return digest(algorithm, captured);
+      });
+    const owner = new Lifetime("captured bytes");
+    const modules = new RealmModules(async () => ({ bytes, close() {} }));
+    try {
+      expect((await modules.evaluate(entry, owner, plan(entry))).default).toBe(
+        "captured before hash",
+      );
+    } finally {
+      hashBytes.mockRestore();
+      await owner.close();
+    }
+  });
+
+  it("shares the native identity across live artifact aliases and refuses an alias after retirement", async () => {
+    const modules = new RealmModules(async () => ({
+      bytes: source,
+      close() {},
+    }));
+    const first = unit("first.js");
+    const second = {
+      ...unit("second.js"),
+      instance: {
+        ...first.instance,
+        source: { ...first.instance.source, installationId: "alias" },
+      },
+    };
+    const a = new Lifetime("first alias"),
+      b = new Lifetime("second alias");
+    expect(await modules.evaluate(first, a, plan(first))).toBe(
+      await modules.evaluate(second, b, plan(second)),
+    );
+    await a.close();
+    const retained = new Lifetime("retained alias");
+    expect(await modules.evaluate(first, retained, plan(first))).toBe(
+      await modules.evaluate(second, b, plan(second)),
+    );
+    await retained.close();
+    await b.close();
+    const later = new Lifetime("retired alias");
+    const third = {
+      ...unit("third.js"),
+      instance: {
+        ...first.instance,
+        source: { ...first.instance.source, installationId: "third" },
+      },
+    };
+    await expect(
+      modules.evaluate(third, later, plan(third)),
+    ).rejects.toMatchObject({ code: "reload_required" });
+    await later.close();
+  });
+
+  it("refuses bytes that do not match the Host-approved digest", async () => {
     const close = vi.fn();
     const modules = new RealmModules(async () => ({
-      url: "http://plugins.example/module.js",
-      digest,
+      bytes: new TextEncoder().encode("export default 'unapproved'"),
       close,
     }));
     const owner = new Lifetime("plaintext");
     const entry = unit();
     await expect(modules.load(entry, owner, plan(entry))).rejects.toMatchObject(
       {
-        code: "permission_denied",
+        code: "contract_mismatch",
       },
     );
     await owner.close();
@@ -63,8 +158,7 @@ describe("Realm module ownership", () => {
   it("evaluates once and retires only after every actual lease releases", async () => {
     const close = vi.fn();
     const modules = new RealmModules(async () => ({
-      url: source,
-      digest,
+      bytes: source,
       close,
     }));
     const first = new Lifetime("first");
@@ -84,7 +178,7 @@ describe("Realm module ownership", () => {
   });
 
   it("requires a new Realm for a release replacement even when the entry path changed", async () => {
-    const open = vi.fn(async () => ({ url: source, digest, close() {} }));
+    const open = vi.fn(async () => ({ bytes: source, close() {} }));
     const modules = new RealmModules(open);
     const first = new Lifetime("first");
     const entry = unit();
@@ -109,8 +203,7 @@ describe("Realm module ownership", () => {
       return { status: "unconfirmed" as const };
     });
     const modules = new RealmModules(async () => ({
-      url: source,
-      digest,
+      bytes: source,
       close,
     }));
     const owner = new Lifetime("owner");
@@ -134,15 +227,18 @@ describe("Realm module ownership", () => {
     const resume = Promise.withResolvers<void>();
     const key = `frameEvaluation${crypto.randomUUID().replaceAll("-", "")}`;
     vi.stubGlobal(key, { start: started.resolve, resume: resume.promise });
+    const bytes = new TextEncoder().encode(
+      `globalThis["${key}"].start(); await globalThis["${key}"].resume; export default {id:'preview',imports:{},exports:{},setup(){return {}}}`,
+    );
     const url =
-      "data:text/javascript," +
-      encodeURIComponent(
-        `globalThis["${key}"].start(); await globalThis["${key}"].resume; export default {id:'preview',imports:{},exports:{},setup(){return {}}}`,
-      );
+      "data:text/javascript;base64," + Buffer.from(bytes).toString("base64");
     const close = vi.fn();
-    const modules = new RealmModules(async () => ({ url, digest, close }));
+    const modules = new RealmModules(async () => ({ bytes, close }));
     const owner = new Lifetime("evaluating");
-    const entry = unit();
+    const entry = {
+      ...unit(),
+      module: { path: "pending.js", digest: hash(bytes) },
+    };
     const loading = owner
       .run(() => modules.load(entry, owner, plan(entry)))
       .catch((error: unknown) => error);
@@ -160,8 +256,7 @@ describe("Realm module ownership", () => {
 
   it("joins an in-flight acquisition and releases a lease that arrives after cancellation", async () => {
     const pending = Promise.withResolvers<{
-      url: string;
-      digest: string;
+      bytes: Uint8Array<ArrayBuffer>;
       close(): void;
     }>();
     const close = vi.fn();
@@ -178,7 +273,7 @@ describe("Realm module ownership", () => {
     });
     await Promise.resolve();
     expect(closed).toBe(false);
-    pending.resolve({ url: source, digest, close });
+    pending.resolve({ bytes: source, close });
     expect((await retiring).status).toBe("released");
     expect(close).toHaveBeenCalledOnce();
     expect(await loading).toMatchObject({ code: "closed" });
@@ -197,13 +292,19 @@ it("evaluates each exact installation and artifact even when their slash paths c
         installationId: ["a", "a/b"][index]!,
       },
     },
-    module: { ...entry.module, digest: ["a", "b"][index]!.repeat(64) },
+    module: {
+      ...entry.module,
+      digest: hash(
+        new TextEncoder().encode(
+          "export default " + JSON.stringify(entry.module.path),
+        ),
+      ),
+    },
   }));
   const modules = new RealmModules(async (entry) => ({
-    digest: entry.module.digest,
-    url:
-      "data:text/javascript,export default " +
-      JSON.stringify(entry.module.path),
+    bytes: new TextEncoder().encode(
+      "export default " + JSON.stringify(entry.module.path),
+    ),
     close() {},
   }));
   const owner = new Lifetime("cache");

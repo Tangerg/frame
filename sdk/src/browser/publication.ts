@@ -1,5 +1,6 @@
+import { captureProtocol } from "../protocol-capture.js";
 import { FrameError } from "../errors.js";
-import { canonicalJSON, freezeJSON } from "../json.js";
+import { canonicalJSON } from "../json.js";
 import type { Point } from "../contracts.js";
 import type { CloseOutcome, Lifetime } from "../lifetime.js";
 import {
@@ -44,7 +45,7 @@ export class PublicationReceipt {
   // Only an unknown outcome may be refined; a confirmed decision and the
   // publication it names never change.
   receive(received: PublicationResult): PublicationResult {
-    const result = freezeJSON(received);
+    const result = captureProtocol("PublicationResult", received);
     this.#checkShape(result);
     this.#checkIdentity(result);
     if (result.decision !== "unknown" || this.#outcome.decision === "unknown")
@@ -178,7 +179,7 @@ export class Publication<M, V> {
       outbox.cancelReservation(reservation);
       throw error;
     }
-    const request: PublicationRequest = freezeJSON({
+    const request: PublicationRequest = captureProtocol("PublicationRequest", {
       operationId,
       authority: execution.plan.authority,
       realm: execution.plan.realm,
@@ -292,7 +293,7 @@ export class Publication<M, V> {
     if (publicationId) {
       outbox.record(
         reservation,
-        freezeJSON({
+        captureProtocol("CloseProof", {
           closeId: outcome.closeId,
           proofId: crypto.randomUUID(),
           authority: execution.plan.authority,

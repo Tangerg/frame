@@ -114,7 +114,16 @@ JavaScript's exact `number` range. It exports `parseJSON`, `stringifyJSON`,
 `cloneJSON`, `freezeJSON`, `ExactNumber`, and numeric inspection helpers.
 `freezeJSON` detaches and recursively freezes one exact JSON value. Array
 serialization reads indexed values, including nulls for holes; a custom iterator
-cannot replace the array's wire contents. `prettyJSON` serializes
+cannot replace the array's wire contents. Both capture helpers return the
+closed `JSONValue` or `FrozenJSONValue` domain (or `undefined` for an undefined
+root), rather than promising to preserve an arbitrary caller type. A Date becomes
+its JSON string or null, an omitted object member disappears, and a small bigint
+may become a number. Custom `toJSON` methods on records are not invoked; an
+enumerable function remains an unsupported JSON value.
+`equalJSON` captures both operands under these same rules before comparing their
+JSON values, with mathematical equality for numbers. Typed control captures use
+the Go-generated protocol validators after normalization.
+`prettyJSON` serializes
 those values with two-space indentation. `formatJSONText` changes only whitespace
 in captured source, retaining numeric literals, string escapes and member order;
 it is presentation, not validation or decoding. Protocol identities,

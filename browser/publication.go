@@ -30,7 +30,7 @@ func (b *Bridge) Publish(ctx context.Context, token string, request PublicationR
 	identity := controlRequestIdentity{Kind: publishOperation, Realm: session.realm, Digest: digest}
 	operation, replay, err := b.begin(ctx, request.OperationID, identity, func(operation *controlOperation) error {
 		entry := b.executions.get(request.Execution.ID)
-		if session.cleanupOnly || !entry.servesLocked(session.realm, request.Execution) || entry.ready == nil {
+		if session.cleanupOnly || !entry.serves(session.realm, request.Execution) || !entry.hasReady() {
 			return frame.ErrUnavailable
 		}
 		if !request.Object.membershipOf(entry.plan.Units[0]) {
@@ -58,25 +58,25 @@ func (b *Bridge) Publish(ctx context.Context, token string, request PublicationR
 	if err := b.reserveReceipt(ctx, request.OperationID, operation); err != nil {
 		return PublicationResult{}, err
 	}
-	result := PublicationResult{Decision: Accepted}
 	published, err := b.publishObject(ctx, request)
+	var problem string
 	if err != nil {
 		// Host publishes synchronously inside admission. Its errors prove that this
 		// command did not publish, even when the transport's context was cancelled.
-		result = rejected(classifyProblem(err).message)
-	} else {
-		result.Publication = &Publication{ID: published.ID, OperationID: request.OperationID, Revision: strconv.FormatUint(published.Revision, 10), Object: request.Object}
+		problem = classifyProblem(err).message
 	}
 	b.mu.Lock()
-	operation.publication = copyWire(result)
-	if result.Publication != nil {
-		b.publications[result.Publication.ID] = operation
+	if problem != "" {
+		operation.rejectPublication(problem)
+	} else {
+		operation.acceptPublication(Publication{ID: published.ID, OperationID: request.OperationID, Revision: strconv.FormatUint(published.Revision, 10), Object: request.Object})
+		b.publications[published.ID] = operation
 	}
+	result, failure := operation.publicationResult()
 	b.mu.Unlock()
-	return result, nil
+	return result, failure
 }
 
-// membershipOf reports a dynamic member of a Point that unit declared.
 func (o ObjectRef) membershipOf(unit PlannedUnit) bool {
 	return o.validIn(unit.Instance.ID) &&
 		o.Export.Contract.Kind == frame.PointKind && declaresContract(unit, o.Export.Contract)
@@ -103,7 +103,7 @@ func (b *Bridge) awaitPublication(ctx context.Context, operation *controlOperati
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return copyWire(operation.publication), operation.failure
+	return operation.publicationResult()
 }
 
 func (b *Bridge) Publication(ctx context.Context, token, operationID string) (PublicationResult, error) {

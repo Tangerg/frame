@@ -37,7 +37,7 @@ func TestWALAdmissionKeepsCallerCancellationBeforeSchemaInitialization(t *testin
 	ctx, cancel := context.WithTimeoutCause(t.Context(), 25*time.Millisecond, cause)
 	defer cancel()
 	type result struct {
-		db  *sql.DB
+		db  *sqlite.Database
 		err error
 	}
 	settled := make(chan result, 1)
@@ -77,11 +77,16 @@ func TestWALAdmissionKeepsCallerCancellationBeforeSchemaInitialization(t *testin
 		t.Fatal(err)
 	}
 	defer db.Close()
+	observer, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer observer.Close()
 	var mode string
-	if err := db.QueryRowContext(t.Context(), `PRAGMA journal_mode`).Scan(&mode); err != nil || mode != "wal" {
+	if err := observer.QueryRowContext(t.Context(), `PRAGMA journal_mode`).Scan(&mode); err != nil || mode != "wal" {
 		t.Fatalf("admitted journal mode = %q, %v", mode, err)
 	}
-	if err := db.QueryRowContext(t.Context(), `SELECT value FROM identity WHERE id=1`).Scan(&value); err != nil || value != "original" {
+	if err := databaseQuery(db, t.Context(), `SELECT value FROM identity WHERE id=1`).Scan(&value); err != nil || value != "original" {
 		t.Fatalf("original owner fact = %q, %v", value, err)
 	}
 }
@@ -93,7 +98,7 @@ func TestSchemaAdmissionSupportsExplicitMemoryDatabase(t *testing.T) {
 	}
 	defer db.Close()
 	var value string
-	if err := db.QueryRowContext(t.Context(), `SELECT value FROM identity WHERE id=1`).Scan(&value); err != nil || value != "original" {
+	if err := databaseQuery(db, t.Context(), `SELECT value FROM identity WHERE id=1`).Scan(&value); err != nil || value != "original" {
 		t.Fatalf("memory owner fact = %q, %v", value, err)
 	}
 }
@@ -110,7 +115,12 @@ func TestCurrentSchemaAdmissionDoesNotAcquireAnotherOwnersWriteSet(t *testing.T)
 		t.Fatal(err)
 	}
 	defer owner.Close()
-	write, err := owner.BeginTx(t.Context(), nil)
+	blocker, err := sql.Open("sqlite", "file:"+path+"?_txlock=immediate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Close()
+	write, err := blocker.BeginTx(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +134,7 @@ func TestCurrentSchemaAdmissionDoesNotAcquireAnotherOwnersWriteSet(t *testing.T)
 	}
 	defer reader.Close()
 	var value string
-	if err := reader.QueryRowContext(t.Context(), `SELECT value FROM identity WHERE id=1`).Scan(&value); err != nil {
+	if err := databaseQuery(reader, t.Context(), `SELECT value FROM identity WHERE id=1`).Scan(&value); err != nil {
 		t.Fatal(err)
 	}
 	if value != "original" {
@@ -138,7 +148,7 @@ func TestCurrentSchemaAdmissionNeverRecreatesAnOwnersMissingFact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := owner.ExecContext(t.Context(), `DELETE FROM identity`); err != nil {
+	if _, err := execDatabase(owner, t.Context(), `DELETE FROM identity`); err != nil {
 		t.Fatal(err)
 	}
 	if err := owner.Close(); err != nil {
@@ -150,7 +160,7 @@ func TestCurrentSchemaAdmissionNeverRecreatesAnOwnersMissingFact(t *testing.T) {
 	}
 	defer reader.Close()
 	var count int
-	if err := reader.QueryRowContext(t.Context(), `SELECT count(*) FROM identity`).Scan(&count); err != nil {
+	if err := databaseQuery(reader, t.Context(), `SELECT count(*) FROM identity`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {
@@ -171,7 +181,7 @@ func TestConcurrentSchemaInitializationAdmitsOneOwnerFact(t *testing.T) {
 				return
 			}
 			var count int
-			err = db.QueryRowContext(t.Context(), `SELECT count(*) FROM identity`).Scan(&count)
+			err = databaseQuery(db, t.Context(), `SELECT count(*) FROM identity`).Scan(&count)
 			if err == nil && count != 1 {
 				err = fmt.Errorf("initialization facts = %d, want one", count)
 			}
@@ -195,7 +205,7 @@ func TestSchemaRoundTripUsesSQLiteObjectDefinitions(t *testing.T) {
 			t.Fatal(err)
 		}
 		var n int
-		err = db.QueryRow(`SELECT count(*) FROM "user facts"`).Scan(&n)
+		err = databaseQuery(db, t.Context(), `SELECT count(*) FROM "user facts"`).Scan(&n)
 		if closeErr := db.Close(); err != nil || closeErr != nil || n != 1 {
 			t.Fatalf("schema or seed changed after reopen: %d %v %v", n, err, closeErr)
 		}
@@ -215,7 +225,12 @@ func TestIndependentWriterCanCancelWhileAnotherOwnerHoldsTheSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer peer.Close()
-	writer, err := owner.BeginTx(t.Context(), nil)
+	blocker, err := sql.Open("sqlite", "file:"+path+"?_txlock=immediate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Close()
+	writer, err := blocker.BeginTx(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -12,8 +12,11 @@ profile requires a reliable local filesystem. It does not support network filesy
 independent writers or atomic transactions across databases.
 
 `Open` accepts the complete current set of `OwnerSchema` declarations. A different
-schema requires a fresh data directory. Each owner supplies its original business
-tables and a trusted reference query. Register the resulting `Owner` with the same
+schema requires a fresh data directory. The declaration identity encodes sorted
+owner identities and each statement boundary; SQL comments cannot impersonate
+another owner declaration. Reopening also checks the persisted owner set. Each
+owner supplies its original business tables and a trusted reference query.
+Register the resulting `Owner` with the same
 Admission through `RegisterUseOwner` before its first destructive dependency check.
 That check seals the owner set for the life of this Admission. Frame does not create a competing business
 reference-count ledger. Every admission read uses a new current transaction.
@@ -73,9 +76,12 @@ evaluation error remains distinguishable from an additional cleanup failure.
 The Store never exposes its pool, so pool closure, independent writers and
 connection settings remain with its original lifecycle owner. Application adapters
 compose by passing the issued capability explicitly. The standalone transaction
-helpers apply only to separately owned databases returned by `OpenSchema`.
-Their connection admission enforces that constructor so raw driver connections
-cannot bypass cursor-release evidence. `OpenSchema` uses modernc's registered
+helpers accept the concrete `*Database` returned by `OpenSchema`, never a raw
+`*sql.DB`. `Connection` grants an executor only inside the original transaction
+context. For independent reads, `Database.Read` lends a scoped `Reader`; direct
+pool queries, settings and closure are not exposed. Store and standalone
+transactions compose the same transaction and physical-connection owner.
+`OpenSchema` uses modernc's registered
 connector and preserves its registered functions, collations and connection hooks.
 Both read and write callbacks reject transaction control, attachments and
 configurable PRAGMAs. Metadata-only PRAGMAs may inspect databases, tables, columns,
@@ -117,23 +123,35 @@ returns, its owner refuses new read leases and joins those already admitted befo
 COMMIT or rollback. Accepted callbacks must finish their own work; cancellation
 does not let transaction settlement bypass them.
 
-`Close` seals new Store transactions and joins those already admitted. A failed
-rollback cannot return its original connection to the pool. The Store retains
-that exact connection and its authority lock until the original driver confirms
+`Close` seals new Store or standalone Database transactions and joins those already
+admitted. A failed rollback cannot return its original connection to the pool.
+The database owner retains that exact connection and any authority lock until the original driver confirms
 release. Repeated `Close` calls join or advance the same shutdown; a later
-`database/sql.Close` returning nil is not release evidence. If release remains
+`database/sql.Close` returning nil is not release evidence. Standalone commit
+acknowledgement loss fences admission before the original connection is released.
+Transactions already queued for that connection refuse their callbacks. The
+application must reconcile the original business operation and open a new Database.
+If release remains
 unconfirmed, the outstanding shutdown keeps the owner alive until the process
 exits, even when a caller drops its handle.
 
-If initialization fails and its cleanup is also unconfirmed, `Open` returns the
-sealed Store together with an error. Callers must preserve that cleanup handle
-and call `Close`; it is not a partially usable database. Normal initialization
-failures whose resources were released return a nil Store. An indeterminate
+If initialization fails and its cleanup is also unconfirmed, `Open` or
+`OpenSchema` returns the sealed Store or Database together with an error. Callers
+must preserve that cleanup handle and call `Close`; it is not a partially usable
+database. Normal initialization failures whose resources were released return a
+nil handle. An indeterminate
 business commit reports `Indeterminate`, without speculative committed evidence.
 
 `Settlement` reads the original conclusion. `RecoverPrepared` may settle remaining
 Prepared intents only after this Store has acquired exclusive authority and old
-connections have ended. `Pending` exposes records requiring restoration or local
+connections have ended. Storage uses a closed submission state: prepared,
+committed or rejected awaiting synchronization, and committed or rejected with
+synchronization confirmed. `Settlement.Synchronized` is derived from that state;
+there is no independently writable synchronization flag. Only committed states
+may carry business evidence. Every settlement, pending read, confirmation,
+recovery and compaction validates the original request digest and state evidence
+before advancing it. Corrupt records fence admission instead of being repaired
+into an actionable intent. `Pending` exposes records requiring restoration or local
 synchronization. `Confirm` records synchronization but does not clear the Host's
 recovery barrier. The composition root calls `Admission.Recover` after restoring
 all necessary owners and execution scopes; recovery does not replay mutations.

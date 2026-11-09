@@ -380,18 +380,27 @@ export class Lifetime {
 
   beginClose(): Exit {
     if (this.#exit) return this.#exit.view;
-    this.#exit = new ExitRecord(crypto.randomUUID());
-    this.#controller.abort(CLOSED_REASON);
-    // All branches receive cancellation before any branch is awaited.
-    for (const child of this.#children.keys()) {
-      const exit = child.beginClose();
-      const unsubscribe = exit.subscribe(() => {
-        this.#resume();
-      });
-      this.#children.set(child, unsubscribe);
+    const sealed: Lifetime[] = [];
+    const pending: Lifetime[] = [this];
+    for (let index = 0; index < pending.length; index++) {
+      const owner = pending[index]!;
+      if (owner.#exit) continue;
+      owner.#exit = new ExitRecord(crypto.randomUUID());
+      sealed.push(owner);
+      pending.push(...owner.#children.keys());
     }
-    this.#resume();
-    return this.#exit.view;
+    // Abort handlers can reenter siblings. Seal every admission before invoking
+    // any handler; the original owners still join their actual work afterward.
+    for (const owner of sealed) {
+      for (const child of owner.#children.keys())
+        owner.#children.set(
+          child,
+          child.#exit!.view.subscribe(() => owner.#resume()),
+        );
+    }
+    for (const owner of sealed) owner.#controller.abort(CLOSED_REASON);
+    for (const owner of sealed) owner.#resume();
+    return this.#exit!.view;
   }
 
   close(signal?: AbortSignal): Promise<CloseOutcome> {

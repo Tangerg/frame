@@ -1,3 +1,4 @@
+import { captureProtocol } from "../protocol-capture.js";
 import {
   FrameError,
   Lifetime,
@@ -5,7 +6,7 @@ import {
   sameContract,
   type Unit,
 } from "../index.js";
-import { canonicalJSON, freezeJSON } from "../json.js";
+import { canonicalJSON } from "../json.js";
 import type {
   Execution,
   Import,
@@ -324,7 +325,7 @@ export class ExecutionResources {
           owner,
         );
         this.#contributions.push(
-          freezeJSON({
+          captureProtocol("PreparedContribution", {
             object: object.reference,
             metadataJson: canonicalJSON(metadata),
           }),
@@ -336,7 +337,7 @@ export class ExecutionResources {
             "service implementation is missing",
           );
         this.#retain(
-          freezeJSON({
+          captureProtocol("ObjectRef", {
             export: {
               instanceId: unit.instance.id,
               name: declared.name,
@@ -385,7 +386,7 @@ export class ExecutionResources {
         "invalid_plan",
         "contribution key is empty or already prepared",
       );
-    const reference: ObjectRef = freezeJSON({
+    const reference: ObjectRef = captureProtocol("ObjectRef", {
       export: { instanceId, name: key, contract: point.ref },
       objectId: crypto.randomUUID(),
     });
@@ -412,7 +413,7 @@ export class ExecutionResources {
         "execution has already prepared its report",
       );
     this.#ready = new ReadySubmission(
-      freezeJSON({
+      captureProtocol("ReadyReport", {
         operationId: crypto.randomUUID(),
         authority: this.plan.authority,
         realm: this.plan.realm,
@@ -480,7 +481,7 @@ export class ExecutionResources {
       if (outcome.status !== "released") return;
       this.#outbox.record(
         this.#reservation,
-        freezeJSON({
+        captureProtocol("CloseProof", {
           closeId: outcome.closeId,
           proofId: crypto.randomUUID(),
           authority: this.plan.authority,

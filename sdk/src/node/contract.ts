@@ -8,20 +8,21 @@ import { captureDescriptor, exceeded, PORTABLE_LIMITS } from "./limits.js";
 
 export const PROTOCOL = profile.protocol;
 const maximumUTF16CodeUnitsPerCodePoint = 2;
+declare const authoringDescriptor: unique symbol;
 
 export interface MethodDescriptor {
-  name: string;
-  kind: "query" | "command";
-  target?: string;
-  description: string;
-  input: unknown;
-  output: unknown;
-  stream?: unknown;
+  readonly name: string;
+  readonly kind: "query" | "command";
+  readonly target?: string;
+  readonly description: string;
+  readonly input: unknown;
+  readonly output: unknown;
+  readonly stream?: unknown;
 }
 export interface CapabilityDescriptor {
-  protocol: string;
-  reference: string;
-  methods: readonly MethodDescriptor[];
+  readonly protocol: string;
+  readonly reference: string;
+  readonly methods: readonly MethodDescriptor[];
 }
 export function digestJSON(value: unknown): string {
   return createHash("sha256").update(canonicalJSON(value)).digest("hex");
@@ -74,6 +75,20 @@ export function exactFields(
     throw new Error("plugin: invalid protocol members");
 }
 
+function admitMethodDescriptor(
+  value: unknown,
+): asserts value is MethodDescriptor {
+  admitShape(value, profile.descriptors.method);
+  if (
+    !validToken(value.name) ||
+    (value.target !== undefined && !validToken(value.target)) ||
+    typeof value.kind !== "string" ||
+    !profile.descriptors.methodKinds.includes(value.kind) ||
+    typeof value.description !== "string"
+  )
+    throw new Error("plugin: invalid method contract");
+}
+
 export class Method {
   readonly descriptor: MethodDescriptor;
   readonly identity: string;
@@ -81,16 +96,9 @@ export class Method {
   readonly admitOutput: (value: unknown) => unknown;
   readonly admitChunk?: (value: unknown) => unknown;
 
-  constructor(source: MethodDescriptor) {
-    const descriptor = freezeJSON(captureDescriptor(source));
-    admitShape(descriptor, profile.descriptors.method);
-    if (
-      !validToken(descriptor.name) ||
-      (descriptor.target !== undefined && !validToken(descriptor.target)) ||
-      !profile.descriptors.methodKinds.includes(descriptor.kind) ||
-      typeof descriptor.description !== "string"
-    )
-      throw new Error("plugin: invalid method contract");
+  constructor(source: unknown) {
+    const descriptor: unknown = freezeJSON(captureDescriptor(source));
+    admitMethodDescriptor(descriptor);
     this.descriptor = descriptor;
     this.admitInput = compileSchema(descriptor.input);
     let admitsNull = true;
@@ -203,7 +211,10 @@ export interface ServiceContract {
   method(name: string): Method;
   implement(handlers: unknown): Readonly<Record<string, unknown>>;
 }
-type Described<C extends ServiceContract> = C["descriptor"]["methods"][number];
+type Described<C extends ServiceContract> =
+  C extends Capability<infer D>
+    ? D["methods"][number]
+    : C["descriptor"]["methods"][number];
 export interface RequestOptions<C = unknown> {
   signal?: AbortSignal;
   onChunk?: (value: C) => Awaitable<void>;
@@ -239,22 +250,24 @@ export type Client<C extends ServiceContract> = {
     ...request: RequestArguments<M>
   ) => Promise<SchemaValue<M["output"]>>;
 };
-export type Handlers<C extends ServiceContract> = {
-  [M in Described<C> as M["name"]]: (
+type MethodHandlers<Methods extends MethodDescriptor> = {
+  [M in Methods as M["name"]]: (
     input: SchemaValue<M["input"]>,
     context: CallContext<Chunk<M>, M["kind"]>,
   ) => Awaitable<SchemaValue<M["output"]>>;
 };
+export type Handlers<C extends ServiceContract> = MethodHandlers<Described<C>>;
 
 export class Capability<
   const D extends CapabilityDescriptor = CapabilityDescriptor,
 > {
-  readonly descriptor: D;
+  declare private readonly [authoringDescriptor]: D;
+  readonly descriptor: CapabilityDescriptor;
   readonly identity: string;
   readonly #methods: ReadonlyMap<string, Method>;
 
   constructor(source: D) {
-    const descriptor = freezeJSON(captureDescriptor(source));
+    const descriptor: unknown = freezeJSON(captureDescriptor(source));
     admitShape(descriptor, profile.descriptors.capability);
     if (
       descriptor.protocol !== PROTOCOL ||
@@ -273,7 +286,11 @@ export class Capability<
     );
     if (this.#methods.size !== methods.length)
       throw new Error("plugin: duplicate capability method");
-    this.descriptor = descriptor;
+    this.descriptor = Object.freeze({
+      protocol: descriptor.protocol,
+      reference: descriptor.reference,
+      methods: Object.freeze(methods.map((method) => method.descriptor)),
+    });
     this.identity = digestJSON({
       ...this.descriptor,
       methods: methods.map((method) => ({
@@ -283,7 +300,9 @@ export class Capability<
     });
     Object.freeze(this);
   }
-  implement(handlers: Handlers<Capability<D>>): Handlers<Capability<D>> {
+  implement(
+    handlers: MethodHandlers<D["methods"][number]>,
+  ): MethodHandlers<D["methods"][number]> {
     if (
       handlers === null ||
       typeof handlers !== "object" ||

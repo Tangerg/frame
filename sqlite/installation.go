@@ -140,7 +140,10 @@ func (s *Store) ConfirmInstallation(ctx context.Context, id frame.InstallationID
 		return err
 	}
 	if err := s.transaction(ctx, func(tx Executor) error {
-		rows, err := tx.QueryContext(ctx, `SELECT sequence FROM frame_submissions WHERE owner_id=? AND state=? AND synchronized=0 AND evidence=? ORDER BY sequence`, s.control.id, submissionCommitted, []byte(id))
+		if _, err := s.control.readSubmissions(ctx, tx); err != nil {
+			return err
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT sequence FROM frame_submissions WHERE owner_id=? AND state=? AND evidence=? ORDER BY sequence`, s.control.id, submissionCommitted, []byte(id))
 		if err != nil {
 			return err
 		}
@@ -159,8 +162,7 @@ func (s *Store) ConfirmInstallation(ctx context.Context, id frame.InstallationID
 		if len(sequences) != 1 {
 			return ErrUnsettled
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE frame_submissions SET synchronized=1 WHERE owner_id=? AND sequence=?`, s.control.id, sequences[0])
-		return err
+		return s.control.confirmIn(ctx, tx, SubmissionID{Store: s.id, Owner: s.control.id, Sequence: sequences[0]})
 	}); err != nil {
 		return err
 	}
@@ -212,8 +214,18 @@ func (s *Store) RecoverInstallations(ctx context.Context) ([]frame.InstallationR
 func (s *Store) ConfirmRestoredInstallations(ctx context.Context) error {
 	return s.admission.Maintenance(ctx, func() error {
 		if err := s.transaction(ctx, func(tx Executor) error {
-			_, err := tx.ExecContext(ctx, `UPDATE frame_submissions SET synchronized=1 WHERE owner_id=? AND state!=?`, s.control.id, submissionPrepared)
-			return err
+			settlements, err := s.control.readSubmissions(ctx, tx)
+			if err != nil {
+				return err
+			}
+			for _, settlement := range settlements {
+				if settlement.State != frame.CommitIndeterminate {
+					if err := s.control.confirmIn(ctx, tx, settlement.ID); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
 		}); err != nil {
 			return err
 		}

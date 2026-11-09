@@ -28,10 +28,14 @@ a framework rejection by returning one of the framework error codes. Neither
 cancellation nor unknown outcome authorizes replay; reconciliation uses the
 original business operation identity and owner.
 
-A handler that exits its goroutine without returning also has an unknown outcome.
-Its worker still replies and releases the original call slot. Local consumer panic
-errors retain their causes for inspection; those causes cannot change the fixed
-wire classification or become remote error text.
+Each accepted request reserves an unknown reply before invoking its handler or
+classifying an error. A panic or goroutine exit in either leaves that reply
+intact. The worker releases its original call slot and attempts one reply with
+the original ID; a queue failure ends the channel. This local completion does
+not promise delivery after disconnection. The finalizer never invokes the
+handler or arbitrary error methods. Local consumer panic errors retain their
+causes for inspection; those causes cannot change the fixed wire classification
+or become remote error text.
 
 The sender checks cancellation again when it holds outbound admission, after
 payload encoding and any wait for the queue lock. Cancellation already visible

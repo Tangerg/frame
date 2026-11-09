@@ -18,7 +18,10 @@ Malformed, cyclic or unsupported models fail before any output is published.
 
 The application creates the Host and Store, constructs `NewBridge`, and registers
 the Bridge as the `browser-js` driver. `ModuleSource` projects an approved unit to
-one immutable artifact. Opaque installation configuration is withheld by
+one immutable artifact. Configured Points are captured at construction and must
+be valid Point references with unique names: the Snapshot request selects a
+configured contract by name. This configuration never owns Host membership.
+Opaque installation configuration is withheld by
 default; `PublicConfiguration` must explicitly project data intended for the
 browser. Optional `RemoteSource` adapters bind real Portable transports to exact
 approved imports and register their resources with the original Setup.
@@ -47,7 +50,11 @@ The envelope and method inputs pass through the same `value.DecodeValue` shape
 admission that owns generated field presence and nullability. A missing or null
 collection is refused before dispatch; an explicit empty collection remains valid
 when the method permits it.
-The same Go declarations generate the SDK's executable response checks. Control
+The same Go declarations generate the SDK's executable protocol checks.
+`decodeProtocolValue` admits a captured value against its named Go wire model;
+JSON capture alone never establishes a domain type. Arrays must contain every
+declared element as an own property, including in direct in-process adapters.
+Control
 encoding, identity comparisons, capacity reservations and persisted evidence use
 one deterministic JSON policy: nil collections encode as empty collections,
 with the same string escaping used when reserving maximum exit identities.
@@ -62,7 +69,10 @@ exit owner, then calls `AdmitPlan` before loading code. `admitted` permits prepa
 observe the original Host's durable settlement and let an unstarted Runtime
 release its temporary reservation. A transport or authentication error provides
 no such observation. The same LocalPlan resolves a lost admission reply without
-inventing another execution. `Ready` observes preparation; only the Core Host
+inventing another execution. `Ready` belongs to the original admitted Runtime
+preparation; an unadmitted execution cannot contain an accepted Ready report.
+The execution owns registration, admission, fencing and Ready transitions;
+fencing never transfers or settles the exit obligation. Only the Core Host
 publishes exports. Each prepared object identity names exactly one export;
 metadata must reference that complete prepared Point identity. Duplicate object
 identities, relabelled metadata owners and orphan metadata are rejected before
@@ -91,6 +101,14 @@ retains a failure receipt and releases its unfinished lease reservation. A retry
 observes that failure; it cannot recapture or report an uncaptured lease as success.
 Dynamic publication preserves the same failure boundary when a metadata decoder
 panics or exits: observation and replay cannot report an empty successful result.
+One closed business result owns the grant, publication, publication refusal,
+snapshot completion or failure. The receipt reservation owns delivery separately;
+an uncertain archive cannot replace an already accepted business result.
+Receipt admission rejects contradictory results, foreign operation identities and
+persisted approval tokens. Approval tokens are derived only by the signer.
+Failure categories are captured once before completion, then projected to receipt
+codes and HTTP problems from the same vocabulary. Arbitrary diagnostic methods
+cannot interrupt completion or be replayed while encoding a receipt.
 
 `Acquire` takes the original lease exactly once when its operation is admitted,
 including an attempt whose selection later fails. Repeating that acquisition ID

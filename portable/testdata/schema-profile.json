@@ -1673,5 +1673,125 @@
         "valid": false
       }
     ]
+  },
+  {
+    "admitted": true,
+    "digest": "a0e97aa1240c84f4461811b8eebbc9e9a74ff0e13382ee935f5a5df3a30725d9",
+    "name": "local references decode tilde escapes once",
+    "schema": {
+      "$defs": {
+        "a~1b": {
+          "type": "string"
+        },
+        "a/b": {
+          "type": "number"
+        }
+      },
+      "$ref": "#/$defs/a~01b"
+    },
+    "values": [
+      {
+        "value": "text",
+        "valid": true
+      },
+      {
+        "value": 7,
+        "valid": false
+      },
+      {
+        "value": null,
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "e034d35dd99a3625496b615db8a352890be881829b3eda2cb9d9427f7dce2ccc",
+    "name": "local references decode every tilde escape",
+    "schema": {
+      "$defs": {
+        "a~b~c": {
+          "type": "string"
+        },
+        "a~b~0c": {
+          "type": "number"
+        }
+      },
+      "$ref": "#/$defs/a~0b~0c"
+    },
+    "values": [
+      {
+        "value": "text",
+        "valid": true
+      },
+      {
+        "value": 7,
+        "valid": false
+      },
+      {
+        "value": null,
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "5f25e60067c9b0ac1f2807e2d3761caf2bc5e57026eb0f6be2eb4efdfc9916a9",
+    "name": "local references decode URI fragments before pointer tokens",
+    "schema": {
+      "$defs": {
+        "a/b": {
+          "type": "string"
+        },
+        "a~1b": {
+          "type": "number"
+        }
+      },
+      "$ref": "#/$defs/a%7E1b"
+    },
+    "values": [
+      {
+        "value": "text",
+        "valid": true
+      },
+      {
+        "value": 7,
+        "valid": false
+      },
+      {
+        "value": null,
+        "valid": false
+      }
+    ]
+  },
+  {
+    "admitted": true,
+    "digest": "ca7a36ec7c217c12a9c7003fa9c31de1ca6a9b3eef673d17b696f9044490d145",
+    "name": "local references preserve the admitted traversal graph",
+    "schema": {
+      "$defs": {
+        "a~1b": {
+          "type": "string"
+        },
+        "a/b": {
+          "$ref": "#"
+        }
+      },
+      "$ref": "#/$defs/a~01b"
+    },
+    "values": [
+      {
+        "value": "text",
+        "valid": true
+      },
+      {
+        "value": 7,
+        "valid": false
+      },
+      {
+        "value": null,
+        "valid": false
+      }
+    ]
   }
 ]

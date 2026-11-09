@@ -16,11 +16,10 @@ decoders before accepting them. A malformed mutation acknowledgement remains
 `outcome_unknown`; a malformed observation reports `unavailable`. A void
 acknowledgement must carry JSON null on the wire.
 
-The control endpoint and every module lease URL must be potentially trustworthy
-in the W3C Secure Contexts sense: HTTPS, or HTTP to a loopback host; a module
-lease may also use a `file:` or `data:` URL. A browser cannot hash module bytes
-before evaluating them, so the approved digest is checked against the lease, not
-the code: module integrity rests on the Host issuing URLs that only it can serve.
+The control endpoint must use HTTPS or HTTP to a loopback host, following W3C
+Secure Contexts. The artifact adapter supplies bounded bytes; `RealmModules`
+hashes their captured content before importing those exact bytes, using the
+digest in the Host-approved plan. See the ESM module contract below.
 
 ```ts
 import { Lifetime } from "@frame/sdk";
@@ -33,7 +32,7 @@ const control = new HTTPControl({
   maximumMessageBytes: session.maxMessageBytes,
   lifetime: transport,
 });
-const modules = new RealmModules(openVerifiedArtifactLease);
+const modules = new RealmModules(openArtifactBytes);
 const runtime = new Runtime({
   authority: session.authority,
   realm: session.realm,
@@ -73,14 +72,17 @@ reconnect requires Host revalidation. Call `runtime.reconnect(replacement)` to
 replace the authenticated channel while the same pump runs. A late poll from the
 retired channel cannot fence or disconnect the replacement. A new authority
 epoch makes old executions cleanup-only.
+Every new `Use.with` interval checks this current admission. A paused channel
+does not cancel an already admitted interval or release its Use; successful
+revalidation can admit a later interval on the same original Use.
 While revalidation is pending, polling joins that same observation instead of
 reconnecting the retired channel. An explicit replacement may supersede the
 observation; its late completion cannot replace or discard the newer channel.
 
 `run(signal?)` owns the pump's bootstrap lifetime. Aborting its signal, or calling
-`pump.close()`, stops new scheduling, begins Runtime closure and joins the actual
-poll, preparations and proof delivery. Successful completion requires resource
-release and durable proof acknowledgement. An unconfirmed close remains an
+`pump.close()`, stops new scheduling, begins Runtime closure and joins scheduled
+polls, preparations and proof acknowledgements. Successful completion requires
+resource release and durable proof acknowledgement. An unconfirmed close remains an
 error with the original Runtime; aborting is never evidence that setup exited.
 Close the transport Lifetime only after this join. A failed close can be retried
 to observe the original resources and redeliver the same proofs; it never
@@ -193,7 +195,16 @@ The current authenticated transport may carry original-epoch evidence during
 cleanup-only recovery. An execution proof covers its owned objects and pending
 admissions; it never releases another execution's resources.
 Reconnect revalidates the bounded execution projection; the outbox then delivers
-each pending proof separately. Failure diagnostics stay on the local Exit and
+each pending proof separately. A replacement channel starts its own delivery
+attempt immediately, even when the retired transport has not answered. Both
+attempts carry the same immutable proof; the first valid acknowledgement advances
+that proof once. A late result cannot reverse its acknowledgement or affect a
+different proof. Cancellation of a `close(signal)` observer ends that wait only;
+resource closure and proof delivery continue independently.
+The transport Lifetime still owns every dispatched request, including obsolete
+proof sends. An acknowledgement completes the proof obligation without claiming
+that those requests exited; closing the transport cancels and joins them.
+Failure diagnostics stay on the local Exit and
 cannot enlarge release evidence. Use the Host's `maxMessageBytes` bootstrap
 projection for the transport budget so accepted messages share one effective
 wire capacity.
@@ -206,9 +217,19 @@ the wait leaves the original exits and proof delivery owned.
 
 ## ESM modules
 
-`RealmModules` acquires verified artifact leases before evaluation. The consumer
-owns artifact authentication and content verification. A module lease's `close`
-receives a late-release confirmation handle for an unconfirmed close.
+Create one `RealmModules` owner for the actual JavaScript Realm and reuse it
+across plans. Constructing a new helper is not a Realm replacement.
+
+`RealmModules` acquires artifact bytes before evaluation. The consumer owns the
+authenticated, bounded fetch and returns a `ModuleLease` containing `bytes` plus
+its resource closure capability. `RealmModules` captures those bytes once, checks
+their SHA-256 digest against the approved plan, and constructs the evaluation
+data URL from that exact capture. A lease supplies neither a trusted digest nor
+a separately fetched import URL. Serve standalone or bundled ESM: relative
+module imports cannot resolve against a data URL. Browser CSP must permit these
+approved data-module imports.
+A module lease's `close` receives a late-release confirmation handle for an
+unconfirmed close.
 
 `load` expects a default Frame unit declaration. `evaluate` lets a consumer adapt
 its own module authoring format without synthesizing a LocalPlan. The exact Host
@@ -217,6 +238,8 @@ plan remains the only authority for executable units and public contracts.
 ESM evaluation belongs to the actual Realm and cannot be cancelled or unloaded.
 A retiring execution stops observing evaluation, closes its resource lease, and
 refuses late exports. The evaluation promise remains in the Realm cache. An
+identical byte sequence has one native evaluation identity across artifact
+aliases; its leases share that identity and a retired alias cannot revive it. An
 evaluated installation cannot change release or authority in place; a retired or
 failed module cannot be restarted by deleting a promise or appending a URL query.
 A controlled Realm replacement is required.

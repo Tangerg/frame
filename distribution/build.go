@@ -105,8 +105,11 @@ func (c *releaseContents) writeArchive(ctx context.Context, output io.Writer, ar
 		// expansion-ratio policy would reject for highly compressible resources.
 		header := &zip.FileHeader{Name: name, Method: zip.Store, Modified: zipEpoch}
 		mode := privateFileMode
-		if slices.ContainsFunc(artifacts, func(artifact Artifact) bool { return artifact.Path == name && artifact.Executable }) {
-			mode |= ownerExecuteBit
+		for _, artifact := range artifacts {
+			if artifact.Path == name {
+				mode = artifact.fileMode(unsealedTree)
+				break
+			}
 		}
 		header.SetMode(mode)
 		writer, err := archive.CreateHeader(header)

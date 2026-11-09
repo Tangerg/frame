@@ -39,10 +39,10 @@ export interface ControlOutputs {
 }
 
 export const CONTROL_ERROR_CODES = [
+  "outcome_unknown",
   "permission_denied",
   "invalid_plan",
   "capacity",
-  "outcome_unknown",
   "contract_mismatch",
   "stale_binding",
   "closed",
@@ -67,7 +67,28 @@ function wireObject(value: unknown, members: readonly string[]): value is Record
     Object.keys(value).every((name) => members.includes(name));
 }
 
+function wireArray(value: unknown, matches: (item: unknown) => boolean): value is readonly unknown[] {
+  if (!Array.isArray(value)) return false;
+  for (let index = 0; index < value.length; index++) {
+    if (!Object.hasOwn(value, index) || !matches(value[index])) return false;
+  }
+  return true;
+}
+
 const wireDigest = new RegExp(DIGEST_PATTERN);
+
+function matchesWireAcquireRequest(value: unknown): value is AcquireRequest {
+  return wireObject(value, ["operationId", "snapshotId", "execution", "selections", "parentUseId"]) &&
+    Object.hasOwn(value, "operationId") &&
+    (typeof value["operationId"] === "string") &&
+    Object.hasOwn(value, "snapshotId") &&
+    (typeof value["snapshotId"] === "string") &&
+    Object.hasOwn(value, "execution") &&
+    (matchesWireExecution(value["execution"])) &&
+    Object.hasOwn(value, "selections") &&
+    (wireArray(value["selections"], (item: unknown) => matchesWireSelection(item))) &&
+    (!Object.hasOwn(value, "parentUseId") || (typeof value["parentUseId"] === "string"));
+}
 
 function matchesWireArtifact(value: unknown): value is Artifact {
   return wireObject(value, ["path", "digest"]) &&
@@ -95,6 +116,36 @@ function matchesWireCandidate(value: unknown): value is Candidate {
     (typeof value["metadataJson"] === "string") &&
     Object.hasOwn(value, "token") &&
     (typeof value["token"] === "string");
+}
+
+function matchesWireCloseProof(value: unknown): value is CloseProof {
+  return wireObject(value, ["closeId", "proofId", "authority", "realm", "execution", "scopeId", "scopeGeneration", "scopeKind", "useId", "publicationId", "instances", "status"]) &&
+    Object.hasOwn(value, "closeId") &&
+    (typeof value["closeId"] === "string") &&
+    Object.hasOwn(value, "proofId") &&
+    (typeof value["proofId"] === "string") &&
+    Object.hasOwn(value, "authority") &&
+    (matchesWireAuthority(value["authority"])) &&
+    Object.hasOwn(value, "realm") &&
+    (matchesWireRealm(value["realm"])) &&
+    Object.hasOwn(value, "execution") &&
+    (matchesWireExecution(value["execution"])) &&
+    Object.hasOwn(value, "scopeId") &&
+    (typeof value["scopeId"] === "string") &&
+    Object.hasOwn(value, "scopeGeneration") &&
+    (typeof value["scopeGeneration"] === "string") &&
+    Object.hasOwn(value, "scopeKind") &&
+    (matchesWireCloseScopeKind(value["scopeKind"])) &&
+    (!Object.hasOwn(value, "useId") || (typeof value["useId"] === "string")) &&
+    (!Object.hasOwn(value, "publicationId") || (typeof value["publicationId"] === "string")) &&
+    Object.hasOwn(value, "instances") &&
+    (wireArray(value["instances"], (item: unknown) => typeof item === "string")) &&
+    Object.hasOwn(value, "status") &&
+    (matchesWireReleaseState(value["status"]));
+}
+
+function matchesWireCloseScopeKind(value: unknown): value is CloseScopeKind {
+  return typeof value === "string" && CloseScopeKindValues.includes(value as CloseScopeKind);
 }
 
 function matchesWireContractKind(value: unknown): value is ContractKind {
@@ -232,7 +283,7 @@ function matchesWireLocalPlan(value: unknown): value is LocalPlan {
     Object.hasOwn(value, "scopeGeneration") &&
     (typeof value["scopeGeneration"] === "string") &&
     Object.hasOwn(value, "units") &&
-    (Array.isArray(value["units"]) && value["units"].every((item: unknown) => matchesWirePlannedUnit(item)));
+    (wireArray(value["units"], (item: unknown) => matchesWirePlannedUnit(item)));
 }
 
 function matchesWireObjectRef(value: unknown): value is ObjectRef {
@@ -270,9 +321,9 @@ function matchesWirePlannedUnit(value: unknown): value is PlannedUnit {
     Object.hasOwn(value, "module") &&
     (matchesWireArtifact(value["module"])) &&
     Object.hasOwn(value, "imports") &&
-    (Array.isArray(value["imports"]) && value["imports"].every((item: unknown) => matchesWireImport(item))) &&
+    (wireArray(value["imports"], (item: unknown) => matchesWireImport(item))) &&
     Object.hasOwn(value, "exports") &&
-    (Array.isArray(value["exports"]) && value["exports"].every((item: unknown) => matchesWireExportDeclaration(item)));
+    (wireArray(value["exports"], (item: unknown) => matchesWireExportDeclaration(item)));
 }
 
 function matchesWirePointSnapshot(value: unknown): value is PointSnapshot {
@@ -282,7 +333,7 @@ function matchesWirePointSnapshot(value: unknown): value is PointSnapshot {
     Object.hasOwn(value, "revision") &&
     (typeof value["revision"] === "string") &&
     Object.hasOwn(value, "candidates") &&
-    (Array.isArray(value["candidates"]) && value["candidates"].every((item: unknown) => matchesWireCandidate(item)));
+    (wireArray(value["candidates"], (item: unknown) => matchesWireCandidate(item)));
 }
 
 function matchesWirePoll(value: unknown): value is Poll {
@@ -292,9 +343,17 @@ function matchesWirePoll(value: unknown): value is Poll {
     Object.hasOwn(value, "realm") &&
     (matchesWireRealm(value["realm"])) &&
     Object.hasOwn(value, "plans") &&
-    (Array.isArray(value["plans"]) && value["plans"].every((item: unknown) => matchesWireLocalPlan(item))) &&
+    (wireArray(value["plans"], (item: unknown) => matchesWireLocalPlan(item))) &&
     Object.hasOwn(value, "fences") &&
-    (Array.isArray(value["fences"]) && value["fences"].every((item: unknown) => matchesWireFence(item)));
+    (wireArray(value["fences"], (item: unknown) => matchesWireFence(item)));
+}
+
+function matchesWirePreparedContribution(value: unknown): value is PreparedContribution {
+  return wireObject(value, ["object", "metadataJson"]) &&
+    Object.hasOwn(value, "object") &&
+    (matchesWireObjectRef(value["object"])) &&
+    Object.hasOwn(value, "metadataJson") &&
+    (typeof value["metadataJson"] === "string");
 }
 
 function matchesWireProfile(value: unknown): value is Profile {
@@ -325,12 +384,44 @@ function matchesWirePublication(value: unknown): value is Publication {
     (matchesWireObjectRef(value["object"]));
 }
 
+function matchesWirePublicationRequest(value: unknown): value is PublicationRequest {
+  return wireObject(value, ["operationId", "authority", "realm", "execution", "object", "metadataJson"]) &&
+    Object.hasOwn(value, "operationId") &&
+    (typeof value["operationId"] === "string") &&
+    Object.hasOwn(value, "authority") &&
+    (matchesWireAuthority(value["authority"])) &&
+    Object.hasOwn(value, "realm") &&
+    (matchesWireRealm(value["realm"])) &&
+    Object.hasOwn(value, "execution") &&
+    (matchesWireExecution(value["execution"])) &&
+    Object.hasOwn(value, "object") &&
+    (matchesWireObjectRef(value["object"])) &&
+    Object.hasOwn(value, "metadataJson") &&
+    (typeof value["metadataJson"] === "string");
+}
+
 function matchesWirePublicationResult(value: unknown): value is PublicationResult {
   return wireObject(value, ["decision", "publication", "problem"]) &&
     Object.hasOwn(value, "decision") &&
     (matchesWireDecision(value["decision"])) &&
     (!Object.hasOwn(value, "publication") || (matchesWirePublication(value["publication"]))) &&
     (!Object.hasOwn(value, "problem") || (typeof value["problem"] === "string"));
+}
+
+function matchesWireReadyReport(value: unknown): value is ReadyReport {
+  return wireObject(value, ["operationId", "authority", "realm", "execution", "objects", "contributions"]) &&
+    Object.hasOwn(value, "operationId") &&
+    (typeof value["operationId"] === "string") &&
+    Object.hasOwn(value, "authority") &&
+    (matchesWireAuthority(value["authority"])) &&
+    Object.hasOwn(value, "realm") &&
+    (matchesWireRealm(value["realm"])) &&
+    Object.hasOwn(value, "execution") &&
+    (matchesWireExecution(value["execution"])) &&
+    Object.hasOwn(value, "objects") &&
+    (wireArray(value["objects"], (item: unknown) => matchesWireObjectRef(item))) &&
+    Object.hasOwn(value, "contributions") &&
+    (wireArray(value["contributions"], (item: unknown) => matchesWirePreparedContribution(item)));
 }
 
 function matchesWireRealm(value: unknown): value is Realm {
@@ -345,6 +436,16 @@ function matchesWireReconnectMode(value: unknown): value is ReconnectMode {
   return typeof value === "string" && ReconnectModeValues.includes(value as ReconnectMode);
 }
 
+function matchesWireReconnectRequest(value: unknown): value is ReconnectRequest {
+  return wireObject(value, ["authority", "realm", "executions"]) &&
+    Object.hasOwn(value, "authority") &&
+    (matchesWireAuthority(value["authority"])) &&
+    Object.hasOwn(value, "realm") &&
+    (matchesWireRealm(value["realm"])) &&
+    Object.hasOwn(value, "executions") &&
+    (wireArray(value["executions"], (item: unknown) => matchesWireExecution(item)));
+}
+
 function matchesWireReconnectResult(value: unknown): value is ReconnectResult {
   return wireObject(value, ["authority", "realm", "mode", "executions"]) &&
     Object.hasOwn(value, "authority") &&
@@ -354,7 +455,11 @@ function matchesWireReconnectResult(value: unknown): value is ReconnectResult {
     Object.hasOwn(value, "mode") &&
     (matchesWireReconnectMode(value["mode"])) &&
     Object.hasOwn(value, "executions") &&
-    (Array.isArray(value["executions"]) && value["executions"].every((item: unknown) => matchesWireRevalidatedExecution(item)));
+    (wireArray(value["executions"], (item: unknown) => matchesWireRevalidatedExecution(item)));
+}
+
+function matchesWireReleaseState(value: unknown): value is ReleaseState {
+  return typeof value === "string" && ReleaseStateValues.includes(value as ReleaseState);
 }
 
 function matchesWireRemoteImport(value: unknown): value is RemoteImport {
@@ -375,6 +480,28 @@ function matchesWireRevalidatedExecution(value: unknown): value is RevalidatedEx
     (typeof value["scopeGeneration"] === "string");
 }
 
+function matchesWireRouteGrant(value: unknown): value is RouteGrant {
+  return wireObject(value, ["id", "use", "source", "receiver"]) &&
+    Object.hasOwn(value, "id") &&
+    (typeof value["id"] === "string") &&
+    Object.hasOwn(value, "use") &&
+    (matchesWireUseGrant(value["use"])) &&
+    Object.hasOwn(value, "source") &&
+    (matchesWireLocalExport(value["source"])) &&
+    Object.hasOwn(value, "receiver") &&
+    (matchesWireLocalExport(value["receiver"]));
+}
+
+function matchesWireSelection(value: unknown): value is Selection {
+  return wireObject(value, ["point", "candidates", "rule"]) &&
+    Object.hasOwn(value, "point") &&
+    (matchesWireContractRef(value["point"])) &&
+    Object.hasOwn(value, "candidates") &&
+    (wireArray(value["candidates"], (item: unknown) => typeof item === "string")) &&
+    Object.hasOwn(value, "rule") &&
+    (typeof value["rule"] === "string");
+}
+
 function matchesWireSnapshot(value: unknown): value is Snapshot {
   return wireObject(value, ["id", "authority", "points"]) &&
     Object.hasOwn(value, "id") &&
@@ -382,7 +509,15 @@ function matchesWireSnapshot(value: unknown): value is Snapshot {
     Object.hasOwn(value, "authority") &&
     (matchesWireAuthority(value["authority"])) &&
     Object.hasOwn(value, "points") &&
-    (Array.isArray(value["points"]) && value["points"].every((item: unknown) => matchesWirePointSnapshot(item)));
+    (wireArray(value["points"], (item: unknown) => matchesWirePointSnapshot(item)));
+}
+
+function matchesWireSnapshotRequest(value: unknown): value is SnapshotRequest {
+  return wireObject(value, ["operationId", "points"]) &&
+    Object.hasOwn(value, "operationId") &&
+    (typeof value["operationId"] === "string") &&
+    Object.hasOwn(value, "points") &&
+    (wireArray(value["points"], (item: unknown) => typeof item === "string"));
 }
 
 function matchesWireUnitID(value: unknown): value is UnitID {
@@ -419,7 +554,127 @@ function matchesWireUseGrant(value: unknown): value is UseGrant {
     Object.hasOwn(value, "scopeGeneration") &&
     (typeof value["scopeGeneration"] === "string") &&
     Object.hasOwn(value, "objects") &&
-    (Array.isArray(value["objects"]) && value["objects"].every((item: unknown) => matchesWireObjectRef(item)));
+    (wireArray(value["objects"], (item: unknown) => matchesWireObjectRef(item)));
+}
+
+function matchesWireWithdrawal(value: unknown): value is Withdrawal {
+  return wireObject(value, ["authority", "publicationId"]) &&
+    Object.hasOwn(value, "authority") &&
+    (matchesWireAuthority(value["authority"])) &&
+    Object.hasOwn(value, "publicationId") &&
+    (typeof value["publicationId"] === "string");
+}
+
+export interface ProtocolValues {
+  readonly AcquireRequest: AcquireRequest;
+  readonly Artifact: Artifact;
+  readonly Authority: Authority;
+  readonly Candidate: Candidate;
+  readonly CloseProof: CloseProof;
+  readonly CloseScopeKind: CloseScopeKind;
+  readonly ContractKind: ContractKind;
+  readonly ContractMode: ContractMode;
+  readonly ContractRef: ContractRef;
+  readonly Decision: Decision;
+  readonly Digest: Digest;
+  readonly Execution: Execution;
+  readonly ExportDeclaration: ExportDeclaration;
+  readonly ExportRef: ExportRef;
+  readonly Fence: Fence;
+  readonly HTTPProblem: HTTPProblem;
+  readonly Import: Import;
+  readonly ImportKind: ImportKind;
+  readonly InstallationID: InstallationID;
+  readonly Instance: Instance;
+  readonly LocalExport: LocalExport;
+  readonly LocalPlan: LocalPlan;
+  readonly ObjectRef: ObjectRef;
+  readonly PlanAdmission: PlanAdmission;
+  readonly PlanAdmissionDecision: PlanAdmissionDecision;
+  readonly PlannedUnit: PlannedUnit;
+  readonly PointSnapshot: PointSnapshot;
+  readonly Poll: Poll;
+  readonly PreparedContribution: PreparedContribution;
+  readonly Profile: Profile;
+  readonly ProofAcknowledgement: ProofAcknowledgement;
+  readonly Publication: Publication;
+  readonly PublicationRequest: PublicationRequest;
+  readonly PublicationResult: PublicationResult;
+  readonly ReadyReport: ReadyReport;
+  readonly Realm: Realm;
+  readonly ReconnectMode: ReconnectMode;
+  readonly ReconnectRequest: ReconnectRequest;
+  readonly ReconnectResult: ReconnectResult;
+  readonly ReleaseState: ReleaseState;
+  readonly RemoteImport: RemoteImport;
+  readonly RevalidatedExecution: RevalidatedExecution;
+  readonly RouteGrant: RouteGrant;
+  readonly Selection: Selection;
+  readonly Snapshot: Snapshot;
+  readonly SnapshotRequest: SnapshotRequest;
+  readonly UnitID: UnitID;
+  readonly UnitRef: UnitRef;
+  readonly UseGrant: UseGrant;
+  readonly Withdrawal: Withdrawal;
+}
+
+const protocolValues = {
+  ["AcquireRequest"]: matchesWireAcquireRequest,
+  ["Artifact"]: matchesWireArtifact,
+  ["Authority"]: matchesWireAuthority,
+  ["Candidate"]: matchesWireCandidate,
+  ["CloseProof"]: matchesWireCloseProof,
+  ["CloseScopeKind"]: matchesWireCloseScopeKind,
+  ["ContractKind"]: matchesWireContractKind,
+  ["ContractMode"]: matchesWireContractMode,
+  ["ContractRef"]: matchesWireContractRef,
+  ["Decision"]: matchesWireDecision,
+  ["Digest"]: matchesWireDigest,
+  ["Execution"]: matchesWireExecution,
+  ["ExportDeclaration"]: matchesWireExportDeclaration,
+  ["ExportRef"]: matchesWireExportRef,
+  ["Fence"]: matchesWireFence,
+  ["HTTPProblem"]: matchesWireHTTPProblem,
+  ["Import"]: matchesWireImport,
+  ["ImportKind"]: matchesWireImportKind,
+  ["InstallationID"]: matchesWireInstallationID,
+  ["Instance"]: matchesWireInstance,
+  ["LocalExport"]: matchesWireLocalExport,
+  ["LocalPlan"]: matchesWireLocalPlan,
+  ["ObjectRef"]: matchesWireObjectRef,
+  ["PlanAdmission"]: matchesWirePlanAdmission,
+  ["PlanAdmissionDecision"]: matchesWirePlanAdmissionDecision,
+  ["PlannedUnit"]: matchesWirePlannedUnit,
+  ["PointSnapshot"]: matchesWirePointSnapshot,
+  ["Poll"]: matchesWirePoll,
+  ["PreparedContribution"]: matchesWirePreparedContribution,
+  ["Profile"]: matchesWireProfile,
+  ["ProofAcknowledgement"]: matchesWireProofAcknowledgement,
+  ["Publication"]: matchesWirePublication,
+  ["PublicationRequest"]: matchesWirePublicationRequest,
+  ["PublicationResult"]: matchesWirePublicationResult,
+  ["ReadyReport"]: matchesWireReadyReport,
+  ["Realm"]: matchesWireRealm,
+  ["ReconnectMode"]: matchesWireReconnectMode,
+  ["ReconnectRequest"]: matchesWireReconnectRequest,
+  ["ReconnectResult"]: matchesWireReconnectResult,
+  ["ReleaseState"]: matchesWireReleaseState,
+  ["RemoteImport"]: matchesWireRemoteImport,
+  ["RevalidatedExecution"]: matchesWireRevalidatedExecution,
+  ["RouteGrant"]: matchesWireRouteGrant,
+  ["Selection"]: matchesWireSelection,
+  ["Snapshot"]: matchesWireSnapshot,
+  ["SnapshotRequest"]: matchesWireSnapshotRequest,
+  ["UnitID"]: matchesWireUnitID,
+  ["UnitRef"]: matchesWireUnitRef,
+  ["UseGrant"]: matchesWireUseGrant,
+  ["Withdrawal"]: matchesWireWithdrawal,
+} as const;
+
+export function decodeProtocolValue<K extends keyof ProtocolValues>(name: K, value: unknown): ProtocolValues[K] {
+  if (!Object.hasOwn(protocolValues, name) || !protocolValues[name](value))
+    throw new TypeError("invalid protocol value");
+  return value as ProtocolValues[K];
 }
 
 const controlOutputs = {

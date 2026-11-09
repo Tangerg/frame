@@ -1,3 +1,4 @@
+import { captureProtocol } from "../protocol-capture.js";
 import {
   Lifetime,
   Point,
@@ -10,7 +11,7 @@ import {
   type Setup,
   type Unit,
 } from "../index.js";
-import { freezeJSON, parseJSON } from "../json.js";
+import { parseJSON } from "../json.js";
 import type {
   AcquireRequest,
   Authority,
@@ -26,7 +27,8 @@ import type {
   UseGrant,
 } from "../protocol.generated.js";
 import { PROTOCOL } from "../protocol.generated.js";
-import type { HostControl } from "./control.js";
+import type { ControlChannel, HostControl } from "./control.js";
+import { observePromise } from "../promise-observation.js";
 import {
   sameAuthority,
   sameExecution,
@@ -84,7 +86,12 @@ function useView(
   grant: UseGrant,
   owner: Lifetime,
   objects: ReadonlyMap<string, ObjectResource>,
+  admission: () => void,
 ): Use {
+  let admit: (() => void) | undefined = admission;
+  owner.observeExit((outcome) => {
+    if (outcome.status === "released") admit = undefined;
+  });
   return Object.freeze({
     id: grant.id,
     objects: grant.objects,
@@ -95,6 +102,7 @@ function useView(
       work: (value: T, signal: AbortSignal) => Awaitable<R>,
     ) => {
       owner.assertOpen();
+      admit!();
       const object = objects.get(reference.objectId);
       if (
         !object ||
@@ -137,8 +145,7 @@ function eventRouteView<T>(
 
 export class Runtime {
   readonly #realm: Realm;
-  #authority: Authority;
-  #control: HostControl;
+  #channel: ControlChannel;
   readonly #load: RuntimeOptions["load"];
   readonly #remote: RuntimeOptions["remote"];
   readonly #outbox: ProofOutbox;
@@ -151,14 +158,17 @@ export class Runtime {
   readonly #objects = new Map<string, ObjectResource>();
   #uses = new Map<string, UseAdmission>();
   #admissions = new Map<string, UseAdmission>();
+  #closing?: Promise<readonly CloseOutcome[]>;
 
   constructor(options: RuntimeOptions) {
     const { realm, authority, control, load, remote, proofCapacity } = options;
     if (typeof load !== "function" || typeof remote !== "function")
       throw new TypeError("runtime loaders must be functions");
-    this.#realm = freezeJSON(realm);
-    this.#authority = freezeJSON(authority);
-    this.#control = control;
+    this.#realm = captureProtocol("Realm", realm);
+    this.#channel = {
+      authority: captureProtocol("Authority", authority),
+      control,
+    };
     this.#load = load.bind(options);
     this.#remote = remote.bind(options);
     this.#outbox = new ProofOutbox(proofCapacity);
@@ -166,6 +176,12 @@ export class Runtime {
 
   get authority(): Authority {
     return this.#authority;
+  }
+  get #authority(): Authority {
+    return this.#channel.authority;
+  }
+  get #control(): HostControl {
+    return this.#channel.control;
   }
   get realm(): Realm {
     return this.#realm;
@@ -195,7 +211,7 @@ export class Runtime {
   }
 
   async prepare(received: LocalPlan): Promise<ExecutionHandle> {
-    const plan = freezeJSON(received);
+    const plan = captureProtocol("LocalPlan", received);
     const existing = this.#executions.get(plan.execution.id);
     if (existing) {
       existing.verify(plan);
@@ -379,7 +395,7 @@ export class Runtime {
 
   async acquire(received: AcquireRequest): Promise<Use> {
     this.#assertConnected();
-    const request = freezeJSON(received);
+    const request = captureProtocol("AcquireRequest", received);
     const entry = this.#useExecution(request.execution);
     const previous = this.#admissions.get(request.operationId);
     const admission = this.#admission(request, entry);
@@ -405,7 +421,7 @@ export class Runtime {
 
   async accept(received: UseGrant): Promise<Use> {
     this.#assertConnected();
-    const grant = freezeJSON(received);
+    const grant = captureProtocol("UseGrant", received);
     const original = this.#admissions.get(grant.operationId);
     original?.verifyGrant(grant);
     if (original?.use) return original.use;
@@ -481,7 +497,7 @@ export class Runtime {
     admission: UseAdmission,
     revision: number,
   ): Promise<Use> {
-    const grant = freezeJSON(received);
+    const grant = captureProtocol("UseGrant", received);
     admission.verifyGrant(grant);
     if (
       !sameExecution(entry.plan.execution, grant.execution) ||
@@ -506,7 +522,7 @@ export class Runtime {
     const owner = admission.lifetime;
     const closing = revision !== this.#connectionRevision || owner.closing;
     const objects = new Map<string, ObjectResource>();
-    const use = useView(grant, owner, objects);
+    const use = useView(grant, owner, objects, () => this.#assertConnected());
     admission.materialize(grant, use);
     this.#uses.set(grant.id, admission);
     this.#observeUseExit(entry, owner, admission.reservation, grant);
@@ -575,7 +591,7 @@ export class Runtime {
     listener: (payload: T, signal: AbortSignal) => Awaitable<void>,
   ): Promise<EventRoute<T>> {
     this.#assertConnected();
-    const grant = freezeJSON(received);
+    const grant = captureProtocol("RouteGrant", received);
     if (
       event.ref.mode !== "native" ||
       !sameContract(event.ref, grant.source.contract) ||
@@ -616,7 +632,7 @@ export class Runtime {
       if (outcome.status !== "released") return;
       this.#outbox.record(
         reservation,
-        freezeJSON({
+        captureProtocol("CloseProof", {
           closeId: outcome.closeId,
           proofId: crypto.randomUUID(),
           authority: entry.plan.authority,
@@ -691,8 +707,10 @@ export class Runtime {
         "reconnection belongs to another realm",
       );
     const sameEpoch = sameAuthority(result.authority, this.#authority);
-    this.#authority = freezeJSON(result.authority);
-    this.#control = control;
+    this.#channel = {
+      authority: captureProtocol("Authority", result.authority),
+      control,
+    };
     if (closing) {
       this.#connection = "closed";
     } else if (sameEpoch && result.mode === "revalidated") {
@@ -803,7 +821,7 @@ export class Runtime {
 
   async flushProofs(): Promise<void> {
     try {
-      await this.#outbox.flush(this.#control, this.#authority, (proof) => {
+      await this.#outbox.flush(this.#channel, (proof) => {
         if (proof.scopeKind !== "execution") return;
         const entry = this.#executions.get(proof.execution.id);
         if (entry && sameExecution(entry.plan.execution, proof.execution))
@@ -822,7 +840,19 @@ export class Runtime {
     }
   }
 
-  async close(signal?: AbortSignal): Promise<readonly CloseOutcome[]> {
+  close(signal?: AbortSignal): Promise<readonly CloseOutcome[]> {
+    if (!this.#closing) {
+      const completion = Promise.withResolvers<readonly CloseOutcome[]>();
+      const work = completion.promise.finally(() => {
+        if (this.#closing === work) this.#closing = undefined;
+      });
+      this.#closing = work;
+      this.#close().then(completion.resolve, completion.reject);
+    }
+    return observePromise(this.#closing, signal);
+  }
+
+  async #close(): Promise<readonly CloseOutcome[]> {
     this.#connection = "closed";
     this.#connectionRevision++;
     const entries = [...this.#executions.values()];
@@ -832,15 +862,15 @@ export class Runtime {
     const exits = entries.map((entry) => entry.lifetime.beginClose());
     await Promise.allSettled(
       entries.map((entry) =>
-        entry.admission.resolve(this.#control, this.#authority, signal),
+        entry.admission.resolve(this.#control, this.#authority),
       ),
     );
     const outcomes = await Promise.all(
       exits.map((exit, index) => {
         const entry = entries[index]!;
         return unresolved.has(entry) && !entry.admission.pending
-          ? exit.wait(signal)
-          : exit.settled(signal);
+          ? exit.wait()
+          : exit.settled();
       }),
     );
     await this.flushProofs();

@@ -169,8 +169,8 @@ func (b *Bridge) replaySnapshot(ctx context.Context, id string, request controlR
 	if err := operation.wait(ctx); err != nil {
 		return Snapshot{}, err
 	}
-	if operation.failure != nil {
-		return Snapshot{}, operation.failure
+	if err := operation.snapshotResult(); err != nil {
+		return Snapshot{}, err
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -202,10 +202,8 @@ func (b *Bridge) snapshotPoints(names []string) ([]frame.ContractRef, error) {
 			if point.Name != name {
 				continue
 			}
-			if selected.Name != "" {
-				return nil, frame.ErrAmbiguous
-			}
 			selected = point
+			break
 		}
 		if selected.Name == "" {
 			return nil, frame.ErrContractMismatch
@@ -231,8 +229,7 @@ func (b *Bridge) CloseSnapshot(ctx context.Context, token, snapshotID string) er
 	}
 	identity := controlRequestIdentity{Kind: closeSnapshotOperation, Realm: session.realm}
 	for {
-		operation, replay, err := b.begin(ctx, snapshotID, identity, func(operation *controlOperation) error {
-			operation.failure = frame.ErrClosed
+		operation, replay, err := b.begin(ctx, snapshotID, identity, func(*controlOperation) error {
 			return nil
 		})
 		switch {
@@ -240,9 +237,9 @@ func (b *Bridge) CloseSnapshot(ctx context.Context, token, snapshotID string) er
 			return err
 		case !replay:
 			if err := b.reserveReceipt(ctx, snapshotID, operation); err != nil {
-				return errors.Join(err, b.complete(ctx, snapshotID, operation))
+				return errors.Join(err, b.finish(ctx, snapshotID, operation, nil))
 			}
-			return b.complete(ctx, snapshotID, operation)
+			return b.finish(ctx, snapshotID, operation, nil)
 		}
 		if err := operation.ownsSnapshot(session.realm); err != nil {
 			return err

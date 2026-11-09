@@ -13,7 +13,7 @@ import (
 	"github.com/Tangerg/frame/sqlite"
 )
 
-func readScopeDatabase(t *testing.T) (*sql.DB, string) {
+func readScopeDatabase(t *testing.T) (*sqlite.Database, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "read-scopes.db")
 	database, err := sqlite.OpenSchema(t.Context(), path, []string{`CREATE TABLE facts (value TEXT NOT NULL)`})
@@ -105,7 +105,7 @@ func TestOverlappingReadScopesKeepTheirOriginalConnectionReadOnly(t *testing.T) 
 				t.Fatal("an earlier scope restored write mode while another reader was still admitted")
 			}
 			var count int
-			if err := database.QueryRowContext(ctx, `SELECT count(*) FROM facts`).Scan(&count); err != nil || count != 1 {
+			if err := databaseQuery(database, ctx, `SELECT count(*) FROM facts`).Scan(&count); err != nil || count != 1 {
 				t.Fatalf("read scopes changed the original writer's facts: count=%d error=%v", count, err)
 			}
 		})

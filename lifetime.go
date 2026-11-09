@@ -95,6 +95,7 @@ type Lifetime struct {
 	mu              sync.Mutex
 	ctx             context.Context
 	cancelContext   context.CancelCauseFunc
+	parentDone      <-chan struct{}
 	stopParent      func() bool
 	changed         chan struct{}
 	work            map[*workInterval]struct{}
@@ -157,7 +158,7 @@ func NewLifetimeWithLimits(parent context.Context, limits LifetimeLimits) (*Life
 		return nil, err
 	}
 	ctx, cancel := context.WithCancelCause(context.WithoutCancel(parent))
-	l := &Lifetime{ctx: ctx, cancelContext: cancel, changed: make(chan struct{}), work: make(map[*workInterval]struct{}), limits: limits}
+	l := &Lifetime{ctx: ctx, cancelContext: cancel, parentDone: parent.Done(), changed: make(chan struct{}), work: make(map[*workInterval]struct{}), limits: limits}
 	stop := context.AfterFunc(parent, func() { l.BeginClose(context.Cause(parent)) })
 	l.mu.Lock()
 	if l.released {
@@ -179,7 +180,9 @@ func (l *Lifetime) isClosing() bool {
 }
 
 func (l *Lifetime) closingLocked() bool {
-	return l.closing != nil || l.released || l.ctx.Err() != nil
+	// The parent's cancellation is already authoritative while its AfterFunc
+	// notification is still queued. The notification only starts retirement.
+	return l.closing != nil || l.released || l.ctx.Err() != nil || isClosed(l.parentDone)
 }
 
 func (l *Lifetime) closeOutcome() (CloseOutcome, bool) {
@@ -203,7 +206,7 @@ func (l *Lifetime) signalLocked() { close(l.changed); l.changed = make(chan stru
 func (l *Lifetime) Own(resource Resource, dependencies ...*ResourceHandle) (*ResourceHandle, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.closing != nil || l.released {
+	if l.closingLocked() {
 		return nil, ErrClosed
 	}
 	return l.ownLocked(resource, dependencies)
@@ -377,6 +380,7 @@ func (l *Lifetime) releaseLocked() func() bool {
 	cancel(ErrClosed)
 	l.ctx = terminal
 	l.cancelContext = cancel
+	l.parentDone = nil
 	l.signalLocked()
 	stop := l.stopParent
 	l.stopParent = nil

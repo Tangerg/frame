@@ -84,7 +84,7 @@ func TestBusinessOwnerCannotReopenSettledSubmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = owner.Update(t.Context(), func(ctx context.Context, tx sqlite.Executor) error {
-		_, err := tx.ExecContext(ctx, `UPDATE frame_submissions SET state='prepared', evidence=NULL, synchronized=0`)
+		_, err := tx.ExecContext(ctx, `UPDATE frame_submissions SET state='prepared', evidence=NULL`)
 		return err
 	})
 	requireSchemaDenied(t, err)

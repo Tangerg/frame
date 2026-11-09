@@ -39,7 +39,7 @@ func (r *cursorFaultRows) Close() error {
 	return err
 }
 
-func cursorFaultDatabase(t *testing.T, fault transactionFault) *sql.DB {
+func cursorFaultDatabase(t *testing.T, fault transactionFault) *Database {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "cursors.db")
 	seed, err := OpenSchema(t.Context(), path, []string{`CREATE TABLE facts (value TEXT NOT NULL)`})
@@ -49,9 +49,9 @@ func cursorFaultDatabase(t *testing.T, fault transactionFault) *sql.DB {
 	if err := seed.Close(); err != nil {
 		t.Fatal(err)
 	}
-	database := sql.OpenDB(cursorConnector{Connector: &faultConnector{driver: &modernc.Driver{}, dsn: storeDataSource(path), fault: fault}})
-	database.SetMaxOpenConns(1)
-	database.SetMaxIdleConns(1)
+	database := &Database{databaseOwner: &databaseOwner{db: sql.OpenDB(cursorConnector{Connector: &faultConnector{driver: &modernc.Driver{}, dsn: storeDataSource(path), fault: fault}})}}
+	database.db.SetMaxOpenConns(1)
+	database.db.SetMaxIdleConns(1)
 	t.Cleanup(func() {
 		if err := database.Close(); err != nil {
 			t.Error(err)
@@ -214,7 +214,7 @@ func TestCursorCloseFailureRemainsWithOriginalTransaction(t *testing.T) {
 				t.Fatalf("caught failure erased original cleanup obligation: error=%v closes=%d", err, disposed.Load())
 			}
 			var count int
-			if err := database.QueryRowContext(t.Context(), `SELECT count(*) FROM facts`).Scan(&count); err != nil || count != 0 {
+			if err := databaseQuery(database, t.Context(), `SELECT count(*) FROM facts`).Scan(&count); err != nil || count != 0 {
 				t.Fatalf("unconfirmed cursor committed its enclosing transaction: count=%d error=%v", count, err)
 			}
 		})
@@ -305,7 +305,7 @@ func TestAutomaticAndCallerCursorCloseKeepOriginalReleaseEvidence(t *testing.T) 
 				t.Fatalf("original cursor failure was lost: error=%v disposed=%d cursor closes=%d", err, disposed.Load(), cursorCloses.Load())
 			}
 			var count int
-			if err := database.QueryRowContext(t.Context(), `SELECT count(*) FROM facts`).Scan(&count); err != nil || count != 0 {
+			if err := databaseQuery(database, t.Context(), `SELECT count(*) FROM facts`).Scan(&count); err != nil || count != 0 {
 				t.Fatalf("unconfirmed cursor committed its writer: count=%d error=%v", count, err)
 			}
 		})

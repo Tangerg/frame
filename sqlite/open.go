@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -38,7 +39,7 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 	if err != nil {
 		return nil, err
 	}
-	store := &Store{lock: lock, admission: config.Admission, owners: make(map[string]Owner), maxRequestBytes: config.MaxRequestBytes, maxSubmissions: config.MaxSubmissionsPerOwner, maxRealmHistoryBytes: config.MaxRealmHistoryBytes}
+	store := &Store{databaseOwner: &databaseOwner{lock: lock, onFailure: config.Admission.RequireRecovery}, admission: config.Admission, owners: make(map[string]Owner), maxRequestBytes: config.MaxRequestBytes, maxSubmissions: config.MaxSubmissionsPerOwner, maxRealmHistoryBytes: config.MaxRealmHistoryBytes}
 	store.control = Owner{store: store, id: installationOwnerID}
 	defer func() {
 		if err != nil {
@@ -72,7 +73,7 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 		return nil, err
 	}
 	var unresolved int
-	if err := store.db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM frame_submissions WHERE state=? OR synchronized=0)+(SELECT count(*) FROM frame_attempts WHERE state IN (?,?))+(SELECT count(*) FROM frame_use_approvals WHERE state=?)`, submissionPrepared, AttemptApproved, AttemptHandoff, useApproved).Scan(&unresolved); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM frame_submissions WHERE state NOT IN (?,?))+(SELECT count(*) FROM frame_attempts WHERE state IN (?,?))+(SELECT count(*) FROM frame_use_approvals WHERE state=?)`, submissionCommittedSynchronized, submissionRejectedSynchronized, AttemptApproved, AttemptHandoff, useApproved).Scan(&unresolved); err != nil {
 		return nil, err
 	}
 	if unresolved != 0 {
@@ -97,10 +98,18 @@ func (s *Store) resolveLimits() error {
 	return nil
 }
 
-// registerOwners admits the complete owner set. Its declarations, in owner
-// order, are the schema identity a reopened database must match.
+// SQL may contain any comment or statement separator. Structured encoding
+// preserves the owner and statement boundaries that grant write authority.
+type ownerSchemaIdentity struct {
+	ID         string
+	Statements []string
+}
+
 func (s *Store) registerOwners(owners []OwnerSchema) (framevalue.Digest, error) {
-	declarations := schema
+	declarations := struct {
+		Frame  string
+		Owners []ownerSchemaIdentity
+	}{Frame: schema}
 	for _, owner := range owners {
 		if !frame.ValidName(owner.ID) || strings.HasPrefix(owner.ID, reservedOwnerPrefix) || owner.References == nil {
 			return framevalue.Digest{}, errors.New("sqlite: owner requires an identity and a reference reader")
@@ -109,9 +118,10 @@ func (s *Store) registerOwners(owners []OwnerSchema) (framevalue.Digest, error) 
 			return framevalue.Digest{}, errors.New("sqlite: duplicate owner")
 		}
 		s.owners[owner.ID] = Owner{store: s, id: owner.ID, references: owner.References, projectInstallation: owner.ProjectInstallation}
-		declarations += "\n-- owner " + owner.ID + "\n" + strings.Join(owner.Statements, ";\n")
+		declarations.Owners = append(declarations.Owners, ownerSchemaIdentity{owner.ID, append([]string{}, owner.Statements...)})
 	}
-	return framevalue.Hash([]byte(declarations)), nil
+	encoded, err := json.Marshal(declarations)
+	return framevalue.Hash(encoded), err
 }
 
 func databasePath(requested string) (string, error) {
@@ -226,10 +236,47 @@ func (s *Store) resumeEpoch(ctx context.Context, tx Executor, digest framevalue.
 	if storedDigest != digest {
 		return errors.New("sqlite: incompatible owner schema; open a fresh data directory")
 	}
+	if err := s.validateRegisteredOwners(ctx, tx); err != nil {
+		return err
+	}
+	for _, owner := range s.owners {
+		if _, err := owner.readSubmissions(ctx, tx); err != nil {
+			return err
+		}
+	}
+	if _, err := s.control.readSubmissions(ctx, tx); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM frame_realm_receipts`); err != nil {
 		return err
 	}
 	s.epoch++
 	_, err := tx.ExecContext(ctx, `UPDATE frame_meta SET epoch=? WHERE singleton=1`, s.epoch)
 	return err
+}
+
+func (s *Store) validateRegisteredOwners(ctx context.Context, tx Reader) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM frame_owners`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		if _, declared := s.owners[id]; !declared && id != s.control.id {
+			return errors.New("sqlite: incompatible persisted owner set")
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if count != len(s.owners)+1 {
+		return errors.New("sqlite: incomplete persisted owner set")
+	}
+	return nil
 }

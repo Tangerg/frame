@@ -38,10 +38,10 @@ func TestTransactionsKeepIndependentDatabaseOwners(t *testing.T) {
 		t.Fatal(err)
 	}
 	var firstCount, secondCount int
-	if err := first.QueryRowContext(t.Context(), `SELECT count(*) FROM facts`).Scan(&firstCount); err != nil {
+	if err := databaseQuery(first, t.Context(), `SELECT count(*) FROM facts`).Scan(&firstCount); err != nil {
 		t.Fatal(err)
 	}
-	if err := second.QueryRowContext(t.Context(), `SELECT count(*) FROM facts`).Scan(&secondCount); err != nil {
+	if err := databaseQuery(second, t.Context(), `SELECT count(*) FROM facts`).Scan(&secondCount); err != nil {
 		t.Fatal(err)
 	}
 	if firstCount != 0 || secondCount != 1 {

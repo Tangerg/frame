@@ -179,11 +179,11 @@ class JSONCapture {
   }
 }
 
-export function captureDescriptor<T>(value: T): T {
+export function captureDescriptor(value: unknown): unknown {
   return new JSONCapture(
     PORTABLE_LIMITS.maxDescriptorNodes,
     new DescriptorBytes(),
-  ).visit(value, 1) as T;
+  ).visit(value, 1);
 }
 
 export function captureValue(source: unknown): {

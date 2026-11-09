@@ -55,7 +55,11 @@ func (s *staging) writeFile(ctx context.Context, name string, mode fs.FileMode, 
 		return err
 	}
 	s.bytes += int64(len(data))
-	file, err := s.root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, privateFileMode|mode.Perm()&fileExecuteMask)
+	stagedMode := privateFileMode
+	if mode.Perm()&fileExecuteMask != 0 {
+		stagedMode |= ownerExecuteBit
+	}
+	file, err := s.root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, stagedMode)
 	if err != nil {
 		return err
 	}

@@ -15,6 +15,21 @@ func TestCachedTreeRevalidatesPathsAndCapacity(t *testing.T) {
 		change func(*testing.T, string)
 		want   error
 	}{
+		{name: "writable artifact", want: ErrIntegrity, change: func(t *testing.T, root string) {
+			if err := os.Chmod(filepath.Join(root, "theme.css"), privateFileMode); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "writable metadata", want: ErrIntegrity, change: func(t *testing.T, root string) {
+			if err := os.Chmod(filepath.Join(root, ManifestName), privateFileMode); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "writable directory", want: ErrIntegrity, change: func(t *testing.T, root string) {
+			if err := os.Mkdir(filepath.Join(root, "assets"), privateDirectoryMode); err != nil {
+				t.Fatal(err)
+			}
+		}},
 		{name: "unportable directory", want: ErrInvalid, change: func(t *testing.T, root string) {
 			if err := os.Mkdir(filepath.Join(root, "con"), sealedDirectoryMode); err != nil {
 				t.Fatal(err)

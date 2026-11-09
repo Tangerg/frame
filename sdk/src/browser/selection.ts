@@ -1,5 +1,6 @@
+import { captureProtocol } from "../protocol-capture.js";
 import { Point, FrameError, sameContract } from "../index.js";
-import { cloneJSON, parseJSON } from "../json.js";
+import { parseJSON } from "../json.js";
 import type { Candidate, Selection, Snapshot } from "../protocol.generated.js";
 
 export interface Choice<M> {
@@ -36,7 +37,7 @@ export function select<M, V>(
   const choices = Object.freeze(
     captured.candidates.map((candidate) =>
       Object.freeze({
-        candidate: frozen(cloneJSON(candidate)),
+        candidate: captureProtocol("Candidate", candidate),
         metadata: frozen(decode(parseJSON(candidate.metadataJson))),
       }),
     ),

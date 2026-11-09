@@ -1,14 +1,38 @@
 import { FrameError } from "../index.js";
-import type { Authority, CloseProof } from "../protocol.generated.js";
-import type { HostControl } from "./control.js";
+import { canonicalJSON } from "../json.js";
+import { captureProtocol } from "../protocol-capture.js";
+import type {
+  CloseProof,
+  ProofAcknowledgement,
+} from "../protocol.generated.js";
+import type { ControlChannel } from "./control.js";
 import { sameAuthority } from "./identity.js";
+
+class ProofDelivery {
+  readonly completion = Promise.withResolvers<void>();
+  readonly replacement = Promise.withResolvers<{ work: Promise<void> }>();
+
+  constructor(readonly channel: ControlChannel) {}
+
+  supersede(next: ProofDelivery): void {
+    this.replacement.resolve({ work: next.completion.promise });
+  }
+}
+
+interface PendingProof {
+  readonly proof: CloseProof;
+  readonly acknowledged: PromiseWithResolvers<void>;
+}
+
+type ProofReservation =
+  | { readonly status: "reserved" }
+  | { readonly status: "recorded"; readonly entry: PendingProof };
 
 /** Realm bootstrap owns delivery; proof delivery is outside plugin Lifetimes. */
 export class ProofOutbox {
   readonly #capacity: number;
-  #reserved = new Set<string>();
-  #pending = new Map<string, { reservation: string; proof: CloseProof }>();
-  #sending?: Promise<void>;
+  readonly #reservations = new Map<string, ProofReservation>();
+  #delivery?: ProofDelivery;
 
   constructor(capacity: number) {
     if (!Number.isSafeInteger(capacity) || capacity < 1)
@@ -17,36 +41,34 @@ export class ProofOutbox {
   }
 
   reserved(identity: string): boolean {
-    return this.#reserved.has(identity);
+    return this.#reservations.has(identity);
   }
 
   reserve(identity: string): void {
-    if (this.#reserved.has(identity))
+    if (this.#reservations.has(identity))
       throw new FrameError(
         "invalid_plan",
         "proof scope identity is already owned",
       );
-    if (this.#reserved.size >= this.#capacity)
+    if (this.#reservations.size >= this.#capacity)
       throw new FrameError("capacity", "unacknowledged proof capacity reached");
-    this.#reserved.add(identity);
+    this.#reservations.set(identity, Object.freeze({ status: "reserved" }));
   }
 
   /** Only for an uncreated resource or one covered by its owning execution proof. */
   cancelReservation(identity: string): void {
-    if (
-      [...this.#pending.values()].some(
-        (entry) => entry.reservation === identity,
-      )
-    )
+    if (this.#reservations.get(identity)?.status === "recorded")
       throw new FrameError(
         "invalid_plan",
         "recorded evidence must receive its own acknowledgement",
       );
-    this.#reserved.delete(identity);
+    this.#reservations.delete(identity);
   }
 
-  record(reservation: string, proof: CloseProof): void {
-    if (!this.#reserved.has(reservation))
+  record(reservation: string, source: CloseProof): void {
+    const proof = captureProtocol("CloseProof", source);
+    const current = this.#reservations.get(reservation);
+    if (!current)
       throw new FrameError(
         "invalid_plan",
         "proof scope was not reserved before creation",
@@ -56,78 +78,141 @@ export class ProofOutbox {
         "close_unconfirmed",
         "only confirmed release is exit evidence",
       );
-    const previous = this.#pending.get(proof.proofId);
-    if (previous) {
-      if (JSON.stringify(previous.proof) !== JSON.stringify(proof))
+    if (current.status === "recorded") {
+      if (canonicalJSON(current.entry.proof) !== canonicalJSON(proof))
         throw new FrameError(
           "invalid_plan",
           "exit evidence identity cannot change",
         );
       return;
     }
-    this.#pending.set(proof.proofId, {
-      reservation,
-      proof: freezeProof(proof),
+    for (const other of this.#reservations.values()) {
+      if (
+        other.status === "recorded" &&
+        other.entry.proof.proofId === proof.proofId
+      )
+        throw new FrameError(
+          "invalid_plan",
+          "exit evidence identity already belongs to another scope",
+        );
+    }
+    const recorded: ProofReservation = Object.freeze({
+      status: "recorded",
+      entry: Object.freeze({
+        proof,
+        acknowledged: Promise.withResolvers<void>(),
+      }),
     });
+    // Delivery follows evidence creation, not the earlier capacity reservation.
+    this.#reservations.delete(reservation);
+    this.#reservations.set(reservation, recorded);
   }
 
   get pending(): readonly CloseProof[] {
     return Object.freeze(
-      [...this.#pending.values()].map((entry) => entry.proof),
+      [...this.#reservations.values()].flatMap((state) =>
+        state.status === "recorded" ? [state.entry.proof] : [],
+      ),
     );
   }
   get empty(): boolean {
-    return this.#reserved.size === 0;
+    return this.#reservations.size === 0;
   }
 
   flush(
-    control: HostControl,
-    authority: Authority,
+    channel: ControlChannel,
     acknowledged: (proof: CloseProof) => void,
   ): Promise<void> {
-    if (this.#sending) return this.#sending;
-    const completion = Promise.withResolvers<void>();
-    this.#sending = completion.promise.finally(() => {
-      this.#sending = undefined;
-    });
-    this.#flush(control, authority, acknowledged).then(
-      completion.resolve,
-      completion.reject,
-    );
-    return this.#sending;
+    if (this.#delivery?.channel === channel)
+      return this.#delivery.completion.promise;
+    const previous = this.#delivery;
+    const delivery = new ProofDelivery(channel);
+    this.#delivery = delivery;
+    previous?.supersede(delivery);
+    void this.#deliver(delivery, acknowledged);
+    return delivery.completion.promise;
   }
 
-  async #flush(
-    control: HostControl,
-    authority: Authority,
+  async #deliver(
+    delivery: ProofDelivery,
     acknowledged: (proof: CloseProof) => void,
   ): Promise<void> {
-    for (const entry of this.#pending.values()) {
-      const ack = await control.prove(entry.proof);
-      if (
-        ack.closeId !== entry.proof.closeId ||
-        ack.proofId !== entry.proof.proofId ||
-        !sameAuthority(ack.authority, authority) ||
-        !ack.recorded
-      ) {
-        throw new FrameError(
-          "outcome_unknown",
-          "host has not durably acknowledged this exit proof",
+    try {
+      // A previously unrecorded reservation may become ready during the send.
+      // Rescan the owner after each acknowledgement instead of skipping it forever.
+      for (let next = this.#nextPending(); next; next = this.#nextPending()) {
+        const [reservation, entry] = next;
+        const sent = this.#send(
+          delivery.channel,
+          reservation,
+          entry,
+          acknowledged,
         );
+        const result = await Promise.race([
+          sent,
+          entry.acknowledged.promise,
+          delivery.replacement.promise,
+        ]);
+        if (result || this.#delivery !== delivery) {
+          const replacement = result ?? (await delivery.replacement.promise);
+          await replacement.work;
+          break;
+        }
       }
-      this.#pending.delete(ack.proofId);
-      this.#reserved.delete(entry.reservation);
-      acknowledged(entry.proof);
+      // Complete a current delivery in the same turn as its last ready check;
+      // a new proof must never join a drain that already decided it had no work.
+      if (this.#delivery === delivery) this.#delivery = undefined;
+      delivery.completion.resolve();
+    } catch (error) {
+      if (this.#delivery === delivery) this.#delivery = undefined;
+      delivery.completion.reject(error);
     }
   }
-}
 
-function freezeProof(proof: CloseProof): CloseProof {
-  return Object.freeze({
-    ...proof,
-    authority: Object.freeze({ ...proof.authority }),
-    realm: Object.freeze({ ...proof.realm }),
-    execution: Object.freeze({ ...proof.execution }),
-    instances: Object.freeze([...proof.instances]),
-  });
+  #nextPending():
+    readonly [reservation: string, entry: PendingProof] | undefined {
+    for (const [reservation, state] of this.#reservations) {
+      if (state.status === "recorded") return [reservation, state.entry];
+    }
+    return undefined;
+  }
+
+  #ownsProof(reservation: string, entry: PendingProof): boolean {
+    const current = this.#reservations.get(reservation);
+    return current?.status === "recorded" && current.entry === entry;
+  }
+
+  async #send(
+    channel: ControlChannel,
+    reservation: string,
+    entry: PendingProof,
+    acknowledged: (proof: CloseProof) => void,
+  ): Promise<void> {
+    let ack: ProofAcknowledgement;
+    try {
+      ack = captureProtocol(
+        "ProofAcknowledgement",
+        await channel.control.prove(entry.proof),
+      );
+    } catch (error) {
+      if (!this.#ownsProof(reservation, entry)) return;
+      throw error;
+    }
+    if (!this.#ownsProof(reservation, entry)) return;
+    if (
+      ack.closeId !== entry.proof.closeId ||
+      ack.proofId !== entry.proof.proofId ||
+      !sameAuthority(ack.authority, channel.authority) ||
+      !ack.recorded
+    )
+      throw new FrameError(
+        "outcome_unknown",
+        "host has not durably acknowledged this exit proof",
+      );
+    // A retired transport can still confirm this exact evidence. It cannot
+    // remove another attempt or repeat the acknowledgement transition.
+    this.#reservations.delete(reservation);
+    entry.acknowledged.resolve();
+    acknowledged(entry.proof);
+  }
 }

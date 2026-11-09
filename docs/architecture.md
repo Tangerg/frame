@@ -179,7 +179,9 @@ The live execution path admits the original plan. A durable host can configure R
 
 The Host reads closing state from its original Lifetime. Closing an injected
 Lifetime or cancelling its parent fences the same operations as `Host.Close`;
-there is no independently advanced Host close flag. Each Watch is a resource
+admission observes the original parent's cancellation even before its close
+notification runs. Already admitted Work still owns any resources it acquires
+while unwinding. There is no independently advanced Host close flag. Each Watch is a resource
 of that Lifetime, so a live subscription consumes both `HostLimits.MaxWatches`
 and one `LifetimeLimits.MaxResources` entry. Closing the Watch closes its
 channel and then returns both capacities. A Host with no Watches reserves no

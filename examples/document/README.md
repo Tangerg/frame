@@ -72,10 +72,21 @@ treated as evidence that an old execution stopped. A surviving page can use
 Realm is limited to cleanup.
 
 Once release is acknowledged, **Connect preview** is disabled and **Reload page**
-becomes available. Reload goes through the original Runtime's release and proof
-gate before replacing the actual page. A closed page cannot manufacture another
+becomes available. The connection owner permits reload only after the original
+pump has joined Runtime release and proof acknowledgement. A closed page cannot manufacture another
 Realm or module cache in the same JavaScript environment. Enter the application
 token again after reloading to obtain a fresh approval.
+
+`PreviewConnection` owns the mutually exclusive idle, opening, opened, resident
+and released states. An uncertain opening retains its original operation; an
+acknowledged opening survives contract discovery failure. `PreviewSession` owns
+the original preview acquisition, snapshot and native Use. Connection recovery
+and preview mounting compose `SerialActions` with the same action Lifetime, so
+release seals both queues before waiting for their actual work. The workbench
+renders these owners without keeping a second set of session flags.
+A failed release retains that original session. Retrying **Release preview**
+resumes its cleanup channel even after Host credentials rotate; action admission
+stays closed, and recovery never opens another Realm or reactivates the preview.
 
 The example trusts only the exact archive assembled from assets embedded in its
 executable. Its HTTP API does not accept arbitrary package installations. An

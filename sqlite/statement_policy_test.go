@@ -101,7 +101,7 @@ func TestNestedReaderCannotOutliveItsGrantInsideTheOriginalWriter(t *testing.T) 
 		t.Fatal(err)
 	}
 	var count int
-	if err := database.QueryRowContext(t.Context(), `SELECT count(*) FROM facts`).Scan(&count); err != nil || count != 1 {
+	if err := databaseQuery(database, t.Context(), `SELECT count(*) FROM facts`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("reader changed writer facts: count=%d error=%v", count, err)
 	}
 }

@@ -90,9 +90,9 @@ func TestNestedReadPanicCannotEraseOriginalDiscardObligation(t *testing.T) {
 			var closed atomic.Int32
 			fault := statementPolicyRestoreFault(after, restoreCause)
 			fault.afterClose = func() { closed.Add(1) }
-			database := sql.OpenDB(cursorConnector{Connector: &faultConnector{driver: &modernc.Driver{}, dsn: storeDataSource(path), fault: fault}})
-			database.SetMaxOpenConns(1)
-			database.SetMaxIdleConns(1)
+			database := &Database{databaseOwner: &databaseOwner{db: sql.OpenDB(cursorConnector{Connector: &faultConnector{driver: &modernc.Driver{}, dsn: storeDataSource(path), fault: fault}})}}
+			database.db.SetMaxOpenConns(1)
+			database.db.SetMaxIdleConns(1)
 			defer database.Close()
 			var recovered any
 			err = RunInTx(t.Context(), database, func(ctx context.Context) error {
@@ -111,8 +111,13 @@ func TestNestedReadPanicCannotEraseOriginalDiscardObligation(t *testing.T) {
 			if !errors.Is(err, errStatementPolicyUnconfirmed) || !errors.Is(err, restoreCause) || closed.Load() != 1 {
 				t.Fatalf("caught panic erased the original owner's cleanup obligation: error=%v closes=%d", err, closed.Load())
 			}
+			observer, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer observer.Close()
 			var count int
-			if err := database.QueryRowContext(t.Context(), `SELECT count(*) FROM facts`).Scan(&count); err != nil || count != 0 {
+			if err := observer.QueryRowContext(t.Context(), `SELECT count(*) FROM facts`).Scan(&count); err != nil || count != 0 {
 				t.Fatalf("tainted transaction committed: count=%d error=%v", count, err)
 			}
 			if err := RunInTx(t.Context(), database, func(ctx context.Context) error {

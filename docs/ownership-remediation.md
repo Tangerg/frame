@@ -80,8 +80,12 @@ regenerate application protocol declarations.
 
 `Store.Read` and `OwnerSchema.References` receive `sqlite.Reader`. Business writes
 remain on their original `Owner.Update` or `Owner.Commit` executor. Standalone
-database adapters may still compose `RunInTx` and `RunReadSnapshot` over their own
-database; they do not receive the Frame Store's private pool.
+database adapters compose `RunInTx` and `RunReadSnapshot` over the concrete
+`sqlite.Database` returned by `OpenSchema`. Its private pool and original physical
+connections share the Store lifecycle implementation. `Connection` grants only a
+transaction-scoped executor; independent reads use `Database.Read`. A failed
+physical Close retains the original resource and seals new admission until that
+connection is released. No raw `*sql.DB` compatibility entry remains.
 
 ### Portable contracts
 

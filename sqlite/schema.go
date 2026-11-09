@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/internal/cancellation"
 
 	sqlitedriver "modernc.org/sqlite"
@@ -21,7 +22,7 @@ const (
 	primaryResultMask = 0xff
 )
 
-func OpenSchema(ctx context.Context, path string, statements []string) (*sql.DB, error) {
+func OpenSchema(ctx context.Context, path string, statements []string) (result *Database, err error) {
 	dsn := fmt.Sprintf(
 		"file:%s?_txlock=immediate&_pragma=foreign_keys(ON)&_pragma=busy_timeout(%d)",
 		url.PathEscape(filepath.ToSlash(path)), busyTimeout/time.Millisecond,
@@ -34,16 +35,27 @@ func OpenSchema(ctx context.Context, path string, statements []string) (*sql.DB,
 	// upgrade can fail immediately even when the busy timeout allows waiting.
 	// One connection serializes this owner's write-sets; SQLite coordinates peers.
 	db.SetMaxOpenConns(1)
+	database := &Database{databaseOwner: &databaseOwner{db: db}}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, database.Close())
+			select {
+			case <-database.closeDone:
+			default:
+				result = database
+			}
+		}
+	}()
 
 	if path != ":memory:" {
 		if err := admitWAL(ctx, db); err != nil {
-			return nil, errors.Join(fmt.Errorf("sqlite: admit wal: %w", err), cancellation.Err(ctx), db.Close())
+			return nil, errors.Join(fmt.Errorf("sqlite: admit wal: %w", err), cancellation.Err(ctx))
 		}
 	}
-	if err := InstallSchema(ctx, db, statements); err != nil {
-		return nil, errors.Join(err, db.Close())
+	if err := InstallSchema(ctx, database, statements); err != nil {
+		return nil, err
 	}
-	return db, nil
+	return database, nil
 }
 
 func admitWAL(ctx context.Context, db *sql.DB) (err error) {
@@ -100,7 +112,10 @@ func waitForSQLite(ctx context.Context, limit time.Duration, attempt func() erro
 	}
 }
 
-func InstallSchema(ctx context.Context, db *sql.DB, stmts []string) error {
+func InstallSchema(ctx context.Context, db *Database, stmts []string) error {
+	if db == nil || db.databaseOwner == nil {
+		return frame.ErrInvalid
+	}
 	expected, err := schemaShape(ctx, stmts)
 	if err != nil {
 		return fmt.Errorf("sqlite: declared schema: %w", err)
@@ -119,7 +134,7 @@ func InstallSchema(ctx context.Context, db *sql.DB, stmts []string) error {
 		return true, nil
 	}
 	var current bool
-	err = runIndependentTx(ctx, db, &sql.TxOptions{ReadOnly: true}, func(ctx context.Context) error {
+	err = runIndependentTx(ctx, db, readTransaction, func(ctx context.Context) error {
 		var err error
 		current, err = inspect(ctx, Connection(ctx, db))
 		return err

@@ -2556,3 +2556,172 @@ it.each(["accepted", "unknown"] as const)(
     await f.runtime.close();
   },
 );
+
+it("seals new Use intervals on channel loss while retaining admitted work through revalidation", async () => {
+  const f = fixture({ reader });
+  await f.runtime.prepare(
+    plan("use-admission", [
+      unit("reader", "reader", [{ name: "files", contract: files.ref }]),
+    ]),
+  );
+  const use = await f.runtime.accept(f.grant("use-admission"));
+  const reference = use.objects[0]!;
+  const finish = Promise.withResolvers<void>();
+  const admitted = use.with(reference, files, async (value, signal) => {
+    await finish.promise;
+    expect(signal.aborted).toBe(false);
+    return value.read();
+  });
+  f.runtime.disconnect();
+  const dispatch = vi.fn();
+  expect(() => use.with(reference, files, dispatch)).toThrow(
+    "no new framework work",
+  );
+  expect(dispatch).not.toHaveBeenCalled();
+  expect(use.lifetime.closing).toBe(false);
+  finish.resolve();
+  expect(await admitted).toBe("reader");
+
+  const validated = Promise.withResolvers<ReconnectResult>();
+  const replacement: HostControl = {
+    ...f.control,
+    reconnect: () => validated.promise,
+  };
+  const reconnecting = f.runtime.reconnect(replacement);
+  expect(() => use.with(reference, files, dispatch)).toThrow(
+    "no new framework work",
+  );
+  validated.resolve({
+    authority,
+    realm,
+    mode: "revalidated",
+    executions: [
+      {
+        execution: { id: "use-admission", generation: "1" },
+        scopeId: "use-admission",
+        scopeGeneration: "1",
+      },
+    ],
+  });
+  await reconnecting;
+  expect(await use.with(reference, files, (value) => value.read())).toBe(
+    "reader",
+  );
+  await use.close();
+  await f.runtime.close();
+});
+
+it("redelivers original proof on a replacement channel before the retired send settles", async () => {
+  const f = fixture({ reader });
+  const execution = await f.runtime.prepare(
+    plan("proof-generation", [
+      unit("reader", "reader", [{ name: "files", contract: files.ref }]),
+    ]),
+  );
+  await execution.close();
+  const original = f.runtime.pendingProofs[0]!;
+  const reply =
+    Promise.withResolvers<Awaited<ReturnType<HostControl["prove"]>>>();
+  vi.mocked(f.control.prove).mockImplementation(() => reply.promise);
+  const retired = f.runtime.flushProofs();
+  expect(f.control.prove).toHaveBeenCalledExactlyOnceWith(original);
+  const replacement: HostControl = {
+    ...f.control,
+    prove: vi.fn(async (proof) => ({
+      authority,
+      recorded: true,
+      closeId: proof.closeId,
+      proofId: proof.proofId,
+    })),
+  };
+  await f.runtime.reconnect(replacement);
+  await retired;
+  expect(replacement.prove).toHaveBeenCalledExactlyOnceWith(original);
+  expect(f.runtime.pendingProofs).toEqual([]);
+  expect(f.runtime.connection).toBe("connected");
+  reply.resolve({
+    authority,
+    recorded: false,
+    closeId: "stale",
+    proofId: "stale",
+  });
+  await Promise.resolve();
+  expect(f.runtime.pendingProofs).toEqual([]);
+  await f.runtime.close();
+});
+
+it("cancels only a Runtime close observer while immutable proof delivery remains owned", async () => {
+  const f = fixture({ reader });
+  await f.runtime.prepare(
+    plan("close-observation", [
+      unit("reader", "reader", [{ name: "files", contract: files.ref }]),
+    ]),
+  );
+  const started = Promise.withResolvers<CloseProof>();
+  const reply =
+    Promise.withResolvers<Awaited<ReturnType<HostControl["prove"]>>>();
+  vi.mocked(f.control.prove).mockImplementation((proof) => {
+    started.resolve(proof);
+    return reply.promise;
+  });
+  const observer = new AbortController();
+  const closing = f.runtime.close(observer.signal);
+  const proof = await started.promise;
+  expect(Object.isFrozen(proof)).toBe(true);
+  expect(Object.isFrozen(proof.instances)).toBe(true);
+  expect(() => Object.assign(proof.authority, { epoch: "forged" })).toThrow(
+    TypeError,
+  );
+  const remaining = f.runtime.close();
+  observer.abort("observer left");
+  await expect(closing).rejects.toBe("observer left");
+  expect(f.runtime.pendingProofs).toEqual([proof]);
+  expect(f.control.prove).toHaveBeenCalledOnce();
+  reply.resolve({
+    authority,
+    recorded: true,
+    closeId: proof.closeId,
+    proofId: proof.proofId,
+  });
+  expect((await remaining)[0]!.status).toBe("released");
+  expect(f.runtime.pendingProofs).toEqual([]);
+  expect(f.control.prove).toHaveBeenCalledOnce();
+});
+
+it("completes current proof delivery when a retired channel confirms first", async () => {
+  const f = fixture({ reader });
+  const execution = await f.runtime.prepare(
+    plan("first-ack", [
+      unit("reader", "reader", [{ name: "files", contract: files.ref }]),
+    ]),
+  );
+  await execution.close();
+  const proof = f.runtime.pendingProofs[0]!;
+  const retiredReply =
+    Promise.withResolvers<Awaited<ReturnType<HostControl["prove"]>>>();
+  vi.mocked(f.control.prove).mockImplementation(() => retiredReply.promise);
+  const retired = f.runtime.flushProofs();
+  const currentReply =
+    Promise.withResolvers<Awaited<ReturnType<HostControl["prove"]>>>();
+  const currentStarted = Promise.withResolvers<void>();
+  const replacement: HostControl = {
+    ...f.control,
+    prove: vi.fn(() => {
+      currentStarted.resolve();
+      return currentReply.promise;
+    }),
+  };
+  const reconnected = f.runtime.reconnect(replacement);
+  await currentStarted.promise;
+  retiredReply.resolve({
+    authority,
+    recorded: true,
+    closeId: proof.closeId,
+    proofId: proof.proofId,
+  });
+  await Promise.all([retired, reconnected]);
+  expect(f.runtime.pendingProofs).toEqual([]);
+  currentReply.reject(new Error("late transport failure"));
+  await f.runtime.close();
+  expect(replacement.prove).toHaveBeenCalledExactlyOnceWith(proof);
+});

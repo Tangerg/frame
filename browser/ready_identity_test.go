@@ -1,11 +1,38 @@
 package browser_test
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 
 	"github.com/Tangerg/frame/browser"
+	"github.com/Tangerg/frame/sqlite"
 )
+
+func TestReadyBelongsToTheOriginalRuntimeAdmission(t *testing.T) {
+	e := openBridge(t, filepath.Join(t.TempDir(), "store.db"), true)
+	plan, activated := pendingBrowserPlan(e, "pending-runtime")
+	report := e.readyReport(plan)
+	if result, err := e.bridge.Ready(e.ctx, e.credentials.Token, report); err != nil || result.Decision != browser.Rejected {
+		t.Fatalf("Ready preceded Runtime admission: %+v, %v", result, err)
+	}
+	e.admit(plan)
+	for range 2 {
+		if result, err := e.bridge.Ready(e.ctx, e.credentials.Token, report); err != nil || result.Decision != browser.Accepted {
+			t.Fatalf("original Ready was not accepted: %+v, %v", result, err)
+		}
+	}
+	if err := <-activated; err != nil {
+		t.Fatal(err)
+	}
+	report.OperationID = "replacement-ready"
+	if _, err := e.bridge.Ready(e.ctx, e.credentials.Token, report); !errors.Is(err, sqlite.ErrConflict) {
+		t.Fatalf("another Ready identity replaced the original result: %v", err)
+	}
+	if poll, err := e.bridge.Poll(e.ctx, e.credentials.Token); err != nil || len(poll.Plans) != 0 {
+		t.Fatalf("accepted Ready returned to pending preparation: %+v, %v", poll, err)
+	}
+}
 
 func TestReadyPreservesEachObjectAndItsExactMetadataOwner(t *testing.T) {
 	tests := []struct {

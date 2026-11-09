@@ -8,10 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"sync"
-
-	"github.com/Tangerg/frame/internal/cancellation"
 
 	"github.com/Tangerg/frame"
 	framevalue "github.com/Tangerg/frame/value"
@@ -74,8 +70,7 @@ type Config struct {
 }
 
 type Store struct {
-	db                   *sql.DB
-	lock                 *os.File
+	*databaseOwner
 	admission            *frame.Admission
 	id                   string
 	epoch                uint64
@@ -84,17 +79,6 @@ type Store struct {
 	maxRequestBytes      int
 	maxSubmissions       int
 	maxRealmHistoryBytes int64
-	lifecycleMu          sync.Mutex
-	transactions         sync.WaitGroup
-	closing              bool
-	// sealDatabase is the only transition of these two; lifecycleMu guards them.
-	databaseSealed   bool
-	databaseCloseErr error
-	unconfirmed      []*sql.Conn
-	closeOnce        sync.Once
-	closeRequests    chan chan error
-	closeDone        chan struct{}
-	closeErr         error
 }
 
 // Owner is a value capability for an admitted schema. Copies keep that original
@@ -110,7 +94,7 @@ type Owner struct {
 const schema = `
 CREATE TABLE frame_meta (singleton INTEGER PRIMARY KEY CHECK(singleton=1),store_id TEXT NOT NULL,schema_digest TEXT NOT NULL,epoch INTEGER NOT NULL CHECK(epoch>0));
 CREATE TABLE frame_owners (id TEXT PRIMARY KEY,next_sequence INTEGER NOT NULL DEFAULT 0,compacted_through INTEGER NOT NULL DEFAULT 0 CHECK(compacted_through<=next_sequence));
-CREATE TABLE frame_submissions (owner_id TEXT NOT NULL REFERENCES frame_owners(id),sequence INTEGER NOT NULL,digest TEXT NOT NULL,request BLOB NOT NULL,state TEXT NOT NULL CHECK(state IN ('` + string(submissionPrepared) + `','` + string(submissionCommitted) + `','` + string(submissionNotCommitted) + `')),evidence BLOB,synchronized INTEGER NOT NULL DEFAULT 0 CHECK(synchronized IN (0,1)),PRIMARY KEY(owner_id,sequence));
+CREATE TABLE frame_submissions (owner_id TEXT NOT NULL REFERENCES frame_owners(id),sequence INTEGER NOT NULL,digest TEXT NOT NULL,request BLOB NOT NULL,state TEXT NOT NULL CHECK(state IN ('` + string(submissionPrepared) + `','` + string(submissionCommitted) + `','` + string(submissionRejected) + `','` + string(submissionCommittedSynchronized) + `','` + string(submissionRejectedSynchronized) + `')),evidence BLOB,CHECK(state IN ('` + string(submissionCommitted) + `','` + string(submissionCommittedSynchronized) + `') OR evidence IS NULL),PRIMARY KEY(owner_id,sequence));
 CREATE TABLE frame_evidence_references (owner_id TEXT NOT NULL,sequence INTEGER NOT NULL,holder TEXT NOT NULL,PRIMARY KEY(owner_id,sequence,holder),FOREIGN KEY(owner_id,sequence) REFERENCES frame_submissions(owner_id,sequence));
 CREATE TABLE frame_attempts (id TEXT PRIMARY KEY,request BLOB NOT NULL,request_digest TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('` + string(AttemptApproved) + `','` + string(AttemptHandoff) + `','` + string(AttemptReleased) + `')),proof BLOB);
 CREATE INDEX frame_attempts_by_state ON frame_attempts(state,id);
@@ -193,56 +177,6 @@ func (o Owner) Held(ctx context.Context, installation frame.InstallationID) ([]f
 	return dependencies, err
 }
 
-// The connection stays exclusively owned until COMMIT or rollback has settled.
-// Cancellation never abandons a transaction that can commit after admission opens.
-type transactionMode uint8
-
-const (
-	writeTransaction transactionMode = iota
-	readTransaction
-)
-
-type transactionPhase uint8
-
-const (
-	transactionBeginning transactionPhase = iota
-	transactionActive
-	transactionCommitting
-	transactionSettled
-)
-
-// beginStatement takes the write lock up front for a write transaction, so
-// it can never fail to upgrade after reading.
-func (m transactionMode) beginStatement() string {
-	if m == readTransaction {
-		return "BEGIN"
-	}
-	return "BEGIN IMMEDIATE"
-}
-
-// A failed BEGIN acknowledgement cannot prove whether a transaction exists.
-// Disposing its original connection settles either case without inventing a
-// rollback failure. Later phases retain their rollback and commit evidence.
-func (s *Store) settleFailedTransaction(connection *sql.Conn, scope *connectionScope, phase transactionPhase, err error) (bool, error) {
-	var rollbackErr error
-	if phase != transactionBeginning {
-		_, rollbackErr = connection.ExecContext(context.Background(), `ROLLBACK`)
-		if rollbackErr == nil && scope.failure() == nil {
-			return true, err
-		}
-		if rollbackErr != nil && phase == transactionCommitting {
-			err = errors.Join(err, errCommitUnresolved)
-		}
-	}
-	returnable := true
-	if released, closeErr := closeOriginalConnection(connection); !released {
-		returnable = false
-		s.retainUnconfirmedConnection(connection, errors.Join(rollbackErr, closeErr))
-		err = errors.Join(err, ErrIndeterminate, closeErr)
-	}
-	return returnable, errors.Join(err, rollbackErr)
-}
-
 // fenceUnlessRefused requires recovery after a protection write fails for any
 // reason other than a known refusal: the Store can no longer vouch for the
 // durable state that write meant to change.
@@ -251,82 +185,6 @@ func (s *Store) fenceUnlessRefused(err error) error {
 		s.admission.RequireRecovery(err)
 	}
 	return err
-}
-
-func (s *Store) transaction(ctx context.Context, apply func(Executor) error) error {
-	return s.transact(ctx, writeTransaction, apply)
-}
-func (s *Store) transact(ctx context.Context, mode transactionMode, apply func(Executor) error) (err error) {
-	if err := cancellation.Err(ctx); err != nil {
-		return err
-	}
-	s.lifecycleMu.Lock()
-	if s.closing {
-		s.lifecycleMu.Unlock()
-		return errors.Join(frame.ErrClosed, s.admission.RecoveryError())
-	}
-	s.transactions.Add(1)
-	s.lifecycleMu.Unlock()
-	defer s.transactions.Done()
-	connection, err := s.db.Conn(ctx)
-	if err != nil {
-		return err
-	}
-	returnConnection := true
-	defer func() {
-		if !returnConnection {
-			return
-		}
-		if closeErr := connection.Close(); !errors.Is(closeErr, sql.ErrConnDone) {
-			err = errors.Join(err, closeErr)
-		}
-	}()
-	phase := transactionBeginning
-	scope := newConnectionScope(connection, connection)
-	defer func() {
-		recovered := recover()
-		scope.seal()
-		if phase != transactionSettled {
-			returnConnection, err = s.settleFailedTransaction(connection, scope, phase, err)
-			err = scope.include(err)
-		}
-		if recovered != nil {
-			if phase != transactionSettled && err != nil {
-				panic(errors.Join(panicError(recovered), err))
-			}
-			panic(recovered)
-		}
-	}()
-	// A failed acknowledgement can follow a successful BEGIN. This owner must
-	// settle or close that same connection before it can return to the pool.
-	if _, err := connection.ExecContext(ctx, mode.beginStatement()); err != nil {
-		return errors.Join(err, cancellation.Err(ctx))
-	}
-	phase = transactionActive
-	if err := scope.enter(); err != nil {
-		return err
-	}
-	access := newTransactionAccess(scope)
-	body := func() error { return access.run(func() error { return apply(access) }) }
-	if mode == readTransaction {
-		err = access.read(ctx, func(*connectionScope) error { return body() })
-	} else {
-		err = body()
-	}
-	scope.seal()
-	err = scope.include(err)
-	if err != nil {
-		return err
-	}
-	if err = cancellation.Err(ctx); err != nil {
-		return err
-	}
-	phase = transactionCommitting
-	if _, err = connection.ExecContext(context.Background(), `COMMIT`); err != nil {
-		return err
-	}
-	phase = transactionSettled
-	return nil
 }
 
 func (s *Store) IsAuthority(admission *frame.Admission, epoch uint64) bool {
@@ -339,5 +197,5 @@ func (s *Store) Read(ctx context.Context, query func(Reader) error) error {
 	if query == nil {
 		return errors.New("sqlite: query is required")
 	}
-	return s.transact(ctx, readTransaction, func(tx Executor) error { return query(readAccess{access: tx}) })
+	return s.transact(ctx, readTransaction, func(tx Executor) error { return query(readAccess{access: tx}) }, nil)
 }

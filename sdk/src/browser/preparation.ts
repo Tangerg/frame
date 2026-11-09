@@ -9,6 +9,7 @@ import type {
 import { isControlRefusal, type HostControl } from "./control.js";
 
 import { sameAuthority } from "./identity.js";
+import { observePromise } from "../promise-observation.js";
 
 export class ReadySubmission {
   readonly #report: ReadyReport;
@@ -96,15 +97,7 @@ export class PreparationAdmission {
               this.#pending = undefined;
             }))
         : Promise.resolve(this.#decision);
-    if (!signal) return result;
-    return new Promise((resolve, reject) => {
-      const abort = () => reject(signal.reason);
-      signal.addEventListener("abort", abort, { once: true });
-      if (signal.aborted) abort();
-      result
-        .then(resolve, reject)
-        .finally(() => signal.removeEventListener("abort", abort));
-    });
+    return observePromise(result, signal);
   }
 
   async #resolve(

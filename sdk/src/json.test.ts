@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   ExactNumber,
@@ -9,6 +9,10 @@ import {
   compareJSONNumbers,
   equalJSON,
   isJSONInteger,
+  cloneJSON,
+  freezeJSON,
+  type JSONValue,
+  type FrozenJSONValue,
 } from "./json";
 
 describe("feature JSON values", () => {
@@ -94,6 +98,63 @@ describe("feature JSON values", () => {
     holes[2] = null;
     expect(stringifyJSON({ optional: undefined, values: holes })).toBe(
       '{"values":[null,null,null]}',
+    );
+  });
+});
+
+describe("captured JSON values", () => {
+  it("compares the admitted JSON representation symmetrically", () => {
+    const date = new Date("2026-01-02T03:04:05Z");
+    for (const [left, right, equal] of [
+      [Array(1), [null], true],
+      [Array(1), [1], false],
+      [{ present: 1, omitted: undefined }, { present: 1n }, true],
+      [date, date.toISOString(), true],
+      [date, {}, false],
+      [new Date(NaN), null, true],
+      [[undefined], [null], true],
+    ] as const) {
+      expect(equalJSON(left, right)).toBe(equal);
+      expect(equalJSON(right, left)).toBe(equal);
+    }
+  });
+
+  it("captures getters once and freezes only the detached JSON representation", () => {
+    let reads = 0;
+    const date = new Date("2026-01-02T03:04:05Z");
+    const list: unknown[] = Array(3);
+    list[2] = 2n;
+    const source = {
+      get value() {
+        reads++;
+        return { small: 1n, date, list, omitted: undefined };
+      },
+    };
+    const captured = freezeJSON(source);
+    expect(reads).toBe(1);
+    expect(captured).toEqual({
+      value: { small: 1, date: date.toISOString(), list: [null, null, 2] },
+    });
+    expect(Object.isFrozen(captured)).toBe(true);
+    expect(Object.isFrozen(source)).toBe(false);
+    expect(Object.isFrozen(date)).toBe(false);
+    expect(() => {
+      Object.assign((captured as { value: unknown }).value!, { small: 4 });
+    }).toThrow(TypeError);
+  });
+
+  it("does not claim that arbitrary caller types survive serialization", () => {
+    const date = new Date("2026-01-02T03:04:05Z");
+    expectTypeOf(cloneJSON(date)).toEqualTypeOf<JSONValue | undefined>();
+    expectTypeOf(freezeJSON(1n)).toEqualTypeOf<FrozenJSONValue | undefined>();
+    expect(cloneJSON(date)).toBe(date.toISOString());
+    expect(cloneJSON(1n)).toBe(1);
+    expect(cloneJSON(undefined)).toBeUndefined();
+    expect(freezeJSON(undefined)).toBeUndefined();
+    const toJSON = () => "not an admitted conversion";
+    expect(() => cloneJSON({ toJSON })).toThrow(/unsupported JSON value/);
+    expect(() => equalJSON({ toJSON }, "not an admitted conversion")).toThrow(
+      /unsupported JSON value/,
     );
   });
 });

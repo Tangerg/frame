@@ -22,48 +22,6 @@ const emptyConfiguration = `{}`
 
 const executionResourcePrefix = "browser execution "
 
-// browserExecution is one Setup the Host asked a Realm to prepare. Its Runtime
-// owner reserves it through AdmitPlan; until then the Host can settle it alone.
-type browserExecution struct {
-	plan     LocalPlan
-	attempt  sqlite.Attempt
-	setup    *frame.Setup
-	resource *frame.ResourceHandle
-	// prepared delivers the exports of the accepted Ready report to Prepare.
-	prepared chan []frame.ExportValue
-	ready    *readyReport
-	// retiring fences new work; admitted transfers the exit obligation to the
-	// Runtime; uncertainApproval records that its durable attempt may or may
-	// not have committed.
-	retiring          bool
-	admitted          bool
-	uncertainApproval bool
-	projectionBytes   int64
-}
-
-// readyReport identifies the single accepted Ready report of an execution.
-type readyReport struct {
-	operationID string
-	digest      framevalue.Digest
-}
-
-// repeats accepts only a retry of the original report.
-func (r *readyReport) repeats(operationID string, digest framevalue.Digest) (PublicationResult, error) {
-	if r.operationID != operationID || r.digest != digest {
-		return PublicationResult{}, sqlite.ErrConflict
-	}
-	return PublicationResult{Decision: Accepted}, nil
-}
-
-// servesLocked reports a live execution that realm may still direct.
-func (e *browserExecution) servesLocked(realm Realm, execution Execution) bool {
-	return e != nil && !e.retiring && e.plan.Realm == realm && e.plan.Execution == execution
-}
-
-func (e *browserExecution) fence() Fence {
-	return Fence{ScopeID: e.plan.ScopeID, ScopeGeneration: e.plan.ScopeGeneration}
-}
-
 // Ready rejections tell the Runtime why its report was refused. They name a
 // protocol condition and never carry application diagnostics.
 const (
@@ -145,15 +103,14 @@ func (b *Bridge) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 	// non-delivery witness, including failures while the database commits.
 	approvalErr := b.config.Store.RecordAttempt(ctx, attempt)
 	b.mu.Lock()
-	entry.resource = resource
-	entry.uncertainApproval = approvalErr != nil
+	entry.recordAttempt(resource, approvalErr)
 	reserved = false
 	b.executions.commit(plan.Execution.ID, entry)
 	projectionHeld = false
-	if approvalErr != nil || session.cleanupOnly || ctx.Err() != nil {
-		entry.retiring = true
+	if session.cleanupOnly || ctx.Err() != nil {
+		entry.fence()
 	}
-	revoked := entry.retiring
+	revoked := entry.isFenced()
 	close(registered)
 	b.mu.Unlock()
 	if revoked {
@@ -285,7 +242,7 @@ func (b *Bridge) plannedImport(ctx context.Context, setup *frame.Setup, declarat
 
 func (b *Bridge) releaseUnadmitted(ctx context.Context, entry *browserExecution) error {
 	attempt := entry.attempt
-	if entry.uncertainApproval {
+	if entry.approvalUnconfirmed() {
 		original, err := b.config.Store.Attempt(ctx, attempt.ID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
@@ -305,7 +262,7 @@ func (b *Bridge) releaseUnadmitted(ctx context.Context, entry *browserExecution)
 func (b *Bridge) closeExecution(ctx context.Context, entry *browserExecution) (frame.ReleaseState, error) {
 	b.fence(entry)
 	b.mu.Lock()
-	admitted, owned := entry.admitted, entry.resource
+	admitted, owned := entry.runtimeOwnsExit(), entry.resourceHandle()
 	registered := b.executions.get(entry.attempt.ID) == entry
 	b.mu.Unlock()
 	switch {
@@ -332,7 +289,7 @@ func (b *Bridge) closeExecution(ctx context.Context, entry *browserExecution) (f
 func (b *Bridge) fence(entry *browserExecution) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	entry.retiring = true
+	entry.fence()
 }
 
 func (b *Bridge) Poll(ctx context.Context, token string) (Poll, error) {
@@ -348,15 +305,15 @@ func (b *Bridge) Poll(ctx context.Context, token string) (Poll, error) {
 	result := Poll{Authority: b.authority, Realm: session.realm, Plans: []LocalPlan{}, Fences: []Fence{}}
 	fences := make(map[Fence]bool)
 	for _, entry := range b.executions.all() {
-		if entry.plan.Realm == session.realm && entry.retiring && entry.admitted {
-			fences[entry.fence()] = true
+		if entry.plan.Realm == session.realm && entry.isFenced() && entry.runtimeOwnsExit() {
+			fences[entry.scopeFence()] = true
 		}
 	}
 	for _, entry := range b.executions.all() {
-		if fences[entry.fence()] || session.cleanupOnly {
+		if fences[entry.scopeFence()] || session.cleanupOnly {
 			continue
 		}
-		if entry.plan.Realm == session.realm && !entry.retiring && entry.ready == nil {
+		if entry.plan.Realm == session.realm && !entry.isFenced() && !entry.hasReady() {
 			result.Plans = append(result.Plans, copyWire(entry.plan))
 		}
 	}
@@ -380,7 +337,7 @@ func (b *Bridge) validateCurrentPlan(ctx context.Context, token string, plan Loc
 	}
 	b.mu.Lock()
 	entry := b.executions.get(plan.Execution.ID)
-	valid := entry.servesLocked(session.realm, plan.Execution) && sameWire(entry.plan, plan)
+	valid := entry.serves(session.realm, plan.Execution) && sameWire(entry.plan, plan)
 	b.mu.Unlock()
 	if !valid {
 		return frame.ErrStaleBinding
@@ -407,13 +364,13 @@ func (b *Bridge) Ready(ctx context.Context, token string, report ReadyReport) (P
 	}
 	b.mu.Lock()
 	entry := b.executions.get(report.Execution.ID)
-	switch {
-	case session.cleanupOnly || entry == nil || !entry.admitted || !entry.servesLocked(session.realm, report.Execution):
+	if session.cleanupOnly || !entry.runtimeOwnsExit() || !entry.serves(session.realm, report.Execution) {
 		b.mu.Unlock()
 		return rejected(problemExecutionUnavailable), nil
-	case entry.ready != nil:
+	}
+	if result, replay, err := entry.replayReady(report.OperationID, digest); replay {
 		b.mu.Unlock()
-		return entry.ready.repeats(report.OperationID, digest)
+		return result, err
 	}
 	b.mu.Unlock()
 	if err := b.validateCurrentPlan(ctx, token, entry.plan); err != nil {
@@ -425,15 +382,14 @@ func (b *Bridge) Ready(ctx context.Context, token string, report ReadyReport) (P
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	switch {
-	case session.cleanupOnly || entry.retiring:
+	if session.cleanupOnly {
 		return rejected(problemExecutionReleased), nil
-	case entry.ready != nil:
-		return entry.ready.repeats(report.OperationID, digest)
 	}
-	entry.ready = &readyReport{operationID: report.OperationID, digest: digest}
-	entry.prepared <- exports
-	return PublicationResult{Decision: Accepted}, nil
+	result, accepted, err := entry.acceptReady(report.OperationID, digest)
+	if accepted {
+		entry.prepared <- exports
+	}
+	return result, err
 }
 
 // readyExports admits the reported objects against the approved unit: every

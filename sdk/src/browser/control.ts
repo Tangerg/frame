@@ -1,4 +1,8 @@
-import type { ControlInputs, ControlOutputs } from "../protocol.generated.js";
+import type {
+  Authority,
+  ControlInputs,
+  ControlOutputs,
+} from "../protocol.generated.js";
 import { FrameError } from "../errors.js";
 
 /** The application supplies an authenticated transport to its single Go Host. */
@@ -7,6 +11,11 @@ export type HostControl = {
     ? () => Promise<ControlOutputs[K]>
     : (input: ControlInputs[K]) => Promise<ControlOutputs[K]>;
 };
+
+export interface ControlChannel {
+  readonly control: HostControl;
+  readonly authority: Authority;
+}
 
 // A refusal excludes effects from this call, not from earlier uncertain dispatches.
 export function isControlRefusal(error: unknown): boolean {

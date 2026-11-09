@@ -29,7 +29,7 @@ describe("portable JSON admission capture", () => {
     );
     const captured = captureDescriptor(boundary.source);
     expect(boundary.reads()).toBe(1);
-    expect(captured.const.text).toBe(lexeme);
+    expect(captured).toMatchObject({ const: { text: lexeme } });
     expect(Buffer.byteLength(stringifyJSON(captured))).toBe(
       PORTABLE_LIMITS.maxDescriptorBytes,
     );

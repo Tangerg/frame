@@ -3,6 +3,7 @@ package browser
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"slices"
 	"strconv"
 	"sync"
@@ -100,6 +101,9 @@ func NewBridge(config BridgeConfig) (*Bridge, error) {
 		return nil, frame.ErrInvalid
 	}
 	config.Points = slices.Clone(config.Points)
+	if err := validateConfiguredPoints(config.Points); err != nil {
+		return nil, err
+	}
 	return &Bridge{
 		config:       config,
 		authority:    Authority{ID: config.Store.ID(), Epoch: strconv.FormatUint(config.Store.Epoch(), 10)},
@@ -114,6 +118,23 @@ func NewBridge(config BridgeConfig) (*Bridge, error) {
 		uses:         make(map[string]*browserUse),
 		routes:       newBoundedTable[string, browserRoute]("event routes", config.MaxPending),
 	}, nil
+}
+
+func validateConfiguredPoints(points []frame.ContractRef) error {
+	names := make(map[string]struct{}, len(points))
+	for _, point := range points {
+		if err := point.Validate(); err != nil {
+			return fmt.Errorf("browser: configured point: %w", err)
+		}
+		if point.Kind != frame.PointKind {
+			return fmt.Errorf("%w: browser configured point requires a point contract", frame.ErrInvalid)
+		}
+		if _, duplicate := names[point.Name]; duplicate {
+			return fmt.Errorf("%w: duplicate browser point name %q", frame.ErrInvalid, point.Name)
+		}
+		names[point.Name] = struct{}{}
+	}
+	return nil
 }
 
 func (*Bridge) Profile() frame.Profile { return frame.BrowserJS }

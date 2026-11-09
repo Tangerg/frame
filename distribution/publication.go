@@ -11,14 +11,14 @@ import (
 )
 
 func (s *Store) publishHeld(ctx context.Context, staged *staging, source Source) (result *Lease, err error) {
-	release, err := s.validate(ctx, staged.root)
+	release, err := s.validate(ctx, staged.root, unsealedTree)
 	if err != nil {
 		return nil, err
 	}
 	if err := s.checkTrust(ctx, source, release); err != nil {
 		return nil, errors.Join(ErrUntrusted, err)
 	}
-	if err := sealContents(staged.root); err != nil {
+	if err := sealContents(staged.root, release.Manifest); err != nil {
 		return nil, err
 	}
 	var lease *Lease
@@ -85,15 +85,12 @@ func (s *Store) admitCached(ctx context.Context, source Source, digest value.Dig
 	if err != nil || !os.SameFile(opened, original) {
 		return Release{}, errors.Join(ErrIntegrity, err)
 	}
-	cached, err := s.validate(ctx, root)
+	cached, err := s.validate(ctx, root, unsealedTree)
 	if err != nil || cached.Digest != digest {
 		return Release{}, errors.Join(ErrIntegrity, err)
 	}
 	if err := s.checkTrust(ctx, source, cached); err != nil {
 		return Release{}, errors.Join(ErrUntrusted, err)
-	}
-	if original.Mode().Perm() == sealedDirectoryMode {
-		return cached, nil
 	}
 	err = s.admission.Under(ctx, func() error {
 		current, err := s.root.Lstat(digest.String())
@@ -102,14 +99,17 @@ func (s *Store) admitCached(ctx context.Context, source Source, digest value.Dig
 		}
 		// Optional manifest fields can differ without changing a release digest.
 		// Seal only the projection that this source's trust callback approved.
-		checked, err := s.validate(ctx, root)
+		checked, err := s.validate(ctx, root, unsealedTree)
 		if err != nil || !reflect.DeepEqual(checked, cached) {
 			return errors.Join(ErrIntegrity, err)
 		}
-		if err := sealContents(root); err != nil {
+		if err := sealContents(root, cached.Manifest); err != nil {
 			return err
 		}
 		if err := root.Chmod(".", sealedDirectoryMode); err != nil {
+			return err
+		}
+		if _, err := s.validate(ctx, root, sealedTree); err != nil {
 			return err
 		}
 		return s.lock.Sync()

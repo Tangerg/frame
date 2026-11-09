@@ -56,12 +56,10 @@ func (b *Bridge) AdmitPlan(ctx context.Context, token string, plan LocalPlan) (P
 		b.mu.Unlock()
 		return PlanAdmission{}, frame.ErrStaleBinding
 	}
-	cleanup, admitted := entry.retiring || session.cleanupOnly, entry.admitted
-	if !cleanup {
-		// The pending Runtime owner already exists. A failed currentness check
-		// must retain that owner instead of racing a Host non-admission proof.
-		entry.admitted = true
-	}
+	admitted := entry.runtimeOwnsExit()
+	// The pending Runtime owner already exists. A failed currentness check
+	// must retain that owner instead of racing a Host non-admission proof.
+	cleanup := session.cleanupOnly || !entry.admitRuntime()
 	b.mu.Unlock()
 	if cleanup {
 		return b.admitForCleanup(ctx, entry, admitted, plan, result)
@@ -94,7 +92,7 @@ func (b *Bridge) admitCurrent(ctx context.Context, session *realmSession, entry 
 		return b.recordedPlanAdmission(ctx, plan, result)
 	}
 	b.mu.Lock()
-	live := b.executions.get(plan.Execution.ID) == entry && !entry.retiring && !session.cleanupOnly
+	live := b.executions.get(plan.Execution.ID) == entry && !entry.isFenced() && !session.cleanupOnly
 	b.mu.Unlock()
 	if !live {
 		return b.recordedPlanAdmission(ctx, plan, result)

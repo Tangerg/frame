@@ -22,6 +22,13 @@ caller-owned object that would later be read again. Array budgets count every
 indexed position, including holes that encode as null, before cloning or schema
 execution can expand them.
 
+Local references resolve once into the admitted schema graph. Validation work
+budgets and the engine projection use those same targets. The engine receives
+only generated numeric reference paths, so URI and pointer escapes or author
+definition names cannot redirect evaluation. Reference siblings and composition
+remain active; recursive references must consume instance depth. The private
+projection leaves the published descriptor and its identity unchanged.
+
 Format admission follows the fixed list generated from the Go portable profile:
 `date`, `time`, `date-time`, `uuid`, `json-pointer`, and `relative-json-pointer`.
 Unknown formats are rejected. Go and Node use the portable predicates and their
@@ -40,7 +47,9 @@ Remote invocation uses that captured table as the method receiver, so methods ca
 compose through `this` without reading a mutable caller-owned table again.
 
 Inferred client and handler types project primitive kinds, object openness,
-required members, arrays and literals from the descriptor. Numeric literals use
+required members, arrays and literals from the authoring descriptor. The runtime
+`Capability.descriptor` is an admitted `CapabilityDescriptor`, not the original
+generic input type: JSON capture can transform its values. Numeric literals use
 `JSONNumber` so equivalent exact spellings remain representable. TypeScript cannot
 express numeric equality or every JSON Schema predicate; `Method` still validates
 each captured value. Complex reference and composition schemas can use the

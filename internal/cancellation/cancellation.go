@@ -13,9 +13,6 @@ func Err(ctx context.Context) error {
 	if err == nil {
 		return nil
 	}
-	cause := context.Cause(ctx)
-	if errors.Is(cause, err) {
-		return cause
-	}
-	return errors.Join(err, cause)
+	// Cancellation must not execute arbitrary diagnostic methods on its cause.
+	return errors.Join(err, context.Cause(ctx))
 }

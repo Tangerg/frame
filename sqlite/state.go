@@ -9,9 +9,11 @@ import (
 type submissionState string
 
 const (
-	submissionPrepared     submissionState = "prepared"
-	submissionCommitted    submissionState = submissionState(frame.CommitSucceeded)
-	submissionNotCommitted submissionState = submissionState(frame.CommitRejected)
+	submissionPrepared              submissionState = "prepared"
+	submissionCommitted             submissionState = submissionState(frame.CommitSucceeded)
+	submissionRejected              submissionState = submissionState(frame.CommitRejected)
+	submissionCommittedSynchronized submissionState = "committed_synchronized"
+	submissionRejectedSynchronized  submissionState = "not_committed_synchronized"
 )
 
 // Prepared is durable intent, not a terminal business conclusion. Unknown
@@ -20,12 +22,29 @@ func (s submissionState) settlement() (frame.CommitState, error) {
 	switch s {
 	case submissionPrepared:
 		return frame.CommitIndeterminate, nil
-	case submissionCommitted:
+	case submissionCommitted, submissionCommittedSynchronized:
 		return frame.CommitSucceeded, nil
-	case submissionNotCommitted:
+	case submissionRejected, submissionRejectedSynchronized:
 		return frame.CommitRejected, nil
 	default:
-		return frame.CommitIndeterminate, errors.New("sqlite: invalid stored submission state")
+		return frame.CommitIndeterminate, errors.Join(ErrIndeterminate, errors.New("sqlite: invalid stored submission state"))
+	}
+}
+
+func (s submissionState) synchronized() bool {
+	return s == submissionCommittedSynchronized || s == submissionRejectedSynchronized
+}
+
+func (s submissionState) confirm() (submissionState, error) {
+	switch s {
+	case submissionCommitted, submissionCommittedSynchronized:
+		return submissionCommittedSynchronized, nil
+	case submissionRejected, submissionRejectedSynchronized:
+		return submissionRejectedSynchronized, nil
+	case submissionPrepared:
+		return s, ErrUnsettled
+	default:
+		return s, errors.Join(ErrIndeterminate, errors.New("sqlite: invalid stored submission state"))
 	}
 }
 

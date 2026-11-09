@@ -189,10 +189,3 @@ func (r readAccess) QueryContext(ctx context.Context, statement string, args ...
 func (r readAccess) QueryRowContext(ctx context.Context, statement string, args ...any) *Row {
 	return r.access.QueryRowContext(ctx, statement, args...)
 }
-
-type databaseAccess struct{ sqlExecutor }
-
-func (a databaseAccess) QueryRowContext(ctx context.Context, statement string, args ...any) *Row {
-	cursor, err := queryCursor(ctx, a.sqlExecutor, statement, args...)
-	return &Row{cursor: cursor, err: err}
-}

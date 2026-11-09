@@ -27,7 +27,7 @@ func (b *Bridge) Acquire(ctx context.Context, token string, request AcquireReque
 		if session.cleanupOnly {
 			return errRealmSealed
 		}
-		if !entry.servesLocked(session.realm, request.Execution) || !lease.capturedFor(session.realm) {
+		if !entry.serves(session.realm, request.Execution) || !lease.capturedFor(session.realm) {
 			return frame.ErrStaleBinding
 		}
 		operation.execution = entry.plan.Execution.ID
@@ -70,7 +70,7 @@ func (b *Bridge) Acquire(ctx context.Context, token string, request AcquireReque
 func (b *Bridge) takeLease(session *realmSession, entry *browserExecution, id string, lease *snapshotLease) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if session.cleanupOnly || entry.retiring || b.executions.get(entry.plan.Execution.ID) != entry || b.snapshots[id] != lease {
+	if session.cleanupOnly || entry.isFenced() || b.executions.get(entry.plan.Execution.ID) != entry || b.snapshots[id] != lease {
 		return frame.ErrStaleBinding
 	}
 	delete(b.snapshots, id)
@@ -141,15 +141,14 @@ func (b *Bridge) deliverUse(ctx context.Context, session *realmSession, entry *b
 	}
 	retained.resource = resource
 	b.mu.Lock()
-	if entry.retiring || session.cleanupOnly {
+	if entry.isFenced() || session.cleanupOnly {
 		b.mu.Unlock()
 		_ = resource.ConfirmReleased(nil)
 		use.BeginClose(frame.ErrFenced)
 		return UseGrant{}, frame.ErrFenced
 	}
 	b.uses[use.ID()] = retained
-	copy := copyWire(grant)
-	operation.grant = &copy
+	operation.acceptGrant(grant)
 	b.mu.Unlock()
 	return grant, nil
 }
@@ -212,7 +211,6 @@ func (b *Bridge) Route(ctx context.Context, token string, grant UseGrant, source
 	return route, nil
 }
 
-// grants reports an object this grant exposes.
 func (g UseGrant) grants(export LocalExport) bool {
 	return slices.ContainsFunc(g.Objects, func(object ObjectRef) bool { return object.Export == export })
 }

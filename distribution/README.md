@@ -56,6 +56,10 @@ Only regular files are accepted. Symbolic links, special files, traversal, absol
 paths, platform-reserved names, duplicate destinations and case aliases are refused.
 Portable paths use ASCII to avoid filesystem-dependent Unicode aliases. Executable
 bits are explicit in the inventory; setuid, setgid and sticky bits are rejected.
+An input file with any execution bit must match `Artifact.Executable`. Staging
+normalizes that declaration to owner-only 0600 or 0700; publication derives
+0400 or 0500 from the same artifact declaration. Group/other execution bits are
+not retained as a separate cache permission policy.
 `Limits.Entries` counts files, directories and their implicit ancestors. Directory
 imports and cache revalidation read bounded batches against that same inventory;
 they refuse excess entries before allocating or sorting the rest of a directory. Source
@@ -65,7 +69,11 @@ Staging belongs to one installation operation and is removed unless atomically
 published. Validated content is read-only in the content-addressed cache.
 Contents are sealed before rename; the release root is sealed after rename under
 admission, before its first lease. This also supports macOS filesystems that
-refuse renaming a non-writable directory. An incompletely sealed root is refused by readers. Reimport of the same trusted release revalidates the original tree before completing its seal.
+refuse renaming a non-writable directory. Readers refuse a release if its root or
+any descendant has noncanonical permissions. Reimport of the same trusted release revalidates the original tree
+and its trust projection before explicitly repairing the entire seal under
+admission, even when the root was already read-only. Acquire and leased reads
+never change filesystem permissions.
 Collection changes only the root's mode after excluding every lease and retention
 claim, restores that mode if withdrawal fails, and unseals descendants only after
 the directory has left the public namespace.

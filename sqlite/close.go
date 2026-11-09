@@ -7,9 +7,9 @@ import (
 	"errors"
 )
 
-// Close joins the original Store shutdown. An unconfirmed connection remains
+// Close joins the original database shutdown. An unconfirmed connection remains
 // owned, and its authority lock remains held, until that exact connection closes.
-func (s *Store) Close() error {
+func (s *databaseOwner) close() error {
 	if s == nil {
 		return nil
 	}
@@ -28,7 +28,7 @@ func (s *Store) Close() error {
 	}
 }
 
-func (s *Store) startClose() {
+func (s *databaseOwner) startClose() {
 	s.closeOnce.Do(func() {
 		s.lifecycleMu.Lock()
 		s.closing = true
@@ -42,21 +42,21 @@ func (s *Store) startClose() {
 // This is the outstanding resource owner, including when Open's caller drops
 // an error. It keeps the original connection and os.File alive while release is
 // unconfirmed; no finalizer can silently relinquish the authority in that state.
-func (s *Store) closeOriginal() {
+func (s *databaseOwner) closeOriginal() {
 	for result := range s.closeRequests {
 		err := s.advanceClose()
-		if err == nil || s.lock == nil {
+		if err == nil || len(s.unconfirmed) == 0 && s.databaseCloseErr == nil && s.lock == nil {
 			s.closeErr = err
 			close(s.closeDone)
 			result <- err
 			return
 		}
-		s.admission.RequireRecovery(err)
+		s.requireRecovery(err)
 		result <- err
 	}
 }
 
-func (s *Store) advanceClose() error {
+func (s *databaseOwner) advanceClose() error {
 	s.transactions.Wait()
 	if s.db != nil {
 		if err := s.sealDatabase(); err != nil {
@@ -88,11 +88,11 @@ func (s *Store) advanceClose() error {
 	return closeErr
 }
 
-func (s *Store) retainUnconfirmedConnection(connection *sql.Conn, cause error) {
+func (s *databaseOwner) retainUnconfirmedConnection(connection *sql.Conn, cause error) {
 	s.lifecycleMu.Lock()
 	s.unconfirmed = append(s.unconfirmed, connection)
 	s.lifecycleMu.Unlock()
-	s.admission.RequireRecovery(cause)
+	s.requireRecovery(cause)
 	s.startClose()
 	// The checked-out original remains available to its close owner. Sealing
 	// the pool prevents queued transactions from waiting forever or replacing it.
@@ -102,7 +102,7 @@ func (s *Store) retainUnconfirmedConnection(connection *sql.Conn, cause error) {
 // sealDatabase closes the pool once. database/sql.Close only disposes idle
 // connections, so the sole open connection is pinned first, unless one is
 // already retained, and its own close is observed afterwards.
-func (s *Store) sealDatabase() error {
+func (s *databaseOwner) sealDatabase() error {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 	if s.databaseSealed {

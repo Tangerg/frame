@@ -189,7 +189,7 @@ export class Peer {
     this.#checkRequestAdmission(signal);
     // User getters may cancel, close the peer, or dispatch another request.
     // Capture their values before reserving an identity in wire order.
-    const captured = cloneJSON({ method, params });
+    const captured = { method, params: cloneJSON(params) };
     this.#checkRequestAdmission(signal);
     const next = this.#next + 1n;
     const id = next.toString();

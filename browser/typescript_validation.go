@@ -11,39 +11,56 @@ import (
 	framevalue "github.com/Tangerg/frame/value"
 )
 
-// Executable response checks come from the same Go declarations as their types.
-// HTTP success alone cannot settle a mutation or authorize an object borrow.
-func (e *typeScriptEmitter) writeResponseDecoders() error {
-	roots := []reflect.Type{reflect.TypeFor[HTTPProblem]()}
-	for _, method := range controlMethods {
-		if method.output != nil {
-			roots = append(roots, method.output)
-		}
-	}
-	outputs, err := newTypeScriptEmitter(roots)
-	if err != nil {
-		return err
-	}
+// Typed captures and response admission use the same Go declarations. A JSON
+// round trip cannot establish a protocol type or settle an operation by itself.
+func (e *typeScriptEmitter) writeProtocolDecoders() error {
 	e.WriteString(`function wireObject(value: unknown, members: readonly string[]): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) &&
     Object.keys(value).every((name) => members.includes(name));
 }
 
+function wireArray(value: unknown, matches: (item: unknown) => boolean): value is readonly unknown[] {
+  if (!Array.isArray(value)) return false;
+  for (let index = 0; index < value.length; index++) {
+    if (!Object.hasOwn(value, index) || !matches(value[index])) return false;
+  }
+  return true;
+}
+
 const wireDigest = new RegExp(DIGEST_PATTERN);
 
 `)
-	for _, name := range slices.Sorted(maps.Keys(outputs.types)) {
-		declaration := outputs.types[name]
+	names := slices.Sorted(maps.Keys(e.types))
+	for _, name := range names {
+		declaration := e.types[name]
 		check, err := e.validateWireModel(declaration.source, declaration.model, "value")
 		if err != nil {
 			return err
 		}
 		fmt.Fprintf(e, "function matchesWire%s(value: unknown): value is %s {\n  return %s;\n}\n\n", name, name, check)
 	}
+	e.WriteString("export interface ProtocolValues {\n")
+	for _, name := range names {
+		fmt.Fprintf(e, "  readonly %s: %s;\n", contractgen.PropertyKey(name), name)
+	}
+	e.WriteString("}\n\nconst protocolValues = {\n")
+	for _, name := range names {
+		fmt.Fprintf(e, "  %s: matchesWire%s,\n", contractgen.RuntimePropertyKey(name), name)
+	}
+	e.WriteString(`} as const;
+
+export function decodeProtocolValue<K extends keyof ProtocolValues>(name: K, value: unknown): ProtocolValues[K] {
+  if (!Object.hasOwn(protocolValues, name) || !protocolValues[name](value))
+    throw new TypeError("invalid protocol value");
+  return value as ProtocolValues[K];
+}
+
+`)
 	e.WriteString("const controlOutputs = {\n")
 	for _, method := range controlMethods {
 		check := "value === null"
 		if method.output != nil {
+			var err error
 			check, err = e.validateWireType(method.output, "value")
 			if err != nil {
 				return err
@@ -101,11 +118,11 @@ func (e *typeScriptEmitter) validateWireModel(source, model reflect.Type, value 
 		if err != nil {
 			return "", err
 		}
-		check := "Array.isArray(" + value + ")"
+		check := "wireArray(" + value + ", (item: unknown) => " + item + ")"
 		if model.Kind() == reflect.Array {
 			check += fmt.Sprintf(" && %s.length === %d", value, model.Len())
 		}
-		return check + " && " + value + ".every((item: unknown) => " + item + ")", nil
+		return check, nil
 	case reflect.Struct:
 		return e.validateWireFields(model, value)
 	default:

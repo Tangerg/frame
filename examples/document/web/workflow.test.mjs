@@ -146,10 +146,7 @@ test("document CLI, Host control, actual JS preview and durable exit", async () 
       }
       return reply;
     };
-    const assets = await readdir(join(directory, "dist/assets"));
-    const main = assets.find((file) => file.endsWith(".js"));
-    assert.ok(main);
-    await import(pathToFileURL(join(directory, "dist/assets", main)).href);
+    await import(entryModule(window.document));
     const element = (id) => window.document.getElementById(id);
     element("token").value = (
       await readFile(join(state, "application-token"), "utf8")
@@ -397,13 +394,8 @@ test("dynamic native publication exits through its original execution and resend
       });
       assert.equal(response.ok, true);
       const bytes = new Uint8Array(await response.arrayBuffer());
-      const digest = Buffer.from(
-        await crypto.subtle.digest("SHA-256", bytes),
-      ).toString("hex");
-      assert.equal(digest, unit.module.digest);
       return {
-        url: `data:text/javascript;base64,${Buffer.from(bytes).toString("base64")}`,
-        digest,
+        bytes,
         close() {},
       };
     });
@@ -545,14 +537,8 @@ test("document actions retain their original task when the selection changes", a
         });
       },
     });
-    const main = (await readdir(join(directory, "dist/assets"))).find((file) =>
-      file.endsWith(".js"),
-    );
-    assert.ok(main);
-    await import(
-      pathToFileURL(join(directory, "dist/assets", main)).href +
-        "?original-task-actions"
-    );
+    const main = entryModule(window.document);
+    await import(main + "?original-task-actions");
     const element = (id) => window.document.getElementById(id);
     element("token").value = "action-test-credential";
     element("task").value = "convert-original";
@@ -614,3 +600,172 @@ async function writable(path) {
     if (entry.isDirectory()) await writable(join(path, entry.name));
   }
 }
+
+function entryModule(document) {
+  const source = document
+    .querySelector('script[type="module"][src]')
+    ?.getAttribute("src");
+  assert.ok(source, "the built document declares its application entry");
+  return pathToFileURL(join(directory, "dist", source)).href;
+}
+
+test("a closed preview resumes its original cleanup channel after the Go Host is reconstructed", async () => {
+  assert.ok(binary, "build the document command and set FRAME_DOCUMENT_BINARY");
+  const state = await mkdtemp(join(tmpdir(), "frame-document-close-recovery-"));
+  const documents = join(state, "documents");
+  await mkdir(documents);
+  await writeFile(
+    join(documents, "hello.md"),
+    "# Original preview\nRetained across Host reconstruction.\n",
+  );
+  const original = {
+    window: globalThis.window,
+    document: globalThis.document,
+    HTMLElement: globalThis.HTMLElement,
+    MutationObserver: globalThis.MutationObserver,
+    fetch: globalThis.fetch,
+  };
+  let server,
+    exited,
+    origin,
+    window,
+    diagnostics = "",
+    completed = false;
+  const requests = [];
+  async function start(address = "127.0.0.1:0") {
+    let current = "";
+    server = spawn(
+      binary,
+      [
+        "-command",
+        "serve",
+        "-state",
+        state,
+        "-documents",
+        documents,
+        "-listen",
+        address,
+        "-web",
+        join(directory, "dist"),
+      ],
+      { stdio: ["ignore", "ignore", "pipe"] },
+    );
+    exited = once(server, "exit");
+    server.stderr.setEncoding("utf8");
+    server.stderr.on("data", (chunk) => {
+      current += chunk;
+      diagnostics += chunk;
+    });
+    await until(
+      () => /listening at http:\/\/[^;]+;/.test(current),
+      () => diagnostics,
+    );
+    origin = /listening at (http:\/\/[^;]+);/.exec(current)[1];
+  }
+  try {
+    await start();
+    window = new Window({
+      url: origin,
+      settings: {
+        disableCSSFileLoading: true,
+        disableJavaScriptFileLoading: true,
+        disableIframePageLoading: true,
+      },
+    });
+    window.document.write(
+      await readFile(join(directory, "dist/index.html"), "utf8"),
+    );
+    Object.assign(globalThis, {
+      window,
+      document: window.document,
+      HTMLElement: window.HTMLElement,
+      MutationObserver: window.MutationObserver,
+      fetch: (input, init) => {
+        const url = new URL(input, origin);
+        requests.push({
+          path: url.pathname,
+          body: init?.body ? JSON.parse(init.body) : undefined,
+        });
+        return original.fetch(url, init);
+      },
+    });
+    await import(entryModule(window.document) + "?close-host-recovery");
+    const element = (id) => window.document.getElementById(id);
+    async function click(id) {
+      element(id).click();
+      await until(
+        () => !element(id).disabled,
+        () => element("error").textContent + diagnostics,
+      );
+    }
+    element("token").value = (
+      await readFile(join(state, "application-token"), "utf8")
+    ).trim();
+    await click("connect");
+    assert.equal(element("error").textContent, "");
+    element("task").value = "close-recovery-original";
+    await click("convert");
+    assert.equal(element("error").textContent, "");
+    assert.ok(window.document.querySelector("iframe.document-preview"));
+    const address = new URL(origin).host;
+    server.kill("SIGKILL");
+    await exited;
+    await start(address);
+
+    await click("close");
+    assert.match(element("error").textContent, /release did not complete/);
+    assert.equal(element("reload").disabled, true);
+    assert.equal(element("reconnect").disabled, true);
+    assert.equal(
+      window.document.querySelector("iframe.document-preview"),
+      null,
+    );
+    await click("close");
+    assert.equal(element("error").textContent, "");
+    assert.equal(
+      element("connection-state").textContent,
+      "Original Realm released and acknowledged",
+    );
+    assert.equal(element("reload").disabled, false);
+    assert.equal(
+      requests.filter(({ path }) => path === "/api/realm/open").length,
+      1,
+    );
+    assert.equal(
+      requests.filter(({ path }) => path === "/api/preview/activate").length,
+      1,
+    );
+    assert.equal(
+      requests.filter(({ path }) => path === "/api/realm/resume").length,
+      1,
+    );
+    const proofs = requests
+      .filter(
+        ({ path, body }) =>
+          path === "/frame/control" && body?.method === "prove",
+      )
+      .map(({ body }) => body.input);
+    assert.ok(proofs.length >= 2);
+    assert.ok(
+      proofs.some((proof, index) =>
+        proofs
+          .slice(index + 1)
+          .some((later) => later.proofId === proof.proofId),
+      ),
+    );
+    for (const proof of proofs)
+      assert.deepEqual(
+        proof,
+        proofs.find((original) => original.proofId === proof.proofId),
+      );
+    completed = true;
+  } finally {
+    if (server?.exitCode === null)
+      server.kill(completed ? "SIGINT" : "SIGKILL");
+    if (exited) await exited;
+    await window?.happyDOM.close();
+    Object.assign(globalThis, original);
+    await writable(state);
+    await rm(state, { recursive: true, force: true });
+  }
+});

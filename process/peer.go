@@ -326,29 +326,11 @@ func (p *peer) receiveRequestLocked(msg envelope, n uint64) error {
 func (p *peer) respond(ctx context.Context, cancel context.CancelFunc, msg envelope) {
 	defer p.workers.Done()
 	defer cancel()
-	var result jsontext.Value
-	var err error
-	returned := false
-	// Goexit runs defers without returning or panicking. The original worker
-	// still owes its reply and capacity release after that interruption.
+	reply := envelope{ID: msg.ID, Error: unknownProblem()}
+	// Handler and diagnostic methods may panic or call Goexit. Only a fully
+	// classified reply replaces the default; completion invokes neither again.
 	defer func() {
-		if recover() != nil || !returned {
-			result = nil
-			err = ErrOutcomeUnknown
-		}
-		reply := envelope{ID: msg.ID, Result: result}
-		if err != nil {
-			reply.Result = nil
-			if errors.Is(err, context.Canceled) && !errors.Is(err, errConsumerPanic) {
-				reply.Error = &Problem{wire.Errors.Cancelled, "request cancelled"}
-			} else if errors.Is(err, ErrOutcomeUnknown) {
-				reply.Error = &Problem{wire.Errors.Unknown, "operation did not return a confirmed result"}
-			} else if established, ok := errors.AsType[*Problem](err); ok {
-				reply.Error = established
-			} else {
-				reply.Error = &Problem{wire.Errors.Unknown, "operation did not return a confirmed result"}
-			}
-		}
+		_ = recover()
 		p.mu.Lock()
 		delete(p.running, msg.ID)
 		sendErr := p.sendLocked(reply)
@@ -357,8 +339,29 @@ func (p *peer) respond(ctx context.Context, cancel context.CancelFunc, msg envel
 			p.end(sendErr)
 		}
 	}()
-	result, err = p.handle(ctx, msg.Method, msg.Params)
-	returned = true
+	result, err := p.handle(ctx, msg.Method, msg.Params)
+	if err != nil {
+		reply = envelope{ID: msg.ID, Error: responseProblem(err)}
+		return
+	}
+	reply = envelope{ID: msg.ID, Result: result}
+}
+
+func unknownProblem() *Problem {
+	return &Problem{wire.Errors.Unknown, "operation did not return a confirmed result"}
+}
+
+func responseProblem(err error) *Problem {
+	if errors.Is(err, context.Canceled) && !errors.Is(err, errConsumerPanic) {
+		return &Problem{wire.Errors.Cancelled, "request cancelled"}
+	}
+	if errors.Is(err, ErrOutcomeUnknown) {
+		return unknownProblem()
+	}
+	if established, ok := errors.AsType[*Problem](err); ok && established != nil && established.valid() {
+		return new(*established)
+	}
+	return unknownProblem()
 }
 
 func decode(raw jsontext.Value, out any) error {

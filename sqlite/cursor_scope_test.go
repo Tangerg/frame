@@ -44,7 +44,7 @@ func TestReadSnapshotClosesItsCursorsBeforeRestoringWriter(t *testing.T) {
 		if err := row.Err(); !errors.Is(err, sql.ErrTxDone) {
 			t.Fatalf("expired row concealed its original callback lifetime: %v", err)
 		}
-		for _, enter := range []func(context.Context, *sql.DB, func(context.Context) error) error{sqlite.RunReadSnapshot, sqlite.RunInTx} {
+		for _, enter := range []func(context.Context, *sqlite.Database, func(context.Context) error) error{sqlite.RunReadSnapshot, sqlite.RunInTx} {
 			entered := false
 			err := enter(expired, database, func(context.Context) error { entered = true; return nil })
 			if entered || !errors.Is(err, sql.ErrTxDone) {
@@ -64,70 +64,75 @@ func TestReadSnapshotClosesItsCursorsBeforeRestoringWriter(t *testing.T) {
 		t.Fatalf("expired writer context: %v", err)
 	}
 	var value string
-	if err := database.QueryRowContext(t.Context(), `SELECT value FROM facts`).Scan(&value); err != nil || value != "original writer" {
+	if err := databaseQuery(database, t.Context(), `SELECT value FROM facts`).Scan(&value); err != nil || value != "original writer" {
 		t.Fatalf("cursor cleanup lost its original writer: value=%q error=%v", value, err)
 	}
 }
 
 func TestRowKeepsSingleRowScanSemantics(t *testing.T) {
 	database, _ := readScopeDatabase(t)
-	access := sqlite.Connection(t.Context(), database)
-	t.Run("first result", func(t *testing.T) {
-		row := access.QueryRowContext(t.Context(), `SELECT 'first' UNION ALL SELECT 'second'`)
-		if err := row.Err(); err != nil {
-			t.Fatal(err)
-		}
-		var value string
-		if err := row.Scan(&value); err != nil || value != "first" {
-			t.Fatalf("single-row result: value=%q error=%v", value, err)
-		}
+	err := database.Read(t.Context(), func(access sqlite.Reader) error {
+		t.Run("first result", func(t *testing.T) {
+			row := access.QueryRowContext(t.Context(), `SELECT 'first' UNION ALL SELECT 'second'`)
+			if err := row.Err(); err != nil {
+				t.Fatal(err)
+			}
+			var value string
+			if err := row.Scan(&value); err != nil || value != "first" {
+				t.Fatalf("single-row result: value=%q error=%v", value, err)
+			}
+		})
+		t.Run("no result", func(t *testing.T) {
+			row := access.QueryRowContext(t.Context(), `SELECT value FROM facts`)
+			if err := row.Err(); err != nil {
+				t.Fatal(err)
+			}
+			var value string
+			if err := row.Scan(&value); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("empty result: %v", err)
+			}
+		})
+		t.Run("query error", func(t *testing.T) {
+			row := access.QueryRowContext(t.Context(), `SELECT missing FROM facts`)
+			original := row.Err()
+			var value string
+			if original == nil || !errors.Is(row.Scan(&value), original) {
+				t.Fatalf("query error was not preserved: %v", original)
+			}
+		})
+		t.Run("conversion error", func(t *testing.T) {
+			var value int
+			if err := access.QueryRowContext(t.Context(), `SELECT 'text'`).Scan(&value); err == nil {
+				t.Fatal("invalid conversion was accepted")
+			}
+			if err := access.QueryRowContext(t.Context(), `SELECT 7`).Scan(&value); err != nil || value != 7 {
+				t.Fatalf("conversion error retained the only connection: value=%d error=%v", value, err)
+			}
+		})
+		t.Run("borrowed bytes", func(t *testing.T) {
+			var borrowed sql.RawBytes
+			if err := access.QueryRowContext(t.Context(), `SELECT 'text'`).Scan(&borrowed); err == nil {
+				t.Fatal("single-row scan returned bytes invalidated by its own cursor closure")
+			}
+			var owned []byte
+			if err := access.QueryRowContext(t.Context(), `SELECT 'text'`).Scan(&owned); err != nil || string(owned) != "text" {
+				t.Fatalf("owned bytes: value=%q error=%v", owned, err)
+			}
+		})
+		t.Run("canceled query", func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			row := access.QueryRowContext(ctx, `SELECT 1`)
+			var value int
+			if !errors.Is(row.Err(), context.Canceled) || !errors.Is(row.Scan(&value), context.Canceled) {
+				t.Fatalf("query cancellation was not preserved: %v", row.Err())
+			}
+		})
+		return nil
 	})
-	t.Run("no result", func(t *testing.T) {
-		row := access.QueryRowContext(t.Context(), `SELECT value FROM facts`)
-		if err := row.Err(); err != nil {
-			t.Fatal(err)
-		}
-		var value string
-		if err := row.Scan(&value); !errors.Is(err, sql.ErrNoRows) {
-			t.Fatalf("empty result: %v", err)
-		}
-	})
-	t.Run("query error", func(t *testing.T) {
-		row := access.QueryRowContext(t.Context(), `SELECT missing FROM facts`)
-		original := row.Err()
-		var value string
-		if original == nil || !errors.Is(row.Scan(&value), original) {
-			t.Fatalf("query error was not preserved: %v", original)
-		}
-	})
-	t.Run("conversion error", func(t *testing.T) {
-		var value int
-		if err := access.QueryRowContext(t.Context(), `SELECT 'text'`).Scan(&value); err == nil {
-			t.Fatal("invalid conversion was accepted")
-		}
-		if err := access.QueryRowContext(t.Context(), `SELECT 7`).Scan(&value); err != nil || value != 7 {
-			t.Fatalf("conversion error retained the only connection: value=%d error=%v", value, err)
-		}
-	})
-	t.Run("borrowed bytes", func(t *testing.T) {
-		var borrowed sql.RawBytes
-		if err := access.QueryRowContext(t.Context(), `SELECT 'text'`).Scan(&borrowed); err == nil {
-			t.Fatal("single-row scan returned bytes invalidated by its own cursor closure")
-		}
-		var owned []byte
-		if err := access.QueryRowContext(t.Context(), `SELECT 'text'`).Scan(&owned); err != nil || string(owned) != "text" {
-			t.Fatalf("owned bytes: value=%q error=%v", owned, err)
-		}
-	})
-	t.Run("canceled query", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		row := access.QueryRowContext(ctx, `SELECT 1`)
-		var value int
-		if !errors.Is(row.Err(), context.Canceled) || !errors.Is(row.Scan(&value), context.Canceled) {
-			t.Fatalf("query cancellation was not preserved: %v", row.Err())
-		}
-	})
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestHandledCursorErrorsDoNotBecomeConnectionCleanupFailures(t *testing.T) {
@@ -173,20 +178,16 @@ func TestHandledCursorErrorsDoNotBecomeConnectionCleanupFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	var count int
-	if err := database.QueryRowContext(ctx, `SELECT count(*) FROM facts`).Scan(&count); err != nil || count != 1 {
+	if err := databaseQuery(database, ctx, `SELECT count(*) FROM facts`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("handled statement errors poisoned the original writer: count=%d error=%v", count, err)
 	}
 }
 
-func TestTransactionsRefuseUnobservedDriverConnections(t *testing.T) {
-	database, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer database.Close()
+func TestTransactionsRefuseAnUninitializedDatabase(t *testing.T) {
+	database := &sqlite.Database{}
 	for _, test := range []struct {
 		name  string
-		enter func(context.Context, *sql.DB, func(context.Context) error) error
+		enter func(context.Context, *sqlite.Database, func(context.Context) error) error
 	}{
 		{name: "write", enter: sqlite.RunInTx},
 		{name: "independent", enter: sqlite.RunIndependentTx},

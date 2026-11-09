@@ -48,7 +48,7 @@ func (s *Store) inspect(ctx context.Context, digest value.Digest) (Release, erro
 		return Release{}, err
 	}
 	defer root.Close()
-	release, err := s.validate(ctx, root)
+	release, err := s.validate(ctx, root, sealedTree)
 	if err != nil {
 		return Release{}, err
 	}
@@ -58,12 +58,12 @@ func (s *Store) inspect(ctx context.Context, digest value.Digest) (Release, erro
 	return release, nil
 }
 
-func (s *Store) validate(ctx context.Context, root *os.Root) (Release, error) {
+func (s *Store) validate(ctx context.Context, root *os.Root, admission treeAdmission) (Release, error) {
 	release, err := s.readReleaseMetadata(ctx, root)
 	if err != nil {
 		return Release{}, err
 	}
-	verifier := artifactVerifier{ctx: ctx, root: root, limits: s.limits, expected: make(map[string]Artifact, len(release.Manifest.Artifacts))}
+	verifier := artifactVerifier{ctx: ctx, root: root, admission: admission, limits: s.limits, expected: make(map[string]Artifact, len(release.Manifest.Artifacts))}
 	for _, artifact := range release.Manifest.Artifacts {
 		verifier.expected[artifact.Path] = artifact
 	}
@@ -108,11 +108,12 @@ func (s *Store) readReleaseMetadata(ctx context.Context, root *os.Root) (Release
 }
 
 type artifactVerifier struct {
-	ctx      context.Context
-	root     *os.Root
-	limits   Limits
-	expected map[string]Artifact
-	size     int64
+	admission treeAdmission
+	ctx       context.Context
+	root      *os.Root
+	limits    Limits
+	expected  map[string]Artifact
+	size      int64
 }
 
 func (v *artifactVerifier) visit(name string, entry fs.DirEntry) error {
@@ -124,12 +125,18 @@ func (v *artifactVerifier) visit(name string, entry fs.DirEntry) error {
 		return ErrInvalid
 	}
 	if info.IsDir() {
+		if v.admission == sealedTree && info.Mode().Perm() != sealedDirectoryMode {
+			return ErrIntegrity
+		}
 		return nil
 	}
 	if err := v.account(info); err != nil {
 		return err
 	}
 	if isReleaseMetadata(name) {
+		if v.admission == sealedTree && info.Mode().Perm() != sealedFileMode {
+			return ErrIntegrity
+		}
 		return nil
 	}
 	artifact, ok := v.expected[name]
@@ -140,7 +147,7 @@ func (v *artifactVerifier) visit(name string, entry fs.DirEntry) error {
 	if err != nil {
 		return err
 	}
-	if err := artifact.verify(content); err != nil {
+	if err := artifact.verify(content, v.admission); err != nil {
 		return err
 	}
 	delete(v.expected, name)
@@ -158,7 +165,10 @@ func (v *artifactVerifier) account(info fs.FileInfo) error {
 	return nil
 }
 
-func (a Artifact) verify(content fileSnapshot) error {
+func (a Artifact) verify(content fileSnapshot, admission treeAdmission) error {
+	if admission == sealedTree && content.mode.Perm() != a.fileMode(sealedTree) {
+		return ErrIntegrity
+	}
 	if int64(len(content.data)) != a.Size || value.Hash(content.data) != a.Digest || (content.mode.Perm()&fileExecuteMask != 0) != a.Executable {
 		return ErrIntegrity
 	}

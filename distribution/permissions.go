@@ -19,7 +19,30 @@ const (
 	specialFileModes     = fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky
 )
 
-func sealContents(root *os.Root) error {
+type treeAdmission uint8
+
+const (
+	unsealedTree treeAdmission = iota
+	sealedTree
+)
+
+func (a Artifact) fileMode(admission treeAdmission) fs.FileMode {
+	mode := privateFileMode
+	if admission == sealedTree {
+		mode = sealedFileMode
+	}
+	if a.Executable {
+		mode |= ownerExecuteBit
+	}
+	return mode
+}
+
+func sealContents(root *os.Root, manifest Manifest) error {
+	artifacts := make(map[string]Artifact, len(manifest.Artifacts))
+	for _, artifact := range manifest.Artifacts {
+		artifacts[artifact.Path] = artifact
+	}
+
 	return fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -30,12 +53,10 @@ func sealContents(root *os.Root) error {
 		mode := sealedFileMode
 		if entry.IsDir() {
 			mode = sealedDirectoryMode
-		} else {
-			info, err := entry.Info()
-			if err != nil {
-				return err
-			}
-			mode |= info.Mode().Perm() & fileExecuteMask
+		} else if artifact, found := artifacts[name]; found {
+			mode = artifact.fileMode(sealedTree)
+		} else if !isReleaseMetadata(name) {
+			return ErrIntegrity
 		}
 		return root.Chmod(name, mode)
 	})

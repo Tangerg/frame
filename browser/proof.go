@@ -94,7 +94,7 @@ func (b *Bridge) releaseProven(ctx context.Context, proof CloseProof, attempt sq
 func (b *Bridge) provenAttempt(ctx context.Context, session *realmSession, proof CloseProof) (sqlite.Attempt, error) {
 	b.mu.Lock()
 	entry := b.executions.get(proof.Execution.ID)
-	unadmitted := entry != nil && !entry.admitted
+	unadmitted := entry != nil && !entry.runtimeOwnsExit()
 	b.mu.Unlock()
 	if unadmitted {
 		return sqlite.Attempt{}, frame.ErrStaleBinding
@@ -164,7 +164,11 @@ func (b *Bridge) bindProofPublication(session *realmSession, attempt sqlite.Atte
 		if publication.execution != attempt.ID || publication.Realm != session.realm {
 			return nil, frame.ErrStaleBinding
 		}
-		if _, err := b.config.Host.Publication(publication.execution, publication.publication.Publication.OperationID); !errors.Is(err, frame.ErrUnavailable) {
+		result, err := publication.publicationResult()
+		if err != nil || result.Publication == nil {
+			return nil, errors.Join(frame.ErrStaleBinding, err)
+		}
+		if _, err := b.config.Host.Publication(publication.execution, result.Publication.OperationID); !errors.Is(err, frame.ErrUnavailable) {
 			return nil, errors.Join(frame.ErrStaleBinding, err)
 		}
 		return publication, nil
@@ -356,7 +360,7 @@ func (b *Bridge) releaseExecution(ctx context.Context, attempt sqlite.Attempt, p
 	b.mu.Lock()
 	entry := b.executions.get(attempt.ID)
 	if entry != nil {
-		entry.retiring = true
+		entry.fence()
 	}
 	pending := b.unjoinedLocked(make(map[*controlOperation]bool), func(operation *controlOperation) bool { return operation.execution == attempt.ID })
 	b.mu.Unlock()
@@ -390,7 +394,7 @@ func (b *Bridge) releaseExecution(ctx context.Context, attempt sqlite.Attempt, p
 		return err
 	}
 	if entry != nil {
-		if err := entry.resource.ConfirmReleased(nil); err != nil {
+		if err := entry.resourceHandle().ConfirmReleased(nil); err != nil {
 			return err
 		}
 	}
@@ -456,7 +460,7 @@ func (b *Bridge) reportedExecutions(session *realmSession, request ReconnectRequ
 	entries := make([]*browserExecution, 0, len(request.Executions))
 	for _, execution := range request.Executions {
 		entry := b.executions.get(execution.ID)
-		if entry == nil || entry.plan.Execution != execution || entry.plan.Realm != session.realm || entry.retiring {
+		if entry == nil || entry.plan.Execution != execution || entry.plan.Realm != session.realm || entry.isFenced() {
 			return nil, false
 		}
 		entries = append(entries, entry)

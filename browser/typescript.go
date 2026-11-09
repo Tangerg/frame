@@ -39,7 +39,7 @@ func WriteTypeScript(out io.Writer) error {
 	if err := emitter.writeProtocol(); err != nil {
 		return err
 	}
-	if err := emitter.writeResponseDecoders(); err != nil {
+	if err := emitter.writeProtocolDecoders(); err != nil {
 		return err
 	}
 	return emitter.finish(out)

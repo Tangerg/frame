@@ -96,7 +96,7 @@ func (b *Bridge) planExecution(session *realmSession, binding frame.BindingSnaps
 			return nil, err
 		}
 	}
-	if entry == nil || entry.retiring || session.cleanupOnly {
+	if entry == nil || entry.isFenced() || session.cleanupOnly {
 		return nil, frame.ErrStaleBinding
 	}
 	operation.execution = entry.plan.Execution.ID
@@ -114,7 +114,7 @@ func (b *Bridge) readyExecutionLocked(realm Realm, binding frame.BindingSnapshot
 	}
 	var found *browserExecution
 	for _, candidate := range b.executions.all() {
-		if candidate.retiring || candidate.plan.Realm != realm || candidate.ready == nil || candidate.attempt.Source != root || candidate.plan.Units[0].Instance.Configuration != configuration {
+		if candidate.isFenced() || candidate.plan.Realm != realm || !candidate.hasReady() || candidate.attempt.Source != root || candidate.plan.Units[0].Instance.Configuration != configuration {
 			continue
 		}
 		if found != nil {

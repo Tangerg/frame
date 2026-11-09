@@ -83,6 +83,22 @@ export class ExactNumber {
 
 export type JSONNumber = number | bigint | ExactNumber;
 
+export type JSONValue =
+  | null
+  | boolean
+  | string
+  | JSONNumber
+  | JSONValue[]
+  | { [key: string]: JSONValue };
+
+export type FrozenJSONValue =
+  | null
+  | boolean
+  | string
+  | JSONNumber
+  | readonly FrozenJSONValue[]
+  | { readonly [key: string]: FrozenJSONValue };
+
 export function isJSONNumber(value: unknown): value is JSONNumber {
   return (
     (typeof value === "number" && Number.isFinite(value)) ||
@@ -155,6 +171,13 @@ export function isJSONInteger(value: unknown): boolean {
 }
 
 export function equalJSON(left: unknown, right: unknown): boolean {
+  return equalCapturedJSON(cloneJSON(left), cloneJSON(right));
+}
+
+function equalCapturedJSON(
+  left: JSONValue | undefined,
+  right: JSONValue | undefined,
+): boolean {
   if (isJSONNumber(left) || isJSONNumber(right))
     return (
       isJSONNumber(left) &&
@@ -166,7 +189,7 @@ export function equalJSON(left: unknown, right: unknown): boolean {
       Array.isArray(left) &&
       Array.isArray(right) &&
       left.length === right.length &&
-      left.every((value, index) => equalJSON(value, right[index]))
+      left.every((value, index) => equalCapturedJSON(value, right[index]))
     );
   if (
     left !== null &&
@@ -174,12 +197,12 @@ export function equalJSON(left: unknown, right: unknown): boolean {
     typeof left === "object" &&
     typeof right === "object"
   ) {
-    const a = left as Record<string, unknown>,
-      b = right as Record<string, unknown>;
+    const a = left as Record<string, JSONValue>,
+      b = right as Record<string, JSONValue>;
     return (
       Object.keys(a).length === Object.keys(b).length &&
       Object.keys(a).every(
-        (key) => Object.hasOwn(b, key) && equalJSON(a[key], b[key]),
+        (key) => Object.hasOwn(b, key) && equalCapturedJSON(a[key], b[key]),
       )
     );
   }
@@ -215,11 +238,11 @@ export function projectNumber(value: unknown): number {
 }
 
 // Structured cloning strips ExactNumber's encoding from captured JSON evidence.
-export function cloneJSON<T>(value: T): T {
-  return value === undefined ? value : (parseJSON(stringifyJSON(value)) as T);
+export function cloneJSON(value: unknown): JSONValue | undefined {
+  return value === undefined ? value : parseJSON(stringifyJSON(value));
 }
 
-export function freezeJSON<T>(value: T): T {
+export function freezeJSON(value: unknown): FrozenJSONValue | undefined {
   const copy = cloneJSON(value);
   const freeze = (value: unknown): void => {
     if (value === null || typeof value !== "object" || Object.isFrozen(value))
@@ -230,9 +253,9 @@ export function freezeJSON<T>(value: T): T {
   freeze(copy);
   return copy;
 }
-export function parseJSON(text: string): unknown {
+export function parseJSON(text: string): JSONValue {
   validateJSON(text);
-  function read(node: Node): unknown {
+  function read(node: Node): JSONValue {
     if (node.type === "number") {
       const raw = text.slice(node.offset, node.offset + node.length);
       const value = node.value as number;
@@ -247,7 +270,7 @@ export function parseJSON(text: string): unknown {
     }
     if (node.type === "array") return (node.children ?? []).map(read);
     if (node.type === "object") {
-      const value: Record<string, unknown> = {};
+      const value: Record<string, JSONValue> = {};
       for (const property of node.children ?? []) {
         Object.defineProperty(value, property.children![0]!.value as string, {
           value: read(property.children![1]!),
@@ -258,7 +281,7 @@ export function parseJSON(text: string): unknown {
       }
       return value;
     }
-    return node.value as unknown;
+    return node.value as JSONValue;
   }
   return read(parseTree(text)!);
 }

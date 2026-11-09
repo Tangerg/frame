@@ -296,3 +296,78 @@ test("release resolves an uncertain opening with its original identity before se
     },
   );
 });
+
+test("contract discovery retry retains an acknowledged opening without opening another Realm", async (t) => {
+  let discoveries = 0;
+  await withApplication(
+    t,
+    (request, next) => {
+      if (request.path === "/api/contracts" && ++discoveries === 1)
+        throw new Error("contract discovery unavailable");
+      return next();
+    },
+    async ({ click, element, requests }) => {
+      await click("connect");
+      assert.match(element("error").textContent, /contract discovery/);
+      await click("connect");
+      assert.match(element("error").textContent, /activation transport/);
+      assert.equal(
+        requests.filter(({ path }) => path === "/api/realm/open").length,
+        1,
+      );
+      assert.equal(discoveries, 2);
+      assert.equal(
+        requests.filter(({ path }) => path === "/api/realm/resume").length,
+        0,
+      );
+      await click("close");
+      assert.match(element("connection-state").textContent, /released/);
+    },
+  );
+});
+
+test("release retry resumes only the original closed Realm after credential rotation", async (t) => {
+  const recoveredToken = "recovered-token";
+  await withApplication(
+    t,
+    async (request, next) => {
+      if (
+        request.path === "/api/realm/seal" &&
+        request.body.token !== recoveredToken
+      )
+        return Response.json(
+          { code: "fenced", error: "credential rotated" },
+          { status: 403 },
+        );
+      if (request.path === "/api/realm/resume") {
+        const credentials = await (await next()).json();
+        return Response.json({ ...credentials, token: recoveredToken });
+      }
+      return next();
+    },
+    async ({ click, element, requests, realm }) => {
+      await click("connect");
+      await click("close");
+      assert.match(element("error").textContent, /release did not complete/);
+      assert.equal(element("reload").disabled, true);
+      assert.equal(element("reconnect").disabled, true);
+      await click("close");
+      assert.equal(element("error").textContent, "");
+      assert.match(element("connection-state").textContent, /released/);
+      assert.equal(element("reload").disabled, false);
+      const resumes = requests.filter(
+        ({ path }) => path === "/api/realm/resume",
+      );
+      assert.equal(resumes.length, 1);
+      assert.deepEqual(resumes[0].body.realm, realm);
+      assert.equal(
+        requests.filter(({ path }) => path === "/api/realm/open").length,
+        1,
+      );
+      assert.equal(
+        requests.filter(({ path }) => path === "/api/preview/activate").length,
+        1,
+      );
+    },
+  );
+});

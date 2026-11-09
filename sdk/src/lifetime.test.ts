@@ -10,6 +10,35 @@ function deferred<T>() {
 }
 
 describe("structured lifetime", () => {
+  it.each(["parent", "sibling"] as const)(
+    "seals child admission before a %s abort handler reenters",
+    async (source) => {
+      const parent = new Lifetime("parent");
+      const sibling = parent.branch("sibling");
+      const child = parent.branch("child");
+      const work = deferred<void>();
+      const running = child.run(() => work.promise);
+      const attempted: string[] = [];
+      const signal = source === "parent" ? parent.signal : sibling.signal;
+      signal.addEventListener("abort", () => {
+        for (const [name, enter] of [
+          ["run", () => child.run(() => attempted.push("dispatched"))],
+          ["branch", () => child.branch("late")],
+          ["cleanup", () => child.cleanup(() => {})],
+        ] as const) {
+          expect(enter).toThrow("no longer accepts");
+          attempted.push(name);
+        }
+      });
+      const exit = parent.beginClose();
+      expect(attempted).toEqual(["run", "branch", "cleanup"]);
+      expect(exit.outcome.status).toBe("unconfirmed");
+      work.resolve();
+      await running;
+      expect((await exit.wait()).status).toBe("released");
+    },
+  );
+
   it("registers work before reentrant close and joins it", async () => {
     const owner = new Lifetime("owner");
     const finished = deferred<number>();

@@ -198,27 +198,40 @@ func (p *Prepared) Acquire(ctx context.Context, owner *frame.Lifetime, reference
 	}); err != nil {
 		return nil, err
 	}
-	work, err := use.Lifetime().Enter(ctx)
+	work, err := use.Enter(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer work.Finish()
-	file, err := os.CreateTemp(p.output, "view-*.html")
+	result := &View{use: use, report: report}
+	if _, err := work.Cleanup("authored document view", result.releaseFile); err != nil {
+		return nil, err
+	}
+	result.file, err = os.CreateTemp(p.output, "view-*.html")
 	if err != nil {
 		return nil, err
 	}
-	release := func() error { return errors.Join(file.Close(), os.Remove(file.Name())) }
-	if _, err := work.Cleanup("authored document view", release); err != nil {
-		return nil, errors.Join(err, release())
-	}
-	written, err := io.WriteString(file, report.Converted.HTML)
+	written, err := io.WriteString(result.file, report.Converted.HTML)
 	if err != nil {
 		return nil, err
 	}
 	if err := contextError(work.Context()); err != nil {
 		return nil, err
 	}
-	return &View{use: use, file: file, size: int64(written), report: report}, nil
+	result.size = int64(written)
+	return result, nil
+}
+
+func (v *View) releaseFile() error {
+	if v.file == nil {
+		return nil
+	}
+	closeErr := v.file.Close()
+	removeErr := os.Remove(v.file.Name())
+	if errors.Is(removeErr, os.ErrNotExist) {
+		removeErr = nil
+	}
+	return errors.Join(closeErr, removeErr)
 }
 
 func (v *View) Report() Report {
@@ -233,7 +246,7 @@ func (v *View) WithReader(ctx context.Context, read func(context.Context, io.Rea
 	if read == nil {
 		return errors.New("authoring: resource reader is required")
 	}
-	work, err := v.use.Lifetime().Enter(ctx)
+	work, err := v.use.Enter(ctx)
 	if err != nil {
 		return err
 	}

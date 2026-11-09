@@ -45,7 +45,7 @@ func withAccess(ctx context.Context, use *Use, call func(*Access) error) error {
 	if use == nil || call == nil {
 		return ErrInvalid
 	}
-	work, err := use.enter(ctx)
+	work, err := use.Enter(ctx)
 	if err != nil {
 		return err
 	}

@@ -132,7 +132,7 @@ func typeScriptTypeName(t reflect.Type) string {
 	// Names must work in both module declarations and bare type references.
 	// Type operators cannot be references even when their declarations parse.
 	switch name {
-	case "any", "await", "bigint", "boolean", "break", "case", "catch", "class", "const", "continue",
+	case "any", "as", "await", "bigint", "boolean", "break", "case", "catch", "class", "const", "continue",
 		"debugger", "default", "delete", "do", "else", "enum", "export", "extends", "false", "finally", "for", "function",
 		"if", "implements", "import", "in", "infer", "instanceof", "interface", "keyof", "let", "never", "new", "null", "number", "object",
 		"package", "private", "protected", "public", "readonly", "return", "static", "string", "super", "switch", "symbol",

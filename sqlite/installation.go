@@ -34,26 +34,46 @@ func (s *Store) CommitInstallation(ctx context.Context, change frame.Installatio
 		}
 		return frame.CommitRejected, err
 	}
+	commit := installationCommit{owner: s.control, id: submission, request: request}
 	defer func() {
 		cause := recover()
-		if cause == nil && state != frame.CommitRejected {
-			return
+		var cleanupErr error
+		if state != frame.CommitSucceeded {
+			state, cleanupErr = commit.conclude(context.WithoutCancel(ctx))
+			err = errors.Join(err, cleanupErr)
 		}
-		// The private control receipt has no external holder to release it after
-		// rejection or panic. Compaction still requires terminal synchronization.
-		cleanupErr := s.control.compactSettled(context.WithoutCancel(ctx))
 		if cause != nil {
 			if cleanupErr != nil {
 				panic(errors.Join(panicError(cause), cleanupErr))
 			}
 			panic(cause)
 		}
-		err = errors.Join(err, cleanupErr)
 	}()
 	settlement, err := s.control.commit(ctx, submission, request, func(ctx context.Context, tx Executor) ([]byte, error) {
 		return []byte(id), s.applyInstallation(ctx, tx, id, change)
 	}, nil, confirmByCaller)
 	return settlement.State, err
+}
+
+// The installation call owns its private intent even before mutation enters.
+// Every unsuccessful return, panic and Goexit must conclude that same intent.
+type installationCommit struct {
+	owner   Owner
+	id      SubmissionID
+	request []byte
+}
+
+func (c installationCommit) conclude(ctx context.Context) (frame.CommitState, error) {
+	settlement, err := c.owner.settlePrepared(ctx, c.id, c.request)
+	if err != nil || settlement.State != frame.CommitRejected {
+		err = errors.Join(ErrIndeterminate, ErrUnsettled, err)
+		c.owner.store.admission.RequireRecovery(err)
+		return frame.CommitIndeterminate, err
+	}
+	if _, err := c.owner.synchronize(settlement, nil, confirmOnCommit); err != nil {
+		return frame.CommitRejected, err
+	}
+	return frame.CommitRejected, c.owner.compactSettled(ctx)
 }
 
 func changedInstallation(change frame.InstallationChange) (frame.InstallationID, error) {

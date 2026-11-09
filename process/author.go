@@ -123,7 +123,7 @@ func (s *server) activateUnit(ctx context.Context, raw jsontext.Value) (jsontext
 	}
 	work, err := s.life.Enter(ctx)
 	if err != nil {
-		return nil, err
+		return nil, lifetimeAdmissionError(err)
 	}
 	defer work.Finish()
 	if err := s.transition(prepared, activating); err != nil {
@@ -152,7 +152,7 @@ func (s *server) call(ctx context.Context, raw jsontext.Value) (jsontext.Value, 
 	}
 	work, err := s.life.Enter(ctx)
 	if err != nil {
-		return nil, err
+		return nil, lifetimeAdmissionError(err)
 	}
 	defer work.Finish()
 	return dispatchCall(work.Context(), s.peer, s.bound, raw)
@@ -186,7 +186,7 @@ func (s *server) prepare(ctx context.Context, raw jsontext.Value) (jsontext.Valu
 	}
 	work, err := s.life.Enter(ctx)
 	if err != nil {
-		return nil, err
+		return nil, lifetimeAdmissionError(err)
 	}
 	defer work.Finish()
 	if err := s.transition(described, preparing); err != nil {

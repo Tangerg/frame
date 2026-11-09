@@ -44,6 +44,11 @@ observation remains Unknown and cannot hand authority to a replacement runner.
 
 `NewClient` validates the static socket address without connecting. Every control
 operation opens its own connection and verifies the physical authority directory.
+Each private control request has an `operation` and a required `params` object.
+The selected operation alone determines the parameter type. Missing, null or
+foreign fields are rejected before dispatch; responses require complete typed
+evidence, including an explicit `fenced` boolean in every identity. The client
+and runner must use this same protocol revision.
 The client API is `NewClient`, `Identity`, `Fence`, `Launch`, `Attach`, `Inspect`,
 `CloseAttempt`, `AcknowledgeExit` and `ProveAbsent`. `Identity` identifies the actual runner incarnation. Record that
 identity as the execution Realm, and verify the returned running observation before

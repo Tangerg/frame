@@ -62,7 +62,12 @@ func (u *Use) Sources() []ExportRef {
 	return slices.Clone(u.binding.Roots)
 }
 
-func (u *Use) enter(ctx context.Context) (*Work, error) {
+// Enter retains this Use's resources and checks its original grant before new
+// work begins, even while asynchronous retirement has not observed a fence.
+func (u *Use) Enter(ctx context.Context) (*Work, error) {
+	if u == nil || u.lifetime == nil {
+		return nil, ErrInvalid
+	}
 	work, err := u.lifetime.Enter(ctx)
 	if err != nil {
 		return nil, err
@@ -266,8 +271,11 @@ func (h *Host) readyInstanceLocked(source UnitRef, realm RealmID) (*unitInstance
 		return nil, err
 	}
 	instance := h.instances[instanceKey{source: source, realm: realm}]
-	if instance == nil || !instance.servingLocked() {
+	if instance == nil {
 		return nil, ErrUnavailable
+	}
+	if err := instance.validateServingLocked(); err != nil {
+		return nil, err
 	}
 	return instance, nil
 }
@@ -648,7 +656,7 @@ func BorrowExport[V any](ctx context.Context, use *Use, source ExportRef, call f
 	if use == nil || call == nil {
 		return ErrInvalid
 	}
-	work, err := use.enter(ctx)
+	work, err := use.Enter(ctx)
 	if err != nil {
 		return err
 	}

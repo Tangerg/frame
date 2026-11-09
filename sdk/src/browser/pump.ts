@@ -1,10 +1,11 @@
 import { FrameError } from "../index.js";
+import { observeCallback } from "../callback-observation.js";
 import { Runtime } from "./runtime.js";
 
 export interface PumpOptions {
   readonly intervalMilliseconds: number;
   readonly preparationCapacity: number;
-  onError(error: unknown): void;
+  onError(error: unknown): unknown;
 }
 
 /** Pending plans stay at the Host until their original execution settles. */
@@ -91,12 +92,10 @@ export class ControlPump {
 
   #report(error: unknown): void {
     if (this.#stopping.signal.aborted) return;
-    try {
-      this.#onError(error);
-    } catch (error) {
+    observeCallback(this.#onError, error, (error) => {
       this.#failure ??= { error };
       this.#stopping.abort(error);
-    }
+    });
   }
 
   run(signal?: AbortSignal): Promise<void> {

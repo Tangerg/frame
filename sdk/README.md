@@ -93,6 +93,9 @@ observe one exit identity. Final reports contain bounded diagnostic categories,
 not thrown payloads or retained plugin closures.
 The cancellation reason is an immutable closed-status error. Use the original
 Exit's identity to identify an exit; the reason object does not identify one.
+Exit observers may return promises. Their synchronous and asynchronous failures
+are isolated from release evidence, and their completion is not a resource
+dependency. This also applies to observing an exit that has already completed.
 
 `acquire` and `withResource` build resource handles on that same Lifetime. They
 reserve cleanup before asynchronous acquisition and release a late result when

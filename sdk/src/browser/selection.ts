@@ -24,7 +24,7 @@ export function select<M, V>(
   choose: (choices: readonly Choice<M>[]) => readonly Choice<M>[],
   decode: (value: unknown) => M,
 ): Selection {
-  const captured = snapshot.points.find((entry) =>
+  const captured = captureProtocol("Snapshot", snapshot).points.find((entry) =>
     sameContract(entry.point, point.ref),
   );
   if (!captured)
@@ -37,7 +37,7 @@ export function select<M, V>(
   const choices = Object.freeze(
     captured.candidates.map((candidate) =>
       Object.freeze({
-        candidate: captureProtocol("Candidate", candidate),
+        candidate,
         metadata: frozen(decode(parseJSON(candidate.metadataJson))),
       }),
     ),

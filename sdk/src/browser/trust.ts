@@ -3,13 +3,8 @@ const loopbackIPv6 = "[::1]";
 const localhostName = "localhost";
 const localhostSuffix = ".localhost";
 
-/**
- * Reports whether a network attacker cannot replace what `url` names, following
- * the W3C Secure Contexts "potentially trustworthy URL" rules a browser applies
- * to its own secure contexts. Approval binds a digest that the browser cannot
- * verify against fetched module bytes, and the control channel carries the realm
- * credential, so both depend on the transport itself being trustworthy.
- */
+// The realm credential needs trustworthy transport even though module evaluation
+// independently verifies the approved digest against its captured bytes.
 export function potentiallyTrustworthy(url: URL): boolean {
   switch (url.protocol) {
     case "https:":

@@ -133,24 +133,29 @@ func (h *Host) PreparePublication(ctx context.Context, instanceID string, value 
 	h.mu.Lock()
 	instance := h.allInstances[instanceID]
 	err := ErrUnavailable
+	var work *Work
 	if instance != nil {
-		err = instance.validatePublicationLocked()
+		err = instance.validateServingLocked()
+		if err == nil {
+			work, err = instance.lifetime.Enter(ctx)
+		}
 	}
 	h.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
+	defer work.Finish()
 	if !declaresPoint(instance.unit, value.Contract) {
 		return nil, ErrContractMismatch
 	}
 	if err := validateName("export name", value.Name); err != nil {
 		return nil, err
 	}
-	prepared, err := h.prepareExport(ctx, instance, value)
+	prepared, err := h.prepareExport(work.Context(), instance, value)
 	if err != nil {
 		return nil, err
 	}
-	if err := contextError(ctx); err != nil {
+	if err := instance.validateCurrent(work.Context()); err != nil {
 		return nil, err
 	}
 	return &PublicationRequest{owner: h.identity, identity: publicationRequestID(prepared.id), instance: instance, source: prepared.source, metadata: prepared.metadata, value: prepared.value}, nil
@@ -173,7 +178,7 @@ func (h *Host) Publish(ctx context.Context, operationID string, request *Publica
 		if h.allInstances[instance.id] != instance {
 			return ErrUnavailable
 		}
-		if err := instance.validatePublicationLocked(); err != nil {
+		if err := instance.validateServingLocked(); err != nil {
 			return err
 		}
 		value, err := instance.publishLocked(operationID, request)
@@ -184,13 +189,6 @@ func (h *Host) Publish(ctx context.Context, operationID string, request *Publica
 		return nil
 	})
 	return result, err
-}
-
-func (i *unitInstance) validatePublicationLocked() error {
-	if done, err := i.preparedLocked(); !done || err != nil {
-		return ErrUnavailable
-	}
-	return i.validateCurrentLocked()
 }
 
 func (i *unitInstance) publishLocked(operationID string, request *PublicationRequest) (*publication, error) {

@@ -38,6 +38,12 @@ open. The workbench owns source revisions, file limits, validation policy and
 the resulting report. The behavioral tests cover cancellation, cleanup after
 partial preparation, changing sources, and retirement with an outstanding view.
 
+Each view reader calls `Use.Enter` before accessing the file. The returned work
+keeps the original providers alive and checks the original scope even before an
+asynchronous fence notification closes the Use. File cleanup is reserved before
+creation; a previously removed temporary path does not invalidate a completed
+file close.
+
 The non-test Go files can be copied together into an independent author module.
 They import only public Frame packages. The author owns its regular-file and
 byte-limit policy; the Unix opener refuses a FIFO without waiting for a writer.

@@ -64,7 +64,7 @@ func (s *staging) writeFile(ctx context.Context, name string, mode fs.FileMode, 
 		return err
 	}
 	_, writeErr := file.Write(data)
-	return errors.Join(writeErr, file.Sync(), file.Close())
+	return errors.Join(writeErr, file.Close())
 }
 
 // Source paths can change during staging; the copied file must retain its

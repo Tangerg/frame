@@ -48,7 +48,7 @@ func TestCapacityRefusalHasAnOriginalDurableReceiptWithoutAnActiveSlot(t *testin
 	t.Cleanup(func() { _ = host.Close() })
 	done := make(chan struct{})
 	go func() { defer close(done); defer endpoint.Close(); server.handle(t.Context(), endpoint, func() {}) }()
-	data, err := encodeRequest(controlRequest{Operation: methodLaunch, Launch: &request})
+	data, err := encodeRequest(launchControlRequest{request})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestControlWriteWithoutReplyCannotProveNonDispatch(t *testing.T) {
 	host, endpoint := net.Pipe()
 	defer host.Close()
 	go func() { defer endpoint.Close(); data := make([]byte, 1); _, _ = endpoint.Read(data) }()
-	data, err := encodeRequest(controlRequest{Operation: methodLaunch, Launch: &request})
+	data, err := encodeRequest(launchControlRequest{request})
 	if err != nil {
 		t.Fatal(err)
 	}

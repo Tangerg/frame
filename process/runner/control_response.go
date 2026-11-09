@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/value"
 )
 
 type controlResult interface{ controlResult() }
@@ -133,13 +134,13 @@ func decodeControlResult(data []byte, method controlMethod) (controlResult, erro
 }
 
 func decodeControlValue[T any](data []byte) (T, error) {
-	var result *T
-	err := json.Unmarshal(data, &result, json.RejectUnknownMembers(true))
-	if err != nil || result == nil {
+	var result T
+	err := value.DecodeValue(data, &result, "runner control")
+	if err != nil {
 		var zero T
 		return zero, errors.Join(frame.ErrInvalid, err)
 	}
-	return *result, nil
+	return result, nil
 }
 
 func decodeControlError(data []byte) (error, error) {

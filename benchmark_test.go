@@ -130,7 +130,7 @@ func BenchmarkUseCancelAndJoin(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		work, err := use.Lifetime().Enter(b.Context())
+		work, err := use.Enter(b.Context())
 		if err != nil {
 			b.Fatal(err)
 		}

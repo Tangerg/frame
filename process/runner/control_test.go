@@ -3,7 +3,6 @@ package runner
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"errors"
 	"net"
 	"strings"
@@ -13,12 +12,12 @@ import (
 )
 
 func TestControlRequestLimitIncludesLineFeed(t *testing.T) {
-	req := controlRequest{Operation: methodInspect, AttemptID: "x"}
-	encoded, err := json.Marshal(req)
+	req := inspectRequest{AttemptID: "x"}
+	encoded, err := encodeRequest(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.AttemptID += strings.Repeat("x", maxControlBytes-len(encoded)-1)
+	req.AttemptID += strings.Repeat("x", maxControlBytes-len(encoded))
 	var wire bytes.Buffer
 	if err = writeRequest(&wire, req); err != nil {
 		t.Fatal(err)

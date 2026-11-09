@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/Tangerg/frame"
@@ -216,71 +217,92 @@ func TestRejectedInstallationReclaimsItsPrivateSubmissionCapacity(t *testing.T) 
 	}
 }
 
-func TestInstallationProjectionPanicReleasesReceiptBeforeHostRecovery(t *testing.T) {
-	admission := frame.NewAdmission()
-	config := testConfig(filepath.Join(t.TempDir(), "private-receipts.db"), admission)
-	config.MaxSubmissionsPerOwner = 1
-	cause := errors.New("installation projection panicked")
-	panics := true
-	config.Owners[0].ProjectInstallation = func(context.Context, Executor, frame.InstallationChange) error {
-		if panics {
-			panic(cause)
-		}
-		return nil
-	}
-	store, err := Open(t.Context(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	host, err := frame.NewHost(t.Context(), frame.HostConfig{Admission: admission, Installations: store})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer host.Close(context.Background())
-	plugin, err := frame.Define(frame.Definition{Revision: value.Hash(nil)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	installation := frame.InstallationConfig{ID: "example", Plugin: plugin}
-	for range 3 {
-		recovered := capturePanic(func() { _, _ = host.Install(t.Context(), installation) })
-		failure, ok := recovered.(error)
-		if !ok || !errors.Is(failure, cause) {
-			t.Fatalf("projection panic lost its original cause: %v", recovered)
-		}
-		records, err := store.Installations(t.Context())
-		if err != nil || len(records) != 0 {
-			t.Fatalf("rolled-back projection retained installation facts: records=%v error=%v", records, err)
-		}
-		var receipts int
-		if err := store.Read(t.Context(), func(reader Reader) error {
-			return reader.QueryRowContext(t.Context(), `SELECT count(*) FROM frame_submissions WHERE owner_id=?`, store.control.id).Scan(&receipts)
-		}); err != nil || receipts != 0 {
-			t.Fatalf("settled panic retained its private receipt before recovery: count=%d error=%v", receipts, err)
-		}
-		if !errors.Is(admission.RecoveryError(), frame.ErrRecoveryRequired) {
-			t.Fatalf("interrupted Host boundary remained open: %v", admission.RecoveryError())
-		}
-		// The Host did not observe SQLite's rollback acknowledgement. Restore the
-		// original store's facts before allowing another installation attempt.
-		records, err = store.RecoverInstallations(t.Context())
-		if err != nil || len(records) != 0 {
-			t.Fatalf("recovery changed the original rollback: records=%v error=%v", records, err)
-		}
-		if err := host.Restore(t.Context(), records, nil); err != nil {
-			t.Fatal(err)
-		}
-		if err := store.ConfirmRestoredInstallations(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-		if err := admission.Recover(t.Context(), func() error { return nil }); err != nil {
-			t.Fatal(err)
-		}
-	}
-	panics = false
-	if _, err := host.Install(t.Context(), installation); err != nil {
-		t.Fatalf("settled panic still occupies the private receipt budget: %v", err)
+func TestInterruptedInstallationProjectionReleasesReceiptBeforeHostRecovery(t *testing.T) {
+	for _, interruption := range []string{"panic", "goexit"} {
+		t.Run(interruption, func(t *testing.T) {
+			admission := frame.NewAdmission()
+			config := testConfig(filepath.Join(t.TempDir(), "private-receipts.db"), admission)
+			config.MaxSubmissionsPerOwner = 1
+			cause := errors.New("installation projection panicked")
+			interrupts := true
+			config.Owners[0].ProjectInstallation = func(context.Context, Executor, frame.InstallationChange) error {
+				if interrupts {
+					if interruption == "goexit" {
+						runtime.Goexit()
+					}
+					panic(cause)
+				}
+				return nil
+			}
+			store, err := Open(t.Context(), config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			host, err := frame.NewHost(t.Context(), frame.HostConfig{Admission: admission, Installations: store})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer host.Close(context.Background())
+			plugin, err := frame.Define(frame.Definition{Revision: value.Hash(nil)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			installation := frame.InstallationConfig{ID: "example", Plugin: plugin}
+			for range 3 {
+				finished := make(chan any, 1)
+				returned := false
+				go func() {
+					defer func() { finished <- recover() }()
+					_, _ = host.Install(t.Context(), installation)
+					returned = true
+				}()
+				recovered := <-finished
+				if returned {
+					t.Fatal("interrupted installation returned normally")
+				}
+				if interruption == "panic" {
+					failure, ok := recovered.(error)
+					if !ok || !errors.Is(failure, cause) {
+						t.Fatalf("projection panic lost its original cause: %v", recovered)
+					}
+				} else if recovered != nil {
+					t.Fatalf("Goexit acquired an unrelated panic: %v", recovered)
+				}
+				records, err := store.Installations(t.Context())
+				if err != nil || len(records) != 0 {
+					t.Fatalf("rolled-back projection retained installation facts: records=%v error=%v", records, err)
+				}
+				var receipts int
+				if err := store.Read(t.Context(), func(reader Reader) error {
+					return reader.QueryRowContext(t.Context(), `SELECT count(*) FROM frame_submissions WHERE owner_id=?`, store.control.id).Scan(&receipts)
+				}); err != nil || receipts != 0 {
+					t.Fatalf("settled interruption retained its private receipt before recovery: count=%d error=%v", receipts, err)
+				}
+				if !errors.Is(admission.RecoveryError(), frame.ErrRecoveryRequired) {
+					t.Fatalf("interrupted Host boundary remained open: %v", admission.RecoveryError())
+				}
+				// The Host did not observe SQLite's rollback acknowledgement. Restore the
+				// original store's facts before allowing another installation attempt.
+				records, err = store.RecoverInstallations(t.Context())
+				if err != nil || len(records) != 0 {
+					t.Fatalf("recovery changed the original rollback: records=%v error=%v", records, err)
+				}
+				if err := host.Restore(t.Context(), records, nil); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.ConfirmRestoredInstallations(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if err := admission.Recover(t.Context(), func() error { return nil }); err != nil {
+					t.Fatal(err)
+				}
+			}
+			interrupts = false
+			if _, err := host.Install(t.Context(), installation); err != nil {
+				t.Fatalf("settled interruption still occupies the private receipt budget: %v", err)
+			}
+		})
 	}
 }
 

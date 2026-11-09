@@ -18,7 +18,7 @@ func (s *Store) publishHeld(ctx context.Context, staged *staging, source Source)
 	if err := s.checkTrust(ctx, source, release); err != nil {
 		return nil, errors.Join(ErrUntrusted, err)
 	}
-	if err := sealContents(staged.root, release.Manifest); err != nil {
+	if err := sealReleaseContents(ctx, staged.root, release.Manifest, s.limits.Entries); err != nil {
 		return nil, err
 	}
 	var lease *Lease
@@ -37,9 +37,9 @@ func (s *Store) publishHeld(ctx context.Context, staged *staging, source Source)
 			if err := s.root.Rename(staged.name, destination); err != nil {
 				return err
 			}
-			// Seal the renamed root before admission can grant its first lease.
-			// A failed seal leaves a directory that openRelease refuses.
-			if err := staged.root.Chmod(".", sealedDirectoryMode); err != nil {
+			// Some filesystems require a writable source directory for rename.
+			// Seal and sync its original inode before publishing the parent entry.
+			if err := sealEntry(staged.root, ".", staged.identity, sealedDirectoryMode); err != nil {
 				return err
 			}
 			if err := s.lock.Sync(); err != nil {
@@ -103,10 +103,10 @@ func (s *Store) admitCached(ctx context.Context, source Source, digest value.Dig
 		if err != nil || !reflect.DeepEqual(checked, cached) {
 			return errors.Join(ErrIntegrity, err)
 		}
-		if err := sealContents(root, cached.Manifest); err != nil {
+		if err := sealReleaseContents(ctx, root, cached.Manifest, s.limits.Entries); err != nil {
 			return err
 		}
-		if err := root.Chmod(".", sealedDirectoryMode); err != nil {
+		if err := sealEntry(root, ".", original, sealedDirectoryMode); err != nil {
 			return err
 		}
 		if _, err := s.validate(ctx, root, sealedTree); err != nil {

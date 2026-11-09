@@ -121,6 +121,112 @@ function fixture(units: readonly Unit[], preparationCapacity = 2) {
 }
 
 describe("control pump ownership", () => {
+  it.each([
+    {
+      name: "synchronous exception",
+      fail(error: Error): unknown {
+        throw error;
+      },
+    },
+    {
+      name: "async rejection",
+      async fail(error: Error) {
+        await Promise.resolve();
+        throw error;
+      },
+    },
+    {
+      name: "thenable rejection",
+      fail(error: Error): unknown {
+        return new Proxy(
+          {},
+          {
+            get(_target, key) {
+              if (key !== "then") return undefined;
+              return (_resolve: unknown, reject: (error: unknown) => void) => {
+                reject(error);
+                reject(new Error("duplicate settlement"));
+                throw new Error("throw after settlement");
+              };
+            },
+          },
+        );
+      },
+    },
+    {
+      name: "throwing then getter",
+      fail(error: Error): unknown {
+        return new Proxy(
+          {},
+          {
+            get() {
+              throw error;
+            },
+          },
+        );
+      },
+    },
+  ])("stops on an error observer's $name", async ({ fail }) => {
+    const f = fixture([]);
+    const failure = new Error("diagnostic observer failed");
+    const polling = new Error("control poll failed");
+    vi.mocked(f.control.poll).mockRejectedValueOnce(polling);
+    const onError = vi.fn((error: unknown) => {
+      expect(error).toBe(polling);
+      return fail(failure);
+    });
+    const pump = new ControlPump(f.runtime, {
+      intervalMilliseconds: 1,
+      preparationCapacity: 1,
+      onError,
+    });
+
+    await expect(pump.run()).rejects.toMatchObject({ errors: [failure] });
+    await expect(pump.close()).rejects.toMatchObject({ errors: [failure] });
+    expect(onError).toHaveBeenCalledOnce();
+    expect(f.runtime.connection).toBe("closed");
+  });
+
+  it("allows an error observer to return the original pump close", async () => {
+    const f = fixture([]);
+    vi.mocked(f.control.poll).mockRejectedValueOnce(new Error("poll failed"));
+    let closing: Promise<void> | undefined;
+    const pump = new ControlPump(f.runtime, {
+      intervalMilliseconds: 1,
+      preparationCapacity: 1,
+      onError: () => (closing = pump.close()),
+    });
+
+    await pump.run();
+    expect(pump.close()).toBe(closing);
+    expect(f.runtime.connection).toBe("closed");
+  });
+
+  it("does not retain runtime resources for a pending diagnostic observer", async () => {
+    const f = fixture([]);
+    vi.mocked(f.control.poll).mockRejectedValueOnce(new Error("poll failed"));
+    const entered = Promise.withResolvers<void>();
+    const observer = Promise.withResolvers<void>();
+    const pump = new ControlPump(f.runtime, {
+      intervalMilliseconds: 1,
+      preparationCapacity: 1,
+      onError() {
+        entered.resolve();
+        return observer.promise;
+      },
+    });
+    const running = pump.run();
+    await entered.promise;
+    const closing = pump.close();
+    await closing;
+    await running;
+    observer.reject(new Error("diagnostic failed after shutdown"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(pump.close()).toBe(closing);
+    expect(f.runtime.connection).toBe("closed");
+  });
+
   it("captures prototype options once and invokes the original private-state handler", async () => {
     const failure = new Error("original setup failed");
     const f = fixture([

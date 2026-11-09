@@ -106,9 +106,12 @@ func (i *unitInstance) preparedLocked() (bool, error) {
 	}
 }
 
-func (i *unitInstance) servingLocked() bool {
+func (i *unitInstance) validateServingLocked() error {
 	done, err := i.preparedLocked()
-	return done && err == nil && !i.retiring
+	if !done || err != nil {
+		return errors.Join(ErrUnavailable, err)
+	}
+	return i.validateCurrentLocked()
 }
 
 func (i *unitInstance) observationLocked() InstanceObservation {
@@ -206,10 +209,10 @@ func (i *unitInstance) prepareUnit() error {
 			return contextError(work.Context())
 		}
 		h.mu.Lock()
-		serving := provider.servingLocked()
+		err := provider.validateServingLocked()
 		h.mu.Unlock()
-		if !serving {
-			return errors.Join(ErrUnavailable, provider.preparationErr)
+		if err != nil {
+			return err
 		}
 	}
 	setup := &Setup{host: h, instance: i, work: work, activation: &activation{}}

@@ -1,4 +1,5 @@
 import { FrameError, isErrorCode, type ErrorCode } from "./errors.js";
+import { observeCallback } from "./callback-observation.js";
 import type { ReleaseState } from "./protocol.generated.js";
 
 export type Awaitable<T> = T | PromiseLike<T>;
@@ -84,7 +85,13 @@ export interface Exit {
   readonly outcome: CloseOutcome;
   settled(signal?: AbortSignal): Promise<CloseOutcome>;
   wait(signal?: AbortSignal): Promise<CloseOutcome>;
-  subscribe(observer: (outcome: CloseOutcome) => void): () => void;
+  subscribe(observer: ExitObserver): () => void;
+}
+
+type ExitObserver = (outcome: CloseOutcome) => unknown;
+
+function ignoreExitObserverFailure(): void {
+  // Observation cannot delay or alter the original resource's release evidence.
 }
 
 /** An exit observation has no reference back to the resource owner. */
@@ -93,7 +100,7 @@ class ExitRecord {
   readonly id: string;
   #outcome: CloseOutcome;
   #published = false;
-  #observers = new Set<(outcome: CloseOutcome) => void>();
+  #observers = new Set<ExitObserver>();
 
   constructor(id: string) {
     this.id = boundedLifetimeText(id, "close identity");
@@ -112,8 +119,7 @@ class ExitRecord {
       },
       settled: (signal?: AbortSignal) => this.settled(signal),
       wait: (signal?: AbortSignal) => this.wait(signal),
-      subscribe: (observer: (outcome: CloseOutcome) => void) =>
-        this.subscribe(observer),
+      subscribe: (observer: ExitObserver) => this.subscribe(observer),
     });
   }
 
@@ -148,7 +154,7 @@ class ExitRecord {
     });
   }
 
-  subscribe(observer: (outcome: CloseOutcome) => void): () => void {
+  subscribe(observer: ExitObserver): () => void {
     if (this.#outcome.status === "released") return () => {};
     this.#observers.add(observer);
     return () => {
@@ -163,13 +169,8 @@ class ExitRecord {
     this.#published = true;
     const observers = [...this.#observers];
     if (outcome.status === "released") this.#observers.clear();
-    for (const observer of observers) {
-      try {
-        observer(outcome);
-      } catch {
-        /* Observation cannot alter release evidence. */
-      }
-    }
+    for (const observer of observers)
+      observeCallback(observer, outcome, ignoreExitObserverFailure);
   }
 }
 
@@ -250,7 +251,7 @@ export class Lifetime {
   #parentRelease?: (outcome: CloseOutcome) => void;
   #providers = new Set<Lifetime>();
   #dependents = new Set<Lifetime>();
-  #exitObservers = new Set<(outcome: CloseOutcome) => void>();
+  #exitObservers = new Set<ExitObserver>();
 
   constructor(label: string, limits: LifetimeLimits = DEFAULT_LIMITS) {
     this.label = boundedLifetimeText(label, "lifetime label");
@@ -276,8 +277,9 @@ export class Lifetime {
     return this.#exit?.view;
   }
 
-  observeExit(observer: (outcome: CloseOutcome) => void): () => void {
-    if (this.#exit) observer(this.#exit.outcome);
+  observeExit(observer: ExitObserver): () => void {
+    if (this.#exit)
+      observeCallback(observer, this.#exit.outcome, ignoreExitObserverFailure);
     if (this.#exit?.outcome.status === "released") return () => {};
     this.#exitObservers.add(observer);
     return () => {
@@ -473,13 +475,8 @@ export class Lifetime {
     this.#exit!.publish(outcome);
     const observers = [...this.#exitObservers];
     if (outcome.status === "released") this.#exitObservers.clear();
-    for (const observer of observers) {
-      try {
-        observer(outcome);
-      } catch {
-        /* Observation cannot alter release evidence. */
-      }
-    }
+    for (const observer of observers)
+      observeCallback(observer, outcome, ignoreExitObserverFailure);
     if (outcome.status === "released") {
       this.#tasks.clear();
       this.#resources = [];

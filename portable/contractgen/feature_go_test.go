@@ -1,15 +1,87 @@
 package contractgen
 
 import (
+	"encoding/json"
 	"go/ast"
 	"go/constant"
 	"go/parser"
 	"go/token"
 	"go/types"
+	"slices"
 	"testing"
 
 	"github.com/Tangerg/frame/portable"
 )
+
+func TestGoStringEnumsOnlyPublishAdmittedStringLiterals(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		schema string
+		values []string
+	}{
+		{name: "mixed literals", schema: `{"type":"string","enum":[null,true,42,{},[],"approved"]}`, values: []string{"approved"}},
+		{name: "empty string", schema: `{"type":"string","enum":[null,"","approved"]}`, values: []string{"", "approved"}},
+		{name: "composed enum", schema: `{"type":"string","allOf":[{"enum":[null,"approved"]}]}`, values: []string{"approved"}},
+		{name: "null constant", schema: `{"type":"string","const":null}`},
+		{name: "string constant", schema: `{"type":"string","const":"approved"}`, values: []string{"approved"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			descriptor := portable.MethodDescriptor{
+				Name: "acme/read", Kind: portable.Query, Target: "installation", Description: "Read a review.",
+				Input: []byte(`{"type":"boolean"}`), Output: []byte(test.schema),
+			}
+			method, err := portable.AdmitMethod(descriptor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := featureDescriptor(method.Descriptor())
+			if err != nil {
+				t.Fatal(err)
+			}
+			feature, err := buildFeature(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			projection, err := feature.goProjection(featureGoOptions{Package: "consumer"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			files := token.NewFileSet()
+			file, err := parser.ParseFile(files, "contract.go", projection, parser.AllErrors)
+			if err != nil {
+				t.Fatal(err)
+			}
+			compiled, err := (&types.Config{}).Check("consumer", files, []*ast.File{file}, nil)
+			if err != nil {
+				t.Fatalf("generated enum does not compile: %v\n%s", err, projection)
+			}
+			output := compiled.Scope().Lookup("ReadOutput")
+			if output == nil {
+				t.Fatal("generated contract omitted its output type")
+			}
+			var values []string
+			for _, name := range compiled.Scope().Names() {
+				member, ok := compiled.Scope().Lookup(name).(*types.Const)
+				if !ok || !types.Identical(member.Type(), output.Type()) {
+					continue
+				}
+				value := constant.StringVal(member.Val())
+				encoded, err := json.Marshal(value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := method.ValidateOutput(encoded); err != nil {
+					t.Fatalf("generated member %s=%q violates its original contract: %v", name, value, err)
+				}
+				values = append(values, value)
+			}
+			slices.Sort(values)
+			if !slices.Equal(values, test.values) {
+				t.Fatalf("published values=%q, want %q", values, test.values)
+			}
+		})
+	}
+}
 
 func TestGoProjectionPreservesPublishedStringEnumOwnership(t *testing.T) {
 	method := portable.MethodDescriptor{

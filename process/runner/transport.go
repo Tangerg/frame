@@ -3,7 +3,6 @@ package runner
 import (
 	"bufio"
 	"context"
-	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -37,15 +36,6 @@ const (
 	methodAttachControl   controlMethod = "attach_control"
 	methodAttachStream    controlMethod = "attach_stream"
 )
-
-type controlRequest struct {
-	Operation controlMethod  `json:"operation"`
-	Epoch     uint64         `json:"epoch,omitzero"`
-	AttemptID string         `json:"attemptId,omitempty"`
-	Launch    *LaunchRequest `json:"launch,omitempty"`
-	Receipt   *ExitReceipt   `json:"receipt,omitempty"`
-	Attempt   *AttemptRef    `json:"attempt,omitempty"`
-}
 
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	ctx, owned, err := s.admitServe(ctx, listener)
@@ -100,68 +90,43 @@ func (s *Server) handle(ctx context.Context, connection net.Conn, release func()
 	if err := connection.SetReadDeadline(time.Time{}); err != nil {
 		return
 	}
-	if request.Operation == methodAttachControl || request.Operation == methodAttachStream {
-		if request.Attempt == nil {
-			_ = s.writeAcknowledgment(connection, frame.ErrInvalid)
-			return
-		}
-		if request.Operation == methodAttachControl {
-			s.serveAttachmentControl(ctx, connection, reader, *request.Attempt, release)
-		} else {
-			s.serveAttachmentStream(ctx, connection, reader, *request.Attempt, release)
-		}
+	switch request := request.(type) {
+	case attachControlRequest:
+		s.serveAttachmentControl(ctx, connection, reader, request.AttemptRef, release)
+		return
+	case attachStreamRequest:
+		s.serveAttachmentStream(ctx, connection, reader, request.AttemptRef, release)
 		return
 	}
 	response, err := s.respond(ctx, request)
 	_ = s.writeReply(connection, response, err)
 }
 
-func readRequest(reader *bufio.Reader) (controlRequest, error) {
-	line, err := readLine(reader)
-	if err != nil {
-		return controlRequest{}, err
-	}
-	var request controlRequest
-	return request, jsonv2.Unmarshal(line, &request, jsonv2.RejectUnknownMembers(true))
-}
-
 func (s *Server) respond(ctx context.Context, request controlRequest) (controlResult, error) {
-	switch request.Operation {
-	case methodIdentity:
+	switch request := request.(type) {
+	case identityRequest:
 		identity, err := s.Identity(ctx)
 		if err != nil {
 			return nil, err
 		}
 		return identity, nil
-	case methodFence:
+	case fenceRequest:
 		return acknowledged(s.Fence(ctx, request.Epoch))
-	case methodProveAbsent:
-		if request.Attempt == nil {
-			return nil, frame.ErrInvalid
-		}
-		proof, err := s.ProveAbsent(ctx, *request.Attempt)
+	case proveAbsentRequest:
+		proof, err := s.ProveAbsent(ctx, request.AttemptRef)
 		if err != nil {
 			return nil, err
 		}
 		return proof, nil
-	case methodAcknowledgeExit:
-		if request.Receipt == nil {
-			return nil, frame.ErrInvalid
-		}
-		return acknowledged(s.AcknowledgeExit(ctx, *request.Receipt))
-	case methodLaunch:
-		if request.Launch == nil {
-			return nil, frame.ErrInvalid
-		}
-		result, err := s.Launch(ctx, *request.Launch)
+	case acknowledgeExitRequest:
+		return acknowledged(s.AcknowledgeExit(ctx, request.ExitReceipt))
+	case launchControlRequest:
+		result, err := s.Launch(ctx, request.LaunchRequest)
 		return observed(result.Observation, err)
-	case methodInspect:
+	case inspectRequest:
 		return observed(s.Inspect(ctx, request.AttemptID))
-	case methodClose:
-		if request.Attempt == nil {
-			return nil, frame.ErrInvalid
-		}
-		return observed(s.CloseAttempt(ctx, *request.Attempt))
+	case closeRequest:
+		return observed(s.CloseAttempt(ctx, request.AttemptRef))
 	default:
 		return nil, frame.ErrInvalid
 	}
@@ -267,7 +232,7 @@ func (c *Client) dial(ctx context.Context) (net.Conn, error) {
 }
 
 func (c *Client) Identity(ctx context.Context) (Identity, error) {
-	response, _, err := c.request(ctx, controlRequest{Operation: methodIdentity})
+	response, _, err := c.request(ctx, identityRequest{})
 	if err != nil {
 		return Identity{}, err
 	}
@@ -275,14 +240,14 @@ func (c *Client) Identity(ctx context.Context) (Identity, error) {
 }
 
 func (c *Client) Fence(ctx context.Context, epoch uint64) error {
-	_, err := c.control(ctx, controlRequest{Operation: methodFence, Epoch: epoch})
+	_, err := c.control(ctx, fenceRequest{Epoch: epoch})
 	return err
 }
 func (c *Client) Launch(ctx context.Context, request LaunchRequest) (LaunchResult, error) {
 	if err := request.Validate(); err != nil {
 		return notDispatched(request), err
 	}
-	response, dispatch, err := c.request(ctx, controlRequest{Operation: methodLaunch, Launch: &request})
+	response, dispatch, err := c.request(ctx, launchControlRequest{request})
 	if dispatch == controlNotDispatched {
 		return notDispatched(request), err
 	}
@@ -290,19 +255,19 @@ func (c *Client) Launch(ctx context.Context, request LaunchRequest) (LaunchResul
 	return LaunchResult{Observation: observation}, err
 }
 func (c *Client) Inspect(ctx context.Context, id string) (Observation, error) {
-	return c.control(ctx, controlRequest{Operation: methodInspect, AttemptID: id})
+	return c.control(ctx, inspectRequest{AttemptID: id})
 }
 func (c *Client) CloseAttempt(ctx context.Context, ref AttemptRef) (Observation, error) {
-	return c.control(ctx, controlRequest{Operation: methodClose, Attempt: &ref})
+	return c.control(ctx, closeRequest{ref})
 }
 
 func (c *Client) AcknowledgeExit(ctx context.Context, receipt ExitReceipt) error {
-	_, err := c.control(ctx, controlRequest{Operation: methodAcknowledgeExit, Receipt: &receipt})
+	_, err := c.control(ctx, acknowledgeExitRequest{receipt})
 	return err
 }
 
 func (c *Client) ProveAbsent(ctx context.Context, request AttemptRef) (AbsenceProof, error) {
-	response, _, err := c.request(ctx, controlRequest{Operation: methodProveAbsent, Attempt: &request})
+	response, _, err := c.request(ctx, proveAbsentRequest{request})
 	if err != nil {
 		return AbsenceProof{}, err
 	}
@@ -339,7 +304,7 @@ func (c *Client) request(ctx context.Context, request controlRequest) (controlRe
 		return nil, controlNotDispatched, errors.Join(err, cancellation.Err(ctx))
 	}
 	defer connection.Close()
-	return exchangeControl(ctx, connection, request.Operation, data)
+	return exchangeControl(ctx, connection, request.method(), data)
 }
 
 func exchangeControl(ctx context.Context, connection net.Conn, method controlMethod, data []byte) (controlResult, controlDispatch, error) {
@@ -378,7 +343,7 @@ func (a *clientAttachment) Close() error {
 }
 
 func (c *Client) Attach(ctx context.Context, ref AttemptRef) (result io.ReadWriteCloser, err error) {
-	control, _, err := c.openAttachmentConnection(ctx, methodAttachControl, ref)
+	control, _, err := c.openAttachmentConnection(ctx, attachControlRequest{ref})
 	if err != nil {
 		return nil, err
 	}
@@ -396,20 +361,20 @@ func (c *Client) Attach(ctx context.Context, ref AttemptRef) (result io.ReadWrit
 			}
 		}
 	}()
-	stream, reader, err := c.openAttachmentConnection(ctx, methodAttachStream, ref)
+	stream, reader, err := c.openAttachmentConnection(ctx, attachStreamRequest{ref})
 	if err != nil {
 		return nil, err
 	}
 	return &clientAttachment{stream: stream, reader: reader, control: control}, nil
 }
 
-func (c *Client) openAttachmentConnection(ctx context.Context, method controlMethod, ref AttemptRef) (net.Conn, *bufio.Reader, error) {
+func (c *Client) openAttachmentConnection(ctx context.Context, request controlRequest) (net.Conn, *bufio.Reader, error) {
 	connection, err := c.dial(ctx)
 	if err != nil {
 		return nil, nil, errors.Join(err, cancellation.Err(ctx))
 	}
 	stop := context.AfterFunc(ctx, func() { _ = connection.Close() })
-	if err := writeRequest(connection, controlRequest{Operation: method, Attempt: &ref}); err != nil {
+	if err := writeRequest(connection, request); err != nil {
 		stop()
 		_ = connection.Close()
 		return nil, nil, errors.Join(err, cancellation.Err(ctx))
@@ -417,7 +382,7 @@ func (c *Client) openAttachmentConnection(ctx context.Context, method controlMet
 	reader := bufio.NewReader(connection)
 	line, err := readLine(reader)
 	if err == nil {
-		_, err = decodeResponse(line, method)
+		_, err = decodeResponse(line, request.method())
 	}
 	stop()
 	if cause := cancellation.Err(ctx); cause != nil {
@@ -453,17 +418,6 @@ func writeRequest(writer io.Writer, request controlRequest) error {
 		return err
 	}
 	return writeControl(writer, data)
-}
-
-func encodeRequest(request controlRequest) ([]byte, error) {
-	data, err := jsonv2.Marshal(request)
-	if err != nil {
-		return nil, err
-	}
-	if len(data)+1 > maxControlBytes {
-		return nil, frame.ErrCapacity
-	}
-	return append(data, '\n'), nil
 }
 
 func writeControl(writer io.Writer, data []byte) error {

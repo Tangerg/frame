@@ -474,3 +474,49 @@ func TestTypeScriptProjectionRejectsReservedNameCollisionsBeforePublication(t *t
 		t.Fatalf("reserved declaration name collided after publication: %s, %v", out.String(), err)
 	}
 }
+
+func TestTypeScriptProjectionPreservesContextualNames(t *testing.T) {
+	type as string
+	type asserts string
+	type is string
+	type satisfies string
+	type intrinsic string
+	type namespace string
+	type contextualNames struct {
+		Alias     as        `json:"alias"`
+		Assertion asserts   `json:"assertion"`
+		Predicate is        `json:"predicate"`
+		Satisfied satisfies `json:"satisfied"`
+		Intrinsic intrinsic `json:"intrinsic"`
+		Namespace namespace `json:"namespace"`
+	}
+	var out strings.Builder
+	if err := WriteTypeScriptTypes(&out, reflect.TypeFor[contextualNames]()); err != nil {
+		t.Fatal(err)
+	}
+	checkTypeScriptConsumer(t, out.String(), `import type { as_, asserts, is, satisfies, intrinsic, namespace, contextualNames } from "./types.generated.js";
+const alias: as_ = "alias";
+const assertion: asserts = "assertion";
+const predicate: is = "predicate";
+const satisfied: satisfies = "satisfied";
+const intrinsicValue: intrinsic = "intrinsic";
+const namespaceValue: namespace = "namespace";
+const values: contextualNames = {alias, assertion, predicate, satisfied, intrinsic: intrinsicValue, namespace: namespaceValue};
+// @ts-expect-error Renaming retains the original string shape.
+const invalid: as_ = 42;
+void [values, invalid];
+`)
+}
+
+func TestTypeScriptProjectionRejectsContextualNameCollisionsBeforePublication(t *testing.T) {
+	type as string
+	type as_ bool
+	roots := []reflect.Type{reflect.TypeFor[as](), reflect.TypeFor[as_]()}
+	for range 2 {
+		var out strings.Builder
+		if err := WriteTypeScriptTypes(&out, roots...); err == nil || out.Len() != 0 {
+			t.Fatalf("contextual name collision published output: %s, %v", out.String(), err)
+		}
+		slices.Reverse(roots)
+	}
+}

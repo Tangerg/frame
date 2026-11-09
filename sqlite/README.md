@@ -151,7 +151,12 @@ there is no independently writable synchronization flag. Only committed states
 may carry business evidence. Every settlement, pending read, confirmation,
 recovery and compaction validates the original request digest and state evidence
 before advancing it. Corrupt records fence admission instead of being repaired
-into an actionable intent. `Pending` exposes records requiring restoration or local
+into an actionable intent. Issuance and compaction watermarks define the exact
+retained interval. New issuance, full reads and reopening require every sequence
+in that interval; reading, confirming or retaining an issued identity whose
+original evidence is missing also fences admission. An unknown identity or one
+below the compaction watermark remains an ordinary caller error.
+`Pending` exposes records requiring restoration or local
 synchronization. `Confirm` records synchronization but does not clear the Host's
 recovery barrier. The composition root calls `Admission.Recover` after restoring
 all necessary owners and execution scopes; recovery does not replay mutations.
@@ -164,10 +169,13 @@ continuous terminal, synchronized, unreferenced sequence prefix. Deletion and th
 watermark commit in one transaction. Old queries return `ErrEvidenceExpired`;
 expiration never authorizes recreating an old identity.
 
-Installation control receipts have no external recovery holder. A rejected or
-panicking projection releases its private receipt only after the original
-submission has settled and synchronized; an unresolved or committed receipt
-remains available for its original recovery and confirmation.
+Installation control receipts have no external recovery holder. The installation
+call owns its private intent from preparation onward and concludes it on every
+exit, including cancellation before mutation, panic and `runtime.Goexit`. A
+rejected intent releases capacity only after its original submission has settled
+and synchronized; an unresolved or committed receipt remains available for its
+original recovery and confirmation. This cleanup never infers rejection for a
+public submission whose original request the caller has not proved.
 
 ## Execution protection
 

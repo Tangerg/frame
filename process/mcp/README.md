@@ -97,7 +97,11 @@ The adapter admits each complete newline-delimited inbound frame within
 Missing terminators, oversized frames, blank lines and values split across lines
 fail the stream. Duplicate object names and malformed Unicode also fail before
 the SDK can decode a different value from the original frame. Each line must
-contain one complete JSON value. The same budget applies
+contain one complete JSON-RPC object, including during initialization. Top-level
+arrays and scalars are rejected before SDK decoding. This single-object profile
+prevents legacy batch decoding from retaining requests and unfinished replies
+outside the SDK's request owner; arrays inside parameters or results remain
+valid. The same budget applies
 to each outgoing frame. SDK decoder prefetch cannot move bytes between budgets.
 
 ## Connect a custom protocol

@@ -64,7 +64,7 @@ func (h *Host) startBinding(plan *BindingPlan, grant ScopeGrant) activationBindi
 }
 
 func (u *Use) start(ctx context.Context, root UnitRef) (*RunningUnit, error) {
-	work, err := u.enter(ctx)
+	work, err := u.Enter(ctx)
 	if err != nil {
 		return nil, err
 	}

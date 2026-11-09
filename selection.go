@@ -357,7 +357,7 @@ func (h *Host) validatePlanLocked(plan *BindingPlan) error {
 		if actual == nil || actual.source != member.source || actual.instance.id != member.instanceID {
 			return ErrStaleBinding
 		}
-		if err := h.validateServingLocked(actual.instance); err != nil {
+		if err := actual.instance.validateServingLocked(); err != nil {
 			return err
 		}
 	}
@@ -366,18 +366,11 @@ func (h *Host) validatePlanLocked(plan *BindingPlan) error {
 		if instance == nil || instance.binding.Source != member.source {
 			return ErrStaleBinding
 		}
-		if err := h.validateServingLocked(instance); err != nil {
+		if err := instance.validateServingLocked(); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-func (h *Host) validateServingLocked(instance *unitInstance) error {
-	if instance.retiring {
-		return ErrStaleBinding
-	}
-	return h.admission.ValidateScope(instance.scope)
 }
 
 func (h *Host) validatePreparationLocked(plan *BindingPlan) error {

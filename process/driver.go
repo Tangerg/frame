@@ -201,16 +201,22 @@ func (d *Driver) checkUnit(unit frame.UnitDeclaration) error {
 	return nil
 }
 
-// program resolves the approved executable. Its content lease becomes a
-// resource of the Setup even when resolution fails after acquiring it.
 func (d *Driver) program(ctx context.Context, setup *frame.Setup) (Program, *frame.ResourceHandle, error) {
-	program, err := d.config.Source.Program(ctx, setup.Binding())
-	if program.ReleaseContent == nil {
-		return program, nil, err
+	var program Program
+	// Preparation work keeps cleanup behind the original acquisition, including
+	// a content lease returned together with a resolution error.
+	content, err := setup.Cleanup(contentResourceName, func() error {
+		if program.ReleaseContent == nil {
+			return nil
+		}
+		return program.ReleaseContent()
+	})
+	if err != nil {
+		return Program{}, nil, err
 	}
-	content, ownErr := setup.Cleanup(contentResourceName, program.ReleaseContent)
-	if ownErr != nil {
-		return Program{}, nil, errors.Join(err, ownErr, program.ReleaseContent())
+	program, err = d.config.Source.Program(ctx, setup.Binding())
+	if program.ReleaseContent == nil {
+		return program, nil, errors.Join(err, content.ConfirmReleased(nil))
 	}
 	return program, content, err
 }

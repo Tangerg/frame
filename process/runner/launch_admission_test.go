@@ -80,7 +80,7 @@ func TestLaunchRejectsUnrepresentableProgramBeforeReservation(t *testing.T) {
 func TestControlRequestPreservesProgramTextOrRejectsBeforeWriting(t *testing.T) {
 	for _, input := range []struct{ name, text string }{{"invalid-utf8", "\xff"}, {"replacement-rune", "replacement \ufffd"}, {"non-BMP", "unicode \U0001d11e"}} {
 		t.Run(input.name, func(t *testing.T) {
-			request := controlRequest{Operation: methodLaunch, Launch: &LaunchRequest{Args: []string{input.text}}}
+			request := launchControlRequest{LaunchRequest{Args: []string{input.text}, ExecutableDigest: value.Hash(nil), Configuration: value.Hash(nil)}}
 			var output bytes.Buffer
 			err := writeRequest(&output, request)
 			if input.name == "invalid-utf8" {
@@ -92,8 +92,9 @@ func TestControlRequestPreservesProgramTextOrRejectsBeforeWriting(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			actual, err := readRequest(bufio.NewReader(&output))
-			if err != nil || actual.Launch == nil || len(actual.Launch.Args) != 1 || actual.Launch.Args[0] != input.text {
+			decoded, err := readRequest(bufio.NewReader(&output))
+			actual, ok := decoded.(launchControlRequest)
+			if err != nil || !ok || len(actual.Args) != 1 || actual.Args[0] != input.text {
 				t.Fatalf("valid program text changed on the wire: %+v, %v", actual, err)
 			}
 		})
@@ -133,7 +134,7 @@ func TestControlLaunchPreservesExactEnvironmentWithoutSocketTransport(t *testing
 				defer endpoint.Close()
 				server.handle(ctx, endpoint, func() {})
 			}()
-			if err := writeRequest(host, controlRequest{Operation: methodLaunch, Launch: &request}); err != nil {
+			if err := writeRequest(host, launchControlRequest{request}); err != nil {
 				t.Fatal(err)
 			}
 			raw, err := readLine(bufio.NewReader(host))

@@ -58,17 +58,17 @@ func (o Owner) prepare(ctx context.Context, request []byte) (id SubmissionID, er
 	err = func() error {
 		var sequence uint64
 		err := o.store.transaction(ctx, func(tx Executor) error {
-			var retained int
-			if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM frame_submissions WHERE owner_id=?`, o.id).Scan(&retained); err != nil {
+			retained, err := o.retainedSubmissions(ctx, tx)
+			if err != nil {
 				return err
 			}
-			if retained >= o.store.maxSubmissions {
+			if retained >= uint64(o.store.maxSubmissions) {
 				return frame.ErrCapacity
 			}
 			if err := tx.QueryRowContext(ctx, `UPDATE frame_owners SET next_sequence=next_sequence+1 WHERE id=? RETURNING next_sequence`, o.id).Scan(&sequence); err != nil {
 				return err
 			}
-			_, err := tx.ExecContext(ctx, `INSERT INTO frame_submissions(owner_id,sequence,digest,request,state) VALUES(?,?,?,?,?)`, o.id, sequence, value.Hash(request), request, submissionPrepared)
+			_, err = tx.ExecContext(ctx, `INSERT INTO frame_submissions(owner_id,sequence,digest,request,state) VALUES(?,?,?,?,?)`, o.id, sequence, value.Hash(request), request, submissionPrepared)
 			return err
 		})
 		if err != nil {
@@ -287,13 +287,7 @@ func (o Owner) synchronize(settlement Settlement, apply func(Settlement) error, 
 }
 
 func (o Owner) readSettlement(ctx context.Context, tx Executor, id SubmissionID, request []byte) (Settlement, error) {
-	if err := o.requireIssued(ctx, tx, id); err != nil {
-		return Settlement{}, err
-	}
-	result, stored, _, err := o.scanSubmission(tx.QueryRowContext(ctx, `SELECT sequence,digest,request,state,evidence FROM frame_submissions WHERE owner_id=? AND sequence=?`, o.id, id.Sequence))
-	if errors.Is(err, sql.ErrNoRows) {
-		return Settlement{}, fmt.Errorf("%w: issued intent has no evidence", ErrIndeterminate)
-	}
+	result, stored, _, err := o.readSubmission(ctx, tx, id)
 	if err != nil {
 		return Settlement{}, err
 	}
@@ -368,10 +362,7 @@ func (o Owner) confirm(ctx context.Context, id SubmissionID) error {
 }
 
 func (o Owner) confirmIn(ctx context.Context, tx Executor, id SubmissionID) error {
-	if err := o.requireIssued(ctx, tx, id); err != nil {
-		return err
-	}
-	_, _, state, err := o.scanSubmission(tx.QueryRowContext(ctx, `SELECT sequence,digest,request,state,evidence FROM frame_submissions WHERE owner_id=? AND sequence=?`, o.id, id.Sequence))
+	_, _, state, err := o.readSubmission(ctx, tx, id)
 	if err != nil {
 		return err
 	}
@@ -392,7 +383,7 @@ func (o Owner) RetainEvidence(ctx context.Context, id SubmissionID, holder strin
 	}
 	return o.store.admission.Under(ctx, func() error {
 		return o.store.transaction(ctx, func(tx Executor) error {
-			if err := o.requireIssued(ctx, tx, id); err != nil {
+			if _, _, _, err := o.readSubmission(ctx, tx, id); err != nil {
 				return err
 			}
 			_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO frame_evidence_references(owner_id,sequence,holder) VALUES(?,?,?)`, o.id, id.Sequence, holder)
@@ -503,20 +494,6 @@ func (o Owner) validateRequest(request []byte) error {
 	}
 	if len(request) > o.store.maxRequestBytes {
 		return fmt.Errorf("%w: sqlite submission request exceeds its byte limit", frame.ErrCapacity)
-	}
-	return nil
-}
-
-func (o Owner) requireIssued(ctx context.Context, tx Executor, id SubmissionID) error {
-	var issued, compacted uint64
-	if err := tx.QueryRowContext(ctx, `SELECT next_sequence,compacted_through FROM frame_owners WHERE id=?`, o.id).Scan(&issued, &compacted); err != nil {
-		return err
-	}
-	if id.Sequence <= compacted {
-		return ErrEvidenceExpired
-	}
-	if id.Sequence > issued {
-		return ErrUnknownSubmission
 	}
 	return nil
 }

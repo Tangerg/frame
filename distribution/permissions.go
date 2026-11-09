@@ -1,11 +1,13 @@
 package distribution
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
 
+	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/internal/localfile"
 )
 
@@ -37,29 +39,72 @@ func (a Artifact) fileMode(admission treeAdmission) fs.FileMode {
 	return mode
 }
 
-func sealContents(root *os.Root, manifest Manifest) error {
+func sealReleaseContents(ctx context.Context, root *os.Root, manifest Manifest, limit int) error {
 	artifacts := make(map[string]Artifact, len(manifest.Artifacts))
 	for _, artifact := range manifest.Artifacts {
 		artifacts[artifact.Path] = artifact
 	}
 
-	return fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
+	type directory struct {
+		name     string
+		identity fs.FileInfo
+	}
+	var directories []directory
+	paths := pathInventory{}
+	err := paths.walk(ctx, root, limit, func(name string, entry fs.DirEntry) error {
+		info, err := entry.Info()
 		if err != nil {
 			return err
 		}
-		if name == "." {
+		if entry.IsDir() {
+			directories = append(directories, directory{name: name, identity: info})
 			return nil
 		}
 		mode := sealedFileMode
-		if entry.IsDir() {
-			mode = sealedDirectoryMode
-		} else if artifact, found := artifacts[name]; found {
+		if artifact, found := artifacts[name]; found {
 			mode = artifact.fileMode(sealedTree)
 		} else if !isReleaseMetadata(name) {
 			return ErrIntegrity
 		}
-		return root.Chmod(name, mode)
+		return sealEntry(root, name, info, mode)
 	})
+	if err != nil {
+		return err
+	}
+	// A parent entry cannot stand in for durable child entries or final modes.
+	// Reverse preorder seals and syncs every directory after all its descendants.
+	for index := len(directories) - 1; index >= 0; index-- {
+		if err := cancellation.Err(ctx); err != nil {
+			return err
+		}
+		directory := directories[index]
+		if err := sealEntry(root, directory.name, directory.identity, sealedDirectoryMode); err != nil {
+			return err
+		}
+	}
+	rootFile, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	return errors.Join(rootFile.Sync(), rootFile.Close())
+}
+
+func sealEntry(root *os.Root, name string, expected fs.FileInfo, mode fs.FileMode) error {
+	var file *os.File
+	var err error
+	if expected.IsDir() {
+		file, err = root.Open(name)
+	} else {
+		file, err = localfile.OpenRegularIn(root, name)
+	}
+	if err != nil {
+		return err
+	}
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(expected, opened) || opened.Mode().Type() != expected.Mode().Type() {
+		return errors.Join(ErrIntegrity, err, file.Close())
+	}
+	return errors.Join(file.Chmod(mode), file.Sync(), file.Close())
 }
 
 func removeSealed(directory string) error {

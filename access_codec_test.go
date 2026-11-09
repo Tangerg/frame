@@ -198,7 +198,7 @@ func TestMetadataReadUsesTheOriginalBorrowWorkBudget(t *testing.T) {
 		}
 	}()
 	for {
-		work, err := use.Lifetime().Enter(ctx)
+		work, err := use.Enter(ctx)
 		if errors.Is(err, frame.ErrCapacity) {
 			break
 		}

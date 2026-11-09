@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -64,7 +63,16 @@ func openAttachmentPipe(t *testing.T, server *Server, ctx context.Context, metho
 			t.Fatal(err)
 		}
 	}
-	if err := writeRequest(host, controlRequest{Operation: method, Attempt: &ref}); err != nil {
+	var request controlRequest
+	switch method {
+	case methodAttachControl:
+		request = attachControlRequest{ref}
+	case methodAttachStream:
+		request = attachStreamRequest{ref}
+	default:
+		t.Fatalf("unsupported attachment method: %s", method)
+	}
+	if err := writeRequest(host, request); err != nil {
 		return host, nil, done, err
 	}
 	reader := bufio.NewReader(host)
@@ -180,11 +188,11 @@ func TestFailedAttachmentStreamReleasesControlAndOriginalChild(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			requestJSON, err := json.Marshal(controlRequest{Operation: methodAttachStream, Attempt: &request.AttemptRef})
+			requestJSON, err := encodeRequest(attachStreamRequest{request.AttemptRef})
 			if err != nil {
 				t.Fatal(err)
 			}
-			connection := failedAttachConnection{bytes.NewReader(append(requestJSON, '\n')), test.writeErr, test.deadlineErr}
+			connection := failedAttachConnection{bytes.NewReader(requestJSON), test.writeErr, test.deadlineErr}
 			server.handle(ctx, connection, func() { t.Error("failed stream was admitted for forwarding") })
 			waitAttachment(t, ctx, controlDone)
 			observation, err := server.Inspect(ctx, request.AttemptID)

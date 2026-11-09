@@ -16,8 +16,8 @@ const callToolMethod = "tools/call"
 
 type toolResultProjectionKey struct{}
 
-// Only the adapter's stdio client uses this projection. The public Transport
-// retains the SDK connection's server-side protocol negotiation capabilities.
+// The adapter's stdio client needs original tool-result JSON. Decorating its
+// connection must preserve protocol decisions made by the SDK session owner.
 type toolResultTransport struct{ source *Transport }
 
 func (t toolResultTransport) Connect(ctx context.Context) (sdk.Connection, error) {
@@ -91,6 +91,12 @@ func (c *resultConnection) Read(ctx context.Context) (jsonrpc.Message, error) {
 func (c *resultConnection) DropResponse(id jsonrpc.ID) {
 	if dropper, ok := c.Connection.(interface{ DropResponse(jsonrpc.ID) }); ok {
 		dropper.DropResponse(id)
+	}
+}
+
+func (c *resultConnection) ProtocolVersionNegotiated(version string) {
+	if receiver, ok := c.Connection.(interface{ ProtocolVersionNegotiated(string) }); ok {
+		receiver.ProtocolVersionNegotiated(version)
 	}
 }
 

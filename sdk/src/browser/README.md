@@ -56,6 +56,11 @@ projection. Fences and proof delivery continue while setup is pending. Proof
 acknowledgements also run independently of polling. No timeout substitutes for
 resource release.
 
+`onError` may return a promise. A synchronous exception or asynchronous rejection
+stops the pump through its original failure policy. Diagnostic observers do not
+retain runtime resources or delay shutdown; a failure arriving after shutdown
+cannot change that completed resource-release observation.
+
 The original execution remains locally owned after resource release until its
 proof is acknowledged. Polling cannot schedule that terminal execution again.
 Acknowledgement invalidates older plan observations without retaining execution

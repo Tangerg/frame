@@ -69,7 +69,7 @@ func (s *hostSession) dispatch(ctx context.Context, method string, raw jsontext.
 	}
 	work, err := s.lifetime.Enter(ctx)
 	if err != nil {
-		return nil, &Problem{wire.Errors.Closed, "instance is retiring"}
+		return nil, lifetimeAdmissionError(err)
 	}
 	defer work.Finish()
 	return dispatchCall(work.Context(), s.peer, s.grants, raw)

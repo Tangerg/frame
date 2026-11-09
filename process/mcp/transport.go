@@ -43,7 +43,7 @@ func connect(ctx context.Context, channel io.ReadWriteCloser, maximum int, confi
 // Transport carries one MCP session over the stream a process driver attached
 // for one execution, under this package's wire profile. Each inbound frame is
 // admitted whole, terminator included, within the frame budget and as exactly
-// one strict JSON value before the SDK interprets it; each outbound frame stays
+// one strict JSON-RPC object before the SDK interprets it; each outbound frame stays
 // within the same budget. Canceling a queued write leaves the active sender and
 // readers alone. Canceling a write whose bytes are moving closes the stream,
 // because the peer may already hold part of the frame.
@@ -130,10 +130,12 @@ func (r *frameReader) splitFrame(data []byte, atEOF bool) (int, []byte, error) {
 		if size > r.maximum {
 			return 0, nil, frameSizeError(r.maximum)
 		}
-		// Reject ambiguous names and malformed Unicode before SDK decoding can
-		// replace their original wire representation. Each line owns one value.
-		if !jsontext.Value(data[:size]).IsValid() {
-			return 0, nil, fmt.Errorf("%w: MCP frame must contain one complete JSON value", frame.ErrContractMismatch)
+		// Batch decoding would retain requests and unfinished replies outside
+		// the SDK's original request budget. Strict JSON also prevents ambiguous
+		// names and malformed Unicode from changing during SDK decoding.
+		payload := jsontext.Value(data[:size])
+		if !payload.IsValid() || payload.Kind() != '{' {
+			return 0, nil, fmt.Errorf("%w: MCP frame must contain one complete JSON-RPC object", frame.ErrContractMismatch)
 		}
 		return size, data[:size], nil
 	}

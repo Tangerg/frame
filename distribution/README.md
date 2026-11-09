@@ -67,9 +67,13 @@ and expanded bytes, manifest bytes and compression ratio have explicit configura
 bounds. ZIP checksums and artifact hashes are both verified.
 Staging belongs to one installation operation and is removed unless atomically
 published. Validated content is read-only in the content-addressed cache.
-Contents are sealed before rename; the release root is sealed after rename under
-admission, before its first lease. This also supports macOS filesystems that
-refuse renaming a non-writable directory. Readers refuse a release if its root or
+Each file is synchronized after its final seal. Descendant directories are sealed
+and synchronized from the leaves upward, then the root's entries are synchronized
+before rename. Under admission, publication renames the root, seals and
+synchronizes that same inode, and synchronizes the cache parent before issuing
+its first lease. Sealing the root after rename supports macOS filesystems that
+refuse renaming a non-writable directory. A parent sync alone does not make child
+entries or permission changes durable. Readers refuse a release if its root or
 any descendant has noncanonical permissions. Reimport of the same trusted release revalidates the original tree
 and its trust projection before explicitly repairing the entire seal under
 admission, even when the root was already read-only. Acquire and leased reads

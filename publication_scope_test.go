@@ -93,11 +93,8 @@ func TestPublicationRechecksOriginalGrantAfterMetadataPreparation(t *testing.T) 
 			host.Admission().FenceScope(grant.ID())
 		}),
 	})
-	if err != nil || !prepared {
-		t.Fatalf("metadata preparation failed: prepared=%v error=%v", prepared, err)
-	}
-	if _, err := host.Publish(t.Context(), "revoked-during-preparation", request); err == nil {
-		t.Fatal("publication crossed its original grant")
+	if err == nil || !prepared || request != nil {
+		t.Fatalf("revoked preparation produced publication authority: prepared=%v request=%v error=%v", prepared, request, err)
 	}
 	if _, err := host.Publication(running.ID(), "revoked-during-preparation"); !errors.Is(err, frame.ErrUnavailable) {
 		t.Fatalf("late publication entered the catalog: %v", err)

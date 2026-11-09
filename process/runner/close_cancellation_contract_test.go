@@ -110,7 +110,7 @@ func (c cancellationControlConnection) Read(data []byte) (int, error) {
 }
 
 func TestControlExchangePreservesCancellationAtIOBoundaries(t *testing.T) {
-	encoded, err := encodeRequest(controlRequest{Operation: methodIdentity})
+	encoded, err := encodeRequest(identityRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}

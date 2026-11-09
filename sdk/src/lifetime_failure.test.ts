@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FrameError } from "./errors.js";
-import { Lifetime } from "./lifetime.js";
+import { Lifetime, type CloseOutcome } from "./lifetime.js";
 
 const diagnosticFailures = [
   {
@@ -143,4 +143,99 @@ it("uses the exact lifetime limits captured before validation", async () => {
   expect(await owner.run(() => 1)).toBe(1);
   expect(reads).toBe(1);
   expect((await owner.close()).status).toBe("released");
+});
+
+describe("exit observation", () => {
+  const observers = [
+    {
+      name: "synchronous exception",
+      fail(error: Error): unknown {
+        throw error;
+      },
+    },
+    {
+      name: "async rejection",
+      async fail(error: Error) {
+        await Promise.resolve();
+        throw error;
+      },
+    },
+    {
+      name: "thenable rejection",
+      fail(error: Error): unknown {
+        return new Proxy(
+          {},
+          {
+            get(_target, key) {
+              if (key !== "then") return undefined;
+              return (_resolve: unknown, reject: (error: unknown) => void) => {
+                reject(error);
+                reject(new Error("duplicate settlement"));
+                throw new Error("throw after settlement");
+              };
+            },
+          },
+        );
+      },
+    },
+    {
+      name: "throwing then getter",
+      fail(error: Error): unknown {
+        return new Proxy(
+          {},
+          {
+            get() {
+              throw error;
+            },
+          },
+        );
+      },
+    },
+  ];
+
+  it.each(observers)(
+    "isolates $name without changing release evidence",
+    async ({ fail }) => {
+      const owner = new Lifetime("observed resource");
+      const failure = new Error("observer failed");
+      const observations: CloseOutcome[] = [];
+      const unhandled: unknown[] = [];
+      const rejected = (error: unknown) => unhandled.push(error);
+      process.on("unhandledRejection", rejected);
+      try {
+        const observe = (outcome: CloseOutcome) => {
+          observations.push(outcome);
+          return fail(failure);
+        };
+        owner.observeExit(observe);
+        const exit = owner.beginClose();
+        exit.subscribe(observe);
+        const outcome = await owner.close();
+        expect(() => owner.observeExit(observe)).not.toThrow();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        expect(unhandled).toEqual([]);
+        expect(observations).toEqual([outcome, outcome, outcome]);
+        expect(exit.outcome).toBe(outcome);
+        expect(outcome).toMatchObject({ status: "released", failures: [] });
+      } finally {
+        process.off("unhandledRejection", rejected);
+      }
+    },
+  );
+
+  it("does not make pending observations a resource-release dependency", async () => {
+    const owner = new Lifetime("independent observers");
+    const pending = Promise.withResolvers<void>();
+    owner.observeExit(() => pending.promise);
+    const exit = owner.beginClose();
+    exit.subscribe(() => pending.promise);
+
+    const outcome = await owner.close();
+    expect(outcome.status).toBe("released");
+    pending.reject(new Error("observer finished after release"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(exit.outcome).toBe(outcome);
+    expect(outcome.failures).toEqual([]);
+  });
 });

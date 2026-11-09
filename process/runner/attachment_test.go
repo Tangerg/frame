@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -93,11 +92,11 @@ func TestFailedAttachmentReleasesOriginalStdout(t *testing.T) {
 				t.Fatal(err)
 			}
 			pipe := trackStdout(t, server, request.AttemptID)
-			encoded, err := json.Marshal(controlRequest{Operation: methodAttachControl, Attempt: &request.AttemptRef})
+			encoded, err := encodeRequest(attachControlRequest{request.AttemptRef})
 			if err != nil {
 				t.Fatal(err)
 			}
-			connection := failedAttachConnection{bytes.NewReader(append(encoded, '\n')), test.writeErr, test.deadlineErr}
+			connection := failedAttachConnection{bytes.NewReader(encoded), test.writeErr, test.deadlineErr}
 			server.handle(ctx, connection, func() { t.Error("failed attachment was admitted for streaming") })
 			if exit, err := server.Inspect(ctx, request.AttemptID); err != nil || exit.State != Exited {
 				t.Fatalf("original child exit: %+v %v", exit, err)

@@ -261,6 +261,9 @@ func (n *projectionNode) stringEnum() []string {
 	if n.literals != nil {
 		values = []string{}
 		for _, raw := range n.literals {
+			if raw.Kind() != '"' {
+				continue
+			}
 			var value string
 			if json.Unmarshal(raw, &value) == nil {
 				values = append(values, value)

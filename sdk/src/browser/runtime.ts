@@ -144,6 +144,7 @@ export class Runtime {
   readonly #outbox: ProofOutbox;
   #connection: "connected" | "paused" | "cleanupOnly" | "closed" = "connected";
   #connectionRevision = 0;
+  #revalidation?: { revision: number; work: Promise<void> };
   #executionProjectionRevision = 0;
   #executions = new Map<string, ExecutionResources>();
   readonly #instances = new Map<string, UnitResource>();
@@ -654,10 +655,27 @@ export class Runtime {
     await this.flushProofs();
   }
 
-  async #revalidate(control: HostControl): Promise<void> {
-    const closing = this.#connection === "closed";
+  #revalidate(control: HostControl): Promise<void> {
     this.disconnect();
     const revision = this.#connectionRevision;
+    const completion = Promise.withResolvers<void>();
+    const work: Promise<void> = completion.promise.finally(() => {
+      if (this.#revalidation?.work === work) this.#revalidation = undefined;
+    });
+    // Publish the original observation before the adapter can reenter polling.
+    this.#revalidation = { revision, work };
+    this.#revalidateControl(control, revision).then(
+      completion.resolve,
+      completion.reject,
+    );
+    return work;
+  }
+
+  async #revalidateControl(
+    control: HostControl,
+    revision: number,
+  ): Promise<void> {
+    const closing = this.#connection === "closed";
     const result = await control.reconnect({
       authority: this.#authority,
       realm: this.#realm,
@@ -704,7 +722,11 @@ export class Runtime {
     let plans: LocalPlan[];
     try {
       if (this.#connection === "paused") {
-        const revalidating = this.#revalidate(this.#control);
+        const pending = this.#revalidation;
+        const revalidating =
+          pending?.revision === this.#connectionRevision
+            ? pending.work
+            : this.#revalidate(this.#control);
         revision = this.#connectionRevision;
         await revalidating;
       }

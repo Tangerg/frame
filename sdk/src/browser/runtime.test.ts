@@ -23,6 +23,7 @@ import {
   type PublicationRequest,
   type PublicationResult,
   type ReadyReport,
+  type ReconnectResult,
   type UseGrant,
 } from "../protocol.generated.js";
 import { Runtime, type RuntimeOptions } from "./runtime";
@@ -194,6 +195,85 @@ function fixture(definitions: Record<string, Unit>, proofCapacity = 128) {
   }
   return { runtime, control, ready, grants, grant, publications, proofs };
 }
+
+it("joins a pending manual revalidation before polling its replacement channel", async () => {
+  const f = fixture({});
+  const reply = Promise.withResolvers<ReconnectResult>();
+  const replacement: HostControl = {
+    ...f.control,
+    reconnect: vi.fn<HostControl["reconnect"]>(() => reply.promise),
+    poll: vi.fn<HostControl["poll"]>(async () => ({
+      authority,
+      realm,
+      plans: [],
+      fences: [],
+    })),
+  };
+  const schedule = vi.fn<(plans: readonly LocalPlan[]) => void>();
+  const reconnecting = f.runtime.reconnect(replacement);
+  const polling = f.runtime.poll(schedule);
+  reply.resolve({ authority, realm, mode: "revalidated", executions: [] });
+  await Promise.all([reconnecting, polling]);
+  expect(f.control.reconnect).not.toHaveBeenCalled();
+  expect(f.control.poll).not.toHaveBeenCalled();
+  expect(replacement.reconnect).toHaveBeenCalledOnce();
+  expect(replacement.poll).toHaveBeenCalledOnce();
+  expect(schedule).toHaveBeenCalledExactlyOnceWith([]);
+  expect(f.runtime.connection).toBe("connected");
+  await f.runtime.close();
+});
+
+it("joins a pending revalidation when its control adapter reenters polling", async () => {
+  const f = fixture({});
+  const schedule = vi.fn<(plans: readonly LocalPlan[]) => void>();
+  let polling: Promise<void> | undefined;
+  const replacement: HostControl = {
+    ...f.control,
+    reconnect: vi.fn<HostControl["reconnect"]>(async () => {
+      polling = f.runtime.poll(schedule);
+      return { authority, realm, mode: "revalidated", executions: [] };
+    }),
+  };
+  await f.runtime.reconnect(replacement);
+  await polling;
+  expect(f.control.reconnect).not.toHaveBeenCalled();
+  expect(replacement.reconnect).toHaveBeenCalledOnce();
+  expect(schedule).toHaveBeenCalledExactlyOnceWith([]);
+  expect(f.runtime.connection).toBe("connected");
+  await f.runtime.close();
+});
+
+it("retains the current revalidation after a retired channel finishes", async () => {
+  const f = fixture({});
+  const oldReply = Promise.withResolvers<ReconnectResult>();
+  vi.mocked(f.control.reconnect).mockReturnValueOnce(oldReply.promise);
+  f.runtime.disconnect();
+  const oldSchedule = vi.fn<(plans: readonly LocalPlan[]) => void>();
+  const oldPolling = f.runtime.poll(oldSchedule);
+  const currentReply = Promise.withResolvers<ReconnectResult>();
+  const replacement: HostControl = {
+    ...f.control,
+    reconnect: vi.fn<HostControl["reconnect"]>(() => currentReply.promise),
+  };
+  const reconnecting = f.runtime.reconnect(replacement);
+  oldReply.resolve({ authority, realm, mode: "revalidated", executions: [] });
+  await oldPolling;
+  const schedule = vi.fn<(plans: readonly LocalPlan[]) => void>();
+  const polling = f.runtime.poll(schedule);
+  currentReply.resolve({
+    authority,
+    realm,
+    mode: "revalidated",
+    executions: [],
+  });
+  await Promise.all([reconnecting, polling]);
+  expect(f.control.reconnect).toHaveBeenCalledOnce();
+  expect(replacement.reconnect).toHaveBeenCalledOnce();
+  expect(oldSchedule).not.toHaveBeenCalled();
+  expect(schedule).toHaveBeenCalledExactlyOnceWith([]);
+  expect(f.runtime.connection).toBe("connected");
+  await f.runtime.close();
+});
 
 it("captures runtime callbacks once with their original class receiver", async () => {
   const dependency = new Service<{ read(): string }>({

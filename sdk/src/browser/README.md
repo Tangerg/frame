@@ -73,6 +73,9 @@ reconnect requires Host revalidation. Call `runtime.reconnect(replacement)` to
 replace the authenticated channel while the same pump runs. A late poll from the
 retired channel cannot fence or disconnect the replacement. A new authority
 epoch makes old executions cleanup-only.
+While revalidation is pending, polling joins that same observation instead of
+reconnecting the retired channel. An explicit replacement may supersede the
+observation; its late completion cannot replace or discard the newer channel.
 
 `run(signal?)` owns the pump's bootstrap lifetime. Aborting its signal, or calling
 `pump.close()`, stops new scheduling, begins Runtime closure and joins the actual

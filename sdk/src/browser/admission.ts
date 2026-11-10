@@ -6,7 +6,11 @@ import type {
   UseGrant,
 } from "../protocol.generated.js";
 import type { Use } from "./runtime.js";
-import { isControlRefusal, type HostControl } from "./control.js";
+import {
+  ControlOperation,
+  isControlRefusal,
+  type ControlChannel,
+} from "./control.js";
 
 // Both acquisition entrances observe one original operation. A terminal owner
 // remains here until its proof is acknowledged; historical receipts alone never
@@ -21,7 +25,7 @@ export class UseAdmission {
   #requestDispatched = false;
   #grant?: UseGrant;
   #use?: Use;
-  #pending?: Promise<Use>;
+  readonly #operation = new ControlOperation<Use>();
 
   constructor(
     identity: Pick<AcquireRequest, "operationId" | "parentUseId" | "execution">,
@@ -75,13 +79,16 @@ export class UseAdmission {
     this.#request = request;
   }
 
-  async requestGrant(control: HostControl): Promise<UseGrant> {
+  async requestGrant(channel: ControlChannel): Promise<UseGrant> {
     if (!this.#request)
       throw new FrameError("invalid_plan", "acquisition request is required");
     const previouslyDispatched = this.#requestDispatched;
     this.#requestDispatched = true;
     try {
-      return await control.acquire(this.#request);
+      const request = this.#request;
+      return await channel.observe((control, signal) =>
+        control.acquire(request, signal),
+      );
     } catch (error) {
       // A later refusal cannot disprove an earlier acceptance whose ACK was lost.
       if (!previouslyDispatched && isControlRefusal(error))
@@ -107,23 +114,9 @@ export class UseAdmission {
     this.#use = use;
   }
 
-  resolve(work: () => Promise<Use>): Promise<Use> {
-    if (this.#use) return Promise.resolve(this.#use);
-    if (this.#pending) return this.#pending;
-    let resolve!: (use: Use) => void;
-    let reject!: (cause: unknown) => void;
-    const result = new Promise<Use>((accept, refuse) => {
-      resolve = accept;
-      reject = refuse;
-    });
-    this.#pending = result.finally(() => {
-      this.#pending = undefined;
-    });
-    try {
-      this.lifetime.run(work).then(resolve, reject);
-    } catch (cause) {
-      reject(cause);
-    }
-    return this.#pending;
+  resolve(channel: ControlChannel, work: () => Promise<Use>): Promise<Use> {
+    return this.#operation.run(channel, () =>
+      this.#use ? Promise.resolve(this.#use) : this.lifetime.run(work),
+    );
   }
 }

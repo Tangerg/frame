@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -71,13 +72,6 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 	}
 	if err := store.openEpoch(ctx, owners, digest, expectedShape); err != nil {
 		return nil, err
-	}
-	var unresolved int
-	if err := store.db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM frame_submissions WHERE state NOT IN (?,?))+(SELECT count(*) FROM frame_attempts WHERE state IN (?,?))+(SELECT count(*) FROM frame_use_approvals WHERE state=?)`, submissionCommittedSynchronized, submissionRejectedSynchronized, AttemptApproved, AttemptHandoff, useApproved).Scan(&unresolved); err != nil {
-		return nil, err
-	}
-	if unresolved != 0 {
-		store.admission.RequireRecovery(ErrIndeterminate)
 	}
 	return store, nil
 }
@@ -239,20 +233,31 @@ func (s *Store) resumeEpoch(ctx context.Context, tx Executor, digest framevalue.
 	if err := s.validateRegisteredOwners(ctx, tx); err != nil {
 		return err
 	}
-	for _, owner := range s.owners {
-		if _, err := owner.readSubmissions(ctx, tx); err != nil {
+	protection, err := readProtectionSnapshot(ctx, tx)
+	if err != nil {
+		return err
+	}
+	recoveryRequired := protection.requiresRecovery()
+	for _, owner := range append(slices.Collect(maps.Values(s.owners)), s.control) {
+		submissions, err := owner.readSubmissions(ctx, tx)
+		if err != nil {
 			return err
 		}
-	}
-	if _, err := s.control.readSubmissions(ctx, tx); err != nil {
-		return err
+		if slices.ContainsFunc(submissions, func(record Settlement) bool { return !record.Synchronized }) {
+			recoveryRequired = true
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM frame_realm_receipts`); err != nil {
 		return err
 	}
 	s.epoch++
-	_, err := tx.ExecContext(ctx, `UPDATE frame_meta SET epoch=? WHERE singleton=1`, s.epoch)
-	return err
+	if _, err := tx.ExecContext(ctx, `UPDATE frame_meta SET epoch=? WHERE singleton=1`, s.epoch); err != nil {
+		return err
+	}
+	if recoveryRequired {
+		s.admission.RequireRecovery(ErrIndeterminate)
+	}
+	return nil
 }
 
 func (s *Store) validateRegisteredOwners(ctx context.Context, tx Reader) error {

@@ -5,13 +5,12 @@ import type { Point } from "../contracts.js";
 import type { CloseOutcome, Lifetime } from "../lifetime.js";
 import {
   DecisionValues,
-  type Authority,
   type PublicationRequest,
   type ObjectRef,
   type PublicationResult,
 } from "../protocol.generated.js";
 import { sameObject } from "./identity.js";
-import { isControlRefusal, type HostControl } from "./control.js";
+import { isControlRefusal, type ControlChannel } from "./control.js";
 import type { ExecutionResources } from "./execution.js";
 import type { ProofOutbox } from "./outbox.js";
 
@@ -120,8 +119,7 @@ export class PublicationReceipt {
 }
 
 export interface PublicationChannel {
-  readonly control: HostControl;
-  readonly authority: Authority;
+  readonly channel: ControlChannel;
   readonly mode: "connected" | "cleanupOnly";
 }
 
@@ -214,7 +212,11 @@ export class Publication<M, V> {
     let result: PublicationResult;
     try {
       result = await active.lifetime.run(() =>
-        active.channel().control.publish(active.request),
+        active
+          .channel()
+          .channel.observe((control, signal) =>
+            control.publish(active.request, signal),
+          ),
       );
     } catch (cause) {
       if (isControlRefusal(cause)) {
@@ -247,7 +249,9 @@ export class Publication<M, V> {
     const channel = active.channel();
     if (channel.mode === "cleanupOnly") return this.#receipt.outcome;
     return this.#receive(
-      await channel.control.publication(this.#receipt.operationId),
+      await channel.channel.observe((control, signal) =>
+        control.publication(this.#receipt.operationId, signal),
+      ),
     );
   }
 
@@ -258,15 +262,23 @@ export class Publication<M, V> {
     let channel = this.#connectedChannel(active);
     if (this.#receipt.outcome.decision !== "accepted")
       this.#receive(
-        await channel.control.publication(this.#receipt.operationId),
+        await channel.channel.observe((control, signal) =>
+          control.publication(this.#receipt.operationId, signal),
+        ),
       );
     const accepted = this.#receipt.acceptedPublication;
     if (!accepted) return { decision: "unknown" };
     channel = this.#connectedChannel(active);
-    const result = await channel.control.withdraw({
-      authority: channel.authority,
-      publicationId: accepted.id,
-    });
+    const current = channel.channel;
+    const result = await current.observe((control, signal) =>
+      control.withdraw(
+        {
+          authority: current.authority,
+          publicationId: accepted.id,
+        },
+        signal,
+      ),
+    );
     if (result.decision === "accepted") {
       this.#receipt.acknowledgeWithdrawal();
       await active.lifetime.close();

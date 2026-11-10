@@ -46,10 +46,7 @@ func RunInTx(ctx context.Context, db *Database, fn func(context.Context) error) 
 		if owned.readOnly {
 			return errors.New("sqlite: write transaction cannot enter a read snapshot")
 		}
-		if err := fn(ctx); err != nil {
-			return errors.Join(err, cancellation.Err(ctx))
-		}
-		return nil
+		return errors.Join(fn(ctx), cancellation.Err(ctx))
 	}
 	return RunIndependentTx(ctx, db, fn)
 }

@@ -38,8 +38,11 @@ type featureGo struct {
 // Go types are projections of the same admitted schemas as TS. Constraints stay
 // in the canonical descriptor; callers validate it before decoding typed output.
 func (f *featureArtifacts) goProjection(output featureGoOptions) ([]byte, error) {
-	if !token.IsIdentifier(output.Package) || (output.Prefix != "" && (!token.IsIdentifier(output.Prefix) || !unicode.IsUpper([]rune(output.Prefix)[0]))) {
-		return nil, fmt.Errorf("feature Go package and optional exported prefix must be identifiers")
+	if output.Package == "_" || !token.IsIdentifier(output.Package) {
+		return nil, fmt.Errorf("%w: Go package must be a non-blank identifier", ErrInvalid)
+	}
+	if output.Prefix != "" && (!token.IsIdentifier(output.Prefix) || !unicode.IsUpper([]rune(output.Prefix)[0])) {
+		return nil, fmt.Errorf("%w: Go prefix must be an exported identifier", ErrInvalid)
 	}
 	emitter, aliases, err := f.goNames(output.Prefix)
 	if err != nil {

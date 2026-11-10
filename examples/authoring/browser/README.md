@@ -52,7 +52,13 @@ last. Cancelling an activation's HTTP wait cannot prove the Host did not admit
 it; Realm sealing also covers a pending plan the Runtime has not observed.
 Concurrent closes share one attempt. A failed close keeps application admission
 sealed and the cleanup channel available for a retry on the same client.
-The Go application owns endpoint paths and generates their TypeScript projection.
+The Go application owns endpoint paths, input/output models and successful
+acknowledgement statuses, and generates their TypeScript projection and runtime
+decoders together. HTTP activation reads and validates the entire bounded body
+before it can create a plan; a second JSON value, trailing data or an oversized
+body cannot start work. The seal request has no user-selected Realm or credential
+field: its original authenticated Realm belongs to the application. Successful
+commands still require an empty no-content acknowledgement.
 Application responses share the Host's advertised message budget with control
 responses. `go generate` formats the projection with the locally installed,
 lockfile-pinned Prettier before the workspace format check.

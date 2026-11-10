@@ -133,13 +133,16 @@ func insertAttempt(ctx context.Context, tx Executor, attempt Attempt, encoded []
 
 const attemptRecords = `SELECT id,request,request_digest,state,proof FROM frame_attempts`
 const attemptByID = attemptRecords + ` WHERE id=?`
-const protectedAttempts = attemptRecords + ` WHERE state=? ORDER BY id`
 
 func (s *Store) Attempts(ctx context.Context) ([]AttemptRecord, error) {
 	return readRecords(ctx, s, attemptRecords+" ORDER BY id", decodeAttempt)
 }
 func (s *Store) PendingAttempts(ctx context.Context) ([]AttemptRecord, error) {
-	return readRecords(ctx, s, attemptRecords+" WHERE state IN (?,?) ORDER BY id", decodeAttempt, AttemptApproved, AttemptHandoff)
+	records, err := s.Attempts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(records, func(record AttemptRecord) bool { return !record.State.pending() }), nil
 }
 func (s *Store) Attempt(ctx context.Context, id string) (AttemptRecord, error) {
 	return readRecord(ctx, s, attemptByID, decodeAttempt, id)
@@ -182,26 +185,17 @@ func decodeAttempt(row protectedRecord) (AttemptRecord, error) {
 func (s *Store) ExecutionDependencies(ctx context.Context) ([]frame.Dependency, error) {
 	var dependencies []frame.Dependency
 	err := s.Read(ctx, func(tx Reader) error {
-		attempts, err := scanRecords(ctx, tx, protectedAttempts, decodeAttempt, AttemptApproved)
+		protection, err := readProtectionSnapshot(ctx, tx)
 		if err != nil {
 			return err
 		}
-		for _, record := range attempts {
-			dependencies = append(dependencies, record.Attempt.Binding.Dependencies()...)
-		}
-		uses, err := scanRecords(ctx, tx, protectedUses, decodeUse, useApproved)
-		if err != nil {
-			return err
-		}
-		for _, record := range uses {
-			dependencies = append(dependencies, record.Approval.Binding.Dependencies()...)
-		}
+		dependencies = protection.dependencies()
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	return frame.CompactDependencies(dependencies), nil
+	return dependencies, nil
 }
 
 func (s *Store) ReleaseAttempt(ctx context.Context, id string, proof ExitProof) error {

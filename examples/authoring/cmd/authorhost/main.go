@@ -60,6 +60,15 @@ type Bootstrap struct {
 	Credentials browser.Credentials `json:"credentials"`
 }
 
+type ActivationRequest struct {
+	Unit frame.UnitID `json:"unit"`
+}
+
+type ActivityView struct {
+	Started   int64 `json:"started"`
+	Cancelled int64 `json:"cancelled"`
+}
+
 type applicationPath string
 
 const (
@@ -82,12 +91,12 @@ func (s moduleSource) Module(_ context.Context, binding frame.UnitBinding) (brow
 }
 
 const (
-	installationID     = frame.InstallationID("author")
-	maxDeclarationSize = 1 << 20
-	maxModuleSize      = 16 << 20
-	maxActivationBody  = 4096
-	closeTimeout       = 10 * time.Second
-	readHeaderTimeout  = 5 * time.Second
+	installationID             = frame.InstallationID("author")
+	maxDeclarationSize         = 1 << 20
+	maxModuleSize              = 16 << 20
+	maxApplicationRequestBytes = 4096
+	closeTimeout               = 10 * time.Second
+	readHeaderTimeout          = 5 * time.Second
 )
 
 func main() {
@@ -260,17 +269,21 @@ func routes(host *frame.Host, bridge *browser.Bridge, author author, credentials
 			next(w, r)
 		}
 	}
-	mux.HandleFunc(http.MethodPost+" "+string(activatePath), application(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(activationHTTP.Method+" "+activationHTTP.Path, application(func(w http.ResponseWriter, r *http.Request) {
 		activate(w, r, host, browser.RealmID(credentials.Realm), author.plugin.Revision())
 	}))
-	mux.HandleFunc(http.MethodPost+" "+string(sealRealmPath), application(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(sealRealmHTTP.Method+" "+sealRealmHTTP.Path, application(func(w http.ResponseWriter, r *http.Request) {
+		var input struct{}
+		if !readApplicationRequest(w, r, &input) {
+			return
+		}
 		if err := bridge.SealRealm(r.Context(), credentials.Token); err != nil {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		w.WriteHeader(sealRealmHTTP.SuccessStatus)
 	}))
-	mux.HandleFunc(http.MethodGet+" "+string(activityPath), application(activity.report))
+	mux.HandleFunc(activityHTTP.Method+" "+activityHTTP.Path, application(activity.report))
 	return mux
 }
 
@@ -288,32 +301,44 @@ func (a *activity) wait(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *activity) report(w http.ResponseWriter, _ *http.Request) {
-	_ = json.NewEncoder(w).Encode(struct {
-		Started   int64 `json:"started"`
-		Cancelled int64 `json:"cancelled"`
-	}{a.started.Load(), a.cancelled.Load()})
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(activityHTTP.SuccessStatus)
+	_ = json.NewEncoder(w).Encode(ActivityView{a.started.Load(), a.cancelled.Load()})
 }
 
 func activate(w http.ResponseWriter, r *http.Request, host *frame.Host, realm frame.RealmID, release value.Digest) {
-	var input struct {
-		Unit frame.UnitID `json:"unit"`
-	}
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxActivationBody))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&input); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	var input ActivationRequest
+	if !readApplicationRequest(w, r, &input) {
 		return
 	}
 	if _, err := host.ActivateUnit(r.Context(), realm, frame.UnitRef{InstallationID: installationID, Release: release, UnitID: input.Unit}); err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	w.WriteHeader(activationHTTP.SuccessStatus)
+}
+
+func readApplicationRequest(w http.ResponseWriter, r *http.Request, target any) bool {
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxApplicationRequestBytes))
+	if err != nil {
+		status := http.StatusBadRequest
+		var limit *http.MaxBytesError
+		if errors.As(err, &limit) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		http.Error(w, err.Error(), status)
+		return false
+	}
+	if err := value.DecodeValue(data, target, "application request"); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return false
+	}
+	return true
 }
 
 func writeContracts(path string, contracts document.Contracts) error {
 	var output bytes.Buffer
-	if err := browser.WriteTypeScriptTypes(&output,
+	if err := browser.WriteTypeScriptHTTP(&output, []browser.HTTPOperation{activationHTTP, activityHTTP, sealRealmHTTP},
 		reflect.TypeFor[document.Document](), reflect.TypeFor[document.Converted](),
 		reflect.TypeFor[document.Diagnostic](), reflect.TypeFor[document.ConverterMetadata](),
 		reflect.TypeFor[document.ValidatorMetadata](), reflect.TypeFor[AuthorPackage](),
@@ -340,7 +365,7 @@ func writeContracts(path string, contracts document.Contracts) error {
 		return err
 	}
 	fmt.Fprintf(&output, "\nexport const applicationPaths = %s as const;\n", paths)
-	return os.WriteFile(path, output.Bytes(), localfile.PublicFileMode)
+	return localfile.WriteGenerated(path, output.Bytes())
 }
 
 func readBounded(path string, maximum int64) ([]byte, error) {

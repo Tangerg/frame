@@ -199,8 +199,9 @@ type Definition struct {
 	Units    []Unit
 }
 
-// Plugin is a reusable declaration. Installing it creates installation and
-// instance ownership; constructing it never starts code.
+// Plugin is a reusable declaration. Host installation operations capture it,
+// so replacing the caller's handle cannot change an admitted release.
+// Constructing a declaration never starts code.
 type Plugin struct {
 	revision framevalue.Digest
 	units    []Unit

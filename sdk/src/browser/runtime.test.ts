@@ -446,7 +446,7 @@ it("rejects a slower admission before it can replace an already owned instance",
   await f.runtime.close();
 });
 
-it("withdraws through the current channel after observing a publication on a retired channel", async () => {
+it("retries the original withdrawal after retiring its publication observation", async () => {
   const contributor = defineUnit({
     id: "contributor",
     imports: {},
@@ -474,7 +474,7 @@ it("withdraws through the current channel after observing a publication on a ret
   );
   const observed = Promise.withResolvers<PublicationResult>();
   vi.mocked(f.control.publication).mockReturnValueOnce(observed.promise);
-  const withdrawing = publication.withdraw();
+  const withdrawing = publication.withdraw().catch((error) => error);
   const replacement: HostControl = {
     ...f.control,
     withdraw: vi.fn<HostControl["withdraw"]>(async () => ({
@@ -482,7 +482,7 @@ it("withdraws through the current channel after observing a publication on a ret
     })),
   };
   await f.runtime.reconnect(replacement);
-  observed.resolve({
+  const accepted: PublicationResult = {
     decision: "accepted",
     publication: {
       id: "original-publication",
@@ -490,13 +490,19 @@ it("withdraws through the current channel after observing a publication on a ret
       revision: "1",
       object: publication.object,
     },
-  });
-  expect((await withdrawing).decision).toBe("accepted");
+  };
+  expect(await withdrawing).toMatchObject({ code: "outcome_unknown" });
+  vi.mocked(replacement.publication).mockResolvedValueOnce(accepted);
+  expect((await publication.withdraw()).decision).toBe("accepted");
+  observed.resolve(accepted);
   expect(f.control.withdraw).not.toHaveBeenCalled();
-  expect(replacement.withdraw).toHaveBeenCalledExactlyOnceWith({
-    authority,
-    publicationId: "original-publication",
-  });
+  expect(replacement.withdraw).toHaveBeenCalledExactlyOnceWith(
+    {
+      authority,
+      publicationId: "original-publication",
+    },
+    expect.any(AbortSignal),
+  );
   await f.runtime.close();
 });
 
@@ -855,10 +861,9 @@ describe("approved browser execution", () => {
       ).toBe(true);
       expect(f.proofs.size).toBe(decision === "cleanupRequired" ? 1 : 0);
       expect(setup).not.toHaveBeenCalled();
-      expect(vi.mocked(f.control.admitPlan).mock.calls).toEqual([
-        [original],
-        [original],
-      ]);
+      expect(
+        vi.mocked(f.control.admitPlan).mock.calls.map(([input]) => [input]),
+      ).toEqual([[original], [original]]);
     },
   );
 
@@ -1051,11 +1056,9 @@ describe("approved browser execution", () => {
       ]),
     );
     expect(f.ready.get("a")).toEqual(original);
-    expect(vi.mocked(f.control.ready).mock.calls).toEqual([
-      [original],
-      [original],
-      [original],
-    ]);
+    expect(
+      vi.mocked(f.control.ready).mock.calls.map(([input]) => [input]),
+    ).toEqual([[original], [original], [original]]);
     await f.runtime.close();
   });
 
@@ -1117,7 +1120,7 @@ describe("approved browser execution", () => {
     await f.runtime.close();
   });
 
-  it("settles a late authenticated admission without dispatching its object", async () => {
+  it("keeps a retired acquisition covered by its execution without materializing a late grant", async () => {
     const f = fixture({ reader });
     const live = await f.runtime.prepare(
       plan("a", [
@@ -1139,19 +1142,21 @@ describe("approved browser execution", () => {
       selections: [],
     });
     const rejected = expect(admitted).rejects.toMatchObject({
-      code: "unavailable",
+      code: "outcome_unknown",
     });
     f.runtime.disconnect();
     resolve(grant);
     await rejected;
     await f.runtime.close();
-    expect(
-      [...f.proofs.values()].find((proof) => proof.useId === grant.id),
-    ).toMatchObject({
-      status: "released",
-      instances: ["source"],
-      scopeGeneration: "1",
-    });
+    expect([...f.proofs.values()]).toEqual([
+      expect.objectContaining({
+        scopeKind: "execution",
+        status: "released",
+        instances: ["source"],
+        scopeGeneration: "1",
+      }),
+    ]);
+    expect(f.control.validateUse).not.toHaveBeenCalled();
   });
 
   it("retries an uncertain acquisition with its original operation and no second resource owner", async () => {
@@ -1188,9 +1193,9 @@ describe("approved browser execution", () => {
     expect(f.runtime.hasPendingAcquisition(request.operationId)).toBe(false);
     expect(await f.runtime.acquire(request)).toBe(use);
     expect(await f.runtime.accept(grant)).toBe(use);
-    expect(vi.mocked(f.control.acquire).mock.calls).toEqual(
-      Array.from({ length: 4 }, () => [request]),
-    );
+    expect(
+      vi.mocked(f.control.acquire).mock.calls.map(([input]) => [input]),
+    ).toEqual(Array.from({ length: 4 }, () => [request]));
     expect(f.control.validateUse).toHaveBeenCalledOnce();
     expect(
       await use.with(live.objects[0]!, files, (value) => value.read()),
@@ -1231,9 +1236,9 @@ describe("approved browser execution", () => {
       expect(f.runtime.hasPendingAcquisition(request.operationId)).toBe(true);
       const use = await accept();
       expect(await f.runtime.accept(grant)).toBe(use);
-      expect(vi.mocked(f.control.acquire).mock.calls).toEqual(
-        entrance === "acquire" ? [[request], [request]] : [],
-      );
+      expect(
+        vi.mocked(f.control.acquire).mock.calls.map(([input]) => [input]),
+      ).toEqual(entrance === "acquire" ? [[request], [request]] : []);
       await f.runtime.close();
       expect(
         [...f.proofs.values()].filter((proof) => proof.useId === grant.id),
@@ -1578,7 +1583,10 @@ describe("approved browser execution", () => {
     received.use = replacement;
     validation.resolve();
     const route = await pending;
-    expect(f.control.validateUse).toHaveBeenCalledWith(approved);
+    expect(f.control.validateUse).toHaveBeenCalledWith(
+      approved,
+      expect.any(AbortSignal),
+    );
     await route.close();
     await f.runtime.close();
   });
@@ -1869,11 +1877,14 @@ describe("approved browser execution", () => {
     const originalProof = f.runtime.pendingProofs[0]!;
     f.runtime.disconnect();
     await f.runtime.reconnect(f.control);
-    expect(f.control.reconnect).toHaveBeenCalledExactlyOnceWith({
-      authority,
-      realm,
-      executions: [active.identity],
-    });
+    expect(f.control.reconnect).toHaveBeenCalledExactlyOnceWith(
+      {
+        authority,
+        realm,
+        executions: [active.identity],
+      },
+      expect.any(AbortSignal),
+    );
     expect(f.runtime.connection).toBe("connected");
     expect(f.runtime.pendingProofs).toEqual([]);
     expect(f.proofs.get(originalProof.proofId)).toEqual(originalProof);
@@ -2624,7 +2635,10 @@ it("redelivers original proof on a replacement channel before the retired send s
     Promise.withResolvers<Awaited<ReturnType<HostControl["prove"]>>>();
   vi.mocked(f.control.prove).mockImplementation(() => reply.promise);
   const retired = f.runtime.flushProofs();
-  expect(f.control.prove).toHaveBeenCalledExactlyOnceWith(original);
+  expect(f.control.prove).toHaveBeenCalledExactlyOnceWith(
+    original,
+    expect.any(AbortSignal),
+  );
   const replacement: HostControl = {
     ...f.control,
     prove: vi.fn(async (proof) => ({
@@ -2636,7 +2650,10 @@ it("redelivers original proof on a replacement channel before the retired send s
   };
   await f.runtime.reconnect(replacement);
   await retired;
-  expect(replacement.prove).toHaveBeenCalledExactlyOnceWith(original);
+  expect(replacement.prove).toHaveBeenCalledExactlyOnceWith(
+    original,
+    expect.any(AbortSignal),
+  );
   expect(f.runtime.pendingProofs).toEqual([]);
   expect(f.runtime.connection).toBe("connected");
   reply.resolve({
@@ -2723,5 +2740,8 @@ it("completes current proof delivery when a retired channel confirms first", asy
   expect(f.runtime.pendingProofs).toEqual([]);
   currentReply.reject(new Error("late transport failure"));
   await f.runtime.close();
-  expect(replacement.prove).toHaveBeenCalledExactlyOnceWith(proof);
+  expect(replacement.prove).toHaveBeenCalledExactlyOnceWith(
+    proof,
+    expect.any(AbortSignal),
+  );
 });

@@ -8,14 +8,20 @@ import type {
 import type { ControlChannel } from "./control.js";
 import { sameAuthority } from "./identity.js";
 
+const SUPERSEDED_DELIVERY = Object.freeze(
+  new FrameError("outcome_unknown", "proof delivery attempt was superseded"),
+);
+
 class ProofDelivery {
   readonly completion = Promise.withResolvers<void>();
   readonly replacement = Promise.withResolvers<{ work: Promise<void> }>();
+  readonly stopping = new AbortController();
 
   constructor(readonly channel: ControlChannel) {}
 
   supersede(next: ProofDelivery): void {
     this.replacement.resolve({ work: next.completion.promise });
+    this.stopping.abort(SUPERSEDED_DELIVERY);
   }
 }
 
@@ -142,12 +148,7 @@ export class ProofOutbox {
       // Rescan the owner after each acknowledgement instead of skipping it forever.
       for (let next = this.#nextPending(); next; next = this.#nextPending()) {
         const [reservation, entry] = next;
-        const sent = this.#send(
-          delivery.channel,
-          reservation,
-          entry,
-          acknowledged,
-        );
+        const sent = this.#send(delivery, reservation, entry, acknowledged);
         const result = await Promise.race([
           sent,
           entry.acknowledged.promise,
@@ -183,16 +184,17 @@ export class ProofOutbox {
   }
 
   async #send(
-    channel: ControlChannel,
+    delivery: ProofDelivery,
     reservation: string,
     entry: PendingProof,
     acknowledged: (proof: CloseProof) => void,
   ): Promise<void> {
+    const { channel } = delivery;
     let ack: ProofAcknowledgement;
     try {
       ack = captureProtocol(
         "ProofAcknowledgement",
-        await channel.control.prove(entry.proof),
+        await channel.control.prove(entry.proof, delivery.stopping.signal),
       );
     } catch (error) {
       if (!this.#ownsProof(reservation, entry)) return;

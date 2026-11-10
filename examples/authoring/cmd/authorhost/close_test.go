@@ -117,8 +117,15 @@ func TestSealRouteClosesOriginalRealmAfterActivationWaitWasCancelled(t *testing.
 	if err != nil || len(pending.Plans) != 1 || pending.Plans[0].Execution != plan.Execution {
 		t.Fatalf("wait cancellation was mistaken for execution exit: %+v %v", pending, err)
 	}
+	invalidSeal := httptest.NewRequestWithContext(ctx, http.MethodPost, string(sealRealmPath), strings.NewReader(`{"token":"`+other.Token+`"}`))
+	invalidSeal.Header.Set("Authorization", "Bearer "+credentials.Token)
+	refused := httptest.NewRecorder()
+	handler.ServeHTTP(refused, invalidSeal)
+	if refused.Code != http.StatusBadRequest {
+		t.Fatalf("seal accepted undeclared input: %d %s", refused.Code, refused.Body)
+	}
 	for range 2 {
-		request := httptest.NewRequestWithContext(ctx, http.MethodPost, string(sealRealmPath), strings.NewReader(`{"token":"`+other.Token+`"}`))
+		request := httptest.NewRequestWithContext(ctx, http.MethodPost, string(sealRealmPath), strings.NewReader(`{}`))
 		request.Header.Set("Authorization", "Bearer "+credentials.Token)
 		reply := httptest.NewRecorder()
 		handler.ServeHTTP(reply, request)

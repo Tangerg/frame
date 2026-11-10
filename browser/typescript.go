@@ -60,7 +60,13 @@ func WriteTypeScriptTypes(out io.Writer, roots ...reflect.Type) error {
 // TypeScript name must denote exactly one Go type.
 type typeScriptEmitter struct {
 	strings.Builder
-	types map[string]typeScriptDeclaration
+	types              map[string]typeScriptDeclaration
+	needsNumberChecks  bool
+	needsIntegerChecks bool
+	needsObjectChecks  bool
+	needsArrayChecks   bool
+	needsDigestCheck   bool
+	valueNames         map[string]string
 }
 
 type typeScriptDeclaration struct {
@@ -69,7 +75,7 @@ type typeScriptDeclaration struct {
 }
 
 func newTypeScriptEmitter(roots []reflect.Type) (*typeScriptEmitter, error) {
-	emitter := &typeScriptEmitter{types: make(map[string]typeScriptDeclaration)}
+	emitter := &typeScriptEmitter{types: make(map[string]typeScriptDeclaration), valueNames: make(map[string]string)}
 	for _, root := range roots {
 		if err := framevalue.ValidateType(root); err != nil {
 			return nil, fmt.Errorf("control: invalid wire type: %w", err)
@@ -78,7 +84,25 @@ func newTypeScriptEmitter(roots []reflect.Type) (*typeScriptEmitter, error) {
 			return nil, err
 		}
 	}
+	for _, name := range slices.Sorted(maps.Keys(emitter.types)) {
+		declaration := emitter.types[name]
+		if _, enum := reflect.Zero(declaration.source).Interface().(interface{ Values() []string }); enum {
+			if err := emitter.reserveValues("enum "+name, name+enumValuesSuffix); err != nil {
+				return nil, err
+			}
+		}
+	}
 	return emitter, nil
+}
+
+func (e *typeScriptEmitter) reserveValues(owner string, names ...string) error {
+	for _, name := range names {
+		if previous, exists := e.valueNames[name]; exists {
+			return fmt.Errorf("typescript projection: value %s is shared by %s and %s", name, previous, owner)
+		}
+		e.valueNames[name] = owner
+	}
+	return nil
 }
 
 func (e *typeScriptEmitter) collect(t reflect.Type) error {
@@ -183,6 +207,9 @@ func (e *typeScriptEmitter) renderModel(t reflect.Type) (string, error) {
 }
 
 func (e *typeScriptEmitter) writeProtocol() error {
+	if err := e.reserveValues("control protocol", "PROTOCOL", "MAX_NAME_BYTES", "DIGEST_PATTERN", "CONTROL_ERROR_CODES", "CONTROL_MUTATIONS"); err != nil {
+		return err
+	}
 	fmt.Fprintf(e, "export const PROTOCOL = %s as const;\n\n", contractgen.TypeScriptStringLiteral(Protocol))
 	fmt.Fprintf(e, "export const MAX_NAME_BYTES = %d as const;\n\n", frame.MaxNameBytes)
 	fmt.Fprintf(e, "export const DIGEST_PATTERN = %s as const;\n\n", contractgen.TypeScriptStringLiteral(framevalue.DigestPattern()))

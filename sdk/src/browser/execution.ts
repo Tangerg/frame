@@ -16,7 +16,7 @@ import type {
   PlannedUnit,
   PreparedContribution,
 } from "../protocol.generated.js";
-import type { HostControl } from "./control.js";
+import { ControlOperation, type ControlChannel } from "./control.js";
 import type { ExecutionHandle } from "./runtime.js";
 import { sameObject } from "./identity.js";
 import { PreparationAdmission, ReadySubmission } from "./preparation.js";
@@ -200,7 +200,7 @@ export class ExecutionResources {
   readonly #units = new Map<string, UnitResource>();
   readonly #objects = new Map<string, OwnedObject>();
   readonly #contributions: PreparedContribution[] = [];
-  #preparing?: Promise<ExecutionHandle>;
+  readonly #preparation = new ControlOperation<ExecutionHandle>();
   #ready?: ReadySubmission;
   #forget?: (execution: ExecutionResources) => void;
 
@@ -236,21 +236,15 @@ export class ExecutionResources {
       );
   }
 
-  get preparing(): Promise<ExecutionHandle> | undefined {
-    return this.#preparing;
-  }
-
   get prepared(): boolean {
     return this.#ready !== undefined;
   }
 
-  prepare(work: () => Promise<ExecutionHandle>): Promise<ExecutionHandle> {
-    this.#preparing ??= Promise.resolve()
-      .then(work)
-      .finally(() => {
-        this.#preparing = undefined;
-      });
-    return this.#preparing;
+  prepare(
+    channel: ControlChannel,
+    work: () => Promise<ExecutionHandle>,
+  ): Promise<ExecutionHandle> {
+    return this.#preparation.run(channel, work);
   }
 
   unit(instanceId: string): UnitResource | undefined {
@@ -426,11 +420,11 @@ export class ExecutionResources {
     this.#contributions.length = 0;
   }
 
-  async submitReady(control: HostControl): Promise<ExecutionHandle> {
+  async submitReady(channel: ControlChannel): Promise<ExecutionHandle> {
     this.lifetime.assertOpen();
     if (!this.#ready)
       throw new FrameError("invalid_plan", "execution has no prepared report");
-    await this.#ready.submit(control);
+    await this.#ready.submit(channel);
     this.lifetime.assertOpen();
     return this.view;
   }
@@ -500,7 +494,6 @@ export class ExecutionResources {
         this.#instanceIndex.delete(instanceId);
       this.#units.clear();
       this.#contributions.length = 0;
-      this.#preparing = undefined;
       this.#ready = undefined;
     });
   }

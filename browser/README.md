@@ -16,6 +16,16 @@ receive target-language names shared by declarations and references; colliding
 projected names are refused before publication.
 Malformed, cyclic or unsupported models fail before any output is published.
 
+`WriteTypeScriptHTTP` projects application-owned GET queries and POST JSON
+operations from the same declarations used to bind their Go handlers. Each
+operation fixes its method, static path, input, output and success status;
+consumers cannot choose an unrelated generic response type. Generated checks
+reuse the original Go field, enum and codec models, including exact integer
+ranges. A JSON null result remains distinct from an acknowledgement with no
+result. GET inputs use query parameters so URL path normalization cannot change
+their identity. Invalid declarations and generated value-name collisions fail
+before publishing bytes.
+
 The application creates the Host and Store, constructs `NewBridge`, and registers
 the Bridge as the `browser-js` driver. `ModuleSource` projects an approved unit to
 one immutable artifact. Configured Points are captured at construction and must

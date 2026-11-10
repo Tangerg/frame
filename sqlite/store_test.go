@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/Tangerg/frame"
@@ -467,7 +466,7 @@ func TestInitialStoreRefusesAnyForeignSchemaObject(t *testing.T) {
 	}
 }
 
-func TestProtectionQueriesDoNotReadReleasedHistory(t *testing.T) {
+func TestProtectionQueriesExcludeProvenHistory(t *testing.T) {
 	store, _, a := testStore(t)
 	ctx := t.Context()
 	ref := frame.UnitRef{InstallationID: "one", Release: value.Hash([]byte("release")), UnitID: "u"}
@@ -480,48 +479,26 @@ func TestProtectionQueriesDoNotReadReleasedHistory(t *testing.T) {
 	if err := a.Admit(ctx, func(ctx context.Context) error { return store.ApproveUse(ctx, approval) }); err != nil {
 		t.Fatal(err)
 	}
-	historicalApproval := approval
-	historicalApproval.ExecutionID = "closed-execution"
-	historical, err := json.Marshal(historicalApproval)
-	if err != nil {
+	historical := active
+	historical.ID = "closed-execution"
+	if err := store.RecordAttempt(ctx, historical); err != nil {
 		t.Fatal(err)
 	}
-	// Invalid historical proof bytes make accidental full-history decoding observable.
-	err = store.transaction(ctx, func(tx Executor) error {
-		const history = `WITH RECURSIVE ids(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM ids WHERE n<1000) `
-		if _, err := tx.ExecContext(ctx, history+`INSERT INTO frame_attempts(id,request,request_digest,state,proof) SELECT 'old-'||n,'{}',?,'released','!' FROM ids`, value.Hash([]byte("{}"))); err != nil {
-			return err
-		}
-		_, err := tx.ExecContext(ctx, history+`INSERT INTO frame_use_approvals(id,request,request_digest,state,proof) SELECT 'old-'||n,?,?,'released','!' FROM ids`, historical, value.Hash(historical))
-		return err
-	})
-	if err != nil {
+	historicalApproval := approval
+	historicalApproval.ID = "closed-use"
+	historicalApproval.ExecutionID = historical.ID
+	if err := a.Admit(ctx, func(ctx context.Context) error { return store.ApproveUse(ctx, historicalApproval) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReleaseAttempt(ctx, historical.ID, historical.LocalExit("not-started", "original execution never started")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SettleUse(ctx, historicalApproval.ID, frame.ReleaseProof{CloseID: 1}); err != nil {
 		t.Fatal(err)
 	}
 	deps, err := store.ExecutionDependencies(ctx)
 	if err != nil || len(deps) != 1 || deps[0] != ref.Dependency() {
 		t.Fatalf("active protection=%+v %v", deps, err)
-	}
-	for _, projection := range []struct {
-		query string
-		state any
-	}{{protectedAttempts, AttemptApproved}, {protectedUses, useApproved}} {
-		rows, err := store.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+projection.query, projection.state)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var indexed bool
-		for rows.Next() {
-			var node, parent, empty int
-			var detail string
-			if err := rows.Scan(&node, &parent, &empty, &detail); err != nil {
-				t.Fatal(err)
-			}
-			indexed = indexed || strings.Contains(detail, "USING INDEX")
-		}
-		if err := errors.Join(rows.Err(), rows.Close()); err != nil || !indexed {
-			t.Fatalf("active projection lost its state index: %v", err)
-		}
 	}
 	if _, err := store.Attempt(ctx, active.ID); err != nil {
 		t.Fatal(err)

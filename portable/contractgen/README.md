@@ -7,6 +7,10 @@ statically express every format, numeric or cross-field predicate. Validate
 inputs, stream chunks and outputs with their admitted method contract.
 An empty method description remains valid. Consumer code generation adds no
 documentation precondition to an already admitted callable descriptor.
+Invalid descriptors, Go package names or prefixes, and conflicting output
+destinations return `ErrInvalid` before publication. Filesystem failures retain
+their original causes so callers can distinguish invalid requests from an
+unavailable destination. A Go package name must be a non-blank identifier.
 
 The generator resolves local JSON Pointer references, including escaped names,
 nested subschemas and structural recursion, into one projection graph shared by

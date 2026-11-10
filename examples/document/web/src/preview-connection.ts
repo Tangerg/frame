@@ -1,5 +1,4 @@
 import { Lifetime } from "@frame/sdk";
-import type { ContractRef } from "@frame/sdk/protocol";
 import type { Converted, Credentials } from "./api.generated.ts";
 import { DocumentServer } from "./document-server.ts";
 import { PreviewSession } from "./preview-session.ts";
@@ -102,8 +101,8 @@ export class PreviewConnection {
       };
     }
     if (this.#state.status === "opening") {
-      const credentials = await this.#server.request<Credentials>(
-        "/api/realm/open",
+      const credentials = await this.#server.request(
+        "openRealm",
         this.#state.request,
         signal,
       );
@@ -111,8 +110,8 @@ export class PreviewConnection {
       this.#state = { status: "opened", credentials };
     }
     const { credentials } = this.#state;
-    const contracts = await this.#server.request<{ previews: ContractRef }>(
-      "/api/contracts",
+    const contracts = await this.#server.request(
+      "contracts",
       undefined,
       signal,
     );
@@ -146,7 +145,7 @@ export class PreviewConnection {
         failures,
         "original preview release did not complete",
       );
-    await this.#server.request("/api/recover", {});
+    await this.#server.request("recover", {});
     this.#state = { status: "released" };
   }
 
@@ -155,24 +154,21 @@ export class PreviewConnection {
   ): Promise<void> {
     switch (state.status) {
       case "opening": {
-        const credentials = await this.#server.request<Credentials>(
-          "/api/realm/open",
+        const credentials = await this.#server.request(
+          "openRealm",
           state.request,
         );
-        await this.#server.request("/api/realm/seal", {
+        await this.#server.request("sealRealm", {
           token: credentials.token,
         });
         return;
       }
       case "opened": {
-        const credentials = await this.#server.request<Credentials>(
-          "/api/realm/resume",
-          {
-            realm: state.credentials.realm,
-            resumeToken: state.credentials.resumeToken,
-          },
-        );
-        await this.#server.request("/api/realm/seal", {
+        const credentials = await this.#server.request("resumeRealm", {
+          realm: state.credentials.realm,
+          resumeToken: state.credentials.resumeToken,
+        });
+        await this.#server.request("sealRealm", {
           token: credentials.token,
         });
         return;

@@ -30,7 +30,7 @@ class DocumentWorkbench {
     });
     this.#action("queue", async () => {
       this.#show(
-        await this.#server.request<TaskView>("/api/queue", {
+        await this.#server.request("queue", {
           id: this.#taskId(),
           path: this.#path.value,
         }),
@@ -39,24 +39,16 @@ class DocumentWorkbench {
     this.#action("run", () => this.#run(this.#taskId()));
     this.#action("convert", async () => {
       const command = { id: this.#taskId(), path: this.#path.value };
-      await this.#server.request("/api/queue", command);
+      await this.#server.request("queue", command);
       await this.#run(command.id);
     });
     this.#action("observe", async () => {
-      this.#show(
-        await this.#server.request<TaskView>(
-          `/api/tasks/${encodeURIComponent(this.#taskId())}`,
-        ),
-      );
+      this.#show(await this.#server.request("task", { id: this.#taskId() }));
     });
     this.#action("cancel", async () => {
       const id = this.#taskId();
-      await this.#server.request("/api/cancel", { id });
-      this.#show(
-        await this.#server.request<TaskView>(
-          `/api/tasks/${encodeURIComponent(id)}`,
-        ),
-      );
+      await this.#server.request("cancel", { id });
+      this.#show(await this.#server.request("task", { id }));
     });
     this.#action("close", async () => {
       const released = this.#preview.close();
@@ -75,7 +67,7 @@ class DocumentWorkbench {
   }
 
   async #run(id: string): Promise<void> {
-    const task = await this.#server.request<TaskView>("/api/run", { id });
+    const task = await this.#server.request("run", { id });
     this.#show(task);
     if (task.id === this.#task.value && task.result) {
       await this.#preview.mount(
@@ -89,7 +81,7 @@ class DocumentWorkbench {
   #show(task: TaskView): void {
     if (task.id !== this.#task.value) return;
     element("status").textContent =
-      `${task.id}: ${task.state}${task.failure ? ` — ${task.failure}` : ""}`;
+      `${task.id}: ${task.state}${task.runStatus ? " / " + task.runStatus : ""}${task.failure ? ` — ${task.failure}` : ""}`;
     element("binding").textContent = task.binding.units
       .map(
         (unit) =>
@@ -115,7 +107,12 @@ class DocumentWorkbench {
   }
 
   #report(error: unknown): void {
-    if (this.#preview.signal.aborted && error === this.#preview.signal.reason)
+    const signal = this.#preview.signal;
+    if (
+      signal.aborted &&
+      (error === signal.reason ||
+        (error instanceof Error && error.cause === signal.reason))
+    )
       return;
     element("error").textContent =
       error instanceof Error ? error.message : String(error);

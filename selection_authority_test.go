@@ -15,7 +15,11 @@ func TestCapturedPlanRejectsLostAuthorityBeforePublicationWithdrawal(t *testing.
 		revoke func(*Host, ScopeGrant, *unitInstance)
 		want   error
 	}{
-		{"start grant", func(host *Host, grant ScopeGrant, _ *unitInstance) { host.Admission().FenceScope(grant.ID()) }, ErrFenced},
+		{"start grant before lifetime cancellation", func(host *Host, grant ScopeGrant, _ *unitInstance) { host.Admission().FenceScope(grant.ID()) }, ErrFenced},
+		{"start grant after lifetime cancellation", func(host *Host, grant ScopeGrant, instance *unitInstance) {
+			host.Admission().FenceScope(grant.ID())
+			instance.lifetime.cancel(ErrFenced)
+		}, ErrStaleBinding},
 		{"instance lifetime", func(_ *Host, _ ScopeGrant, instance *unitInstance) { instance.lifetime.BeginClose(ErrClosed) }, ErrStaleBinding},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
@@ -73,14 +77,21 @@ func TestCapturedPlanRejectsLostAuthorityBeforePublicationWithdrawal(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			// Withdrawal needs Host.mu, so the publication remains visible throughout
-			// this check even though its original authority has already ended.
+			// The observer cancels before acquiring Host.mu for withdrawal. Stop it
+			// before revocation so both sides of that cancellation are deterministic.
 			host.mu.Lock()
-			scenario.revoke(host, grant, host.allInstances[running.ID()])
+			instance := host.allInstances[running.ID()]
+			for _, stop := range instance.stops {
+				if !stop() {
+					host.mu.Unlock()
+					t.Fatal("authority observer ran before the controlled revocation")
+				}
+			}
+			scenario.revoke(host, grant, instance)
 			err = host.validatePlanLocked(plan)
 			host.mu.Unlock()
 			if !errors.Is(err, scenario.want) {
-				t.Fatalf("captured plan accepted lost authority: %v", err)
+				t.Fatalf("captured plan rejection = %v, want %v", err, scenario.want)
 			}
 		})
 	}

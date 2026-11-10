@@ -1,8 +1,10 @@
 package browser
 
 import (
+	jsonv1 "encoding/json"
 	"fmt"
 	"maps"
+	"math/big"
 	"reflect"
 	"slices"
 	"strings"
@@ -14,31 +16,13 @@ import (
 // Typed captures and response admission use the same Go declarations. A JSON
 // round trip cannot establish a protocol type or settle an operation by itself.
 func (e *typeScriptEmitter) writeProtocolDecoders() error {
-	e.WriteString(`function wireObject(value: unknown, members: readonly string[]): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value) &&
-    Object.keys(value).every((name) => members.includes(name));
-}
-
-function wireArray(value: unknown, matches: (item: unknown) => boolean): value is readonly unknown[] {
-  if (!Array.isArray(value)) return false;
-  for (let index = 0; index < value.length; index++) {
-    if (!Object.hasOwn(value, index) || !matches(value[index])) return false;
-  }
-  return true;
-}
-
-const wireDigest = new RegExp(DIGEST_PATTERN);
-
-`)
-	names := slices.Sorted(maps.Keys(e.types))
-	for _, name := range names {
-		declaration := e.types[name]
-		check, err := e.validateWireModel(declaration.source, declaration.model, "value")
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(e, "function matchesWire%s(value: unknown): value is %s {\n  return %s;\n}\n\n", name, name, check)
+	if err := e.reserveValues("control decoders", "protocolValues", "decodeProtocolValue", "controlOutputs", "decodeControlOutput", "isControlProblem"); err != nil {
+		return err
 	}
+	if err := e.writeWireMatchers(); err != nil {
+		return err
+	}
+	names := slices.Sorted(maps.Keys(e.types))
 	e.WriteString("export interface ProtocolValues {\n")
 	for _, name := range names {
 		fmt.Fprintf(e, "  readonly %s: %s;\n", contractgen.PropertyKey(name), name)
@@ -85,9 +69,79 @@ export function isControlProblem(value: unknown): value is HTTPProblem & { code:
 	return nil
 }
 
+func (e *typeScriptEmitter) writeWireMatchers() error {
+	var matchers strings.Builder
+	for _, name := range slices.Sorted(maps.Keys(e.types)) {
+		if err := e.reserveValues("wire matcher "+name, "matchesWire"+name); err != nil {
+			return err
+		}
+		declaration := e.types[name]
+		check, err := e.validateWireModel(declaration.source, declaration.model, "value")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(&matchers, "function matchesWire%s(value: unknown): value is %s {\n  return %s;\n}\n\n", name, name, check)
+	}
+	if e.needsIntegerChecks {
+		if err := e.reserveValues("integer validation", "isJSONNumber", "isJSONInteger", "compareJSONNumbers", "wireInteger"); err != nil {
+			return err
+		}
+		e.WriteString(`import { isJSONNumber, isJSONInteger, compareJSONNumbers } from "@frame/sdk/json";
+
+function wireInteger(value: unknown, minimum: bigint, maximum: bigint): boolean {
+  return isJSONNumber(value) && isJSONInteger(value) &&
+    compareJSONNumbers(value, minimum) >= 0 && compareJSONNumbers(value, maximum) <= 0;
+}
+
+`)
+	} else if e.needsNumberChecks {
+		if err := e.reserveValues("number validation", "isJSONNumber"); err != nil {
+			return err
+		}
+		e.WriteString("import { isJSONNumber } from \"@frame/sdk/json\";\n\n")
+	}
+	if e.needsObjectChecks {
+		if err := e.reserveValues("wire validation", "wireObject"); err != nil {
+			return err
+		}
+		e.WriteString(`function wireObject(value: unknown, members: readonly string[]): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value) &&
+    Object.keys(value).every((name) => members.includes(name));
+}
+
+`)
+	}
+	if e.needsArrayChecks {
+		if err := e.reserveValues("wire validation", "wireArray"); err != nil {
+			return err
+		}
+		e.WriteString(`function wireArray(value: unknown, matches: (item: unknown) => boolean): value is readonly unknown[] {
+  if (!Array.isArray(value)) return false;
+  for (let index = 0; index < value.length; index++) {
+    if (!Object.hasOwn(value, index) || !matches(value[index])) return false;
+  }
+  return true;
+}
+
+`)
+	}
+	if e.needsDigestCheck {
+		if err := e.reserveValues("wire validation", "wireDigest"); err != nil {
+			return err
+		}
+		fmt.Fprintf(e, "const wireDigest = new RegExp(%s);\n\n", contractgen.TypeScriptStringLiteral(framevalue.DigestPattern()))
+	}
+	e.WriteString(matchers.String())
+	return nil
+}
+
 func (e *typeScriptEmitter) validateWireType(t reflect.Type, value string) (string, error) {
 	if t.Kind() == reflect.Pointer {
 		return e.validateWireType(t.Elem(), value)
+	}
+	if t == reflect.TypeFor[jsonv1.Number]() {
+		e.needsNumberChecks = true
+		return "isJSONNumber(" + value + ")", nil
 	}
 	if t.PkgPath() != "" && t.Name() != "" {
 		return "matchesWire" + typeScriptTypeName(t) + "(" + value + ")", nil
@@ -104,9 +158,22 @@ func (e *typeScriptEmitter) validateWireModel(source, model reflect.Type, value 
 		return fmt.Sprintf("typeof %s === \"string\" && %s%s.includes(%s as %s)", value, name, enumValuesSuffix, value, name), nil
 	}
 	if source == reflect.TypeFor[framevalue.Digest]() {
+		e.needsDigestCheck = true
 		return fmt.Sprintf("typeof %s === \"string\" && wireDigest.test(%s)", value, value), nil
 	}
+	if model == reflect.TypeFor[jsonv1.Number]() {
+		e.needsNumberChecks = true
+		return "isJSONNumber(" + value + ")", nil
+	}
 	switch model.Kind() {
+	case reflect.Int8, reflect.Uint8, reflect.Int16, reflect.Uint16, reflect.Int32, reflect.Uint32,
+		reflect.Int, reflect.Uint, reflect.Int64, reflect.Uint64:
+		minimum, maximum := integerBounds(model)
+		if model.Kind() != reflect.Int && model.Kind() != reflect.Uint && model.Bits() <= 32 {
+			return fmt.Sprintf("typeof %s === \"number\" && Number.isInteger(%s) && %s >= %s && %s <= %s", value, value, value, minimum, value, maximum), nil
+		}
+		e.needsIntegerChecks = true
+		return fmt.Sprintf("wireInteger(%s, %sn, %sn)", value, minimum, maximum), nil
 	case reflect.String:
 		return "typeof " + value + " === \"string\"", nil
 	case reflect.Bool:
@@ -114,6 +181,7 @@ func (e *typeScriptEmitter) validateWireModel(source, model reflect.Type, value 
 	case reflect.Interface:
 		return value + " !== undefined", nil
 	case reflect.Slice, reflect.Array:
+		e.needsArrayChecks = true
 		item, err := e.validateWireType(model.Elem(), "item")
 		if err != nil {
 			return "", err
@@ -131,6 +199,7 @@ func (e *typeScriptEmitter) validateWireModel(source, model reflect.Type, value 
 }
 
 func (e *typeScriptEmitter) validateWireFields(model reflect.Type, value string) (string, error) {
+	e.needsObjectChecks = true
 	fields := framevalue.Fields(model)
 	names := make([]string, len(fields))
 	checks := make([]string, 0, len(fields)+1)
@@ -152,4 +221,15 @@ func (e *typeScriptEmitter) validateWireFields(model reflect.Type, value string)
 		}
 	}
 	return strings.Join(checks, " &&\n    "), nil
+}
+
+func integerBounds(model reflect.Type) (string, string) {
+	limit := new(big.Int).Lsh(big.NewInt(1), uint(model.Bits()))
+	minimum := new(big.Int)
+	if model.Kind() >= reflect.Int && model.Kind() <= reflect.Int64 {
+		limit.Rsh(limit, 1)
+		minimum.Neg(limit)
+	}
+	maximum := new(big.Int).Sub(limit, big.NewInt(1))
+	return minimum.String(), maximum.String()
 }

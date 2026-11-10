@@ -1,4 +1,4 @@
-import { FrameError, type Lifetime } from "../index.js";
+import { FrameError, type CloseOutcome, type Lifetime } from "../index.js";
 import { readResponseBytes } from "./response.js";
 import { potentiallyTrustworthy } from "./trust.js";
 import { parseJSON, stringifyJSON } from "../json.js";
@@ -74,13 +74,13 @@ export class HTTPControl implements HostControl {
     this.#endpoint = endpoint.href;
     this.#credential = credential;
     this.#maximumMessageBytes = maximumMessageBytes;
-    this.#lifetime = lifetime;
+    this.#lifetime = lifetime.branch("authenticated control channel");
     const nativeFetch = globalThis.fetch;
     this.#fetch =
       fetchRequest && fetchRequest !== nativeFetch
         ? fetchRequest.bind(options)
         : nativeFetch.bind(globalThis);
-    lifetime.cleanup(() => {
+    this.#lifetime.cleanup(() => {
       this.#credential = "";
     }, "control-credential");
   }
@@ -88,6 +88,7 @@ export class HTTPControl implements HostControl {
   async #request<K extends keyof ControlInputs>(
     method: K,
     input: ControlInputs[K],
+    signal?: AbortSignal,
   ): Promise<ControlOutputs[K]> {
     const body = stringifyJSON({ method, input });
     if (new TextEncoder().encode(body).byteLength > this.#maximumMessageBytes)
@@ -97,7 +98,13 @@ export class HTTPControl implements HostControl {
           "control request capacity exceeded before transmission",
         ),
       );
-    return this.#lifetime.run((signal) => this.#send(method, body, signal));
+    return this.#lifetime.run((owner) =>
+      this.#send(
+        method,
+        body,
+        signal ? AbortSignal.any([owner, signal]) : owner,
+      ),
+    );
   }
 
   async #send<K extends keyof ControlInputs>(
@@ -159,43 +166,62 @@ export class HTTPControl implements HostControl {
     }
   }
 
-  admitPlan(plan: LocalPlan): Promise<PlanAdmission> {
-    return this.#request("admitPlan", plan);
+  close(signal?: AbortSignal): Promise<CloseOutcome> {
+    return this.#lifetime.close(signal);
   }
-  ready(report: ReadyReport): Promise<PublicationResult> {
-    return this.#request("ready", report);
+
+  admitPlan(plan: LocalPlan, signal?: AbortSignal): Promise<PlanAdmission> {
+    return this.#request("admitPlan", plan, signal);
   }
-  acquire(request: AcquireRequest): Promise<UseGrant> {
-    return this.#request("acquire", request);
+  ready(report: ReadyReport, signal?: AbortSignal): Promise<PublicationResult> {
+    return this.#request("ready", report, signal);
   }
-  validateUse(grant: UseGrant): Promise<void> {
-    return this.#request("validateUse", grant);
+  acquire(request: AcquireRequest, signal?: AbortSignal): Promise<UseGrant> {
+    return this.#request("acquire", request, signal);
   }
-  validateRoute(grant: RouteGrant): Promise<void> {
-    return this.#request("validateRoute", grant);
+  validateUse(grant: UseGrant, signal?: AbortSignal): Promise<void> {
+    return this.#request("validateUse", grant, signal);
   }
-  snapshot(request: SnapshotRequest): Promise<Snapshot> {
-    return this.#request("snapshot", request);
+  validateRoute(grant: RouteGrant, signal?: AbortSignal): Promise<void> {
+    return this.#request("validateRoute", grant, signal);
   }
-  closeSnapshot(snapshotId: string): Promise<void> {
-    return this.#request("closeSnapshot", snapshotId);
+  snapshot(request: SnapshotRequest, signal?: AbortSignal): Promise<Snapshot> {
+    return this.#request("snapshot", request, signal);
   }
-  publish(request: PublicationRequest): Promise<PublicationResult> {
-    return this.#request("publish", request);
+  closeSnapshot(snapshotId: string, signal?: AbortSignal): Promise<void> {
+    return this.#request("closeSnapshot", snapshotId, signal);
   }
-  publication(operationId: string): Promise<PublicationResult> {
-    return this.#request("publication", operationId);
+  publish(
+    request: PublicationRequest,
+    signal?: AbortSignal,
+  ): Promise<PublicationResult> {
+    return this.#request("publish", request, signal);
   }
-  withdraw(request: Withdrawal): Promise<PublicationResult> {
-    return this.#request("withdraw", request);
+  publication(
+    operationId: string,
+    signal?: AbortSignal,
+  ): Promise<PublicationResult> {
+    return this.#request("publication", operationId, signal);
   }
-  prove(proof: CloseProof): Promise<ProofAcknowledgement> {
-    return this.#request("prove", proof);
+  withdraw(
+    request: Withdrawal,
+    signal?: AbortSignal,
+  ): Promise<PublicationResult> {
+    return this.#request("withdraw", request, signal);
   }
-  reconnect(request: ReconnectRequest): Promise<ReconnectResult> {
-    return this.#request("reconnect", request);
+  prove(
+    proof: CloseProof,
+    signal?: AbortSignal,
+  ): Promise<ProofAcknowledgement> {
+    return this.#request("prove", proof, signal);
   }
-  poll(): Promise<Poll> {
-    return this.#request("poll", {});
+  reconnect(
+    request: ReconnectRequest,
+    signal?: AbortSignal,
+  ): Promise<ReconnectResult> {
+    return this.#request("reconnect", request, signal);
+  }
+  poll(signal?: AbortSignal): Promise<Poll> {
+    return this.#request("poll", {}, signal);
   }
 }

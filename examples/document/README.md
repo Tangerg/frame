@@ -9,13 +9,22 @@ The native file service is imported once into the Markdown converter's setup.
 The consumer captures one converter and an ordered validator collection in one
 Snapshot. `CommitTask` validates that capture under the same Admission and SQLite
 transaction that creates the original queued task. The business table retains
-its complete binding while queued or running, so replacement is refused even
+its complete binding while queued or unsettled, so replacement is refused even
 when no callback is executing. Starting and finishing update the original task row under admission and never allocate a second submission. The owner compacts synchronized, unretained submission evidence when its admission budget fills. The task row remains observable by its original ID.
 
 Completion removes the business reference while
 preserving the original task and its submission conclusion. Each original run
 belongs to the application Lifetime through result persistence and Use release,
 so shutdown cannot close SQLite after the final callback but before settlement.
+`unsettled` describes the business obligation, not a live callback. The original
+run separately reports `active`, `settlement_pending` or `outcome_unknown`.
+An interrupted callback retains its original run until explicit cancellation;
+panic continues to propagate. A known result survives a failed write in that
+run and a repeated `Run` retries only its persistence. `Cancel` also preserves
+a known result instead of replacing it with a cancellation. An uncertain result
+is never replayed. Pending settlement retains the Store even after shutdown
+starts: `Run` and `Cancel` can still settle that original run, and a later `Close`
+also retries known pending conclusions.
 
 The same application installs a neutral ZIP release containing a browser preview
 Unit and a static-resource theme Unit. Browser modules are verified against their
@@ -39,13 +48,13 @@ go run ./examples/document/cmd/document \
 `-command queue` commits a waiting task. `-command run -task original-task` runs
 that original task, and `-command status` observes it. Repeating a completed task
 returns its original result without invoking the converter again. A source file
-whose digest changed after queuing is rejected. A task found in `running` after
+whose digest changed after queuing is rejected. A task found in `unsettled` after
 Host reconstruction is not silently replayed; explicit cancellation can release
 that old application's business reference.
 
 ## Run the Web consumer
 
-Generate its DTO projection from the Go application types, then build the Web
+Generate its operation and DTO projection from the Go application, then build the Web
 entry from the repository root:
 
 ```sh
@@ -57,6 +66,15 @@ go run ./examples/document/cmd/document -command serve \
   -documents /tmp/frame-documents -state /tmp/frame-document-state \
   -web examples/document/web/dist
 ```
+
+The Go HTTP operations own methods, paths, request types and response types.
+`DocumentServer.request` selects one generated operation; it validates inputs
+before dispatch and admits the complete response at the HTTP boundary. Missing
+or malformed command replies retain an unknown outcome. A caller can observe
+the original task with `GET /api/tasks?id=...`; IDs travel in the query so dot
+segments, slashes and URL punctuation cannot select another route. Duplicate,
+unknown and missing query members are rejected before lookup. Generation first
+validates the complete projection, then atomically replaces the previous file.
 
 The default listener is `127.0.0.1:8088`. The server creates a mode-0600
 `application-token` file in its state directory and never logs its contents.
@@ -83,7 +101,12 @@ acknowledged opening survives contract discovery failure. `PreviewSession` owns
 the original preview acquisition, snapshot and native Use. Connection recovery
 and preview mounting compose `SerialActions` with the same action Lifetime, so
 release seals both queues before waiting for their actual work. The workbench
-renders these owners without keeping a second set of session flags.
+renders these owners without keeping a second set of session flags. The Runtime
+alone selects the current authenticated control adapter. PreviewSession owns all
+channel resources, closes retired or rejected HTTPControl instances after
+replacement, and closes the current one after release acknowledgement. Each
+channel has its own transport child Lifetime, so completed replacements return
+capacity and clear their credentials without closing application HTTP requests.
 A failed release retains that original session. Retrying **Release preview**
 resumes its cleanup channel even after Host credentials rotate; action admission
 stays closed, and recovery never opens another Realm or reactivates the preview.

@@ -8,20 +8,17 @@ import {
   type HTTPControl,
   type Use,
 } from "@frame/sdk/browser";
-import {
-  compareJSONNumbers,
-  isJSONInteger,
-  isJSONNumber,
-} from "@frame/sdk/json";
+import { compareJSONNumbers } from "@frame/sdk/json";
 import type {
   AcquireRequest,
   ContractRef,
   Execution,
 } from "@frame/sdk/protocol";
-import type {
-  Converted,
-  Credentials,
-  PreviewMetadata,
+import {
+  decodeWireValue,
+  type Converted,
+  type Credentials,
+  type PreviewMetadata,
 } from "./api.generated.ts";
 import { DocumentServer } from "./document-server.ts";
 import { PreviewSnapshots } from "./preview-capture.ts";
@@ -55,7 +52,8 @@ export class PreviewSession {
   readonly #previews: SerialActions;
   readonly #pump: ControlPump;
   readonly #pumpWork: Promise<void>;
-  #channel: { credentials: Credentials; control: HTTPControl };
+  #credentials: Credentials;
+  readonly #controls = new Set<HTTPControl>();
   #activation?: { status: "preparing" | "active"; execution: Execution };
   #use?: PreviewUse;
 
@@ -67,8 +65,10 @@ export class PreviewSession {
     report: (error: unknown) => void,
   ) {
     this.#server = server;
-    this.#channel = { credentials, control: server.control(credentials) };
+    this.#credentials = credentials;
     this.#point = new Point(contract);
+    const control = server.control(credentials);
+    this.#controls.add(control);
     this.#snapshots = new PreviewSnapshots(this.#point.ref.name);
     this.#previews = new SerialActions(actions);
     const modules = new RealmModules(async (unit, signal) => {
@@ -86,7 +86,7 @@ export class PreviewSession {
     this.#runtime = new Runtime({
       authority: credentials.authority,
       realm: credentials.realm,
-      control: this.#channel.control,
+      control,
       proofCapacity,
       load: async (unit, owner, plan): Promise<Unit> => {
         if (!this.#activation)
@@ -111,18 +111,14 @@ export class PreviewSession {
   }
 
   get description(): string {
-    const { credentials } = this.#channel;
+    const credentials = this.#credentials;
     return `Realm ${credentials.realm.id.slice(0, 12)} / Host epoch ${credentials.authority.epoch}`;
   }
 
   async activate(signal: AbortSignal): Promise<void> {
     this.#assertConnected();
     // Host activation joins the original instance after a lost reply.
-    await this.#server.request(
-      "/api/preview/activate",
-      this.#channel.credentials,
-      signal,
-    );
+    await this.#server.request("activatePreview", this.#credentials, signal);
     signal.throwIfAborted();
     if (!this.#activation)
       throw new Error(
@@ -146,16 +142,32 @@ export class PreviewSession {
   }
 
   async #resumeControl(signal?: AbortSignal): Promise<void> {
-    const original = this.#channel.credentials;
-    const credentials = await this.#server.request<Credentials>(
-      "/api/realm/resume",
+    const original = this.#credentials;
+    const credentials = await this.#server.request(
+      "resumeRealm",
       { realm: original.realm, resumeToken: original.resumeToken },
       signal,
     );
     signal?.throwIfAborted();
     const control = this.#server.control(credentials);
-    this.#channel = { credentials, control };
-    await this.#runtime.reconnect(control);
+    this.#controls.add(control);
+    this.#credentials = credentials;
+    const failures: unknown[] = [];
+    try {
+      await this.#runtime.reconnect(control);
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await this.#closeControls(
+        [...this.#controls].filter((owned) => owned !== this.#runtime.control),
+      );
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length)
+      throw new AggregateError(failures, "control channel replacement failed");
     signal?.throwIfAborted();
   }
 
@@ -174,8 +186,8 @@ export class PreviewSession {
     // Realm's cleanup channel, including after Host credential rotation.
     if (this.#runtime.connection === "closed") await this.#resumeControl();
     const settled = await Promise.allSettled([
-      this.#server.request("/api/realm/seal", {
-        token: this.#channel.credentials.token,
+      this.#server.request("sealRealm", {
+        token: this.#credentials.token,
       }),
       this.#pump.close(),
       this.#pumpWork,
@@ -188,6 +200,23 @@ export class PreviewSession {
         failures,
         "original preview session release did not complete",
       );
+    await this.#closeControls([...this.#controls]);
+  }
+
+  async #closeControls(controls: readonly HTTPControl[]): Promise<void> {
+    const results = await Promise.allSettled(
+      controls.map(async (control) => {
+        const outcome = await control.close();
+        if (outcome.status !== "released")
+          throw new Error("original control channel release is unconfirmed");
+        this.#controls.delete(control);
+      }),
+    );
+    const failures = results.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    if (failures.length)
+      throw new AggregateError(failures, "control channel cleanup failed");
   }
 
   #assertConnected(): void {
@@ -205,7 +234,7 @@ export class PreviewSession {
 
   async #closeSnapshotAfterFailure(failure: unknown): Promise<never> {
     try {
-      await this.#snapshots.close(this.#channel.control);
+      await this.#snapshots.close(this.#runtime.control);
     } catch (cleanup) {
       throw new AggregateError(
         [failure, cleanup],
@@ -248,7 +277,7 @@ export class PreviewSession {
       await this.#acquire(this.#use.request);
       await this.#closeUse();
     }
-    await this.#snapshots.close(this.#channel.control);
+    await this.#snapshots.close(this.#runtime.control);
   }
 
   async #mount(
@@ -263,7 +292,7 @@ export class PreviewSession {
     await this.#recover();
     await this.#closeUse();
     signal.throwIfAborted();
-    const snapshot = await this.#snapshots.capture(this.#channel.control);
+    const snapshot = await this.#snapshots.capture(this.#runtime.control);
     let choice;
     try {
       choice = select(
@@ -277,7 +306,7 @@ export class PreviewSession {
               compareJSONNumbers(b.metadata.priority, a.metadata.priority),
             )
             .slice(0, 1),
-        decodeMetadata,
+        (value) => decodeWireValue("PreviewMetadata", value),
       );
     } catch (error) {
       return this.#closeSnapshotAfterFailure(error);
@@ -294,11 +323,7 @@ export class PreviewSession {
         (candidate) => candidate.token === choice.candidates[0],
       );
       if (!selected) throw new Error("no approved preview is available");
-      const theme = await this.#server.request<{ css: string }>(
-        "/api/theme",
-        undefined,
-        signal,
-      );
+      const theme = await this.#server.request("theme", undefined, signal);
       signal.throwIfAborted();
       const object = use.objects.find(
         (object) =>
@@ -323,18 +348,4 @@ export class PreviewSession {
       throw error;
     }
   }
-}
-
-function decodeMetadata(value: unknown): PreviewMetadata {
-  if (
-    !value ||
-    typeof value !== "object" ||
-    !("format" in value) ||
-    typeof value.format !== "string" ||
-    !("priority" in value) ||
-    !isJSONNumber(value.priority) ||
-    !isJSONInteger(value.priority)
-  )
-    throw new TypeError("invalid preview metadata");
-  return { format: value.format, priority: value.priority };
 }

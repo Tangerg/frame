@@ -24,7 +24,7 @@ type TaskState string
 
 const (
 	Queued    TaskState = "queued"
-	Running   TaskState = "running"
+	Unsettled TaskState = "unsettled"
 	Completed TaskState = "completed"
 	Failed    TaskState = "failed"
 	Cancelled TaskState = "cancelled"
@@ -35,7 +35,7 @@ func (state TaskState) terminal() bool {
 }
 
 func (TaskState) Values() []string {
-	return []string{string(Queued), string(Running), string(Completed), string(Failed), string(Cancelled)}
+	return []string{string(Queued), string(Unsettled), string(Completed), string(Failed), string(Cancelled)}
 }
 
 type TaskDefinition struct {
@@ -52,6 +52,7 @@ type Task struct {
 	Submission sqlite.SubmissionID `json:"submission"`
 	Definition TaskDefinition      `json:"definition"`
 	State      TaskState           `json:"state"`
+	RunStatus  TaskRunStatus       `json:"runStatus,omitempty"`
 	RunEpoch   uint64              `json:"runEpoch"`
 	Result     *TaskResult         `json:"result,omitempty"`
 	Failure    string              `json:"failure,omitempty"`
@@ -73,7 +74,7 @@ func taskSchema() sqlite.OwnerSchema {
 	}
 	taskTable := fmt.Sprintf(`CREATE TABLE document_tasks (id TEXT PRIMARY KEY,admission_sequence INTEGER NOT NULL UNIQUE,definition BLOB NOT NULL,state TEXT NOT NULL CHECK(state IN (%s)),run_epoch INTEGER NOT NULL DEFAULT 0,result BLOB,failure TEXT NOT NULL DEFAULT '')`, strings.Join(states, ","))
 	return sqlite.OwnerSchema{ID: taskOwnerID, Statements: []string{taskTable, `CREATE TABLE document_bootstrap (singleton INTEGER PRIMARY KEY CHECK(singleton=1))`}, References: func(ctx context.Context, tx sqlite.Reader, id frame.InstallationID) ([]frame.Dependency, error) {
-		rows, err := tx.QueryContext(ctx, `SELECT definition FROM document_tasks WHERE state IN (?,?)`, Queued, Running)
+		rows, err := tx.QueryContext(ctx, `SELECT definition FROM document_tasks WHERE state IN (?,?)`, Queued, Unsettled)
 		if err != nil {
 			return nil, err
 		}
@@ -244,6 +245,12 @@ func (a *App) Task(ctx context.Context, id string) (Task, error) {
 		}
 		return nil
 	})
+	if err == nil && task.State == Unsettled {
+		task.RunStatus = TaskOutcomeUnknown
+		if run := a.taskRun(id); run != nil {
+			err = run.project(&task)
+		}
+	}
 	return task, err
 }
 
@@ -265,23 +272,20 @@ func (a *App) readQueuedBinding(ctx context.Context, id string, grant frame.Scop
 }
 
 func (a *App) Run(ctx context.Context, id string) (returned Task, returnErr error) {
-	// Settlement outlives the last Borrow; shutdown must retain the Store until
-	// the original run has persisted its business result and released its Use.
-	work, err := a.lifetime.Enter(ctx)
+	run, original, scope, err := a.claimTaskRun(ctx, id)
 	if err != nil {
 		return Task{}, err
 	}
-	defer work.Finish()
-	ctx = work.Context()
-	a.mu.Lock()
-	if a.activeRuns[id] {
-		a.mu.Unlock()
-		return Task{}, frame.ErrInUse
+	if !original {
+		return run.resume(ctx)
 	}
-	a.activeRuns[id] = true
-	scope := a.scope
-	a.mu.Unlock()
-	defer func() { a.mu.Lock(); delete(a.activeRuns, id); a.mu.Unlock() }()
+	defer func() {
+		run.exit()
+		if returned.State == Unsettled {
+			returnErr = errors.Join(returnErr, run.project(&returned))
+		}
+	}()
+	ctx = run.work.Context()
 	task, err := a.Task(ctx, id)
 	if err != nil {
 		return Task{}, err
@@ -290,7 +294,7 @@ func (a *App) Run(ctx context.Context, id string) (returned Task, returnErr erro
 		return task, nil
 	}
 	if task.State != Queued {
-		return task, errors.New("document: original execution outcome is unknown; it will not be replayed")
+		return task, ErrTaskOutcomeUnknown
 	}
 	if task.Definition.Policy != taskPolicy {
 		return task, errors.New("document: retained policy is unavailable")
@@ -309,21 +313,12 @@ func (a *App) Run(ctx context.Context, id string) (returned Task, returnErr erro
 	if err := a.startTask(ctx, task); err != nil {
 		return task, err
 	}
+	run.start()
 	result, runErr := a.convert(ctx, task, use)
-	var payload []byte
-	if runErr == nil {
-		payload, runErr = json.Marshal(result)
-		if len(payload) > maximumTaskBytes {
-			payload = nil
-			runErr = frame.ErrCapacity
-		}
-	}
 	finishCtx := context.WithoutCancel(ctx)
-	if err := a.finishTask(finishCtx, id, payload, runErr); err != nil {
-		return task, errors.Join(runErr, err)
-	}
-	finished, err := a.Task(finishCtx, id)
-	return finished, errors.Join(runErr, err)
+	settlementErr := run.complete(finishCtx, result, runErr)
+	finished, readErr := a.Task(finishCtx, id)
+	return finished, errors.Join(settlementErr, readErr)
 }
 
 func changedTask(result sql.Result, err error) error {
@@ -345,7 +340,7 @@ func (a *App) startTask(ctx context.Context, task Task) error {
 		if err := a.Host.ValidateBindingUnder(ctx, task.Definition.Binding); err != nil {
 			return err
 		}
-		return changedTask(tx.ExecContext(ctx, `UPDATE document_tasks SET state=?,run_epoch=? WHERE id=? AND state=?`, Running, a.Store.Epoch(), task.Definition.ID, Queued))
+		return changedTask(tx.ExecContext(ctx, `UPDATE document_tasks SET state=?,run_epoch=? WHERE id=? AND state=?`, Unsettled, a.Store.Epoch(), task.Definition.ID, Queued))
 	})
 }
 
@@ -392,32 +387,22 @@ func (a *App) convert(ctx context.Context, task Task, use *frame.Use) (TaskResul
 	return result, runErr
 }
 
-func (a *App) finishTask(ctx context.Context, id string, payload []byte, runErr error) error {
-	state := Completed
-	var failure string
-	if runErr != nil {
-		state, failure = Failed, runErr.Error()
+// A business cancellation cannot stop an active callback or erase its known
+// result. Current runs supply their own exit evidence; epochs do not prove it.
+func (a *App) Cancel(ctx context.Context, id string) error {
+	if run := a.taskRun(id); run != nil {
+		return run.cancel(ctx)
 	}
 	return a.owner.Update(ctx, func(ctx context.Context, tx sqlite.Executor) error {
-		return changedTask(tx.ExecContext(ctx, `UPDATE document_tasks SET state=?,result=?,failure=? WHERE id=? AND state=? AND run_epoch=?`, state, payload, failure, id, Running, a.Store.Epoch()))
-	})
-}
-
-// Cancel only changes an idle queued task or an original execution whose Host
-// epoch has ended. A current native callback must first observe cancellation
-// and join through its Run owner; this method cannot declare it stopped.
-func (a *App) Cancel(ctx context.Context, id string) error {
-	return a.owner.Update(ctx, func(ctx context.Context, tx sqlite.Executor) error {
+		if a.taskRun(id) != nil {
+			return frame.ErrInUse
+		}
 		var state TaskState
-		var epoch uint64
-		if err := tx.QueryRowContext(ctx, `SELECT state,run_epoch FROM document_tasks WHERE id=?`, id).Scan(&state, &epoch); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT state FROM document_tasks WHERE id=?`, id).Scan(&state); err != nil {
 			return err
 		}
 		if state.terminal() {
 			return nil
-		}
-		if state == Running && epoch == a.Store.Epoch() {
-			return frame.ErrInUse
 		}
 		return changedTask(tx.ExecContext(ctx, `UPDATE document_tasks SET state=? WHERE id=?`, Cancelled, id))
 	})

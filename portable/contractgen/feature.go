@@ -82,7 +82,7 @@ func (d schemaDefinition) compare(other schemaDefinition) int {
 func buildFeature(data []byte) (*featureArtifacts, error) {
 	contract, err := portable.ParseCapability(data)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: capability: %w", ErrInvalid, err)
 	}
 	descriptors := contract.Descriptor().Methods
 	artifacts := &featureArtifacts{definitions: make(map[string]jsontext.Value), capability: contract}

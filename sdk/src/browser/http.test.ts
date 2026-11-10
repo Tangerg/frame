@@ -91,7 +91,7 @@ describe("authenticated control transport", () => {
           headers: expect.objectContaining({
             Authorization: "Bearer captured-secret",
           }),
-          signal: original.signal,
+          signal: expect.any(AbortSignal),
         }),
       ]);
       expect(options.reads).toEqual({
@@ -155,8 +155,10 @@ describe("authenticated control transport", () => {
       method: "poll",
       input: {},
     });
-    expect(request!.signal).toBe(f.lifetime.signal);
+    expect(request!.signal).toBeInstanceOf(AbortSignal);
+    expect(request!.signal!.aborted).toBe(false);
     await f.lifetime.close();
+    expect(request!.signal!.aborted).toBe(true);
     await expect(f.control.poll()).rejects.toMatchObject({ code: "closed" });
   });
 

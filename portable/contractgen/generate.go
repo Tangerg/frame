@@ -13,6 +13,8 @@ import (
 
 type GoOutput struct{ Path, Package, Prefix string }
 
+var ErrInvalid = errors.New("contractgen: invalid input")
+
 // Callers own the selected destinations for the duration of generation. Files in
 // different directories cannot form a single filesystem transaction for readers.
 func Generate(source, directory, tsDirectory string, goOutputs ...GoOutput) error {
@@ -132,7 +134,7 @@ func planStages(source string, outputs []artifact) ([]stagedArtifact, error) {
 			return nil, err
 		}
 		if targets[stage.target] {
-			return nil, fmt.Errorf("feature contracts: duplicate output %s", stage.target)
+			return nil, fmt.Errorf("%w: duplicate output %s", ErrInvalid, stage.target)
 		}
 		targets[stage.target] = true
 		if err := stage.checkDistinct(source, input, stages); err != nil {
@@ -143,7 +145,7 @@ func planStages(source string, outputs []artifact) ([]stagedArtifact, error) {
 	for _, s := range stages {
 		for parent := filepath.Dir(s.target); parent != filepath.Dir(parent); parent = filepath.Dir(parent) {
 			if targets[parent] {
-				return nil, fmt.Errorf("feature contracts: output is also a parent: %s", parent)
+				return nil, fmt.Errorf("%w: output is also a parent: %s", ErrInvalid, parent)
 			}
 		}
 	}
@@ -165,7 +167,7 @@ func resolveStage(path string) (stagedArtifact, error) {
 		return stagedArtifact{}, err
 	}
 	if info != nil && !info.Mode().IsRegular() {
-		return stagedArtifact{}, fmt.Errorf("feature contracts: output is not a regular file: %s", target)
+		return stagedArtifact{}, fmt.Errorf("%w: output is not a regular file: %s", ErrInvalid, target)
 	}
 	return stagedArtifact{target: target, original: info}, nil
 }
@@ -177,11 +179,11 @@ func (s stagedArtifact) checkDistinct(source string, input os.FileInfo, earlier 
 		return nil
 	}
 	if input != nil && os.SameFile(input, s.original) {
-		return fmt.Errorf("feature contracts: output would overwrite descriptor input %s", source)
+		return fmt.Errorf("%w: output would overwrite descriptor input %s", ErrInvalid, source)
 	}
 	for _, prior := range earlier {
 		if prior.original != nil && os.SameFile(s.original, prior.original) {
-			return fmt.Errorf("feature contracts: aliased outputs %s and %s", prior.target, s.target)
+			return fmt.Errorf("%w: aliased outputs %s and %s", ErrInvalid, prior.target, s.target)
 		}
 	}
 	return nil

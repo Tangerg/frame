@@ -32,3 +32,27 @@ jobs:
           test -x "$FRAME_CHROME_EXECUTABLE"
           export FRAME_CHROME_EXECUTABLE
           ./scripts/check-browser-workflows.sh
+  minimum-sdk-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Read the SDK's minimum supported Node version
+        id: runtime
+        run: |
+          node --input-type=module <<'JS' >> "$GITHUB_OUTPUT"
+          import { readFileSync } from "node:fs";
+          const { engines } = JSON.parse(readFileSync("sdk/package.json", "utf8"));
+          const minimum = /^>=(\d+\.\d+\.\d+)$/.exec(engines.node);
+          if (!minimum) throw new Error("SDK Node support must declare one minimum version");
+          console.log(`version=${minimum[1]}`);
+          JS
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ steps.runtime.outputs.version }}
+      - run: npm run check:pack

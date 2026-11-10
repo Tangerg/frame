@@ -2,6 +2,12 @@
 
 `@frame/sdk` contains typed native contracts, unit declarations, structured resource
 ownership, and exact JSON. The native entry point has no React or Node runtime dependency.
+
+For consumers running on Node, the published `package.json` owns the supported
+runtime range in `engines.node`. CI derives the minimum version from that field
+and runs the installed tarball's native, browser, Node and React entry checks on
+that runtime. The repository development toolchain is specified separately in
+`DEVELOPMENT.md`.
 Public control messages and executable response decoders are generated from
 `frame/browser` Go types. They share the original fields, omission rules, enum
 values and encoding models.

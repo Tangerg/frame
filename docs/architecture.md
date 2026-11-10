@@ -26,6 +26,13 @@ go run ./cmd/frame verify plugin.zip --policy publisher-policy.json
 
 The bundled CLI trust policy pins SHA-256 archive digests in a file controlled by the host administrator: `{"allowedArchiveDigests":["<64 lowercase hexadecimal characters>"]}`. Inspect verifies byte integrity and reports publisher trust as unassessed. A matched pin assesses that specific archive. Neither operation grants execution. The Go distribution Store accepts an explicit Trust function for custom signature, publisher and capability policies.
 
+CLI failures emit one versioned JSON diagnostic on stderr and exit unsuccessfully.
+`invalid_request` identifies rejected arguments or input; `operation_failed`
+identifies an unclassified execution failure, including permission or output I/O
+errors. Specific integrity, trust, capacity, existence and contract categories
+remain available. Classification preserves the original cause and message;
+consumers branch on the code instead of parsing diagnostic text.
+
 Use Store.ImportArchiveHeld to obtain a content lease. Lease.Install validates and projects the verified manifest into the Host. For compiled native units supply native setup functions in distribution.Installation. For an external execution profile register its driver with the Host and implement distribution.ArchiveDriver on that driver. The driver checks the already integrity-validated unit's execution shape. Unknown profiles remain inspectable. Store retention must query both installed release facts and any retained business/execution dependencies. Close a lease to release content; Lease.Snapshot returns a detached projection.
 
 `distribution.Limits.Entries` counts files, explicit directories and implicit

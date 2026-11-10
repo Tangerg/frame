@@ -1,3 +1,4 @@
+import { taskView } from "./task-fixture.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { setImmediate } from "node:timers/promises";
@@ -86,18 +87,11 @@ async function withApplication(t, intercept, inspect) {
           throw new TypeError("activation transport unavailable");
         case "/api/realm/seal":
         case "/api/recover":
-        case "/api/queue":
           return Response.json(null);
+        case "/api/queue":
+          return Response.json(taskView(body.id, "queued"));
         case "/api/run":
-          return Response.json({
-            id: "original-task",
-            state: "completed",
-            binding: { units: [] },
-            result: {
-              converted: { html: "<p>kept</p>", title: "Kept" },
-              diagnostics: [],
-            },
-          });
+          return Response.json(taskView("original-task"));
         case "/frame/control":
           if (body.method === "poll")
             return Response.json({ authority, realm, plans: [], fences: [] });
@@ -148,11 +142,20 @@ test("connection recovery retries activation in the original Realm and exposes a
     (_request, next) => next(),
     async ({ click, element, requests, realm }) => {
       await click("connect");
-      assert.match(element("error").textContent, /activation transport/);
+      assert.match(
+        element("error").textContent,
+        /application response was not observed/,
+      );
       await click("connect");
-      assert.match(element("error").textContent, /activation transport/);
+      assert.match(
+        element("error").textContent,
+        /application response was not observed/,
+      );
       await click("reconnect");
-      assert.match(element("error").textContent, /activation transport/);
+      assert.match(
+        element("error").textContent,
+        /application response was not observed/,
+      );
       assert.equal(
         requests.filter(({ path }) => path === "/api/realm/open").length,
         1,
@@ -308,9 +311,15 @@ test("contract discovery retry retains an acknowledged opening without opening a
     },
     async ({ click, element, requests }) => {
       await click("connect");
-      assert.match(element("error").textContent, /contract discovery/);
+      assert.match(
+        element("error").textContent,
+        /response was not observed: contracts/,
+      );
       await click("connect");
-      assert.match(element("error").textContent, /activation transport/);
+      assert.match(
+        element("error").textContent,
+        /application response was not observed/,
+      );
       assert.equal(
         requests.filter(({ path }) => path === "/api/realm/open").length,
         1,

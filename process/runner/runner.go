@@ -278,22 +278,22 @@ func (c Config) resolve() (Config, error) {
 // loadJournal reads the attempts of an earlier runner. A child it was still
 // waiting for becomes Unknown: no later runner holds that wait identity.
 func loadJournal(directory *os.Root, maxAttempts int) (journal, error) {
-	loaded := journal{Version: journalVersion, Attempts: make(map[string]storedAttempt)}
 	data, err := directory.ReadFile(journalFilename)
 	if errors.Is(err, os.ErrNotExist) {
-		return loaded, nil
+		return journal{Version: journalVersion, Attempts: make(map[string]storedAttempt)}, nil
 	}
 	if err != nil {
 		return journal{}, err
 	}
-	if err := jsonv2.Unmarshal(data, &loaded, jsonv2.RejectUnknownMembers(true)); err != nil {
+	var loaded journal
+	if err := framevalue.DecodeValue(data, &loaded, "runner journal"); err != nil {
 		return journal{}, fmt.Errorf("runner: invalid journal: %w", err)
 	}
 	if loaded.Version != journalVersion || loaded.Attempts == nil || len(loaded.Attempts) > maxAttempts {
 		return journal{}, errors.New("runner: incompatible journal")
 	}
 	for id, attempt := range loaded.Attempts {
-		if id != attempt.Observation.AttemptID || attempt.Observation.validate() != nil || attempt.RequestDigest.Validate() != nil {
+		if id != attempt.Observation.AttemptID || attempt.Observation.validate() != nil || attempt.Observation.Epoch > loaded.Epoch || attempt.RequestDigest.Validate() != nil {
 			return journal{}, errors.New("runner: invalid attempt record")
 		}
 		switch attempt.Observation.State {

@@ -90,7 +90,6 @@ func (p *UseProof) proves(approval frame.UseApproval) bool {
 
 const useRecords = `SELECT id,request,request_digest,state,proof FROM frame_use_approvals`
 const useByID = useRecords + ` WHERE id=?`
-const protectedUses = useRecords + ` WHERE state=? ORDER BY id`
 
 func (s *Store) Uses(ctx context.Context) ([]UseRecord, error) {
 	return readRecords(ctx, s, useRecords+" ORDER BY id", decodeUse)

@@ -1,27 +1,25 @@
 package main
 
 //go:generate go run . -out ../../web/src/api.generated.ts
+//go:generate node ../../../../node_modules/prettier/bin/prettier.cjs --write ../../web/src/api.generated.ts
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"os"
-	"reflect"
 
-	"github.com/Tangerg/frame/browser"
 	"github.com/Tangerg/frame/examples/document"
+	"github.com/Tangerg/frame/internal/localfile"
 )
 
 func main() {
 	output := flag.String("out", "web/src/api.generated.ts", "generated domain DTO path")
 	flag.Parse()
-	file, err := os.Create(*output)
+	var source bytes.Buffer
+	err := document.WriteTypeScriptAPI(&source)
 	if err == nil {
-		err = browser.WriteTypeScriptTypes(file, reflect.TypeFor[document.TaskView](), reflect.TypeFor[document.PreviewMetadata](), reflect.TypeFor[browser.Credentials]())
-		closeErr := file.Close()
-		if err == nil {
-			err = closeErr
-		}
+		err = localfile.WriteGenerated(*output, source.Bytes())
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

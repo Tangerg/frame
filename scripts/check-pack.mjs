@@ -114,6 +114,11 @@ try {
   });
   const install = ["ci", "--ignore-scripts", "--no-audit", "--no-fund"];
   npm([...install, "--omit=dev", "--omit=optional", "--omit=peer"]);
+  const installed = await readJSON(
+    join(directory, "node_modules", sdk.name, "package.json"),
+  );
+  if (!sdk.engines?.node || installed.engines?.node !== sdk.engines.node)
+    throw new Error("published SDK is missing its Node support contract");
   const native = `import { defineUnit } from "@frame/sdk";
 import { Lifetime } from "@frame/sdk/lifetime";
 import { Runtime } from "@frame/sdk/browser";

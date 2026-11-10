@@ -274,7 +274,7 @@ func TestHTTPDistinguishesCredentialsAndMissingTasks(t *testing.T) {
 		status int
 		code   string
 	}{{token, 401, "unauthenticated"}, {"Bearer " + token, 404, "not_found"}} {
-		req := httptest.NewRequest(http.MethodGet, "/api/tasks/missing", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/tasks?id=missing", nil)
 		req.Header.Set("Authorization", tc.auth)
 		response := httptest.NewRecorder()
 		h.ServeHTTP(response, req)

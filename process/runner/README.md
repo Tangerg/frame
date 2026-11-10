@@ -130,6 +130,10 @@ runner restarts. Reusing the ID with another epoch or request is a conflict.
 A crash between handoff and confirmation is reconciled by repeating that exact
 acknowledgement against the original state directory.
 This journal format and the corresponding private Host schema require fresh state.
+Only an absent journal creates an initial empty record. Existing journals must
+carry their version, epoch and complete attempts object, with valid observations
+no newer than the retained epoch. Missing or null fields are rejected before
+restoration or persistence; a malformed file is not repaired into an empty history.
 The private control response is one result variant admitted against the requested
 operation: acknowledgment, identity, observation or absence proof. Acknowledgments
 carry explicit `true`; null, missing results and results for another operation

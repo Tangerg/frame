@@ -130,7 +130,7 @@ test(
         await readFile(join(state, "application-token"), "utf8")
       ).trim();
       const response = await fetch(
-        origin + "/api/tasks/" + encodeURIComponent(id),
+        origin + "/api/tasks?id=" + encodeURIComponent(id),
         { headers: { Authorization: "Bearer " + token } },
       );
       assert.equal(response.status, 200);

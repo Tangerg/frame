@@ -64,21 +64,28 @@ type InstallationConfig struct {
 	Enabled       bool
 }
 
-func (c InstallationConfig) record() (InstallationRecord, error) {
+func (c InstallationConfig) capture() (*installed, error) {
 	if err := c.ID.Validate(); err != nil {
-		return InstallationRecord{}, err
+		return nil, err
 	}
 	if c.Plugin == nil {
-		return InstallationRecord{}, ErrInvalid
+		return nil, ErrInvalid
 	}
-	return InstallationRecord{ID: c.ID, Release: c.Plugin.revision, Configuration: bytes.Clone(c.Configuration), Enabled: c.Enabled, Units: c.Plugin.Units()}, nil
+	plugin := *c.Plugin
+	if err := plugin.revision.Validate(); err != nil {
+		return nil, err
+	}
+	return &installed{
+		plugin: plugin,
+		record: InstallationRecord{ID: c.ID, Release: plugin.revision, Configuration: bytes.Clone(c.Configuration), Enabled: c.Enabled, Units: plugin.Units()},
+	}, nil
 }
 
-// installed is the Host's projection of one committed installation record and
-// the grant that fences everything started under it.
+// The captured plugin has no external mutable handle. Its record is a durable
+// projection, and its scope fences everything started under this installation.
 type installed struct {
 	record InstallationRecord
-	plugin *Plugin
+	plugin Plugin
 	scope  ScopeGrant
 }
 
@@ -125,17 +132,17 @@ func (h *Host) Installation(id InstallationID) (InstallationRecord, bool) {
 }
 
 func (h *Host) Install(ctx context.Context, config InstallationConfig) (InstallationRecord, error) {
-	record, err := config.record()
+	entry, err := config.capture()
 	if err != nil {
 		return InstallationRecord{}, err
 	}
+	record := entry.record
 	state := CommitRejected
 	err = h.admitInstallation(ctx, func(admitted context.Context) error {
 		if err := h.checkInstallable(record); err != nil {
 			return err
 		}
 		var commitErr error
-		entry := &installed{record: record.Clone(), plugin: config.Plugin}
 		transition := &installationTransition{after: entry}
 		state, commitErr = h.commitInstallation(admitted, transition)
 		if state != CommitSucceeded {
@@ -201,18 +208,18 @@ func (h *Host) projectInstallationScope(transition *installationTransition, comm
 // Consumer configuration is prepared before this call; the original record is
 // checked again under the same admission as retained-use and commit checks.
 func (h *Host) Update(ctx context.Context, expected InstallationRecord, config InstallationConfig) error {
-	next, err := config.record()
+	next, err := config.capture()
 	if err != nil {
 		return err
 	}
-	if next.ID != expected.ID {
+	if next.record.ID != expected.ID {
 		return ErrInvalid
 	}
-	return h.changeInstallation(ctx, next.ID, func(current *installed) (*installed, error) {
+	return h.changeInstallation(ctx, next.record.ID, func(current *installed) (*installed, error) {
 		if !current.record.equal(expected) {
 			return nil, ErrStaleBinding
 		}
-		return &installed{record: next, plugin: config.Plugin}, nil
+		return next, nil
 	})
 }
 
@@ -225,13 +232,13 @@ func (h *Host) SetEnabled(ctx context.Context, id InstallationID, enabled bool) 
 }
 
 func (h *Host) Replace(ctx context.Context, id InstallationID, plugin *Plugin, configuration []byte) error {
-	if plugin == nil {
-		return ErrInvalid
+	next, err := (InstallationConfig{ID: id, Plugin: plugin, Configuration: configuration}).capture()
+	if err != nil {
+		return err
 	}
-	configuration = bytes.Clone(configuration)
 	return h.changeInstallation(ctx, id, func(current *installed) (*installed, error) {
-		record := InstallationRecord{ID: id, Release: plugin.revision, Configuration: configuration, Enabled: current.record.Enabled, Units: plugin.Units()}
-		return &installed{record: record, plugin: plugin}, nil
+		next.record.Enabled = current.record.Enabled
+		return next, nil
 	})
 }
 
@@ -489,15 +496,19 @@ func (h *Host) Restore(ctx context.Context, records []InstallationRecord, plugin
 	if len(records) > h.limits.MaxInstallations {
 		return fmt.Errorf("%w: installations", ErrCapacity)
 	}
-	definitions := make(map[framevalue.Digest]*Plugin, len(plugins))
+	definitions := make(map[framevalue.Digest]Plugin, len(plugins))
 	for _, plugin := range plugins {
 		if plugin == nil {
 			return ErrInvalid
 		}
-		if existing := definitions[plugin.revision]; existing != nil && !sameUnitDeclarations(existing.Units(), plugin.Units()) {
+		captured := *plugin
+		if err := captured.revision.Validate(); err != nil {
+			return err
+		}
+		if existing, found := definitions[captured.revision]; found && !sameUnitDeclarations(existing.Units(), captured.Units()) {
 			return ErrContractMismatch
 		}
-		definitions[plugin.revision] = plugin
+		definitions[captured.revision] = captured
 	}
 	return h.admission.Maintenance(ctx, func() error {
 		h.mu.Lock()
@@ -548,7 +559,7 @@ func (t *installationTransition) acceptsRestoration(restored *installed) bool {
 	return false
 }
 
-func (h *Host) restoredInstallationsLocked(records []InstallationRecord, definitions map[framevalue.Digest]*Plugin) (map[InstallationID]*installed, error) {
+func (h *Host) restoredInstallationsLocked(records []InstallationRecord, definitions map[framevalue.Digest]Plugin) (map[InstallationID]*installed, error) {
 	restored := make(map[InstallationID]*installed, len(records))
 	var scopes []scopeKey
 	for _, record := range records {
@@ -558,8 +569,8 @@ func (h *Host) restoredInstallationsLocked(records []InstallationRecord, definit
 		if err := h.checkReleaseLocked(record); err != nil {
 			return nil, err
 		}
-		plugin := definitions[record.Release]
-		if plugin == nil {
+		plugin, found := definitions[record.Release]
+		if !found {
 			return nil, fmt.Errorf("%w: definition for retained release", ErrUnavailable)
 		}
 		if restored[record.ID] != nil {

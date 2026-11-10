@@ -58,6 +58,10 @@ const (
 	AttemptReleased AttemptState = "released"
 )
 
+func (s AttemptState) pending() bool {
+	return s == AttemptApproved || s == AttemptHandoff
+}
+
 func (s AttemptState) validate() error {
 	switch s {
 	case AttemptApproved, AttemptHandoff, AttemptReleased:

@@ -4,9 +4,11 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 
+	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/portable/contractgen"
 )
 
@@ -23,7 +25,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("expected contract, package, inspect or verify")
+		return fmt.Errorf("%w: expected contract, package, inspect or verify", frame.ErrInvalid)
 	}
 	switch args[0] {
 	case "contract":
@@ -35,7 +37,7 @@ func run(args []string) error {
 	case "verify":
 		return runVerify(args[1:], os.Stdout)
 	default:
-		return errors.New("expected contract, package, inspect or verify")
+		return fmt.Errorf("%w: expected contract, package, inspect or verify", frame.ErrInvalid)
 	}
 }
 
@@ -49,10 +51,10 @@ func runContract(args []string) error {
 	goPackage := flags.String("go-package", "", "Go projection package")
 	goPrefix := flags.String("go-prefix", "", "Go exported prefix")
 	if err := flags.Parse(args); err != nil {
-		return err
+		return errors.Join(frame.ErrInvalid, err)
 	}
 	if flags.NArg() != 0 || *feature == "" {
-		return errors.New("one feature descriptor is required")
+		return fmt.Errorf("%w: one feature descriptor is required", frame.ErrInvalid)
 	}
 	return contractgen.Generate(*feature, *out, *ts, contractgen.GoOutput{Path: *goOut, Package: *goPackage, Prefix: *goPrefix})
 }

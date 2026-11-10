@@ -23,7 +23,12 @@ digest in the Host-approved plan. See the ESM module contract below.
 
 ```ts
 import { Lifetime } from "@frame/sdk";
-import { ControlPump, HTTPControl, RealmModules, Runtime } from "@frame/sdk/browser";
+import {
+  ControlPump,
+  HTTPControl,
+  RealmModules,
+  Runtime,
+} from "@frame/sdk/browser";
 
 const transport = new Lifetime("realm-control");
 const control = new HTTPControl({
@@ -76,7 +81,12 @@ and fence projection. An unavailable current channel seals new framework work;
 reconnect requires Host revalidation. Call `runtime.reconnect(replacement)` to
 replace the authenticated channel while the same pump runs. A late poll from the
 retired channel cannot fence or disconnect the replacement. A new authority
-epoch makes old executions cleanup-only.
+epoch makes old executions cleanup-only. The read-only `runtime.control` property
+projects the authenticated control adapter currently selected by this owner.
+A replacement retires earlier operation observations and signals cancellation of
+their network attempts. Retrying preparation or acquisition waits for that prior
+observation to exit, then resumes the original admission and operation identity;
+it cannot rerun prepared setup or create another Use owner.
 Every new `Use.with` interval checks this current admission. A paused channel
 does not cancel an already admitted interval or release its Use; successful
 revalidation can admit a later interval on the same original Use.
@@ -86,8 +96,12 @@ observation; its late completion cannot replace or discard the newer channel.
 
 `run(signal?)` owns the pump's bootstrap lifetime. Aborting its signal, or calling
 `pump.close()`, stops new scheduling, begins Runtime closure and joins scheduled
-polls, preparations and proof acknowledgements. Successful completion requires
-resource release and durable proof acknowledgement. An unconfirmed close remains an
+operation observations, actual preparation callbacks and proof acknowledgements.
+Closure first retires the ordinary work channel, including a suspended poll,
+Ready, acquisition or validation. A separate cleanup observation on the same
+control adapter settles original preparation admissions and sends their proofs;
+retiring a request is never a definitive refusal of its business operation.
+Successful completion requires resource release and durable proof acknowledgement. An unconfirmed close remains an
 error with the original Runtime; aborting is never evidence that setup exited.
 Close the transport Lifetime only after this join. A failed close can be retried
 to observe the original resources and redeliver the same proofs; it never
@@ -95,6 +109,24 @@ restarts scheduling or setup. A pump cannot be restarted.
 If recovery needs a replacement authenticated transport, a closed Runtime still
 accepts `reconnect(replacement)` for cleanup. It remains closed to new work;
 retry the original close after that channel is available.
+
+Each `HostControl` method accepts an optional final AbortSignal for that network
+attempt (the only argument to `poll`). Adapters must forward cancellation to
+their transport and keep owning each dispatched request until it actually exits.
+A Runtime can detach a retired observation; it cannot prove an adapter's network
+resource has exited. `HTTPControl` combines each attempt signal with a private
+child of the supplied transport Lifetime. `control.close()` cancels and joins
+that child's requests, clears its credential, and returns its CloseOutcome.
+The parent Lifetime also joins that child when the entire transport closes.
+
+Bootstrap retains every control adapter until its resources have released.
+After a replacement attempt, close the HTTPControl instances other than
+`runtime.control`, including a rejected candidate. Check the current adapter
+even if reconnect throws: revalidation may have selected it before proof delivery
+failed. Keep that selected adapter for cleanup retries. After pump closure and
+durable acknowledgement, close the remaining HTTPControl and then its transport
+Lifetime. Repeated replacements return their child capacity instead of retaining
+credentials in the parent's resource history.
 
 `prepare(plan)` reserves one original execution and proof slot before sending
 `admitPlan`. Only an `admitted` response permits loading code. An uncertain reply
@@ -201,14 +233,14 @@ cleanup-only recovery. An execution proof covers its owned objects and pending
 admissions; it never releases another execution's resources.
 Reconnect revalidates the bounded execution projection; the outbox then delivers
 each pending proof separately. A replacement channel starts its own delivery
-attempt immediately, even when the retired transport has not answered. Both
-attempts carry the same immutable proof; the first valid acknowledgement advances
+attempt immediately, even when the retired transport has not answered, and cancels
+the obsolete delivery attempt. Both attempts carry the same immutable proof; the first valid acknowledgement advances
 that proof once. A late result cannot reverse its acknowledgement or affect a
 different proof. Cancellation of a `close(signal)` observer ends that wait only;
 resource closure and proof delivery continue independently.
 The transport Lifetime still owns every dispatched request, including obsolete
 proof sends. An acknowledgement completes the proof obligation without claiming
-that those requests exited; closing the transport cancels and joins them.
+that those requests exited; closing their HTTPControl or the transport joins them.
 Failure diagnostics stay on the local Exit and
 cannot enlarge release evidence. Use the Host's `maxMessageBytes` bootstrap
 projection for the transport budget so accepted messages share one effective

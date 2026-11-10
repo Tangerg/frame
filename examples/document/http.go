@@ -3,20 +3,20 @@ package document
 import (
 	"crypto/subtle"
 	"database/sql"
-	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/browser"
 	"github.com/Tangerg/frame/sqlite"
+	"github.com/Tangerg/frame/value"
 )
 
 type HTTPConfig struct {
@@ -35,6 +35,7 @@ type TaskView struct {
 	Source     DocumentRef           `json:"source"`
 	Binding    frame.BindingSnapshot `json:"binding"`
 	State      TaskState             `json:"state"`
+	RunStatus  TaskRunStatus         `json:"runStatus,omitempty"`
 	RunEpoch   string                `json:"runEpoch"`
 	Submission SubmissionView        `json:"submission"`
 	Result     *TaskResult           `json:"result,omitempty"`
@@ -42,7 +43,7 @@ type TaskView struct {
 }
 
 func view(task Task) TaskView {
-	return TaskView{ID: task.Definition.ID, Source: task.Definition.Source, Binding: task.Definition.Binding, State: task.State, RunEpoch: strconv.FormatUint(task.RunEpoch, 10), Submission: SubmissionView{Store: task.Submission.Store, Owner: task.Submission.Owner, Sequence: strconv.FormatUint(task.Submission.Sequence, 10)}, Result: task.Result, Failure: task.Failure}
+	return TaskView{ID: task.Definition.ID, Source: task.Definition.Source, Binding: task.Definition.Binding, State: task.State, RunStatus: task.RunStatus, RunEpoch: strconv.FormatUint(task.RunEpoch, 10), Submission: SubmissionView{Store: task.Submission.Store, Owner: task.Submission.Owner, Sequence: strconv.FormatUint(task.Submission.Sequence, 10)}, Result: task.Result, Failure: task.Failure}
 }
 
 const (
@@ -70,107 +71,17 @@ func (a *App) Handler(config HTTPConfig) (http.Handler, error) {
 		_, _ = writer.Write(data)
 	})
 	api := http.NewServeMux()
-	api.HandleFunc("POST /api/queue", func(writer http.ResponseWriter, request *http.Request) {
-		var input struct {
-			ID   string `json:"id"`
-			Path string `json:"path"`
-		}
-		if !decodeRequest(writer, request, &input) {
-			return
-		}
-		task, _, err := a.Queue(request.Context(), input.ID, input.Path)
-		respond(writer, task, err)
-	})
-	api.HandleFunc("POST /api/run", func(writer http.ResponseWriter, request *http.Request) {
-		var input struct {
-			ID string `json:"id"`
-		}
-		if !decodeRequest(writer, request, &input) {
-			return
-		}
-		task, err := a.Run(request.Context(), input.ID)
-		respond(writer, task, err)
-	})
-	api.HandleFunc("GET /api/tasks/{id}", func(writer http.ResponseWriter, request *http.Request) {
-		task, err := a.Task(request.Context(), request.PathValue("id"))
-		respond(writer, task, err)
-	})
-	api.HandleFunc("POST /api/cancel", func(writer http.ResponseWriter, request *http.Request) {
-		var input struct {
-			ID string `json:"id"`
-		}
-		if !decodeRequest(writer, request, &input) {
-			return
-		}
-		respond(writer, nil, a.Cancel(request.Context(), input.ID))
-	})
-	api.HandleFunc("POST /api/converter", func(writer http.ResponseWriter, request *http.Request) {
-		var input struct {
-			Version string `json:"version"`
-		}
-		if !decodeRequest(writer, request, &input) {
-			return
-		}
-		respond(writer, nil, a.ReplaceConverter(request.Context(), input.Version))
-	})
-	api.HandleFunc("GET /api/theme", func(writer http.ResponseWriter, request *http.Request) {
-		theme, err := a.Theme(request.Context())
-		respond(writer, struct {
-			CSS string `json:"css"`
-		}{theme}, err)
-	})
-	api.HandleFunc("GET /api/contracts", func(writer http.ResponseWriter, _ *http.Request) {
-		respond(writer, struct {
-			Previews frame.ContractRef `json:"previews"`
-		}{a.Contracts.Previews.Ref()}, nil)
-	})
-	api.HandleFunc("POST /api/realm/open", func(writer http.ResponseWriter, request *http.Request) {
-		var input struct {
-			OperationID string `json:"operationId"`
-			ResumeToken string `json:"resumeToken"`
-		}
-		if !decodeRequest(writer, request, &input) {
-			return
-		}
-		credentials, err := a.Bridge.OpenRealm(request.Context(), input.OperationID, input.ResumeToken)
-		respond(writer, credentials, err)
-	})
-	api.HandleFunc("POST /api/realm/resume", func(writer http.ResponseWriter, request *http.Request) {
-		var input struct {
-			Realm       browser.Realm `json:"realm"`
-			ResumeToken string        `json:"resumeToken"`
-		}
-		if !decodeRequest(writer, request, &input) {
-			return
-		}
-		credentials, err := a.Bridge.ResumeRealm(request.Context(), input.Realm, input.ResumeToken)
-		respond(writer, credentials, err)
-	})
-	api.HandleFunc("POST /api/realm/seal", func(writer http.ResponseWriter, request *http.Request) {
-		var input struct {
-			Token string `json:"token"`
-		}
-		if !decodeRequest(writer, request, &input) {
-			return
-		}
-		respond(writer, nil, a.Bridge.SealRealm(request.Context(), input.Token))
-	})
-	api.HandleFunc("POST /api/preview/activate", func(writer http.ResponseWriter, request *http.Request) {
-		var credentials browser.Credentials
-		if !decodeRequest(writer, request, &credentials) {
-			return
-		}
-		respond(writer, nil, a.ActivatePreview(request.Context(), credentials))
-	})
-	api.HandleFunc("POST /api/recover", func(writer http.ResponseWriter, request *http.Request) {
-		respond(writer, nil, a.Recover(request.Context()))
-	})
+	for _, operation := range applicationOperations() {
+		api.HandleFunc(operation.contract.Method+" "+operation.contract.Path, func(writer http.ResponseWriter, request *http.Request) {
+			operation.serve(a, writer, request)
+		})
+	}
 	mux.Handle("/api/", http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Cache-Control", "no-store")
 		scheme, received, ok := strings.Cut(request.Header.Get("Authorization"), " ")
 		if !ok || !strings.EqualFold(scheme, "Bearer") || subtle.ConstantTimeCompare([]byte(received), []byte(config.ApplicationToken)) != 1 {
 			writer.Header().Set("WWW-Authenticate", "Bearer")
-			respond(writer, nil, errAuthentication)
+			writeFailure(writer, nil, errAuthentication)
 			return
 		}
 		api.ServeHTTP(writer, request)
@@ -181,21 +92,44 @@ func (a *App) Handler(config HTTPConfig) (http.Handler, error) {
 	return mux, nil
 }
 
-func decodeRequest(writer http.ResponseWriter, request *http.Request, target any) bool {
+func decodeRequest(writer http.ResponseWriter, request *http.Request, target any) error {
 	data, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, maxRequestBytes))
 	if err != nil {
 		var limit *http.MaxBytesError
 		if errors.As(err, &limit) {
-			err = frame.ErrCapacity
+			return errors.Join(frame.ErrCapacity, err)
 		}
-		respond(writer, nil, err)
-		return false
+		return err
 	}
-	if err := jsonv2.Unmarshal(data, target, jsonv2.RejectUnknownMembers(true)); err != nil {
-		respond(writer, nil, frame.ErrInvalid)
-		return false
+	if err := value.DecodeValue(data, target, "application request"); err != nil {
+		return errors.Join(frame.ErrInvalid, err)
 	}
-	return true
+	return nil
+}
+
+func decodeQuery(request *http.Request, target any) error {
+	if len(request.URL.RawQuery) > maxRequestBytes {
+		return frame.ErrCapacity
+	}
+	query, err := url.ParseQuery(request.URL.RawQuery)
+	if err != nil {
+		return errors.Join(frame.ErrInvalid, err)
+	}
+	members := make(map[string]string, len(query))
+	for name, values := range query {
+		if len(values) != 1 {
+			return frame.ErrInvalid
+		}
+		members[name] = values[0]
+	}
+	data, err := jsonv2.Marshal(members)
+	if err == nil {
+		err = value.DecodeValue(data, target, "application query")
+	}
+	if err != nil {
+		return errors.Join(frame.ErrInvalid, err)
+	}
+	return nil
 }
 
 var errAuthentication = errors.New("document: authentication required")
@@ -220,27 +154,23 @@ func describeError(err error) (int, apiFailure) {
 		return http.StatusForbidden, apiFailure{Code: "fenced", Message: "authorization is no longer valid"}
 	case errors.Is(err, frame.ErrRecoveryRequired), errors.Is(err, sqlite.ErrIndeterminate):
 		return http.StatusServiceUnavailable, apiFailure{Code: "recovery_required", Message: "observe the original operation after recovery"}
-	case errors.Is(err, ErrTaskFinished), errors.Is(err, ErrSourceChanged), errors.Is(err, sqlite.ErrConflict), errors.Is(err, frame.ErrInUse), errors.Is(err, frame.ErrStaleBinding), errors.Is(err, frame.ErrUnavailable):
+	case errors.Is(err, ErrTaskFinished), errors.Is(err, ErrTaskOutcomeUnknown), errors.Is(err, ErrSourceChanged), errors.Is(err, sqlite.ErrConflict), errors.Is(err, frame.ErrInUse), errors.Is(err, frame.ErrStaleBinding), errors.Is(err, frame.ErrUnavailable):
 		return http.StatusConflict, apiFailure{Code: "conflict", Message: err.Error()}
 	default:
 		return http.StatusInternalServerError, apiFailure{Code: "internal", Message: "application operation failed"}
 	}
 }
 
-func respond(writer http.ResponseWriter, value any, err error) {
+func writeFailure(writer http.ResponseWriter, output any, err error) {
+	status, failure := describeError(err)
+	if task, ok := output.(TaskView); ok && task.ID != "" {
+		failure.Task = &task
+	}
+	writeResponse(writer, status, failure)
+}
+
+func writeResponse(writer http.ResponseWriter, status int, output any) {
 	writer.Header().Set("Content-Type", "application/json")
-	if err != nil {
-		status, failure := describeError(err)
-		if task, ok := value.(Task); ok && task.Definition.ID != "" {
-			detail := view(task)
-			failure.Task = &detail
-		}
-		writer.WriteHeader(status)
-		_ = json.NewEncoder(writer).Encode(failure)
-		return
-	}
-	if task, ok := value.(Task); ok {
-		value = view(task)
-	}
-	_ = json.NewEncoder(writer).Encode(value)
+	writer.WriteHeader(status)
+	_ = jsonv2.MarshalWrite(writer, output)
 }

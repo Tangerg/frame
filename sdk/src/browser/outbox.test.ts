@@ -3,7 +3,7 @@ import type {
   CloseProof,
   ProofAcknowledgement,
 } from "../protocol.generated.js";
-import type { ControlChannel, HostControl } from "./control.js";
+import { ControlChannel, type HostControl } from "./control.js";
 import { ProofOutbox } from "./outbox.js";
 
 const authority = { id: "host", epoch: "original" };
@@ -35,7 +35,7 @@ function acknowledge(value: CloseProof): ProofAcknowledgement {
 function channel(
   prove: HostControl["prove"] = async (value) => acknowledge(value),
 ): ControlChannel {
-  return { authority, control: { prove } as HostControl };
+  return new ControlChannel(authority, { prove } as HostControl);
 }
 
 describe("proof reservation ownership", () => {
@@ -149,7 +149,10 @@ describe("proof reservation ownership", () => {
         : acknowledge(value),
     );
     const sending = outbox.flush(channel(prove), () => {});
-    expect(prove).toHaveBeenCalledExactlyOnceWith(first);
+    expect(prove).toHaveBeenCalledExactlyOnceWith(
+      first,
+      expect.any(AbortSignal),
+    );
     outbox.record("earlier-scope", earlier);
     acknowledgement.resolve(acknowledge(first));
     await sending;
@@ -212,7 +215,10 @@ it("does not join an empty flush after the first proof becomes ready in the same
     });
   try {
     await first;
-    expect(prove).toHaveBeenCalledExactlyOnceWith(original);
+    expect(prove).toHaveBeenCalledExactlyOnceWith(
+      original,
+      expect.any(AbortSignal),
+    );
     expect(completed).toBe(false);
   } finally {
     acknowledgement.resolve(acknowledge(original));

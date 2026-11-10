@@ -27,7 +27,7 @@ import type {
   UseGrant,
 } from "../protocol.generated.js";
 import { PROTOCOL } from "../protocol.generated.js";
-import type { ControlChannel, HostControl } from "./control.js";
+import { ControlChannel, type HostControl } from "./control.js";
 import { observePromise } from "../promise-observation.js";
 import {
   sameAuthority,
@@ -47,6 +47,10 @@ import {
   type ObjectResource,
   type UnitResource,
 } from "./execution.js";
+
+const SUPERSEDED_REVALIDATION = Object.freeze(
+  new FrameError("unavailable", "control revalidation was superseded"),
+);
 
 export interface RuntimeOptions {
   readonly authority: Authority;
@@ -151,7 +155,11 @@ export class Runtime {
   readonly #outbox: ProofOutbox;
   #connection: "connected" | "paused" | "cleanupOnly" | "closed" = "connected";
   #connectionRevision = 0;
-  #revalidation?: { revision: number; work: Promise<void> };
+  #revalidation?: {
+    revision: number;
+    work: Promise<void>;
+    stopping: AbortController;
+  };
   #executionProjectionRevision = 0;
   #executions = new Map<string, ExecutionResources>();
   readonly #instances = new Map<string, UnitResource>();
@@ -165,10 +173,7 @@ export class Runtime {
     if (typeof load !== "function" || typeof remote !== "function")
       throw new TypeError("runtime loaders must be functions");
     this.#realm = captureProtocol("Realm", realm);
-    this.#channel = {
-      authority: captureProtocol("Authority", authority),
-      control,
-    };
+    this.#channel = new ControlChannel(authority, control);
     this.#load = load.bind(options);
     this.#remote = remote.bind(options);
     this.#outbox = new ProofOutbox(proofCapacity);
@@ -180,7 +185,7 @@ export class Runtime {
   get #authority(): Authority {
     return this.#channel.authority;
   }
-  get #control(): HostControl {
+  get control(): HostControl {
     return this.#channel.control;
   }
   get realm(): Realm {
@@ -215,18 +220,11 @@ export class Runtime {
     const existing = this.#executions.get(plan.execution.id);
     if (existing) {
       existing.verify(plan);
-      if (existing.preparing) return existing.preparing;
-      if (existing.admission.pending)
-        return this.#resumePreparation(existing, this.#connectionRevision);
-      if (existing.lifetime.closing)
-        throw new FrameError("stale_binding", "original execution is closing");
-      this.#assertConnected();
-      if (!existing.prepared)
-        throw new FrameError(
-          "invalid_plan",
-          "execution has no prepared report",
-        );
-      return this.#resumePreparation(existing, this.#connectionRevision);
+      return this.#resumePreparation(
+        existing,
+        this.#channel,
+        this.#connectionRevision,
+      );
     }
     this.#assertConnected();
     if (
@@ -253,24 +251,35 @@ export class Runtime {
       (settled) => this.#forgetExecution(settled),
     );
     this.#executions.set(plan.execution.id, entry);
-    return this.#resumePreparation(entry, this.#connectionRevision);
+    return this.#resumePreparation(
+      entry,
+      this.#channel,
+      this.#connectionRevision,
+    );
   }
 
   #resumePreparation(
     entry: ExecutionResources,
+    channel: ControlChannel,
     revision: number,
   ): Promise<ExecutionHandle> {
-    return entry.prepare(async () => {
-      if (!entry.prepared) await this.#prepare(entry, revision);
+    return entry.prepare(channel, async () => {
+      if (entry.lifetime.closing && !entry.admission.pending)
+        throw new FrameError("stale_binding", "original execution is closing");
+      if (!entry.prepared) await this.#prepare(entry, channel, revision);
       this.#assertRevision(revision);
-      const view = await entry.submitReady(this.#control);
+      const view = await entry.submitReady(channel);
       this.#assertRevision(revision);
       return view;
     });
   }
 
-  async #prepare(entry: ExecutionResources, revision: number): Promise<void> {
-    const admit = () => entry.admission.resolve(this.#control, this.#authority);
+  async #prepare(
+    entry: ExecutionResources,
+    channel: ControlChannel,
+    revision: number,
+  ): Promise<void> {
+    const admit = () => entry.admission.resolve(channel);
     const decision = await (entry.lifetime.closing
       ? admit()
       : entry.lifetime.run(admit));
@@ -400,22 +409,23 @@ export class Runtime {
     const previous = this.#admissions.get(request.operationId);
     const admission = this.#admission(request, entry);
     const revision = this.#connectionRevision;
+    const channel = this.#channel;
     if (previous && !previous.hasRequest) {
       const grant = await admission.lifetime.run(() =>
-        this.#control.acquire(request),
+        channel.observe((control, signal) => control.acquire(request, signal)),
       );
       admission.verifyGrant(grant);
       admission.bindRequest(request);
-      const use = await admission.resolve(() =>
-        this.#materializeGrant(grant, entry, admission, revision),
+      const use = await admission.resolve(channel, () =>
+        this.#materializeGrant(grant, entry, admission, channel, revision),
       );
       admission.verifyGrant(grant);
       return use;
     }
     admission.bindRequest(request);
-    return admission.resolve(async () => {
-      const grant = await admission.requestGrant(this.#control);
-      return this.#materializeGrant(grant, entry, admission, revision);
+    return admission.resolve(channel, async () => {
+      const grant = await admission.requestGrant(channel);
+      return this.#materializeGrant(grant, entry, admission, channel, revision);
     });
   }
 
@@ -429,8 +439,9 @@ export class Runtime {
     const admission = this.#admission(grant, entry);
     admission.verifyGrant(grant);
     const revision = this.#connectionRevision;
-    const use = await admission.resolve(() =>
-      this.#materializeGrant(grant, entry, admission, revision),
+    const channel = this.#channel;
+    const use = await admission.resolve(channel, () =>
+      this.#materializeGrant(grant, entry, admission, channel, revision),
     );
     admission.verifyGrant(grant);
     return use;
@@ -495,6 +506,7 @@ export class Runtime {
     received: UseGrant,
     entry: ExecutionResources,
     admission: UseAdmission,
+    channel: ControlChannel,
     revision: number,
   ): Promise<Use> {
     const grant = captureProtocol("UseGrant", received);
@@ -512,7 +524,9 @@ export class Runtime {
       );
     // A durable acceptance receipt survives release. Only current authority may
     // admit a new local materialization after its terminal record was discarded.
-    await this.#control.validateUse(grant);
+    await channel.observe((control, signal) =>
+      control.validateUse(grant, signal),
+    );
     const existing = this.#uses.get(grant.id);
     if (existing && existing !== admission)
       throw new FrameError(
@@ -579,8 +593,7 @@ export class Runtime {
   #publicationChannel(): PublicationChannel {
     if (this.#connection !== "cleanupOnly") this.#assertConnected();
     return {
-      control: this.#control,
-      authority: this.#authority,
+      channel: this.#channel,
       mode: this.#connection === "cleanupOnly" ? "cleanupOnly" : "connected",
     };
   }
@@ -601,7 +614,11 @@ export class Runtime {
         "contract_mismatch",
         "local event route requires one exact native event contract",
       );
-    await this.#control.validateRoute(grant);
+    const revision = this.#connectionRevision;
+    await this.#channel.observe((control, signal) =>
+      control.validateRoute(grant, signal),
+    );
+    this.#assertRevision(revision);
     const use = await this.accept(grant.use);
     const instanceIds = new Set(
       grant.use.objects.map((object) => object.export.instanceId),
@@ -664,6 +681,8 @@ export class Runtime {
   disconnect(): void {
     if (this.#connection === "connected") this.#connection = "paused";
     this.#connectionRevision++;
+    this.#channel.retire();
+    this.#revalidation?.stopping.abort(SUPERSEDED_REVALIDATION);
   }
 
   async reconnect(control: HostControl): Promise<void> {
@@ -679,8 +698,9 @@ export class Runtime {
       if (this.#revalidation?.work === work) this.#revalidation = undefined;
     });
     // Publish the original observation before the adapter can reenter polling.
-    this.#revalidation = { revision, work };
-    this.#revalidateControl(control, revision).then(
+    const stopping = new AbortController();
+    this.#revalidation = { revision, work, stopping };
+    this.#revalidateControl(control, revision, stopping.signal).then(
       completion.resolve,
       completion.reject,
     );
@@ -690,15 +710,24 @@ export class Runtime {
   async #revalidateControl(
     control: HostControl,
     revision: number,
+    signal: AbortSignal,
   ): Promise<void> {
     const closing = this.#connection === "closed";
-    const result = await control.reconnect({
-      authority: this.#authority,
-      realm: this.#realm,
-      executions: [...this.#executions.values()]
-        .filter((entry) => entry.lifetime.exit?.outcome.status !== "released")
-        .map((entry) => entry.plan.execution),
-    });
+    const result = await observePromise(
+      control.reconnect(
+        {
+          authority: this.#authority,
+          realm: this.#realm,
+          executions: [...this.#executions.values()]
+            .filter(
+              (entry) => entry.lifetime.exit?.outcome.status !== "released",
+            )
+            .map((entry) => entry.plan.execution),
+        },
+        signal,
+      ),
+      signal,
+    );
     if (revision !== this.#connectionRevision)
       throw new FrameError("unavailable", "reconnection was superseded");
     if (!sameRealm(result.realm, this.#realm))
@@ -707,10 +736,7 @@ export class Runtime {
         "reconnection belongs to another realm",
       );
     const sameEpoch = sameAuthority(result.authority, this.#authority);
-    this.#channel = {
-      authority: captureProtocol("Authority", result.authority),
-      control,
-    };
+    this.#channel = new ControlChannel(result.authority, control);
     if (closing) {
       this.#connection = "closed";
     } else if (sameEpoch && result.mode === "revalidated") {
@@ -744,13 +770,15 @@ export class Runtime {
         const revalidating =
           pending?.revision === this.#connectionRevision
             ? pending.work
-            : this.#revalidate(this.#control);
+            : this.#revalidate(this.control);
         revision = this.#connectionRevision;
         await revalidating;
       }
       if (revision !== this.#connectionRevision) return;
       const executionProjectionRevision = this.#executionProjectionRevision;
-      const pending = await this.#control.poll();
+      const pending = await this.#channel.observe((control, signal) =>
+        control.poll(signal),
+      );
       // A replacement channel owns current admission. A late observation from
       // the retired channel cannot fence it or turn it back into a paused one.
       if (revision !== this.#connectionRevision) return;
@@ -855,15 +883,16 @@ export class Runtime {
   async #close(): Promise<readonly CloseOutcome[]> {
     this.#connection = "closed";
     this.#connectionRevision++;
+    this.#channel.retire();
+    this.#revalidation?.stopping.abort(SUPERSEDED_REVALIDATION);
+    this.#channel = new ControlChannel(this.#authority, this.control);
     const entries = [...this.#executions.values()];
     const unresolved = new Set(
       entries.filter((entry) => entry.admission.pending),
     );
     const exits = entries.map((entry) => entry.lifetime.beginClose());
     await Promise.allSettled(
-      entries.map((entry) =>
-        entry.admission.resolve(this.#control, this.#authority),
-      ),
+      entries.map((entry) => entry.admission.resolve(this.#channel)),
     );
     const outcomes = await Promise.all(
       exits.map((exit, index) => {

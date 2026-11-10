@@ -1,5 +1,5 @@
 import { FrameError, Lifetime, type Unit } from "@frame/sdk";
-import { projectNumber } from "@frame/sdk/json";
+import { parseJSON, projectNumber, stringifyJSON } from "@frame/sdk/json";
 import {
   ControlPump,
   readResponseBytes,
@@ -10,6 +10,11 @@ import {
 import type { Execution } from "@frame/sdk/protocol";
 import {
   applicationPaths,
+  decodeHTTPOutput,
+  httpOperations,
+  httpRequestPath,
+  type HTTPInputs,
+  type HTTPOutputs,
   type Bootstrap,
   type DocumentRef,
 } from "./contracts.generated";
@@ -92,17 +97,19 @@ export function connect(
     onError: report,
   });
   const pumping = pump.run().catch((error) => failures.record(error));
-  const request = async (
+  const request = async <K extends keyof HTTPInputs>(
     owner: Lifetime,
-    path: string,
-    input?: unknown,
-  ): Promise<string> =>
-    owner.run(async (signal) => {
+    operation: K,
+    input: NoInfer<HTTPInputs[K]>,
+  ): Promise<HTTPOutputs[K]> => {
+    const path = httpRequestPath(operation, input);
+    const contract = httpOperations[operation];
+    return owner.run(async (signal) => {
       let response: Response;
       let body: string;
       try {
         response = await fetch(new URL(path, origin), {
-          method: input === undefined ? "GET" : "POST",
+          method: contract.method,
           signal,
           redirect: "error",
           credentials: "omit",
@@ -110,38 +117,47 @@ export function connect(
             Authorization: `Bearer ${credential}`,
             "Content-Type": "application/json",
           },
-          ...(input === undefined ? {} : { body: JSON.stringify(input) }),
+          ...(contract.method === "POST" ? { body: stringifyJSON(input) } : {}),
         });
         body =
-          response.status === noContentStatus && response.body === null
+          response.body === null
             ? ""
             : new TextDecoder("utf-8", { fatal: true }).decode(
                 await readResponseBytes(response, maximumMessageBytes),
               );
       } catch (cause) {
         throw new FrameError(
-          input === undefined ? "unavailable" : "outcome_unknown",
+          contract.method === "GET" ? "unavailable" : "outcome_unknown",
           "author application response was not observed",
           { cause },
         );
       }
       if (!response.ok) throw new Error(body);
-      if (
-        input !== undefined &&
-        (response.status !== noContentStatus || body !== "")
-      )
-        throw new FrameError(
-          "outcome_unknown",
-          "author command acknowledgement is invalid",
+      try {
+        if (
+          response.status !== contract.status ||
+          (contract.status === noContentStatus && body !== "")
+        )
+          throw new TypeError("application response status is invalid");
+        return decodeHTTPOutput(
+          operation,
+          body === "" ? null : parseJSON(body),
         );
-      return body;
+      } catch (cause) {
+        throw new FrameError(
+          contract.method === "GET" ? "unavailable" : "outcome_unknown",
+          "author application response is invalid",
+          { cause },
+        );
+      }
     });
+  };
 
   const release = async (): Promise<void> => {
     await Promise.all([...conversions].map((task) => task.close()));
     // Cancelling an activation only stops its waiter. Seal the original Realm
     // before stopping the pump, including plans the Runtime has not observed.
-    await request(transport, applicationPaths.sealRealm, {});
+    await request(transport, "sealRealm", {});
     await pump.close();
     await pumping;
     await application.wait();
@@ -158,10 +174,10 @@ export function connect(
       return failures.omitted;
     },
     async activate(unit: string): Promise<void> {
-      await request(application, applicationPaths.activate, { unit });
+      await request(application, "activate", { unit });
     },
-    async activity(): Promise<{ started: number; cancelled: number }> {
-      return JSON.parse(await request(application, applicationPaths.activity));
+    activity() {
+      return request(application, "activity", undefined);
     },
     createConversion(reference: DocumentRef): ConversionTask {
       application.assertOpen();

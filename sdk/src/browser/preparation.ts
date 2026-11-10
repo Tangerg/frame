@@ -1,12 +1,15 @@
 import { FrameError, type Cleanup, type Lifetime } from "../index.js";
 import type {
-  Authority,
   LocalPlan,
   PlanAdmissionDecision,
   PublicationResult,
   ReadyReport,
 } from "../protocol.generated.js";
-import { isControlRefusal, type HostControl } from "./control.js";
+import {
+  ControlOperation,
+  isControlRefusal,
+  type ControlChannel,
+} from "./control.js";
 
 import { sameAuthority } from "./identity.js";
 import { observePromise } from "../promise-observation.js";
@@ -21,13 +24,15 @@ export class ReadySubmission {
     this.#lifetime = lifetime;
   }
 
-  async submit(control: HostControl): Promise<void> {
+  async submit(channel: ControlChannel): Promise<void> {
     const previouslyDispatched = this.#dispatched;
     let result: PublicationResult;
     try {
       result = await this.#lifetime.run(() => {
         this.#dispatched = true;
-        return control.ready(this.#report);
+        return channel.observe((control, signal) =>
+          control.ready(this.#report, signal),
+        );
       });
     } catch (cause) {
       if (!previouslyDispatched && isControlRefusal(cause)) {
@@ -63,7 +68,7 @@ export class PreparationAdmission {
   readonly #release: Cleanup;
   #settle?: (decision: PlanAdmissionDecision) => void;
   #decision?: PlanAdmissionDecision;
-  #pending?: Promise<PlanAdmissionDecision>;
+  readonly #operation = new ControlOperation<PlanAdmissionDecision>();
   #waitingForDecision = false;
 
   constructor(
@@ -85,32 +90,27 @@ export class PreparationAdmission {
   }
 
   resolve(
-    control: HostControl,
-    authority: Authority,
+    channel: ControlChannel,
     signal?: AbortSignal,
   ): Promise<PlanAdmissionDecision> {
-    const result =
+    const result = this.#operation.run(channel, () =>
       this.#decision === undefined
-        ? (this.#pending ??= Promise.resolve()
-            .then(() => this.#resolve(control, authority))
-            .finally(() => {
-              this.#pending = undefined;
-            }))
-        : Promise.resolve(this.#decision);
+        ? this.#resolve(channel)
+        : Promise.resolve(this.#decision),
+    );
     return observePromise(result, signal);
   }
 
-  async #resolve(
-    control: HostControl,
-    authority: Authority,
-  ): Promise<PlanAdmissionDecision> {
-    const result = await control.admitPlan(this.#plan);
+  async #resolve(channel: ControlChannel): Promise<PlanAdmissionDecision> {
+    const result = await channel.observe((control, signal) =>
+      control.admitPlan(this.#plan, signal),
+    );
     if (
       !result ||
       !result.authority ||
       !result.realm ||
       !result.execution ||
-      !sameAuthority(result.authority, authority) ||
+      !sameAuthority(result.authority, channel.authority) ||
       result.realm.id !== this.#plan.realm.id ||
       result.realm.epoch !== this.#plan.realm.epoch ||
       result.execution.id !== this.#plan.execution.id ||

@@ -75,7 +75,7 @@ function wireArray(value: unknown, matches: (item: unknown) => boolean): value i
   return true;
 }
 
-const wireDigest = new RegExp(DIGEST_PATTERN);
+const wireDigest = new RegExp("^[0-9a-f]{64}$");
 
 function matchesWireAcquireRequest(value: unknown): value is AcquireRequest {
   return wireObject(value, ["operationId", "snapshotId", "execution", "selections", "parentUseId"]) &&

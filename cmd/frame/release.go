@@ -16,6 +16,7 @@ import (
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/distribution"
 	"github.com/Tangerg/frame/internal/localfile"
+	"github.com/Tangerg/frame/portable/contractgen"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -39,10 +40,10 @@ func runPackage(args []string, output io.Writer) error {
 	manifestPath := flags.String("manifest", "", "source manifest")
 	destination := flags.String("out", "", "new archive path")
 	if err := flags.Parse(args); err != nil {
-		return err
+		return errors.Join(frame.ErrInvalid, err)
 	}
 	if flags.NArg() != 0 || *destination == "" || (*source == "" && *manifestPath == "") {
-		return errors.New("provide --manifest or --source, and --out")
+		return fmt.Errorf("%w: provide --manifest or --source, and --out", frame.ErrInvalid)
 	}
 	if *manifestPath == "" {
 		*manifestPath = filepath.Join(*source, distribution.ManifestName)
@@ -56,7 +57,7 @@ func runPackage(args []string, output io.Writer) error {
 	}
 	var manifest distribution.Manifest
 	if err = json.Unmarshal(data, &manifest, json.RejectUnknownMembers(true)); err != nil {
-		return err
+		return errors.Join(distribution.ErrInvalid, err)
 	}
 	temp, err := os.CreateTemp(filepath.Dir(*destination), ".frame-package-*")
 	if err != nil {
@@ -111,6 +112,7 @@ const (
 	diagnosticAlreadyExists    diagnosticCode = "already_exists"
 	diagnosticContractMismatch diagnosticCode = "contract_mismatch"
 	diagnosticInvalidRequest   diagnosticCode = "invalid_request"
+	diagnosticOperationFailed  diagnosticCode = "operation_failed"
 )
 
 type publisherPolicy struct {
@@ -144,7 +146,7 @@ type archiveOptions struct {
 
 func parseArchiveOptions(args []string, register func(*flag.FlagSet, *archiveOptions)) (archiveOptions, error) {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return archiveOptions{}, errors.New("provide an archive path followed by options")
+		return archiveOptions{}, fmt.Errorf("%w: provide an archive path followed by options", frame.ErrInvalid)
 	}
 	options := archiveOptions{archive: args[0]}
 	flags := flag.NewFlagSet("archive", flag.ContinueOnError)
@@ -154,10 +156,10 @@ func parseArchiveOptions(args []string, register func(*flag.FlagSet, *archiveOpt
 		register(flags, &options)
 	}
 	if err := flags.Parse(args[1:]); err != nil {
-		return archiveOptions{}, err
+		return archiveOptions{}, errors.Join(frame.ErrInvalid, err)
 	}
 	if flags.NArg() != 0 || *format != jsonFormat {
-		return archiveOptions{}, errors.New("expected --format json and no extra arguments")
+		return archiveOptions{}, fmt.Errorf("%w: expected --format json and no extra arguments", frame.ErrInvalid)
 	}
 	return options, nil
 }
@@ -216,7 +218,7 @@ func checkPublisherPolicy(path string, digest value.Digest, limits distribution.
 	}
 	var policy publisherPolicy
 	if err = json.Unmarshal(data, &policy, json.RejectUnknownMembers(true)); err != nil {
-		return err
+		return errors.Join(frame.ErrInvalid, err)
 	}
 	if !slices.Contains(policy.Archives, digest) {
 		return fmt.Errorf("%w: archive digest is not approved", distribution.ErrUntrusted)
@@ -238,6 +240,8 @@ func classifyDiagnostic(err error) diagnosticCode {
 		return diagnosticAlreadyExists
 	case errors.Is(err, frame.ErrContractMismatch):
 		return diagnosticContractMismatch
+	case errors.Is(err, frame.ErrInvalid), errors.Is(err, distribution.ErrInvalid), errors.Is(err, contractgen.ErrInvalid), errors.Is(err, os.ErrInvalid):
+		return diagnosticInvalidRequest
 	}
-	return diagnosticInvalidRequest
+	return diagnosticOperationFailed
 }

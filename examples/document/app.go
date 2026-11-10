@@ -42,7 +42,7 @@ type App struct {
 	preview    distribution.Release
 	recoveryMu sync.Mutex
 	mu         sync.Mutex
-	activeRuns map[string]bool
+	runs       map[string]*taskRun
 }
 
 func Open(ctx context.Context, config Config) (_ *App, err error) {
@@ -68,7 +68,7 @@ func Open(ctx context.Context, config Config) (_ *App, err error) {
 		return nil, err
 	}
 	lifetime := frame.NewLifetime(context.Background())
-	a := &App{Store: store, Contracts: contracts, owner: owner, lifetime: lifetime, activeRuns: map[string]bool{}}
+	a := &App{Store: store, Contracts: contracts, owner: owner, lifetime: lifetime, runs: make(map[string]*taskRun)}
 	host, err := frame.NewHost(context.Background(), frame.HostConfig{ReadAcceptedBinding: a.readQueuedBinding, Admission: admission, Lifetime: lifetime, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store, UseOwners: []frame.UseOwner{owner}})
 	if err != nil {
 		return nil, err
@@ -266,7 +266,7 @@ func (a *App) bootstrap(ctx context.Context, directory string, plugins catalog, 
 	})
 }
 
-// Recover does not replay a task that reached running. Such a task remains an
+// Recover does not replay a task that reached unsettled. Such a task remains an
 // application-owned unknown result until the user explicitly cancels it. Old
 // surviving Realms keep recovery closed until their original proofs arrive.
 func (a *App) Recover(ctx context.Context) error {
@@ -435,7 +435,9 @@ func (a *App) ActivatePreview(ctx context.Context, credentials browser.Credentia
 }
 
 func (a *App) Close(ctx context.Context) error {
+	settlementErr := a.settlePendingTasks(ctx)
 	outcome, err := a.Host.Close(ctx)
+	err = errors.Join(settlementErr, err)
 	if !outcome.Released {
 		return errors.Join(frame.ErrUnconfirmedRelease, err)
 	}

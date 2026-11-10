@@ -2,6 +2,7 @@ package contractgen
 
 import (
 	json "encoding/json/v2"
+	"errors"
 	"go/parser"
 	"go/token"
 	"os"
@@ -10,6 +11,51 @@ import (
 
 	"github.com/Tangerg/frame/portable"
 )
+
+func TestInvalidGoOutputPreservesEveryDestination(t *testing.T) {
+	method, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "read", Kind: portable.Query})
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := featureDescriptor(method.Descriptor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, output := range []GoOutput{
+		{Package: "_"}, {Package: ""}, {Package: "for"}, {Package: "two words"},
+		{Package: "consumer", Prefix: "private"}, {Package: "consumer", Prefix: "_"},
+	} {
+		t.Run(output.Package+"/"+output.Prefix, func(t *testing.T) {
+			directory := t.TempDir()
+			source := filepath.Join(directory, "source.json")
+			if err := os.WriteFile(source, descriptor, 0600); err != nil {
+				t.Fatal(err)
+			}
+			original := []byte("original output")
+			destinations := []string{"schema.json", "methods.generated.ts", "valid.go", "invalid.go"}
+			for _, destination := range destinations {
+				if err := os.WriteFile(filepath.Join(directory, destination), original, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			output.Path = filepath.Join(directory, "invalid.go")
+			err := Generate(source, directory, directory, GoOutput{Path: filepath.Join(directory, "valid.go"), Package: "consumer"}, output)
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("invalid Go configuration: %v", err)
+			}
+			for _, destination := range destinations {
+				retained, err := os.ReadFile(filepath.Join(directory, destination))
+				if err != nil || string(retained) != string(original) {
+					t.Fatalf("changed %s before output admission: %q, %v", destination, retained, err)
+				}
+			}
+			entries, err := os.ReadDir(directory)
+			if err != nil || len(entries) != len(destinations)+1 {
+				t.Fatalf("published another artifact before output admission: %v, %v", entries, err)
+			}
+		})
+	}
+}
 
 func TestFeatureConsumerGenerationAcceptsAnUndocumentedMethod(t *testing.T) {
 	directory := t.TempDir()

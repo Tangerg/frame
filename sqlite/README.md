@@ -89,6 +89,11 @@ indexes, foreign keys and the SQLite runtime. Changing or removing an authorizer
 expires prepared statements, so a previously compiled statement cannot bypass a
 later read scope. Standalone nested readers receive their own expiring capability;
 the original writer regains its authority only after the final reader returns.
+Nested `RunInTx` joins the original transaction and reports its callback's error
+and cancellation cause together. This completion rule is the same as an independent
+transaction; returning that error to the outer owner prevents COMMIT. A caller
+that catches an ordinary nested error still owns its decision to continue the
+outer transaction.
 
 The mutation returns bounded evidence locating its committed change. This is
 submission evidence, not a plugin's business receipt. Actual business results stay
@@ -195,7 +200,11 @@ change its conclusion. Attempt epochs live only in their original request.
 `Attempt` and `Use` look up an immutable operation by ID. `PendingAttempts`
 returns approved attempts and outstanding exit acknowledgements.
 `ExecutionUses` reads one execution's approvals. `ExecutionDependencies` reads
-the still-protected rows from both tables in the same transaction.
+both tables in the same transaction and verifies every original request and proof
+before excluding terminal records. Pending-attempt queries use that same complete
+record admission. Reopening validates all protection records before advancing the
+epoch or discarding old control replies; a terminal label without matching proof
+cannot bypass recovery or release dependencies.
 `Attempts` and `ExecutionDependencies` remain separate from business `Held`
 queries. An idle Ready process may be retired by Host policy; its bytes and setup
 dependencies remain protected until actual exit is proved. A runner crash, lost

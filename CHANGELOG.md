@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## v0.2.0 — 2026-11-10
+
+- Protect native resource work through `Use.Enter` and retain dynamic publication
+  callbacks in the original instance lifetime. Reserve cleanup before acquisition.
+- Conclude private installation receipts on every unsuccessful exit and require
+  recovery when retained submission evidence is missing or incomplete.
+- Sync final release permissions and nested directory entries before issuing
+  artifact leases. Validate operation-specific runner requests before dispatch.
+- Observe asynchronous SDK callback failures without manufacturing release proof,
+  capture browser selection data once, and repair generated type and enum edges.
 - Require `github.com/Tangerg/go-sdk` v1.9.0-scope.1. MCP sessions bound retained
   incoming calls and notifications until their handlers and response writes
   finish, and close on overload. Negotiated protocol versions reach the original
@@ -77,15 +87,36 @@
   and `data:` for module leases. Plain HTTP to any other host is refused, since
   it would expose the realm credential or let the network replace module code
   that the approved digest cannot verify.
-- Require `github.com/Tangerg/go-sdk` v1.8.1-scope.5. The SDK now cancels a
-  queued MCP write without sending it and closes the connection when an active
-  write is canceled, so `process/mcp` no longer wraps SDK connections to provide
+- Cancel a queued MCP write without sending it. Canceling an active write closes
+  the connection, so `process/mcp` no longer wraps SDK connections to provide
   that itself. Frame admission, strict JSON and the outbound frame budget are
   unchanged.
 - `make check` and CI run golangci-lint with `.golangci.yml`: errcheck, govet,
   ineffassign, staticcheck and unused. An ignored write, sync or commit error now
   fails the build; closing a read handle and test cleanup follow the
   std-error-handling convention.
+
+### Upgrade from v0.1.1
+
+- Upgrade the Go module, SDK tarball, Host and runner together, and regenerate
+  application contracts and browser control declarations.
+- Handle the error returned by `Candidate.Metadata`. Replace `runner.Dial` with
+  `runner.NewClient(socket)` and handle its construction error. Use the returned
+  `LaunchResult` to distinguish definite refusal from execution observations.
+- Implement `ExecutionProtection.SettleUse` in place of `ReleaseUse`; settlement
+  must prove release or non-commit after the original approval callback ends.
+- Accept the `sqlite.Owner` value returned by `Store.Owner`, move installation
+  projections to `OwnerSchema.ProjectInstallation`, and use `*sqlite.Database`
+  rather than `*sql.DB` with the standalone transaction helpers.
+- Remove `ExportValue.Durable`. Drivers with a remote Go representation implement
+  `ExportValidator` against the original instance and export identity. The
+  internal `frame.Instance` aggregate is no longer exported.
+- Use `Use.Enter` before native work that retains a Use's resources; entering its
+  Lifetime alone does not validate the Use's original grant.
+- The private Host schema and runner journal require fresh state. Stop existing
+  executions through their original owners before switching state directories.
+  No automatic persisted-state migration or old-protocol adapter is included.
+  See [SQLite](sqlite/README.md) and [runner](process/runner/README.md) contracts.
 
 ## v0.1.1 — 2026-11-05
 

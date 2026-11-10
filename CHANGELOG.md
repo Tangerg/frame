@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Require `github.com/Tangerg/go-sdk` v1.9.0-scope.1. MCP sessions bound retained
+  incoming calls and notifications until their handlers and response writes
+  finish, and close on overload. Negotiated protocol versions reach the original
+  transport through the tool-result connection. Caller cancellation retains its
+  error category when connection shutdown races with it.
 - Reject dynamic Use ownership cycles using the original resource and provider
   edges. Caller-owned EventRoute handles no longer hold the Host's mutable
   release identity; copies share the same opaque authorization.

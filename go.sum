@@ -1,5 +1,5 @@
-github.com/Tangerg/go-sdk v1.8.1-scope.5 h1:pB2OimDljbusbZIeTXA19SnEwxi635AStK9u5Wpn/1U=
-github.com/Tangerg/go-sdk v1.8.1-scope.5/go.mod h1:9ZBcxdycY3/8/I1dCH3Uo5rCY3Run9Y4ZmEmiQIulUw=
+github.com/Tangerg/go-sdk v1.9.0-scope.1 h1:2cV13pDEdGqNGfunLoeFxHw9Fb2IFk5x9d4EwxSmVjs=
+github.com/Tangerg/go-sdk v1.9.0-scope.1/go.mod h1:9ZBcxdycY3/8/I1dCH3Uo5rCY3Run9Y4ZmEmiQIulUw=
 github.com/Tangerg/scope/core v0.58.0 h1:9qVRiN+9++zUiWpNoGCjLuusRGLnZiUjC58auS7p4u8=
 github.com/Tangerg/scope/core v0.58.0/go.mod h1:YVjrbA/nQ63xvHX5QX3Y/19c6JH1VsOfaa800Ni0v3o=
 github.com/bahlo/generic-list-go v0.2.0 h1:5sz/EEAK+ls5wF+NeqDpk5+iNdMDXrh3z3nPnH1Wvgk=

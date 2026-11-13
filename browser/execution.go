@@ -11,7 +11,7 @@ import (
 	"strconv"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/internal/cancellation"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 	framevalue "github.com/Tangerg/frame/value"
 )
@@ -40,13 +40,13 @@ const (
 	problemExecutionReleased    = "execution already released"
 )
 
-func rejected(problem string) PublicationResult {
-	return PublicationResult{Decision: Rejected, Problem: problem}
+func rejectedDecision(problem string) DecisionResult {
+	return DecisionResult{Decision: Rejected, Problem: problem}
 }
 
-func (b *Bridge) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.ExportValue, error) {
+func (b *Bridge) Prepare(ctx context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
 	if !b.config.Host.OwnsSetup(setup) {
-		return nil, frame.ErrFenced
+		return nil, framehost.ErrFenced
 	}
 	session, err := b.reservePreparation(setup)
 	if err != nil {
@@ -82,11 +82,11 @@ func (b *Bridge) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 			b.mu.Unlock()
 		}
 	}()
-	attempt := sqlite.Attempt{ID: setup.InstanceID(), Epoch: setup.Epoch(), Source: setup.Binding().Source, Binding: setup.Snapshot(), Realm: string(RealmID(session.realm)), Profile: frame.BrowserJS, Scope: setup.ScopeGrant().WireID(), ScopeGeneration: setup.ScopeGrant().Generation(), Generation: setup.Generation()}
+	attempt := sqlite.Attempt{ID: setup.InstanceID(), Epoch: setup.Epoch(), Source: setup.Binding().Source, Binding: setup.Snapshot(), Realm: string(RealmID(session.realm)), Profile: framehost.BrowserJS, Scope: setup.ScopeGrant().WireID(), ScopeGeneration: setup.ScopeGrant().Generation(), Generation: setup.Generation()}
 	if err := b.config.Store.CheckExitCapacity(unadmittedExitProof(attempt)); err != nil {
 		return nil, err
 	}
-	entry := &browserExecution{plan: plan, attempt: attempt, setup: setup, prepared: make(chan []frame.ExportValue, 1), projectionBytes: projectionBytes}
+	entry := &browserExecution{plan: plan, attempt: attempt, setup: setup, prepared: make(chan []framehost.ExportValue, 1), projectionBytes: projectionBytes}
 	registered := make(chan struct{})
 	resource, err := setup.Own(frame.Resource{Name: executionResourcePrefix + attempt.ID, Cancel: func(error) { b.fence(entry) }, Close: func(wait context.Context) (frame.ReleaseState, error) {
 		select {
@@ -118,29 +118,29 @@ func (b *Bridge) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 		if approvalErr != nil {
 			return nil, errors.Join(approvalErr, err)
 		}
-		return nil, errors.Join(frame.ErrFenced, err)
+		return nil, errors.Join(framehost.ErrFenced, err)
 	}
 	select {
 	case exports := <-entry.prepared:
 		return exports, nil
 	case <-ctx.Done():
 		b.fence(entry)
-		return nil, cancellation.Err(ctx)
+		return nil, frame.ContextError(ctx)
 	}
 }
 
 // reservePreparation counts a Setup against MaxPending before any I/O.
-func (b *Bridge) reservePreparation(setup *frame.Setup) (*realmSession, error) {
+func (b *Bridge) reservePreparation(setup *framehost.Setup) (*realmSession, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	session := b.sessions.get(setup.Realm())
 	if session == nil || session.cleanupOnly {
-		return nil, frame.ErrFenced
+		return nil, framehost.ErrFenced
 	}
 	return session, b.executions.reserve()
 }
 
-func (b *Bridge) localPlan(ctx context.Context, realm Realm, setup *frame.Setup) (LocalPlan, error) {
+func (b *Bridge) localPlan(ctx context.Context, realm Realm, setup *framehost.Setup) (LocalPlan, error) {
 	unit, err := b.plannedUnit(ctx, setup)
 	if err != nil {
 		return LocalPlan{}, err
@@ -158,7 +158,7 @@ func (b *Bridge) localPlan(ctx context.Context, realm Realm, setup *frame.Setup)
 	}, nil
 }
 
-func (b *Bridge) plannedUnit(ctx context.Context, setup *frame.Setup) (PlannedUnit, error) {
+func (b *Bridge) plannedUnit(ctx context.Context, setup *framehost.Setup) (PlannedUnit, error) {
 	module, err := b.config.Source.Module(ctx, setup.Binding())
 	if err != nil {
 		return PlannedUnit{}, err
@@ -174,7 +174,7 @@ func (b *Bridge) plannedUnit(ctx context.Context, setup *frame.Setup) (PlannedUn
 	unit := PlannedUnit{
 		Instance:          Instance{ID: setup.InstanceID(), Generation: strconv.FormatUint(setup.Generation(), 10), Source: binding.Source, Configuration: binding.Configuration},
 		ConfigurationJSON: configuration,
-		Profile:           frame.BrowserJS,
+		Profile:           framehost.BrowserJS,
 		Module:            module,
 		Imports:           []Import{},
 		Exports:           setup.Unit().Exports,
@@ -189,7 +189,7 @@ func (b *Bridge) plannedUnit(ctx context.Context, setup *frame.Setup) (PlannedUn
 	return unit, nil
 }
 
-func (b *Bridge) publicConfiguration(ctx context.Context, setup *frame.Setup) (string, error) {
+func (b *Bridge) publicConfiguration(ctx context.Context, setup *framehost.Setup) (string, error) {
 	if b.config.PublicConfiguration == nil {
 		return emptyConfiguration, nil
 	}
@@ -208,7 +208,7 @@ func (b *Bridge) publicConfiguration(ctx context.Context, setup *frame.Setup) (s
 
 // plannedImport projects one approved import: an object of this Realm, a
 // Portable transport bound by RemoteSource, or an accepted absence.
-func (b *Bridge) plannedImport(ctx context.Context, setup *frame.Setup, declaration frame.ImportDeclaration) (Import, error) {
+func (b *Bridge) plannedImport(ctx context.Context, setup *framehost.Setup, declaration framehost.ImportDeclaration) (Import, error) {
 	values, err := setup.Imports(declaration.Slot)
 	if err != nil {
 		return Import{}, err
@@ -226,7 +226,7 @@ func (b *Bridge) plannedImport(ctx context.Context, setup *frame.Setup, declarat
 		imported.Kind, imported.Local = LocalImportKind, &local
 		return imported, nil
 	}
-	if declaration.Contract.Mode != frame.PortableMode || b.config.Remote == nil {
+	if declaration.Contract.Mode != framehost.PortableMode || b.config.Remote == nil {
 		return Import{}, frame.ErrContractMismatch
 	}
 	remote, err := b.config.Remote.Import(ctx, setup, values[0])
@@ -297,7 +297,7 @@ func (b *Bridge) Poll(ctx context.Context, token string) (Poll, error) {
 	if err != nil {
 		return Poll{}, err
 	}
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return Poll{}, err
 	}
 	b.mu.Lock()
@@ -340,50 +340,56 @@ func (b *Bridge) validateCurrentPlan(ctx context.Context, token string, plan Loc
 	valid := entry.serves(session.realm, plan.Execution) && sameWire(entry.plan, plan)
 	b.mu.Unlock()
 	if !valid {
-		return frame.ErrStaleBinding
+		return framehost.ErrStaleBinding
 	}
 	return entry.setup.ValidateCurrent(ctx)
 }
 
 // Ready observes a prepared execution. Only the Core Host publishes its
 // exports, and a retry of the accepted report observes that same acceptance.
-func (b *Bridge) Ready(ctx context.Context, token string, report ReadyReport) (PublicationResult, error) {
+func (b *Bridge) Ready(ctx context.Context, token string, report ReadyReport) (DecisionResult, error) {
 	if err := b.checkRequest(readyMethod, report); err != nil {
-		return PublicationResult{}, err
+		return DecisionResult{}, err
 	}
-	session, err := b.liveSession(token)
+	session, err := b.anySession(token)
 	if err != nil {
-		return PublicationResult{}, err
+		return DecisionResult{}, err
 	}
 	if report.Authority != b.authority || report.Realm != session.realm || report.OperationID == "" {
-		return rejected(problemWrongAuthority), nil
+		return rejectedDecision(problemWrongAuthority), nil
 	}
 	digest, err := requestDigest(report)
 	if err != nil {
-		return PublicationResult{}, err
+		return DecisionResult{}, err
 	}
 	b.mu.Lock()
 	entry := b.executions.get(report.Execution.ID)
-	if session.cleanupOnly || !entry.runtimeOwnsExit() || !entry.serves(session.realm, report.Execution) {
-		b.mu.Unlock()
-		return rejected(problemExecutionUnavailable), nil
-	}
 	if result, replay, err := entry.replayReady(report.OperationID, digest); replay {
 		b.mu.Unlock()
 		return result, err
 	}
+	if session.cleanupOnly || !entry.runtimeOwnsExit() || !entry.serves(session.realm, report.Execution) {
+		b.mu.Unlock()
+		return rejectedDecision(problemExecutionUnavailable), nil
+	}
 	b.mu.Unlock()
 	if err := b.validateCurrentPlan(ctx, token, entry.plan); err != nil {
-		return PublicationResult{}, err
+		return DecisionResult{}, err
 	}
 	exports, problem := b.readyExports(entry.plan.Units[0], report)
 	if problem != "" {
-		return rejected(problem), nil
+		return rejectedDecision(problem), nil
+	}
+	if err := b.validateCurrentPlan(ctx, token, entry.plan); err != nil {
+		return DecisionResult{}, err
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if result, replay, err := entry.replayReady(report.OperationID, digest); replay {
+		return result, err
+	}
 	if session.cleanupOnly {
-		return rejected(problemExecutionReleased), nil
+		return rejectedDecision(problemExecutionReleased), nil
 	}
 	result, accepted, err := entry.acceptReady(report.OperationID, digest)
 	if accepted {
@@ -395,7 +401,7 @@ func (b *Bridge) Ready(ctx context.Context, token string, report ReadyReport) (P
 // readyExports admits the reported objects against the approved unit: every
 // declared export exactly once, plus dynamic members of declared Points, each
 // with metadata that names its exact prepared object.
-func (b *Bridge) readyExports(unit PlannedUnit, report ReadyReport) ([]frame.ExportValue, string) {
+func (b *Bridge) readyExports(unit PlannedUnit, report ReadyReport) ([]framehost.ExportValue, string) {
 	objects, problem := readyObjects(unit, report.Objects)
 	if problem != "" {
 		return nil, problem
@@ -404,48 +410,48 @@ func (b *Bridge) readyExports(unit PlannedUnit, report ReadyReport) ([]frame.Exp
 	if problem != "" {
 		return nil, problem
 	}
-	exports := make([]frame.ExportValue, 0, len(report.Objects))
+	exports := make([]framehost.ExportValue, 0, len(report.Objects))
 	for _, declaration := range unit.Exports {
 		reference, exists := objects.byExport[declaration.Name]
 		if !exists || reference.Export.Contract != declaration.Contract {
 			return nil, problemUndeclaredExports
 		}
 		var value any
-		if declaration.Contract.Kind == frame.PointKind {
+		if declaration.Contract.Kind == framehost.PointKind {
 			encoded, exists := metadata[reference.ObjectID]
 			if !exists {
 				encoded = jsonNull
 			}
-			decoded, err := b.config.Host.DecodeMetadata(declaration.Contract, []byte(encoded))
+			prepared, err := b.config.Host.PrepareMetadata(declaration.Contract, []byte(encoded))
 			if err != nil {
 				return nil, problemInvalidPointMetadata
 			}
-			value = decoded
+			value = prepared
 		}
-		exports = append(exports, frame.ExportValue{Name: declaration.Name, Contract: declaration.Contract, Metadata: value, Value: Object{Reference: reference}})
+		exports = append(exports, framehost.ExportValue{Name: declaration.Name, Contract: declaration.Contract, Metadata: value, Value: Object{Reference: reference}})
 		delete(objects.byExport, declaration.Name)
 	}
 	// Dynamic setup contributions require a declared Point and are returned in
 	// the same prepared batch. They acquire visibility only in the Core owner.
 	for _, reference := range objects.byExport {
-		if reference.Export.Contract.Kind != frame.PointKind || !declaresContract(unit, reference.Export.Contract) {
+		if reference.Export.Contract.Kind != framehost.PointKind || !declaresContract(unit, reference.Export.Contract) {
 			return nil, problemUndeclaredMember
 		}
 		encoded, exists := metadata[reference.ObjectID]
 		if !exists {
 			return nil, problemMissingMetadata
 		}
-		decoded, err := b.config.Host.DecodeMetadata(reference.Export.Contract, []byte(encoded))
+		prepared, err := b.config.Host.PrepareMetadata(reference.Export.Contract, []byte(encoded))
 		if err != nil {
 			return nil, problemInvalidMemberData
 		}
-		exports = append(exports, frame.ExportValue{Name: reference.Export.Name, Contract: reference.Export.Contract, Metadata: decoded, Value: Object{Reference: reference}})
+		exports = append(exports, framehost.ExportValue{Name: reference.Export.Name, Contract: reference.Export.Contract, Metadata: prepared, Value: Object{Reference: reference}})
 	}
 	return exports, ""
 }
 
-func declaresContract(unit PlannedUnit, contract frame.ContractRef) bool {
-	return slices.ContainsFunc(unit.Exports, func(declaration frame.ExportDeclaration) bool { return declaration.Contract == contract })
+func declaresContract(unit PlannedUnit, contract framehost.ContractRef) bool {
+	return slices.ContainsFunc(unit.Exports, func(declaration framehost.ExportDeclaration) bool { return declaration.Contract == contract })
 }
 
 type readyObjectIndex struct {
@@ -475,7 +481,7 @@ func readyMetadata(objects readyObjectIndex, contributions []PreparedContributio
 	metadata := make(map[string]string, len(contributions))
 	for _, contribution := range contributions {
 		reference, exists := objects.byID[contribution.Object.ObjectID]
-		if !exists || reference != contribution.Object || reference.Export.Contract.Kind != frame.PointKind {
+		if !exists || reference != contribution.Object || reference.Export.Contract.Kind != framehost.PointKind {
 			return nil, problemInexactPoint
 		}
 		if _, exists := metadata[reference.ObjectID]; exists {

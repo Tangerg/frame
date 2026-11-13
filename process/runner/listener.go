@@ -9,6 +9,7 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/internal/localfile"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 // Publication and removal share the Server's directory authority. The socket
@@ -128,7 +129,7 @@ func (s *Server) Listen(socket string) (net.Listener, error) {
 
 func (s *Server) admitServe(ctx context.Context, listener net.Listener) (context.Context, *controlListener, error) {
 	owned, ok := listener.(*controlListener)
-	if ctx == nil || !ok || owned == nil || owned.owner != s {
+	if framevalue.IsNil(ctx) || !ok || owned == nil || owned.owner != s {
 		return nil, nil, frame.ErrInvalid
 	}
 	s.mu.Lock()

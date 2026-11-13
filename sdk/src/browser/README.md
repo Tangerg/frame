@@ -6,6 +6,12 @@ public event routing, and admission. The Browser Runtime owns the resulting
 JavaScript objects, admitted work, resource dependencies, and release evidence.
 It does not contain another catalog, resolver, package manager.
 
+Only a Host-approved `absent` import supplies `undefined` to an optional slot.
+The `remote` adapter must return a non-null implementation for every selected
+provider, including an optional slot whose provider is present. Missing remote
+implementations are refused before consumer setup; adapter failure cannot turn
+the Host's selected provider into another absence decision.
+
 ## Control and execution
 
 A trusted application creates a Realm session through its Host integration. The
@@ -15,6 +21,12 @@ credential in the bootstrap control adapter rather than exposing it to units.
 decoders before accepting them. A malformed mutation acknowledgement remains
 `outcome_unknown`; a malformed observation reports `unavailable`. A void
 acknowledgement must carry JSON null on the wire.
+
+Ready and withdrawal return `DecisionResult`, which carries no publication
+identity. Dynamic publication and its observation return `PublicationResult`.
+Only acceptance carries the exact publication; a refusal or unknown decision
+cannot carry it, and acceptance cannot carry a problem. A contradictory reply
+cannot release an object or overwrite its original publication outcome.
 
 The control endpoint must use HTTPS or HTTP to a loopback host, following W3C
 Secure Contexts. The artifact adapter supplies bounded bytes; `RealmModules`
@@ -83,6 +95,10 @@ replace the authenticated channel while the same pump runs. A late poll from the
 retired channel cannot fence or disconnect the replacement. A new authority
 epoch makes old executions cleanup-only. The read-only `runtime.control` property
 projects the authenticated control adapter currently selected by this owner.
+Control replies, including replies from custom `HostControl` adapters, are
+captured and validated before advancing their original owners. Reconnection and
+polling recheck admission after this capture, so reentrant adapter accessors
+cannot reopen a closed Runtime or schedule work after closure.
 A replacement retires earlier operation observations and signals cancellation of
 their network attempts. Retrying preparation or acquisition waits for that prior
 observation to exit, then resumes the original admission and operation identity;
@@ -225,6 +241,9 @@ the same idempotent removal at the Host, including after a cancellation or lost
 response. Publication observations cannot reverse a confirmed decision. Request
 cancellation before the Host's synchronous mutation is a known refusal, not a
 permanently unknown command.
+When the original publication has no confirmed identity, `withdraw()` returns
+its captured publication decision and diagnostics without sending a removal.
+A malformed withdrawal acknowledgement retains that identity for the next retry.
 
 Only terminal release enters the bounded bootstrap proof outbox. Proof delivery
 reuses the same immutable proof identity and payload after acknowledgement loss.
@@ -265,6 +284,9 @@ data URL from that exact capture. A lease supplies neither a trusted digest nor
 a separately fetched import URL. Serve standalone or bundled ESM: relative
 module imports cannot resolve against a data URL. Browser CSP must permit these
 approved data-module imports.
+A lease's original close method and closure promise are captured once with the
+original receiver; later property replacement cannot redirect release or conceal
+the original endpoint's termination.
 A module lease's `close` receives a late-release confirmation handle for an
 unconfirmed close.
 

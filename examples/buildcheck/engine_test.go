@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/examples/buildcheck"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -31,22 +31,22 @@ func engine(t *testing.T, text string) (*buildcheck.Engine, context.Context) {
 	return e, ctx
 }
 
-func install(t *testing.T, ctx context.Context, e *buildcheck.Engine, id string, exports ...frame.ExportValue) {
+func install(t *testing.T, ctx context.Context, e *buildcheck.Engine, id string, exports ...framehost.ExportValue) {
 	t.Helper()
-	declarations := make([]frame.ExportDeclaration, 0, len(exports))
+	declarations := make([]framehost.ExportDeclaration, 0, len(exports))
 	for _, export := range exports {
-		declarations = append(declarations, frame.ExportDeclaration{Name: export.Name, Contract: export.Contract})
+		declarations = append(declarations, framehost.ExportDeclaration{Name: export.Name, Contract: export.Contract})
 	}
-	plugin, err := frame.Define(frame.Definition{Revision: value.Hash([]byte(id)), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.NativeGo, Exports: declarations}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) { return exports, nil }}}})
+	plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte(id)), Units: []framehost.Unit{{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: declarations}, Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) { return exports, nil }}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.Host.Install(ctx, frame.InstallationConfig{ID: frame.InstallationID(id), Plugin: plugin, Enabled: true}); err != nil {
+	if _, err := e.Host.Install(ctx, framehost.InstallationConfig{ID: framehost.InstallationID(id), Plugin: plugin, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	roots := make([]frame.ExportRef, 0, len(exports))
+	roots := make([]framehost.ExportRef, 0, len(exports))
 	for _, export := range exports {
-		roots = append(roots, frame.ExportRef{InstallationID: frame.InstallationID(id), Release: plugin.Revision(), UnitID: "main", Export: export.Name, Contract: export.Contract})
+		roots = append(roots, framehost.ExportRef{InstallationID: framehost.InstallationID(id), Release: plugin.Revision(), UnitID: "main", Export: export.Name, Contract: export.Contract})
 	}
 	if _, err := e.Host.Activate(ctx, roots...); err != nil {
 		t.Fatal(err)
@@ -80,9 +80,9 @@ func TestParallelAnalysisAndRevisionSafeWriteback(t *testing.T) {
 	e, ctx := engine(t, "R1")
 	started := make(chan string, 2)
 	release := make(chan struct{})
-	var exports []frame.ExportValue
+	var exports []framehost.ExportValue
 	for _, name := range []string{"left", "right"} {
-		exports = append(exports, frame.Contribute(name, e.Contracts.Analyzers, buildcheck.AnalyzerMetadata{Name: name, Required: true}, buildcheck.Analyzer(func(ctx context.Context, source buildcheck.SourceRevision) ([]buildcheck.Diagnostic, error) {
+		exports = append(exports, framehost.Contribute(name, e.Contracts.Analyzers, buildcheck.AnalyzerMetadata{Name: name, Required: true}, buildcheck.Analyzer(func(ctx context.Context, source buildcheck.SourceRevision) ([]buildcheck.Diagnostic, error) {
 			started <- name
 			select {
 			case <-ctx.Done():
@@ -123,7 +123,7 @@ func TestParallelAnalysisAndRevisionSafeWriteback(t *testing.T) {
 func TestOptionalFailureIsCollectedAndRequiredFailureJoinsCancellation(t *testing.T) {
 	e, ctx := engine(t, "input")
 	optionalFailure := errors.New("optional diagnostic unavailable")
-	install(t, ctx, e, "optional", frame.Contribute("optional", e.Contracts.Analyzers, buildcheck.AnalyzerMetadata{Name: "optional"}, buildcheck.Analyzer(func(context.Context, buildcheck.SourceRevision) ([]buildcheck.Diagnostic, error) {
+	install(t, ctx, e, "optional", framehost.Contribute("optional", e.Contracts.Analyzers, buildcheck.AnalyzerMetadata{Name: "optional"}, buildcheck.Analyzer(func(context.Context, buildcheck.SourceRevision) ([]buildcheck.Diagnostic, error) {
 		return nil, optionalFailure
 	})))
 	result, err := e.Run(ctx)
@@ -132,9 +132,9 @@ func TestOptionalFailureIsCollectedAndRequiredFailureJoinsCancellation(t *testin
 	}
 	requiredFailure := errors.New("required analyzer failed")
 	joined := make(chan struct{})
-	install(t, ctx, e, "required", frame.Contribute("required", e.Contracts.Analyzers, buildcheck.AnalyzerMetadata{Name: "required", Required: true}, buildcheck.Analyzer(func(context.Context, buildcheck.SourceRevision) ([]buildcheck.Diagnostic, error) {
+	install(t, ctx, e, "required", framehost.Contribute("required", e.Contracts.Analyzers, buildcheck.AnalyzerMetadata{Name: "required", Required: true}, buildcheck.Analyzer(func(context.Context, buildcheck.SourceRevision) ([]buildcheck.Diagnostic, error) {
 		return nil, requiredFailure
-	})), frame.Contribute("cancelled", e.Contracts.Analyzers, buildcheck.AnalyzerMetadata{Name: "cancelled"}, buildcheck.Analyzer(func(ctx context.Context, _ buildcheck.SourceRevision) ([]buildcheck.Diagnostic, error) {
+	})), framehost.Contribute("cancelled", e.Contracts.Analyzers, buildcheck.AnalyzerMetadata{Name: "cancelled"}, buildcheck.Analyzer(func(ctx context.Context, _ buildcheck.SourceRevision) ([]buildcheck.Diagnostic, error) {
 		<-ctx.Done()
 		close(joined)
 		return nil, ctx.Err()
@@ -153,7 +153,7 @@ func TestAroundContinuationCannotEscapeOrRunTwice(t *testing.T) {
 	e, ctx := engine(t, "input")
 	var saved buildcheck.Next
 	var savedSource buildcheck.SourceRevision
-	install(t, ctx, e, "around-owner", frame.Contribute("guard", e.Contracts.Around, buildcheck.AroundMetadata{Name: "guard", Order: 20}, buildcheck.Around(func(ctx context.Context, source buildcheck.SourceRevision, next buildcheck.Next) (buildcheck.Result, error) {
+	install(t, ctx, e, "around-owner", framehost.Contribute("guard", e.Contracts.Around, buildcheck.AroundMetadata{Name: "guard", Order: 20}, buildcheck.Around(func(ctx context.Context, source buildcheck.SourceRevision, next buildcheck.Next) (buildcheck.Result, error) {
 		saved = next
 		savedSource = source
 		result, err := next(ctx, source)

@@ -8,13 +8,8 @@ export {
   type CloseOutcome,
   type Exit,
   type Cleanup,
-} from "./lifetime.js";
-export {
-  acquire,
-  withResource,
   type Acquired,
-  type AcquiredResource,
-} from "./use.js";
+} from "./lifetime.js";
 export {
   Service,
   Point,

@@ -8,16 +8,14 @@ import (
 	"io"
 	"sync/atomic"
 
-	"github.com/Tangerg/frame/internal/cancellation"
-
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/process"
 	"github.com/Tangerg/frame/value"
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
 
-const ToolsProfile frame.Profile = "mcp-tools"
+const ToolsProfile framehost.Profile = "mcp-tools"
 
 // Tools matches each declared unary member to an MCP tool of the same name.
 // MaxCatalogPages must be positive and bounds discovery, including empty pages.
@@ -26,12 +24,12 @@ type Tools struct {
 	// FullResult selects members that return the entire MCP result envelope,
 	// including unstructured content. By default members return structuredContent
 	// and require an exact advertised output schema. Selection is frozen at setup.
-	FullResult func(frame.ExportDeclaration, string) bool
+	FullResult func(framehost.ExportDeclaration, string) bool
 }
 
-func (Tools) Profile() frame.Profile { return ToolsProfile }
+func (Tools) Profile() framehost.Profile { return ToolsProfile }
 
-func (p Tools) Prepare(setup *frame.Setup, metadata process.ExportMetadata, maximum int) (process.Connection, error) {
+func (p Tools) Prepare(setup *framehost.Setup, metadata process.ExportMetadata, maximum int) (process.Connection, error) {
 	if setup == nil || maximum <= 0 || p.MaxCatalogPages <= 0 {
 		return nil, fmt.Errorf("%w: MCP tools requires a setup and positive limits", frame.ErrInvalid)
 	}
@@ -41,7 +39,7 @@ func (p Tools) Prepare(setup *frame.Setup, metadata process.ExportMetadata, maxi
 	}
 	c := &toolsConnection{maximum: maximum, pages: p.MaxCatalogPages, required: make(toolRequirements)}
 	for _, export := range unit.Exports {
-		contract, err := process.DeclaredCapability(setup, export.Contract)
+		contract, err := setup.Capability(export.Contract)
 		if err != nil {
 			return nil, err
 		}
@@ -63,12 +61,12 @@ type toolsConnection struct {
 	maximum     int
 	pages       int
 	required    toolRequirements
-	values      []frame.ExportValue
+	values      []framehost.ExportValue
 	session     *sdk.ClientSession
 	discovering atomic.Bool
 }
 
-func (c *toolsConnection) Connect(ctx context.Context, channel io.ReadWriteCloser) ([]frame.ExportValue, error) {
+func (c *toolsConnection) Connect(ctx context.Context, channel io.ReadWriteCloser) ([]framehost.ExportValue, error) {
 	session, err := connect(ctx, channel, c.maximum, func(client *sdk.Client) error {
 		client.AddSendingMiddleware(c.admitCatalogRequests)
 		return nil
@@ -109,7 +107,7 @@ func (c *toolsConnection) discover(ctx context.Context) error {
 	for range c.pages {
 		page, err := c.session.ListTools(ctx, &sdk.ListToolsParams{Cursor: cursor})
 		if err != nil {
-			return errors.Join(err, cancellation.Err(ctx))
+			return errors.Join(err, frame.ContextError(ctx))
 		}
 		for _, tool := range page.Tools {
 			if tool == nil {
@@ -151,7 +149,7 @@ func (c *toolsConnection) Close(context.Context) error {
 }
 
 type toolMember struct {
-	method     *portable.Method
+	method     *frame.Method
 	fullResult bool
 }
 
@@ -176,8 +174,8 @@ type ToolError struct{ Result value.JSON }
 
 func (*ToolError) Error() string { return "mcp tool reported an error" }
 
-func (s *toolService) Invoke(ctx context.Context, invocation portable.Invocation) (value.JSON, error) {
-	if ctx == nil {
+func (s *toolService) Invoke(ctx context.Context, invocation frame.Invocation) (value.JSON, error) {
+	if value.IsNil(ctx) {
 		return value.JSON{}, frame.ErrInvalid
 	}
 	name := invocation.Member()
@@ -192,11 +190,11 @@ func (s *toolService) Invoke(ctx context.Context, invocation portable.Invocation
 	if len(raw) == 0 || raw[0] != '{' {
 		return value.JSON{}, fmt.Errorf("%w: MCP tool arguments must be an object", frame.ErrContractMismatch)
 	}
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return value.JSON{}, err
 	}
 	params := &sdk.CallToolParams{Name: name, Arguments: json.RawMessage(raw)}
-	if invocation.Kind() == portable.Command {
+	if invocation.Kind() == frame.Command {
 		if err := params.Meta.Set(commandIDMetadataKey, invocation.CommandID()); err != nil {
 			return value.JSON{}, err
 		}
@@ -205,21 +203,21 @@ func (s *toolService) Invoke(ctx context.Context, invocation portable.Invocation
 	defer projection.release()
 	result, err := s.connection.session.CallTool(context.WithValue(ctx, toolResultProjectionKey{}, projection), params)
 	if err != nil {
-		return value.JSON{}, errors.Join(process.ErrOutcomeUnknown, err, cancellation.Err(ctx))
+		return value.JSON{}, errors.Join(frame.ErrOutcomeUnknown, err, frame.ContextError(ctx))
 	}
 	if result.NeedsInput() {
-		return value.JSON{}, fmt.Errorf("%w: MCP tool requested an unsupported input round", process.ErrOutcomeUnknown)
+		return value.JSON{}, fmt.Errorf("%w: MCP tool requested an unsupported input round", frame.ErrOutcomeUnknown)
 	}
 	reply, err := projection.admit()
 	if err != nil {
-		return value.JSON{}, errors.Join(process.ErrOutcomeUnknown, err)
+		return value.JSON{}, errors.Join(frame.ErrOutcomeUnknown, err)
 	}
 	if result.IsError {
 		return value.JSON{}, &ToolError{Result: reply}
 	}
 	if !member.fullResult {
 		if result.StructuredContent == nil {
-			return value.JSON{}, fmt.Errorf("%w: MCP tool %q omitted structuredContent", process.ErrOutcomeUnknown, name)
+			return value.JSON{}, fmt.Errorf("%w: MCP tool %q omitted structuredContent", frame.ErrOutcomeUnknown, name)
 		}
 		reply, err = sdkValue(result.StructuredContent)
 	}
@@ -227,7 +225,7 @@ func (s *toolService) Invoke(ctx context.Context, invocation portable.Invocation
 		err = member.method.ValidateOutput(reply.Bytes())
 	}
 	if err != nil {
-		return value.JSON{}, errors.Join(process.ErrOutcomeUnknown, err)
+		return value.JSON{}, errors.Join(frame.ErrOutcomeUnknown, err)
 	}
 	return reply, nil
 }

@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 func TestReadyValidationFailureRetainsItsCauseAndOriginalReport(t *testing.T) {
@@ -25,7 +25,7 @@ func TestReadyValidationFailureRetainsItsCauseAndOriginalReport(t *testing.T) {
 	if recoverErr := e.host.Admission().Recover(e.ctx, func() error { return nil }); recoverErr != nil {
 		t.Fatal(recoverErr)
 	}
-	if !errors.Is(err, frame.ErrRecoveryRequired) || result.Decision == browser.Rejected {
+	if !errors.Is(err, framehost.ErrRecoveryRequired) || result.Decision == browser.Rejected {
 		t.Fatalf("temporary recovery failure became a terminal Ready decision: %+v %v", result, err)
 	}
 	if result, err = e.bridge.Ready(e.ctx, e.credentials.Token, report); err != nil || result.Decision != browser.Accepted {
@@ -62,7 +62,7 @@ func TestPublicationRefusalRemainsObservableAfterAdmissionRecovers(t *testing.T)
 	if err != nil || retried.Decision != browser.Rejected {
 		t.Fatalf("original identity did not preserve its refusal: %+v %v", retried, err)
 	}
-	if _, err := e.host.Publication(plan.Units[0].Instance.ID, request.OperationID); !errors.Is(err, frame.ErrUnavailable) {
+	if _, err := e.host.Publication(plan.Units[0].Instance.ID, request.OperationID); !errors.Is(err, framehost.ErrUnavailable) {
 		t.Fatalf("refused publication changed the catalog: %v", err)
 	}
 	request.OperationID = "new-intent"
@@ -99,7 +99,7 @@ func TestWithdrawalRetriesTheOriginalPublicationAfterCancellation(t *testing.T) 
 			t.Fatalf("original publication did not converge after cancellation: %+v %v", result, err)
 		}
 	}
-	if _, err := e.host.Publication(plan.Units[0].Instance.ID, request.OperationID); !errors.Is(err, frame.ErrUnavailable) {
+	if _, err := e.host.Publication(plan.Units[0].Instance.ID, request.OperationID); !errors.Is(err, framehost.ErrUnavailable) {
 		t.Fatalf("acknowledged withdrawal left the publication visible: %v", err)
 	}
 }

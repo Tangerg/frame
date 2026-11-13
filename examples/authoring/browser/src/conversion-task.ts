@@ -1,4 +1,4 @@
-import { acquire, FrameError, sameContract, type Acquired } from "@frame/sdk";
+import { FrameError, sameContract, type Acquired } from "@frame/sdk";
 import {
   compareJSONNumbers,
   isJSONInteger,
@@ -259,20 +259,15 @@ function convert(
           )),
         );
     }
-    const acquired = await acquire(
-      use.lifetime,
+    const acquired = await use.lifetime.acquire(
       "converted HTML Blob URL",
       () => {
         const url = URL.createObjectURL(
           new Blob([document.html], { type: "text/html" }),
         );
-        return {
-          value: { document, diagnostics, url },
-          close() {
-            URL.revokeObjectURL(url);
-          },
-        };
+        return { document, diagnostics, url };
       },
+      (value) => URL.revokeObjectURL(value.url),
     );
     return Object.freeze({
       with: acquired.with,

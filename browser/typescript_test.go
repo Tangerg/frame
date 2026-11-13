@@ -33,7 +33,7 @@ type unsupportedGroups map[string]string
 
 type escapedWireValue string
 
-func (escapedWireValue) Values() []string { return []string{"\a", "\U000e0001"} }
+func (escapedWireValue) JSONSchemaEnum() []string { return []string{"\a", "\U000e0001"} }
 
 type escapedWireFields struct {
 	Bell     escapedWireValue `json:"\a"`
@@ -193,11 +193,11 @@ type recursiveWireModel struct{ modeledWireCode }
 type panickingWireModel struct{ modeledWireCode }
 type numericWireEnum int
 
-func (nilWireModel) JSONSchemaModel() any       { return nil }
-func (nilSliceWireModel) JSONSchemaModel() any  { return []string(nil) }
-func (recursiveWireModel) JSONSchemaModel() any { return recursiveWireModel{} }
-func (panickingWireModel) JSONSchemaModel() any { panic(errWireModel) }
-func (numericWireEnum) Values() []string        { return []string{"one"} }
+func (nilWireModel) JSONSchemaModel() any        { return nil }
+func (nilSliceWireModel) JSONSchemaModel() any   { return []string(nil) }
+func (recursiveWireModel) JSONSchemaModel() any  { return recursiveWireModel{} }
+func (panickingWireModel) JSONSchemaModel() any  { panic(errWireModel) }
+func (numericWireEnum) JSONSchemaEnum() []string { return []string{"one"} }
 
 var errWireModel = errors.New("wire model failed")
 
@@ -411,7 +411,7 @@ func TestTypeScriptProjectionRejectsCollidingGenericNamesBeforePublication(t *te
 
 type enum string
 
-func (enum) Values() []string { return []string{"ready", "closed"} }
+func (enum) JSONSchemaEnum() []string { return []string{"ready", "closed"} }
 
 type enum_Values struct {
 	Label string `json:"label"`

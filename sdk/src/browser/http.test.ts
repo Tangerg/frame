@@ -37,6 +37,32 @@ function control(fetch: typeof globalThis.fetch, maximumMessageBytes = 4096) {
 }
 
 describe("authenticated control transport", () => {
+  it.each(["before encoding", "during encoding"])(
+    "refuses cancellation %s before invoking its transport",
+    async (when) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+        Response.json({ decision: "accepted" }),
+      );
+      const f = control(fetch);
+      const stopping = new AbortController();
+      const reason = new Error("original control request cancelled");
+      const report = { ...ready };
+      if (when === "before encoding") stopping.abort(reason);
+      else
+        Object.defineProperty(report, "operationId", {
+          get() {
+            stopping.abort(reason);
+            return ready.operationId;
+          },
+        });
+      await expect(f.control.ready(report, stopping.signal)).rejects.toBe(
+        reason,
+      );
+      expect(fetch).not.toHaveBeenCalled();
+      await f.lifetime.close();
+    },
+  );
+
   it("uses one validated options capture for requests, callback receiver and cleanup", async () => {
     const original = new Lifetime("original transport owner");
     const replacement = new Lifetime("later getter owner");
@@ -294,4 +320,27 @@ it("bounds streamed bytes across chunks and cancels an oversized body", async ()
   );
   expect(cancel).toHaveBeenCalledOnce();
   expect(overflow.locked).toBe(false);
+});
+
+it("preserves response admission failure when cancelling its body also fails", async () => {
+  const failure = new Error("original body cancellation failed");
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(Uint8Array.of(1, 2));
+    },
+    cancel() {
+      throw failure;
+    },
+  });
+  const result = await readResponseBytes(new Response(body), 1).catch(
+    (error: unknown) => error,
+  );
+  expect(result).toBeInstanceOf(AggregateError);
+  const errors = (result as AggregateError).errors;
+  expect(errors[0]).toHaveProperty(
+    "message",
+    "response exceeds its configured byte limit",
+  );
+  expect(errors[1]).toBe(failure);
+  expect(body.locked).toBe(false);
 });

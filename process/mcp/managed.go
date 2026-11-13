@@ -7,17 +7,17 @@ import (
 	"io"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/process"
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
 
-const ManagedProfile frame.Profile = "qimu-mcp"
+const ManagedProfile framehost.Profile = "qimu-mcp"
 
 // ManagedProtocol resolves physical exports from the package already approved
 // by the host. The map is keyed by the logical export name in the Frame unit.
 type ManagedProtocol struct {
-	Exports       func(frame.UnitBinding) (map[string]ManagedExport, error)
+	Exports       func(framehost.UnitBinding) (map[string]ManagedExport, error)
 	OpenCallbacks OpenManagedCallbacks
 	OpenCall      OpenManagedCall
 	OpenStream    OpenManagedStream
@@ -30,9 +30,9 @@ type ManagedExport struct {
 	Background bool
 }
 
-func (ManagedProtocol) Profile() frame.Profile { return ManagedProfile }
+func (ManagedProtocol) Profile() framehost.Profile { return ManagedProfile }
 
-func (p ManagedProtocol) Prepare(setup *frame.Setup, metadata process.ExportMetadata, maxBytes int) (process.Connection, error) {
+func (p ManagedProtocol) Prepare(setup *framehost.Setup, metadata process.ExportMetadata, maxBytes int) (process.Connection, error) {
 	if p.Exports == nil || setup == nil {
 		return nil, frame.ErrInvalid
 	}
@@ -48,7 +48,7 @@ func (p ManagedProtocol) Prepare(setup *frame.Setup, metadata process.ExportMeta
 		return nil, fmt.Errorf("%w: managed export declarations differ", frame.ErrContractMismatch)
 	}
 	prepared := &managedConnection{openStream: p.OpenStream, openCall: p.OpenCall, setup: setup, contributions: make([]managedContribution, 0, len(declared)), maxBytes: maxBytes, onActivate: setup.OnActivate}
-	builder := managedBuilder{protocol: p, setup: setup, connection: prepared, imports: make(map[string]frame.ImportDeclaration, len(unit.Imports)), used: make(map[string]bool, len(unit.Imports)), routes: make(managedRoutes)}
+	builder := managedBuilder{protocol: p, setup: setup, connection: prepared, imports: make(map[string]framehost.ImportDeclaration, len(unit.Imports)), used: make(map[string]bool, len(unit.Imports)), routes: make(managedRoutes)}
 	for _, slot := range unit.Imports {
 		builder.imports[slot.Slot] = slot
 	}
@@ -68,14 +68,14 @@ func (p ManagedProtocol) Prepare(setup *frame.Setup, metadata process.ExportMeta
 // by exactly the contributions that use it.
 type managedBuilder struct {
 	protocol   ManagedProtocol
-	setup      *frame.Setup
+	setup      *framehost.Setup
 	connection *managedConnection
-	imports    map[string]frame.ImportDeclaration
+	imports    map[string]framehost.ImportDeclaration
 	used       map[string]bool
 	routes     managedRoutes
 }
 
-func (b *managedBuilder) add(export frame.ExportDeclaration, source ManagedExport, metadata process.ExportMetadata) error {
+func (b *managedBuilder) add(export framehost.ExportDeclaration, source ManagedExport, metadata process.ExportMetadata) error {
 	if source.Contract == nil || source.Contract.capability == nil || !managedExportName.MatchString(source.Name) {
 		return fmt.Errorf("%w: missing managed export %q", frame.ErrContractMismatch, export.Name)
 	}
@@ -107,8 +107,8 @@ func (b *managedBuilder) add(export frame.ExportDeclaration, source ManagedExpor
 
 // The managed projection cannot weaken the host's approved capability or
 // publish a stream without its reverse-delivery authority.
-func (b *managedBuilder) checkContract(export frame.ExportDeclaration, source ManagedExport) error {
-	capability, err := process.DeclaredCapability(b.setup, export.Contract)
+func (b *managedBuilder) checkContract(export framehost.ExportDeclaration, source ManagedExport) error {
+	capability, err := b.setup.Capability(export.Contract)
 	if err != nil {
 		return err
 	}
@@ -127,16 +127,16 @@ type managedConnection struct {
 	openCall      OpenManagedCall
 	openStream    OpenManagedStream
 	openCallbacks OpenManagedCallbacks
-	setup         *frame.Setup
+	setup         *framehost.Setup
 	maxBytes      int
 	onActivate    func(func(context.Context) error) error
 	catalog       managedCatalog
 	contributions []managedContribution
-	values        []frame.ExportValue
+	values        []framehost.ExportValue
 	session       *sdk.ClientSession
 }
 
-func (c *managedConnection) Connect(ctx context.Context, channel io.ReadWriteCloser) ([]frame.ExportValue, error) {
+func (c *managedConnection) Connect(ctx context.Context, channel io.ReadWriteCloser) ([]framehost.ExportValue, error) {
 	session, err := connect(ctx, channel, c.maxBytes, registerManaged)
 	if err != nil {
 		return nil, err
@@ -179,10 +179,10 @@ func (c *managedConnection) Connect(ctx context.Context, channel io.ReadWriteClo
 	return c.bindExports(c.setup.Binding().Source, c.setup.Lifetime(), receipt), nil
 }
 
-func (c *managedConnection) bindExports(unit frame.UnitRef, lifetime *frame.Lifetime, receipt *portable.Method) []frame.ExportValue {
+func (c *managedConnection) bindExports(unit framehost.UnitRef, lifetime frame.Lifetime, receipt *frame.Method) []framehost.ExportValue {
 	for i, contribution := range c.contributions {
 		published := &c.values[i]
-		source := frame.ExportRef{InstallationID: unit.InstallationID, Release: unit.Release, UnitID: unit.UnitID, Export: published.Name, Contract: published.Contract}
+		source := framehost.ExportRef{InstallationID: unit.InstallationID, Release: unit.Release, UnitID: unit.UnitID, Export: published.Name, Contract: published.Contract}
 		published.Value = &ManagedService{
 			session: c.session, source: source, physical: contribution.Export, contract: c.catalog.exports[contribution.Export],
 			receipt: receipt, openStream: c.openStream, openCall: c.openCall, lifetime: lifetime,

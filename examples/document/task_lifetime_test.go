@@ -10,21 +10,22 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/examples/document"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
 func TestCloseJoinsTaskSettlementBeforeClosingItsStore(t *testing.T) {
 	app, config, ctx := application(t)
 	validating := make(chan struct{})
-	validator, err := frame.Define(frame.Definition{
+	validator, err := framehost.Define(framehost.Definition{
 		Revision: value.Hash([]byte("task-settlement-validator")),
-		Units: []frame.Unit{{
-			Declaration: frame.UnitDeclaration{
-				ID: "settlement", Profile: frame.NativeGo,
-				Exports: []frame.ExportDeclaration{{Name: "settlement", Contract: app.Contracts.Validators.Ref()}},
+		Units: []framehost.Unit{{
+			Declaration: framehost.UnitDeclaration{
+				ID: "settlement", Profile: framehost.NativeGo,
+				Exports: []framehost.ExportDeclaration{{Name: "settlement", Contract: app.Contracts.Validators.Ref()}},
 			},
-			Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
-				return []frame.ExportValue{frame.Contribute("settlement", app.Contracts.Validators,
+			Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+				return []framehost.ExportValue{framehost.Contribute("settlement", app.Contracts.Validators,
 					document.ValidatorMetadata{Name: "settlement", Order: 100},
 					document.Validator(func(ctx context.Context, _ document.Converted) ([]document.Diagnostic, error) {
 						close(validating)
@@ -37,7 +38,7 @@ func TestCloseJoinsTaskSettlementBeforeClosingItsStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.Host.Install(ctx, frame.InstallationConfig{ID: "settlement", Plugin: validator, Enabled: true}); err != nil {
+	if _, err := app.Host.Install(ctx, framehost.InstallationConfig{ID: "settlement", Plugin: validator, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	const taskID = "settlement-before-close"

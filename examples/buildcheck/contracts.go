@@ -7,7 +7,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 var ErrStaleRevision = errors.New("buildcheck: source revision changed")
@@ -89,27 +89,27 @@ type AroundMetadata struct {
 }
 
 type Contracts struct {
-	Passes     frame.Point[PassMetadata, CompilerPass]
-	Analyzers  frame.Point[AnalyzerMetadata, Analyzer]
-	Formatters frame.Point[FormatterMetadata, Formatter]
-	Around     frame.Point[AroundMetadata, Around]
+	Passes     framehost.Point[PassMetadata, CompilerPass]
+	Analyzers  framehost.Point[AnalyzerMetadata, Analyzer]
+	Formatters framehost.Point[FormatterMetadata, Formatter]
+	Around     framehost.Point[AroundMetadata, Around]
 }
 
 func NewContracts() (Contracts, error) {
 	var contracts Contracts
 	var err error
-	contracts.Passes, err = frame.NewPoint[PassMetadata, CompilerPass]("build.compiler-passes", "1")
+	contracts.Passes, err = framehost.NewPoint[PassMetadata, CompilerPass]("build.compiler-passes", "1")
 	if err != nil {
 		return contracts, err
 	}
-	contracts.Analyzers, err = frame.NewPoint[AnalyzerMetadata, Analyzer]("build.analyzers", "1")
+	contracts.Analyzers, err = framehost.NewPoint[AnalyzerMetadata, Analyzer]("build.analyzers", "1")
 	if err != nil {
 		return contracts, err
 	}
-	contracts.Formatters, err = frame.NewPoint[FormatterMetadata, Formatter]("build.formatters", "1")
+	contracts.Formatters, err = framehost.NewPoint[FormatterMetadata, Formatter]("build.formatters", "1")
 	if err != nil {
 		return contracts, err
 	}
-	contracts.Around, err = frame.NewPoint[AroundMetadata, Around]("build.around", "1")
+	contracts.Around, err = framehost.NewPoint[AroundMetadata, Around]("build.around", "1")
 	return contracts, err
 }

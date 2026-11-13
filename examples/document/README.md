@@ -40,7 +40,7 @@ From the Frame module:
 ```sh
 mkdir -p /tmp/frame-documents
 printf '# Hello\nAn original document.\n' > /tmp/frame-documents/hello.md
-go run ./examples/document/cmd/document \
+go run ./cmd/document \
   -documents /tmp/frame-documents -state /tmp/frame-document-state \
   -document hello.md -task original-task -command convert
 ```
@@ -52,6 +52,10 @@ whose digest changed after queuing is rejected. A task found in `unsettled` afte
 Host reconstruction is not silently replayed; explicit cancellation can release
 that old application's business reference.
 
+`run` and `status` require `-task`; only `queue` and `convert` create an
+identity when it is omitted. Invalid arguments are rejected before the workbench
+opens application state. Each invocation owns its flags and cancellation context.
+
 ## Run the Web consumer
 
 Generate its operation and DTO projection from the Go application, then build the Web
@@ -60,9 +64,9 @@ entry from the repository root:
 ```sh
 npm ci
 npm run build
-go run ./examples/document/cmd/webgen -out examples/document/web/src/api.generated.ts
+go run ./cmd/document -command generate -out examples/document/web/src/api.generated.ts
 npm run build --workspace @frame/example-document-web
-go run ./examples/document/cmd/document -command serve \
+go run ./cmd/document -command serve \
   -documents /tmp/frame-documents -state /tmp/frame-document-state \
   -web examples/document/web/dist
 ```
@@ -119,7 +123,7 @@ application that accepts external packages must supply its own trust policy.
 
 ```sh
 go test -race ./examples/document ./browser
-go build -o /tmp/frame-document ./examples/document/cmd/document
+go build -o /tmp/frame-document ./cmd/document
 npm run build --workspace @frame/example-document-web
 FRAME_DOCUMENT_BINARY=/tmp/frame-document npm run test:workflow --workspace @frame/example-document-web
 FRAME_DOCUMENT_BINARY=/tmp/frame-document \

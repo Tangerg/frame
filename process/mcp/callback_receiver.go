@@ -14,10 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Tangerg/frame/internal/cancellation"
-
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/value"
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
@@ -48,13 +45,13 @@ func NewCallbackReceiver(limits CallbackReceiverLimits) (*CallbackReceiver, erro
 
 type callbackRoute struct {
 	name, fingerprint string
-	kind              portable.MethodKind
+	kind              frame.MethodKind
 	handle            func(context.Context, string, value.JSON) (value.JSON, error)
 }
 
 // Grant binds one unary method to ctx. The host owns authorization, effects,
 // and receipts. The handler receives the original command ID (empty for queries).
-func (r *CallbackReceiver) Grant(ctx context.Context, method *portable.Method, handle func(context.Context, string, value.JSON) (value.JSON, error)) (ManagedCallback, error) {
+func (r *CallbackReceiver) Grant(ctx context.Context, method *frame.Method, handle func(context.Context, string, value.JSON) (value.JSON, error)) (ManagedCallback, error) {
 	if r == nil || method == nil || handle == nil {
 		return ManagedCallback{}, frame.ErrInvalid
 	}
@@ -98,7 +95,7 @@ func (r *CallbackReceiver) Stream(ctx context.Context, session *sdk.ClientSessio
 	if int64(len(envelope)) > r.limits.MaxResponseBytes {
 		return ManagedCallback{}, frame.ErrCapacity
 	}
-	return r.open(ctx, callbackRoute{streamDeliveryName, streamDeliveryFingerprint, portable.Command, func(call context.Context, _ string, input value.JSON) (value.JSON, error) {
+	return r.open(ctx, callbackRoute{streamDeliveryName, streamDeliveryFingerprint, frame.Command, func(call context.Context, _ string, input value.JSON) (value.JSON, error) {
 		var part struct {
 			Sequence uint64     `json:"sequence"`
 			Value    value.JSON `json:"value"`
@@ -124,7 +121,7 @@ func credentialMatches(header http.Header, name, expected string) bool {
 func (route callbackRoute) admits(p *managedParams) bool {
 	return p.Protocol == managedVersion && p.Method == route.name && p.Contract.String() == route.fingerprint &&
 		p.Contributions == nil && p.Export == "" && p.Capability.String() == "" && p.Meta == nil &&
-		(route.kind == portable.Command && portable.ValidCommandID(p.CommandID) || route.kind == portable.Query && p.CommandID == "")
+		(route.kind == frame.Command && frame.ValidCommandID(p.CommandID) || route.kind == frame.Query && p.CommandID == "")
 }
 
 // A callback request presents both the session credential and the call
@@ -231,10 +228,10 @@ func (l callbackListener) Accept() (net.Conn, error) {
 }
 
 func (r *CallbackReceiver) open(ctx context.Context, route callbackRoute) (ManagedCallback, error) {
-	if r == nil || r.calls == nil || ctx == nil {
+	if r == nil || r.calls == nil {
 		return ManagedCallback{}, frame.ErrInvalid
 	}
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return ManagedCallback{}, err
 	}
 	select {

@@ -4,6 +4,7 @@ package browser
 
 import (
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -25,21 +26,21 @@ type Execution struct {
 }
 
 type Instance struct {
-	ID            string        `json:"id"`
-	Generation    string        `json:"generation"`
-	Source        frame.UnitRef `json:"source"`
-	Configuration value.Digest  `json:"configuration"`
+	ID            string            `json:"id"`
+	Generation    string            `json:"generation"`
+	Source        framehost.UnitRef `json:"source"`
+	Configuration value.Digest      `json:"configuration"`
 }
 
 type LocalExport struct {
-	InstanceID string            `json:"instanceId"`
-	Name       string            `json:"name"`
-	Contract   frame.ContractRef `json:"contract"`
+	InstanceID string                `json:"instanceId"`
+	Name       string                `json:"name"`
+	Contract   framehost.ContractRef `json:"contract"`
 }
 
 type RemoteImport struct {
-	Source frame.ExportRef `json:"source"`
-	Token  string          `json:"token"`
+	Source framehost.ExportRef `json:"source"`
+	Token  string              `json:"token"`
 }
 
 type ImportKind string
@@ -51,11 +52,11 @@ const (
 )
 
 type Import struct {
-	Slot     string            `json:"slot"`
-	Contract frame.ContractRef `json:"contract"`
-	Kind     ImportKind        `json:"kind"`
-	Local    *LocalExport      `json:"local,omitempty"`
-	Remote   *RemoteImport     `json:"remote,omitempty"`
+	Slot     string                `json:"slot"`
+	Contract framehost.ContractRef `json:"contract"`
+	Kind     ImportKind            `json:"kind"`
+	Local    *LocalExport          `json:"local,omitempty"`
+	Remote   *RemoteImport         `json:"remote,omitempty"`
 }
 
 type Artifact struct {
@@ -64,12 +65,12 @@ type Artifact struct {
 }
 
 type PlannedUnit struct {
-	Instance          Instance                  `json:"instance"`
-	ConfigurationJSON string                    `json:"configurationJson"`
-	Profile           frame.Profile             `json:"profile"`
-	Module            Artifact                  `json:"module"`
-	Imports           []Import                  `json:"imports"`
-	Exports           []frame.ExportDeclaration `json:"exports"`
+	Instance          Instance                      `json:"instance"`
+	ConfigurationJSON string                        `json:"configurationJson"`
+	Profile           framehost.Profile             `json:"profile"`
+	Module            Artifact                      `json:"module"`
+	Imports           []Import                      `json:"imports"`
+	Exports           []framehost.ExportDeclaration `json:"exports"`
 }
 
 type LocalPlan struct {
@@ -148,16 +149,16 @@ type UseGrant struct {
 }
 
 type Candidate struct {
-	PublicationID string          `json:"publicationId"`
-	Source        frame.ExportRef `json:"source"`
-	MetadataJSON  string          `json:"metadataJson"`
-	Token         string          `json:"token"`
+	PublicationID string              `json:"publicationId"`
+	Source        framehost.ExportRef `json:"source"`
+	MetadataJSON  string              `json:"metadataJson"`
+	Token         string              `json:"token"`
 }
 
 type PointSnapshot struct {
-	Point      frame.ContractRef `json:"point"`
-	Revision   string            `json:"revision"`
-	Candidates []Candidate       `json:"candidates"`
+	Point      framehost.ContractRef `json:"point"`
+	Revision   string                `json:"revision"`
+	Candidates []Candidate           `json:"candidates"`
 }
 
 type SnapshotRequest struct {
@@ -172,9 +173,9 @@ type Snapshot struct {
 }
 
 type Selection struct {
-	Point      frame.ContractRef `json:"point"`
-	Candidates []string          `json:"candidates"`
-	Rule       string            `json:"rule"`
+	Point      framehost.ContractRef `json:"point"`
+	Candidates []string              `json:"candidates"`
+	Rule       string                `json:"rule"`
 }
 
 type AcquireRequest struct {
@@ -208,6 +209,11 @@ const (
 	Rejected Decision = "rejected"
 	Unknown  Decision = "unknown"
 )
+
+type DecisionResult struct {
+	Decision Decision `json:"decision"`
+	Problem  string   `json:"problem,omitempty"`
+}
 
 type PublicationResult struct {
 	Decision    Decision     `json:"decision"`
@@ -283,16 +289,18 @@ const (
 	PublicationScope CloseScopeKind = "publication"
 )
 
-func (ImportKind) Values() []string {
+func (ImportKind) JSONSchemaEnum() []string {
 	return []string{string(LocalImportKind), string(RemoteImportKind), string(AbsentImportKind)}
 }
-func (Decision) Values() []string {
+func (Decision) JSONSchemaEnum() []string {
 	return []string{string(Accepted), string(Rejected), string(Unknown)}
 }
-func (PlanAdmissionDecision) Values() []string {
+func (PlanAdmissionDecision) JSONSchemaEnum() []string {
 	return []string{string(PlanAdmitted), string(PlanCleanupRequired), string(PlanNotAdmitted), string(PlanSettled)}
 }
-func (ReconnectMode) Values() []string { return []string{string(Revalidated), string(CleanupOnly)} }
-func (CloseScopeKind) Values() []string {
+func (ReconnectMode) JSONSchemaEnum() []string {
+	return []string{string(Revalidated), string(CleanupOnly)}
+}
+func (CloseScopeKind) JSONSchemaEnum() []string {
 	return []string{string(ExecutionScope), string(UseScope), string(PublicationScope)}
 }

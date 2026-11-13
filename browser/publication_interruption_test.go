@@ -7,8 +7,8 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 	"github.com/Tangerg/frame/value"
 )
@@ -37,7 +37,7 @@ func (m *interruptedPublicationMetadata) UnmarshalJSON(raw []byte) error {
 func TestPublicationInterruptionRetainsOriginalFailure(t *testing.T) {
 	for _, interruption := range []string{"panic", "goexit"} {
 		t.Run(interruption, func(t *testing.T) {
-			point, err := frame.NewPoint[interruptedPublicationMetadata, browser.Object]("test.interrupted-publication", "1")
+			point, err := framehost.NewPoint[interruptedPublicationMetadata, browser.Object]("test.interrupted-publication", "1")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -45,7 +45,7 @@ func TestPublicationInterruptionRetainsOriginalFailure(t *testing.T) {
 			if err := e.host.Register(point); err != nil {
 				t.Fatal(err)
 			}
-			e.plugin, err = frame.Define(frame.Definition{Revision: value.Hash([]byte("interrupted-publication")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "view", Profile: frame.BrowserJS, Exports: []frame.ExportDeclaration{{Name: "preview", Contract: e.first.Ref()}, {Name: "theme", Contract: e.second.Ref()}, {Name: "interrupted", Contract: point.Ref()}}}}}})
+			e.plugin, err = framehost.Define(framehost.Definition{Revision: value.Hash([]byte("interrupted-publication")), Units: []framehost.Unit{{Declaration: framehost.UnitDeclaration{ID: "view", Profile: framehost.BrowserJS, Exports: []framehost.ExportDeclaration{{Name: "preview", Contract: e.first.Ref()}, {Name: "theme", Contract: e.second.Ref()}, {Name: "interrupted", Contract: point.Ref()}}}}}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -82,12 +82,12 @@ func TestPublicationInterruptionRetainsOriginalFailure(t *testing.T) {
 			}
 			for range 2 {
 				observed, err := e.bridge.Publication(e.ctx, e.credentials.Token, request.OperationID)
-				if !errors.Is(err, frame.ErrUnavailable) || observed.Publication != nil {
+				if !errors.Is(err, framehost.ErrUnavailable) || observed.Publication != nil {
 					t.Fatalf("interrupted publication appeared successful: %+v, %v", observed, err)
 				}
 			}
 			replayed, err := e.bridge.Publish(e.ctx, e.credentials.Token, request)
-			if !errors.Is(err, frame.ErrUnavailable) || replayed.Publication != nil {
+			if !errors.Is(err, framehost.ErrUnavailable) || replayed.Publication != nil {
 				t.Fatalf("interrupted publication replayed as success: %+v, %v", replayed, err)
 			}
 			changed := request
@@ -95,7 +95,7 @@ func TestPublicationInterruptionRetainsOriginalFailure(t *testing.T) {
 			if _, err := e.bridge.Publish(e.ctx, e.credentials.Token, changed); !errors.Is(err, sqlite.ErrConflict) {
 				t.Fatalf("interrupted operation admitted another request: %v", err)
 			}
-			if _, err := e.host.Publication(plan.Units[0].Instance.ID, request.OperationID); !errors.Is(err, frame.ErrUnavailable) {
+			if _, err := e.host.Publication(plan.Units[0].Instance.ID, request.OperationID); !errors.Is(err, framehost.ErrUnavailable) {
 				t.Fatalf("interrupted operation published: %v", err)
 			}
 			if _, err := e.store.RealmReceipt(e.ctx, request.OperationID); err != nil {

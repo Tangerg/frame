@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"reflect"
 
-	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 type QueueRequest struct {
@@ -28,7 +28,7 @@ type ThemeView struct {
 }
 
 type ContractsView struct {
-	Previews frame.ContractRef `json:"previews"`
+	Previews framehost.ContractRef `json:"previews"`
 }
 
 type OpenRealmRequest struct {

@@ -41,9 +41,7 @@ class PatternTranslator {
         "portable: patterns require fixed-width atoms and repetitions",
       );
     else if (char === "{") this.#repetition();
-    else
-      this.#expression +=
-        char === "." ? syntax.dot : char === "$" ? syntax.end : char;
+    else this.#expression += char === "." ? syntax.dot : char;
   }
 
   finish(): RegExp {

@@ -53,7 +53,10 @@ func (e *localCloseError) Unwrap() []error {
 
 // ObserveCloseCauses must precede the failures of interest. It shares the live
 // observation, without reconstructing past causes from diagnostic strings.
-func (l *Lifetime) ObserveCloseCauses() *CloseCauses {
+func (l *lifetimeRecord) ObserveCloseCauses() *CloseCauses {
+	if l == nil {
+		return nil
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if !l.released {
@@ -69,6 +72,9 @@ func (l *Lifetime) ObserveCloseCauses() *CloseCauses {
 }
 
 func (c *CloseCauses) snapshot() *closeCauseReport {
+	if c == nil {
+		return nil
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.causes) == 0 {
@@ -81,13 +87,19 @@ func (c *CloseCauses) snapshot() *closeCauseReport {
 }
 
 func (c *CloseCauses) Err() error {
+	if c == nil {
+		return ErrInvalid
+	}
 	if report := c.snapshot(); report != nil {
 		return report
 	}
 	return nil
 }
 
-func (c *CloseCauses) join(status error) error {
+func (c *CloseCauses) Join(status error) error {
+	if c == nil {
+		return errors.Join(ErrInvalid, status)
+	}
 	report := c.snapshot()
 	if report == nil {
 		return status

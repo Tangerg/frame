@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/process"
 	"github.com/Tangerg/frame/process/runner"
 	"github.com/Tangerg/frame/value"
@@ -18,10 +18,10 @@ import (
 
 type cleanupProtocol struct{ connection *cleanupConnection }
 
-func (cleanupProtocol) Profile() frame.Profile { return frame.LocalProcess }
-func (p cleanupProtocol) Prepare(setup *frame.Setup, metadata process.ExportMetadata, _ int) (process.Connection, error) {
+func (cleanupProtocol) Profile() framehost.Profile { return framehost.LocalProcess }
+func (p cleanupProtocol) Prepare(setup *framehost.Setup, metadata process.ExportMetadata, _ int) (process.Connection, error) {
 	for _, export := range setup.Unit().Exports {
-		p.connection.values = append(p.connection.values, metadata.Export(export, process.Handler(func(_ context.Context, invocation portable.Invocation) (value.JSON, error) {
+		p.connection.values = append(p.connection.values, metadata.Export(export, frame.Handler(func(_ context.Context, invocation frame.Invocation) (value.JSON, error) {
 			return invocation.Input(), nil
 		})))
 	}
@@ -29,14 +29,14 @@ func (p cleanupProtocol) Prepare(setup *frame.Setup, metadata process.ExportMeta
 }
 
 type cleanupConnection struct {
-	values      []frame.ExportValue
+	values      []framehost.ExportValue
 	started     chan struct{}
 	finishClose func(context.Context) error
 	connect     func(context.Context) error
 	closes      atomic.Int32
 }
 
-func (c *cleanupConnection) Connect(ctx context.Context, _ io.ReadWriteCloser) ([]frame.ExportValue, error) {
+func (c *cleanupConnection) Connect(ctx context.Context, _ io.ReadWriteCloser) ([]framehost.ExportValue, error) {
 	if c.connect != nil {
 		if err := c.connect(ctx); err != nil {
 			return nil, err

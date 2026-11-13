@@ -7,16 +7,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tangerg/frame/portable"
+	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/value"
 )
 
 func TestServeRetainsTheCapabilityItDescribed(t *testing.T) {
-	method, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "read", Kind: portable.Query})
+	method, err := frame.NewMethod[string, string](frame.MethodConfig{Name: "read", Kind: frame.Query})
 	if err != nil {
 		t.Fatal(err)
 	}
-	contract, err := portable.NewCapability("test.capture", method.Descriptor())
+	contract, err := frame.NewCapability("test.capture", method.Descriptor())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,8 +24,8 @@ func TestServeRetainsTheCapabilityItDescribed(t *testing.T) {
 	a, b := net.Pipe()
 	served := make(chan error, 1)
 	go func() {
-		served <- Serve(context.WithoutCancel(t.Context()), a, Unit{ID: "worker", Exports: map[string]*portable.Capability{"reader": contract}, Prepare: func(context.Context, Setup) (Prepared, error) {
-			return Prepared{Exports: map[string]Service{"reader": Handler(func(_ context.Context, invocation portable.Invocation) (value.JSON, error) {
+		served <- Serve(context.WithoutCancel(t.Context()), a, Unit{ID: "worker", Exports: map[string]*frame.Capability{"reader": contract}, Prepare: func(context.Context, Setup) (Prepared, error) {
+			return Prepared{Exports: map[string]frame.Service{"reader": frame.Handler(func(_ context.Context, invocation frame.Invocation) (value.JSON, error) {
 				return invocation.Input(), nil
 			})}}, nil
 		}})
@@ -48,11 +48,11 @@ func TestServeRetainsTheCapabilityItDescribed(t *testing.T) {
 	if actual.Exports["reader"] != admitted.Identity().Digest().String() {
 		t.Fatal("handshake changed the declared contract")
 	}
-	replacement, err := portable.NewMethod[int, bool](portable.MethodConfig{Name: "read", Kind: portable.Command})
+	replacement, err := frame.NewMethod[int, bool](frame.MethodConfig{Name: "read", Kind: frame.Command})
 	if err != nil {
 		t.Fatal(err)
 	}
-	replacementContract, err := portable.NewCapability("test.capture", replacement.Descriptor())
+	replacementContract, err := frame.NewCapability("test.capture", replacement.Descriptor())
 	if err != nil {
 		t.Fatal(err)
 	}

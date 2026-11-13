@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/process"
 	"github.com/Tangerg/frame/value"
 	sdk "github.com/Tangerg/go-sdk/mcp"
@@ -24,8 +24,8 @@ import (
 // Markdown through a different, acknowledged chunk grant in the same invocation.
 func TestFlameTrajectoryInterop(t *testing.T) {
 	var facts struct {
-		Read     portable.MethodDescriptor `json:"read"`
-		Document json.RawMessage           `json:"document"`
+		Read     frame.MethodDescriptor `json:"read"`
+		Document json.RawMessage        `json:"document"`
 	}
 	source, err := os.ReadFile(os.Getenv("FRAME_TRAJECTORY_INPUT"))
 	if err != nil {
@@ -34,7 +34,7 @@ func TestFlameTrajectoryInterop(t *testing.T) {
 	if err := json.Unmarshal(source, &facts); err != nil {
 		t.Fatal(err)
 	}
-	read, err := portable.AdmitMethod(facts.Read)
+	read, err := frame.AdmitMethod(facts.Read)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,15 +57,15 @@ func TestFlameTrajectoryInterop(t *testing.T) {
 		Digest string `json:"digest"`
 		Bytes  int    `json:"bytes"`
 	}
-	registered, err := frame.NewPortableContract[process.Service]("1", contract.Capability())
+	registered, err := framehost.NewPortableContract[frame.Service]("1", contract.Capability())
 	if err != nil {
 		t.Fatal(err)
 	}
-	var approved frame.ExportRef
+	var approved framehost.ExportRef
 	protocol := ManagedProtocol{
-		Exports: func(binding frame.UnitBinding) (map[string]ManagedExport, error) {
+		Exports: func(binding framehost.UnitBinding) (map[string]ManagedExport, error) {
 			unit := binding.Source
-			approved = frame.ExportRef{InstallationID: unit.InstallationID, Release: unit.Release, UnitID: unit.UnitID, Export: "service", Contract: registered.Ref()}
+			approved = framehost.ExportRef{InstallationID: unit.InstallationID, Release: unit.Release, UnitID: unit.UnitID, Export: "service", Contract: registered.Ref()}
 			return map[string]ManagedExport{"service": {Name: "markdown", Contract: contract}}, nil
 		},
 		OpenCall: func(ctx context.Context, session *sdk.ClientSession, call ManagedCall) (*ManagedCallback, error) {
@@ -74,7 +74,7 @@ func TestFlameTrajectoryInterop(t *testing.T) {
 				return nil, err
 			}
 			if session == nil || call.Source != approved || call.Method.Name() != methodName || call.CommandID != "" || requested.Digest != digest || requested.Bytes != len(facts.Document) {
-				return nil, frame.ErrUnavailable
+				return nil, framehost.ErrUnavailable
 			}
 			grant, err := receiver.Grant(ctx, read, func(_ context.Context, id string, input value.JSON) (value.JSON, error) {
 				var r struct {
@@ -104,14 +104,14 @@ func TestFlameTrajectoryInterop(t *testing.T) {
 			t.Fatal(err)
 		}
 		return process.Program{Command: name, ExecutableDigest: value.Hash(image), Directory: dir, Env: []string{"PLUGIN_DATA=" + dir}}
-	}, nil, func(ctx context.Context, borrowed process.Service, _ string) {
+	}, nil, func(ctx context.Context, borrowed frame.Service, _ string) {
 
 		in, err := value.EncodeJSON(documentID{digest, len(facts.Document)})
 		if err != nil {
 			t.Fatal(err)
 		}
 		var markdown strings.Builder
-		out, err := borrowed.(process.StreamingService).Stream(ctx, queryInvocation(t, methodName, in), func(_ context.Context, chunk value.JSON) error {
+		out, err := borrowed.(frame.StreamingService).Stream(ctx, queryInvocation(t, methodName, in), func(_ context.Context, chunk value.JSON) error {
 			var text string
 			if err := value.DecodeValue(chunk.Bytes(), &text, "markdown"); err != nil {
 				return err

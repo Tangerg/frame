@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -18,7 +19,7 @@ func TestJointSubmissionRequiresTheOriginalLiveAdmission(t *testing.T) {
 	if _, err := owner.PrepareUnder(t.Context(), request); err == nil {
 		t.Fatal("unadmitted caller prepared a submission")
 	}
-	foreign := frame.NewAdmission()
+	foreign := framehost.NewAdmission()
 	if err := foreign.Admit(t.Context(), func(ctx context.Context) error {
 		_, err := owner.PrepareUnder(ctx, request)
 		return err
@@ -38,7 +39,7 @@ func TestJointSubmissionRequiresTheOriginalLiveAdmission(t *testing.T) {
 			_, err := tx.ExecContext(ctx, `INSERT INTO documents VALUES('joint','converter',?,1)`, value.Hash([]byte("release")))
 			return []byte("joint"), err
 		}, nil)
-		if err == nil && (settlement.State != frame.CommitSucceeded || !settlement.Synchronized) {
+		if err == nil && (settlement.State != framehost.CommitSucceeded || !settlement.Synchronized) {
 			t.Fatalf("joint settlement = %+v", settlement)
 		}
 		return err
@@ -64,7 +65,7 @@ func TestJointSubmissionRequiresTheOriginalLiveAdmission(t *testing.T) {
 }
 
 func TestSubmissionCapacityRetainsUnsettledPrefixAndReclaimsOnlyConfirmedEvidence(t *testing.T) {
-	admission := frame.NewAdmission()
+	admission := framehost.NewAdmission()
 	config := testConfig(filepath.Join(t.TempDir(), "bounded.db"), admission)
 	config.MaxSubmissionsPerOwner = 2
 	store, err := Open(t.Context(), config)
@@ -143,7 +144,7 @@ func TestOnlyTheMatchedRequestCanSettleOrSynchronize(t *testing.T) {
 	checkedReplay()
 	applied := false
 	state, err := owner.Commit(t.Context(), id, request, func(context.Context, Executor) ([]byte, error) { applied = true; return []byte("evidence"), nil }, nil)
-	if err != nil || !applied || state.State != frame.CommitSucceeded {
+	if err != nil || !applied || state.State != framehost.CommitSucceeded {
 		t.Fatalf("original submission did not execute: %+v %v", state, err)
 	}
 	checkedReplay()
@@ -170,10 +171,10 @@ func TestPostcommitPanicFencesAdmissionUntilTheOwnerRestores(t *testing.T) {
 		_, _ = owner.Commit(t.Context(), id, req, func(context.Context, Executor) ([]byte, error) { return []byte("original"), nil }, func(Settlement) error { panic(failure) })
 	}()
 	pending, err := owner.Settlement(t.Context(), id, req)
-	if err != nil || pending.State != frame.CommitSucceeded || pending.Synchronized || string(pending.Evidence) != "original" {
+	if err != nil || pending.State != framehost.CommitSucceeded || pending.Synchronized || string(pending.Evidence) != "original" {
 		t.Fatalf("lost the real commit: %+v, %v", pending, err)
 	}
-	if _, err := owner.Prepare(t.Context(), []byte("next")); !errors.Is(err, frame.ErrRecoveryRequired) {
+	if _, err := owner.Prepare(t.Context(), []byte("next")); !errors.Is(err, framehost.ErrRecoveryRequired) {
 		t.Fatalf("new work crossed the unsynchronized commit: %v", err)
 	}
 	if err := owner.Confirm(t.Context(), id); err != nil {
@@ -188,26 +189,26 @@ func TestPostcommitPanicFencesAdmissionUntilTheOwnerRestores(t *testing.T) {
 }
 
 func TestRejectedInstallationReclaimsItsPrivateSubmissionCapacity(t *testing.T) {
-	a := frame.NewAdmission()
+	a := framehost.NewAdmission()
 	cfg := testConfig(filepath.Join(t.TempDir(), "state"), a)
 	cfg.MaxSubmissionsPerOwner = 1
 	reject := errors.New("index unavailable")
-	cfg.Owners[0].ProjectInstallation = func(context.Context, Executor, frame.InstallationChange) error { return reject }
+	cfg.Owners[0].ProjectInstallation = func(context.Context, Executor, framehost.InstallationChange) error { return reject }
 	store, err := Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	h, err := frame.NewHost(t.Context(), frame.HostConfig{Admission: a, Installations: store})
+	h, err := framehost.New(t.Context(), framehost.Config{Admission: a, Installations: store})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer h.Close(context.Background())
-	p, err := frame.Define(frame.Definition{Revision: value.Hash(nil)})
+	p, err := framehost.Define(framehost.Definition{Revision: value.Hash(nil)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	install := frame.InstallationConfig{ID: "example", Plugin: p}
+	install := framehost.InstallationConfig{ID: "example", Plugin: p}
 	if _, err := h.Install(t.Context(), install); !errors.Is(err, reject) {
 		t.Fatalf("first rejection: %v", err)
 	}
@@ -220,12 +221,12 @@ func TestRejectedInstallationReclaimsItsPrivateSubmissionCapacity(t *testing.T) 
 func TestInterruptedInstallationProjectionReleasesReceiptBeforeHostRecovery(t *testing.T) {
 	for _, interruption := range []string{"panic", "goexit"} {
 		t.Run(interruption, func(t *testing.T) {
-			admission := frame.NewAdmission()
+			admission := framehost.NewAdmission()
 			config := testConfig(filepath.Join(t.TempDir(), "private-receipts.db"), admission)
 			config.MaxSubmissionsPerOwner = 1
 			cause := errors.New("installation projection panicked")
 			interrupts := true
-			config.Owners[0].ProjectInstallation = func(context.Context, Executor, frame.InstallationChange) error {
+			config.Owners[0].ProjectInstallation = func(context.Context, Executor, framehost.InstallationChange) error {
 				if interrupts {
 					if interruption == "goexit" {
 						runtime.Goexit()
@@ -239,16 +240,16 @@ func TestInterruptedInstallationProjectionReleasesReceiptBeforeHostRecovery(t *t
 				t.Fatal(err)
 			}
 			defer store.Close()
-			host, err := frame.NewHost(t.Context(), frame.HostConfig{Admission: admission, Installations: store})
+			host, err := framehost.New(t.Context(), framehost.Config{Admission: admission, Installations: store})
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer host.Close(context.Background())
-			plugin, err := frame.Define(frame.Definition{Revision: value.Hash(nil)})
+			plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash(nil)})
 			if err != nil {
 				t.Fatal(err)
 			}
-			installation := frame.InstallationConfig{ID: "example", Plugin: plugin}
+			installation := framehost.InstallationConfig{ID: "example", Plugin: plugin}
 			for range 3 {
 				finished := make(chan any, 1)
 				returned := false
@@ -279,7 +280,7 @@ func TestInterruptedInstallationProjectionReleasesReceiptBeforeHostRecovery(t *t
 				}); err != nil || receipts != 0 {
 					t.Fatalf("settled interruption retained its private receipt before recovery: count=%d error=%v", receipts, err)
 				}
-				if !errors.Is(admission.RecoveryError(), frame.ErrRecoveryRequired) {
+				if !errors.Is(admission.RecoveryError(), framehost.ErrRecoveryRequired) {
 					t.Fatalf("interrupted Host boundary remained open: %v", admission.RecoveryError())
 				}
 				// The Host did not observe SQLite's rollback acknowledgement. Restore the

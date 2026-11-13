@@ -12,19 +12,19 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/process"
 	"github.com/Tangerg/frame/process/runner"
 	"github.com/Tangerg/frame/sqlite"
 	"github.com/Tangerg/frame/value"
 )
 
-func echoContract() (*portable.Method, *portable.Capability, error) {
-	method, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "document.echo", Kind: portable.Query, Target: "document", Description: "Read the exact document text."})
+func echoContract() (*frame.Method, *frame.Capability, error) {
+	method, err := frame.NewMethod[string, string](frame.MethodConfig{Name: "document.echo", Kind: frame.Query, Target: "document", Description: "Read the exact document text."})
 	if err != nil {
 		return nil, nil, err
 	}
-	contract, err := portable.NewCapability("document.echo", method.Descriptor())
+	contract, err := frame.NewCapability("document.echo", method.Descriptor())
 	return method, contract, err
 }
 
@@ -39,7 +39,7 @@ func TestLocalProcessHelper(t *testing.T) {
 			return err
 		}
 		return process.ServeStdio(context.Background(), process.Unit{
-			ID: "backend", Exports: map[string]*portable.Capability{"echo": contract},
+			ID: "backend", Exports: map[string]*frame.Capability{"echo": contract},
 			Prepare: func(ctx context.Context, setup process.Setup) (process.Prepared, error) {
 				if err := os.WriteFile(filepath.Join(directory, "prepared"), []byte("once"), 0600); err != nil {
 					return process.Prepared{}, err
@@ -48,13 +48,13 @@ func TestLocalProcessHelper(t *testing.T) {
 					<-ctx.Done()
 					return process.Prepared{}, context.Cause(ctx)
 				}
-				echo := process.Handler(func(ctx context.Context, invocation portable.Invocation) (value.JSON, error) {
+				echo := frame.Handler(func(ctx context.Context, invocation frame.Invocation) (value.JSON, error) {
 					if _, err := os.Stat(filepath.Join(directory, "activated")); err != nil {
 						return value.JSON{}, errors.New("business executed before activation")
 					}
 					return invocation.Input(), nil
 				})
-				return process.Prepared{Exports: map[string]process.Service{"echo": echo},
+				return process.Prepared{Exports: map[string]frame.Service{"echo": echo},
 					Activate: func(context.Context) error {
 						return os.WriteFile(filepath.Join(directory, "activated"), []byte("once"), 0600)
 					}}, nil
@@ -74,19 +74,19 @@ type source struct {
 	programCalls atomic.Int32
 }
 
-func (s *source) Program(context.Context, frame.UnitBinding) (process.Program, error) {
+func (s *source) Program(context.Context, framehost.UnitBinding) (process.Program, error) {
 	s.programCalls.Add(1)
 	return s.program, nil
 }
 
 type environment struct {
 	ctx       context.Context
-	store     *sqlite.Store
+	store     sqlite.Store
 	runner    *runner.Client
 	driver    *process.Driver
-	host      *frame.Host
+	host      framehost.Host
 	source    *source
-	ref       frame.ExportRef
+	ref       framehost.ExportRef
 	directory string
 }
 
@@ -125,7 +125,7 @@ func newConfiguredEnvironment(t *testing.T, wait bool, protocol process.Protocol
 	if err != nil {
 		t.Fatal(err)
 	}
-	admission := frame.NewAdmission()
+	admission := framehost.NewAdmission()
 	store, err := sqlite.Open(ctx, sqlite.Config{Path: filepath.Join(directory, "state.sqlite"), Admission: admission})
 	if err != nil {
 		t.Fatal(err)
@@ -142,7 +142,7 @@ func newConfiguredEnvironment(t *testing.T, wait bool, protocol process.Protocol
 	if err != nil {
 		t.Fatal(err)
 	}
-	contract, err := frame.NewPortableContract[process.Service]("1", capability)
+	contract, err := framehost.NewPortableContract[frame.Service]("1", capability)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func newConfiguredEnvironment(t *testing.T, wait bool, protocol process.Protocol
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := frame.NewHost(ctx, frame.HostConfig{Admission: admission, Epoch: store.Epoch(), Drivers: []frame.Driver{driver}, Installations: store, ExecutionProtection: store})
+	host, err := framehost.New(ctx, framehost.Config{Admission: admission, Epoch: store.Epoch(), Drivers: []framehost.Driver{driver}, Installations: store, ExecutionProtection: store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,14 +188,14 @@ func newConfiguredEnvironment(t *testing.T, wait bool, protocol process.Protocol
 	if err := host.Register(contract); err != nil {
 		t.Fatal(err)
 	}
-	plugin, err := frame.Define(frame.Definition{Revision: value.Hash([]byte("echo release")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "backend", Profile: frame.LocalProcess, Exports: []frame.ExportDeclaration{{Name: "echo", Contract: ref}}}}}})
+	plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("echo release")), Units: []framehost.Unit{{Declaration: framehost.UnitDeclaration{ID: "backend", Profile: framehost.LocalProcess, Exports: []framehost.ExportDeclaration{{Name: "echo", Contract: ref}}}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.Install(ctx, frame.InstallationConfig{ID: "echo", Plugin: plugin, Configuration: []byte(`{}`), Enabled: true}); err != nil {
+	if _, err := host.Install(ctx, framehost.InstallationConfig{ID: "echo", Plugin: plugin, Configuration: []byte(`{}`), Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	return &environment{ctx: ctx, store: store, runner: client, driver: driver, host: host, source: source, ref: frame.ExportRef{InstallationID: "echo", Release: plugin.Revision(), UnitID: "backend", Export: "echo", Contract: ref}, directory: directory}
+	return &environment{ctx: ctx, store: store, runner: client, driver: driver, host: host, source: source, ref: framehost.ExportRef{InstallationID: "echo", Release: plugin.Revision(), UnitID: "backend", Export: "echo", Contract: ref}, directory: directory}
 }
 
 func TestApprovedProcessUsesPublicContractAndReleasesOriginalAttempt(t *testing.T) {
@@ -209,7 +209,7 @@ func TestApprovedProcessUsesPublicContractAndReleasesOriginalAttempt(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	use, err := e.host.Acquire(e.ctx, binding, frame.UseConfig{Owner: owner, Scope: scope})
+	use, err := e.host.Acquire(e.ctx, binding, framehost.UseConfig{Owner: owner, Scope: scope})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,8 +217,8 @@ func TestApprovedProcessUsesPublicContractAndReleasesOriginalAttempt(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = frame.BorrowExport[process.Service](e.ctx, use, e.ref, func(ctx context.Context, capability process.Service) error {
-		invocation, err := portable.NewQueryInvocation("document.echo", input)
+	err = framehost.BorrowExport[frame.Service](e.ctx, use, e.ref, func(ctx context.Context, capability frame.Service) error {
+		invocation, err := frame.NewQueryInvocation("document.echo", input)
 		if err != nil {
 			return err
 		}

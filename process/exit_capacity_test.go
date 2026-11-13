@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/process"
 	"github.com/Tangerg/frame/process/runner"
 	"github.com/Tangerg/frame/sqlite"
@@ -94,13 +95,13 @@ func (*exitCapacityRunner) ProveAbsent(context.Context, runner.AttemptRef) (runn
 
 type emptyProcessProgram struct{}
 
-func (emptyProcessProgram) Program(context.Context, frame.UnitBinding) (process.Program, error) {
+func (emptyProcessProgram) Program(context.Context, framehost.UnitBinding) (process.Program, error) {
 	return process.Program{Command: "/approved/executable", ExecutableDigest: value.Hash(nil)}, nil
 }
 
-func exitCapacityHost(t *testing.T, requestBytes int, authority *exitCapacityRunner) (*frame.Host, *sqlite.Store, frame.UnitRef) {
+func exitCapacityHost(t *testing.T, requestBytes int, authority *exitCapacityRunner) (framehost.Host, sqlite.Store, framehost.UnitRef) {
 	t.Helper()
-	admission := frame.NewAdmission()
+	admission := framehost.NewAdmission()
 	store, err := sqlite.Open(t.Context(), sqlite.Config{Path: filepath.Join(t.TempDir(), "state.sqlite"), Admission: admission, MaxRequestBytes: requestBytes})
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +115,7 @@ func exitCapacityHost(t *testing.T, requestBytes int, authority *exitCapacityRun
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := frame.NewHost(t.Context(), frame.HostConfig{Admission: admission, Epoch: store.Epoch(), Drivers: []frame.Driver{driver}, Installations: store, ExecutionProtection: store})
+	host, err := framehost.New(t.Context(), framehost.Config{Admission: admission, Epoch: store.Epoch(), Drivers: []framehost.Driver{driver}, Installations: store, ExecutionProtection: store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,14 +126,14 @@ func exitCapacityHost(t *testing.T, requestBytes int, authority *exitCapacityRun
 			t.Errorf("host release: %v", err)
 		}
 	})
-	plugin, err := frame.Define(frame.Definition{Revision: value.Hash(nil), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.LocalProcess}}}})
+	plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash(nil), Units: []framehost.Unit{{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.LocalProcess}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.Install(t.Context(), frame.InstallationConfig{ID: "provider", Plugin: plugin, Enabled: true}); err != nil {
+	if _, err := host.Install(t.Context(), framehost.InstallationConfig{ID: "provider", Plugin: plugin, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	return host, store, frame.UnitRef{InstallationID: "provider", Release: plugin.Revision(), UnitID: "main"}
+	return host, store, framehost.UnitRef{InstallationID: "provider", Release: plugin.Revision(), UnitID: "main"}
 }
 
 func TestProcessRefusesUnsettleableExitBeforeApprovalOrLaunch(t *testing.T) {

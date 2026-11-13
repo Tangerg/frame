@@ -2,6 +2,7 @@ package browser
 
 import (
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 )
 
@@ -66,7 +67,7 @@ func (o *controlOperation) grantResult() (UseGrant, error) {
 	case failedOperation:
 		return UseGrant{}, result.cause
 	default:
-		return UseGrant{}, frame.ErrUnavailable
+		return UseGrant{}, framehost.ErrUnavailable
 	}
 }
 
@@ -76,11 +77,11 @@ func (o *controlOperation) publicationResult() (PublicationResult, error) {
 		publication := copyWire(result.publication)
 		return PublicationResult{Decision: Accepted, Publication: &publication}, nil
 	case publicationRefusal:
-		return rejected(result.problem), nil
+		return PublicationResult{Decision: Rejected, Problem: result.problem}, nil
 	case failedOperation:
 		return PublicationResult{}, result.cause
 	default:
-		return PublicationResult{}, frame.ErrUnavailable
+		return PublicationResult{}, framehost.ErrUnavailable
 	}
 }
 
@@ -94,7 +95,7 @@ func (o *controlOperation) snapshotResult() error {
 		}
 		return nil
 	default:
-		return frame.ErrUnavailable
+		return framehost.ErrUnavailable
 	}
 }
 

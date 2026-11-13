@@ -107,7 +107,7 @@ func (a *schemaAdmission) admitRelation(name string) modernc.AuthorizerReturnCod
 	return modernc.AuthorizerOK
 }
 
-func (s *Store) admitSchema(ctx context.Context, owners []OwnerSchema) (shape framevalue.Digest, err error) {
+func (s *storeAuthority) admitSchema(ctx context.Context, owners []OwnerSchema) (shape framevalue.Digest, err error) {
 	database, err := openDatabase(":memory:")
 	if err != nil {
 		return shape, err

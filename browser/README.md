@@ -1,14 +1,21 @@
 # Browser Host adapter
 
 This package owns the browser control DTOs, their TypeScript projection, the authenticated Go driver and its HTTP port.
-It depends on the original Frame Host and SQLite Store, which share one Admission.
+It depends on the original Frame Host and SQLite Store value, which share one Admission.
 It does not select providers or publish a second catalog.
 
 `WriteTypeScriptTypes` derives fields and omission from the admitted Go wire
 declaration. Custom codecs project their explicit `JSONSchemaModel`, including
 `value.Number` through the SDK's exact `JSONNumber` representation. Pointer
 fields do not introduce null; `value.AllowsNull` owns that distinction for
-decoding and projections. String enum values require a string wire model.
+decoding and projections. String enums declare their vocabulary through
+`JSONSchemaEnum`, shared by Go admission, portable schemas and TypeScript.
+Enum values require a string wire model and a value receiver. A vocabulary must
+contain distinct UTF-8 strings and cannot be empty; an omitted empty enum would
+otherwise publish an unconstrained string. Codec and model vocabularies narrow
+one another by intersection, including through composed encoding models.
+Map keys must remain plain string encodings: codecs and enum constraints on a
+key are refused before schema publication because they cannot be projected.
 Native-width and 64-bit integers use `JSONNumber`; fixed-width integers of at
 most 32 bits remain JavaScript numbers. A generated DTO cannot narrow a wide
 Go integer to the JavaScript safe integer range. Instantiated generic types
@@ -47,6 +54,13 @@ creating another one. `ResumeRealm` after Host reconstruction grants cleanup
 authority only. The trusted in-process `Credentials` projection lets application
 composition reuse the original session without a second Realm registry; it is
 not exposed through `Handler`.
+Realm identity encodes both components independently. Its bounded `RealmID`
+affinity is a digest of that exact tuple, and credential authentication uses the
+same encoding. Punctuation and individually maximal valid names cannot merge
+Realms or change which execution a proof can release. Credentials are opaque;
+their capacity derives from the component limits and signature size.
+This identity format requires fresh development state; earlier Realm affinity
+records and credential encodings are not migrated.
 `Credentials.maxMessageBytes` projects the Bridge's `MaxMessageBytes` limit;
 the application passes that value to its browser control transport. A failed
 credential read preserves its storage or cancellation cause. Only a missing
@@ -60,6 +74,11 @@ The envelope and method inputs pass through the same `value.DecodeValue` shape
 admission that owns generated field presence and nullability. A missing or null
 collection is refused before dispatch; an explicit empty collection remains valid
 when the method permits it.
+The complete wire model, including enum membership, integer bounds and fixed
+array lengths, is admitted before any custom decoder runs. A codec cannot waive
+its declared model or a sibling's required field, and a refused value cannot
+partially replace its destination. Codecs retain their own additional domain
+validation and original error causes after admission.
 The same Go declarations generate the SDK's executable protocol checks.
 `decodeProtocolValue` admits a captured value against its named Go wire model;
 JSON capture alone never establishes a domain type. Arrays must contain every
@@ -81,6 +100,10 @@ release its temporary reservation. A transport or authentication error provides
 no such observation. The same LocalPlan resolves a lost admission reply without
 inventing another execution. `Ready` belongs to the original admitted Runtime
 preparation; an unadmitted execution cannot contain an accepted Ready report.
+An exact accepted Ready replay remains accepted after instance retirement or
+Realm sealing. Its original report owns that historical decision; current
+availability can refuse a new report but cannot rewrite an earlier acceptance
+or republish retired exports.
 The execution owns registration, admission, fencing and Ready transitions;
 fencing never transfers or settles the exit obligation. Only the Core Host
 publishes exports. Each prepared object identity names exactly one export;
@@ -90,6 +113,10 @@ the batch can be published. Point acquisition retains the original
 multi-Point Snapshot and candidate provenance. Trusted consumers use
 `AcquirePlan` for a fresh declaration plan created in the target Realm; its
 candidate and setup premises remain subject to the Core's final admission.
+This Go API consumes a `framehost.BindingPlan` value handle. Its operation identity
+and Host acquisition retain the same original graph while receipt persistence
+or preparation is waiting. Core Snapshot handles likewise retain candidate
+provenance independently of caller-owned variables.
 A child Use inherits its original accepted parent. The Bridge persists its
 Use approval before handing a grant to JavaScript. Durable business records
 are restored at their original owner through Host.AcquireRecord.
@@ -111,6 +138,15 @@ retains a failure receipt and releases its unfinished lease reservation. A retry
 observes that failure; it cannot recapture or report an uncaptured lease as success.
 Dynamic publication preserves the same failure boundary when a metadata decoder
 panics or exits: observation and replay cannot report an empty successful result.
+Ready and dynamic publication pass `Host.PrepareMetadata` results to the Core.
+The original wire value remains authoritative; a local Go decoder cannot replace
+it through a second encode. Ready revalidates its original execution after metadata
+preparation, including cancellation and recovery raised inside a decoder.
+Ready and withdrawal return `DecisionResult`; neither can carry a publication
+identity. `PublicationResult` belongs only to publishing and observing a dynamic
+publication. The Runtime rejects a publication identity beside a refusal or an
+unknown decision, and an acceptance beside a problem, before advancing its
+outcome or releasing its object.
 One closed business result owns the grant, publication, publication refusal,
 snapshot completion or failure. The receipt reservation owns delivery separately;
 an uncertain archive cannot replace an already accepted business result.
@@ -150,7 +186,9 @@ same installation. An admitted plan remains protected until its original proof
 arrives. A Use proof releases the original parent-to-child delegated closure,
 including an unknown child acknowledgement. An execution proof releases only
 that original execution's Uses. Proof acknowledgement waits for durable release;
-repeating it never starts cleanup again or substitutes a new exit identity.
+replaying exact evidence completes interrupted protection and projection settlement
+without substituting a new exit identity. A persisted publication proof remains
+authoritative after its local publication index has been removed.
 The parent proof fences the complete live descendant closure before joining
 admissions and reading durable protection, so a completed child admission cannot
 disappear between those observations or admit another descendant during release.

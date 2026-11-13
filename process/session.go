@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/internal/nilness"
-	"github.com/Tangerg/frame/portable"
+	framehost "github.com/Tangerg/frame/host"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 type hello struct {
@@ -27,17 +27,17 @@ type description struct {
 	Imports       map[string]string `json:"imports"`
 }
 type offered struct {
-	Handle        string             `json:"handle"`
-	Source        frame.ExportRef    `json:"source"`
-	ValueContract *frame.ContractRef `json:"valueContract,omitzero"`
+	Handle        string                 `json:"handle"`
+	Source        framehost.ExportRef    `json:"source"`
+	ValueContract *framehost.ContractRef `json:"valueContract,omitzero"`
 }
 
-func (g offered) validates(contract *portable.Capability) bool {
+func (g offered) validates(contract *frame.Capability) bool {
 	if !frame.ValidName(g.Handle) || g.Source.Validate() != nil {
 		return false
 	}
 	ref := g.Source.Contract
-	if ref.Kind == frame.PointKind && ref.Mode == frame.PortableMode {
+	if ref.Kind == framehost.PointKind && ref.Mode == framehost.PortableMode {
 		if g.ValueContract == nil {
 			return false
 		}
@@ -45,7 +45,7 @@ func (g offered) validates(contract *portable.Capability) bool {
 	} else if g.ValueContract != nil {
 		return false
 	}
-	return ref.Validate() == nil && ref.Mode == frame.PortableMode && ref.Kind == frame.ServiceKind && ref.Name == contract.Descriptor().Reference && ref.Digest == contract.Identity().Digest()
+	return ref.Validate() == nil && ref.Mode == framehost.PortableMode && ref.Kind == framehost.ServiceKind && ref.Name == contract.Descriptor().Reference && ref.Digest == contract.Identity().Digest()
 }
 
 type preparation struct {
@@ -55,7 +55,7 @@ type preparation struct {
 type hostSession struct {
 	peer       *peer
 	active     atomic.Bool
-	lifetime   *frame.Lifetime
+	lifetime   frame.Lifetime
 	grants     map[string]binding
 	deliveries deliveries
 }
@@ -77,26 +77,26 @@ func (s *hostSession) dispatch(ctx context.Context, method string, raw jsontext.
 
 type localProtocol struct{}
 
-func (localProtocol) Profile() frame.Profile { return frame.LocalProcess }
+func (localProtocol) Profile() framehost.Profile { return framehost.LocalProcess }
 
 type assembly struct {
-	setup    *frame.Setup
+	setup    *framehost.Setup
 	session  *hostSession
 	expected description
 	grants   preparation
-	values   []frame.ExportValue
+	values   []framehost.ExportValue
 }
 
-func (localProtocol) Prepare(setup *frame.Setup, metadata ExportMetadata, maximum int) (Connection, error) {
+func (localProtocol) Prepare(setup *framehost.Setup, metadata ExportMetadata, maximum int) (Connection, error) {
 	s := &hostSession{}
 	s.peer = newPeer(nil, maximum, s.dispatch)
 	s.grants = map[string]binding{}
 	s.lifetime = setup.Lifetime()
 	expected := description{Version: wire.Version, MaxFrameBytes: maximum, Unit: string(setup.Unit().ID), Exports: map[string]string{}, Imports: map[string]string{}}
 	prepared := preparation{Imports: map[string][]offered{}}
-	values := make([]frame.ExportValue, 0, len(setup.Unit().Exports))
+	values := make([]framehost.ExportValue, 0, len(setup.Unit().Exports))
 	for _, export := range setup.Unit().Exports {
-		contract, err := DeclaredCapability(setup, export.Contract)
+		contract, err := setup.Capability(export.Contract)
 		if err != nil {
 			return nil, err
 		}
@@ -104,7 +104,7 @@ func (localProtocol) Prepare(setup *frame.Setup, metadata ExportMetadata, maximu
 		values = append(values, metadata.Export(export, &remote{s.peer, export.Name, contract, &s.deliveries}))
 	}
 	for _, slot := range setup.Unit().Imports {
-		contract, err := DeclaredCapability(setup, slot.Contract)
+		contract, err := setup.Capability(slot.Contract)
 		if err != nil {
 			return nil, err
 		}
@@ -115,16 +115,16 @@ func (localProtocol) Prepare(setup *frame.Setup, metadata ExportMetadata, maximu
 		}
 		handles := make([]offered, 0, len(resolved))
 		for _, provider := range resolved {
-			svc, ok := provider.Value.(Service)
+			svc, ok := provider.Value.(frame.Service)
 			if provider.Local {
 				svc = &remote{s.peer, provider.Source.Export, contract, &s.deliveries}
-			} else if !ok || nilness.Is(svc) {
+			} else if !ok || framevalue.IsNil(svc) {
 				return nil, fmt.Errorf("%w: slot %s requires a portable service", frame.ErrContractMismatch, slot.Slot)
 			}
 			handle := rand.Text()
 			s.grants[handle] = binding{contract, svc}
 			offer := offered{Handle: handle, Source: provider.Source}
-			if provider.Source.Contract.Kind == frame.PointKind {
+			if provider.Source.Contract.Kind == framehost.PointKind {
 				value, err := setup.ValueContract(provider.Source.Contract)
 				if err != nil {
 					return nil, err
@@ -138,7 +138,7 @@ func (localProtocol) Prepare(setup *frame.Setup, metadata ExportMetadata, maximu
 	return &assembly{setup, s, expected, prepared, values}, nil
 }
 
-func (a *assembly) Connect(ctx context.Context, ch io.ReadWriteCloser) ([]frame.ExportValue, error) {
+func (a *assembly) Connect(ctx context.Context, ch io.ReadWriteCloser) ([]framehost.ExportValue, error) {
 	s, expected := a.session, a.expected
 	s.peer.transport = ch
 	s.peer.start()

@@ -1,4 +1,4 @@
-// Package frame owns contracts, exact bindings, admission and structured plugin
-// lifetimes. Execution and persistence adapters supply actual resources and
-// durable evidence; they cannot select another implementation for an admitted use.
+// Package frame owns callable contract semantics and structured resource lifetimes.
+// The host package composes these guarantees into installation, exact binding and
+// admission. Execution and persistence adapters translate already approved work.
 package frame

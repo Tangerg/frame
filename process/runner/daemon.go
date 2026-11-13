@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/internal/cancellation"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 // DaemonConfig identifies a separately packaged runner executable and its
@@ -58,10 +58,7 @@ func NewDaemon(config DaemonConfig) (*Daemon, error) {
 }
 
 func (d *Daemon) connect(ctx context.Context) error {
-	if ctx == nil {
-		return frame.ErrInvalid
-	}
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return err
 	}
 	d.mu.Lock()
@@ -81,7 +78,7 @@ func (d *Daemon) connect(ctx context.Context) error {
 	d.mu.Unlock()
 	select {
 	case <-ctx.Done():
-		return cancellation.Err(ctx)
+		return frame.ContextError(ctx)
 	case <-d.ready:
 		return d.err
 	}
@@ -119,7 +116,7 @@ func (d *Daemon) start(ctx context.Context) error {
 		}
 		select {
 		case <-ctx.Done():
-			return cancellation.Err(ctx)
+			return frame.ContextError(ctx)
 		case <-d.exited:
 			return errors.Join(errors.New("runner: original daemon exited before readiness"), d.exitErr)
 		case <-ticker.C:
@@ -184,7 +181,7 @@ func (d *Daemon) ProveAbsent(ctx context.Context, request AttemptRef) (AbsencePr
 // A later call advances the same shutdown if the daemon retained an unconfirmed
 // release; cancellation abandons only this caller's wait.
 func (d *Daemon) Close(ctx context.Context) error {
-	if ctx == nil {
+	if framevalue.IsNil(ctx) {
 		return frame.ErrInvalid
 	}
 	d.mu.Lock()
@@ -208,12 +205,12 @@ func (d *Daemon) Close(ctx context.Context) error {
 			return d.closeErr
 		case d.closeRequests <- result:
 		case <-ctx.Done():
-			return cancellation.Err(ctx)
+			return frame.ContextError(ctx)
 		}
 	}
 	select {
 	case <-ctx.Done():
-		return cancellation.Err(ctx)
+		return frame.ContextError(ctx)
 	case err := <-result:
 		return err
 	case <-d.closeDone:

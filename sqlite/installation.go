@@ -10,35 +10,35 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 )
 
-var _ frame.InstallationStore = (*Store)(nil)
+var _ framehost.InstallationStore = Store{}
 
-func (s *Store) CommitInstallation(ctx context.Context, change frame.InstallationChange) (state frame.CommitState, err error) {
+func (s *storeAuthority) CommitInstallation(ctx context.Context, change framehost.InstallationChange) (state framehost.CommitState, err error) {
 	if err := s.admission.CheckAdmitted(ctx); err != nil {
-		return frame.CommitRejected, err
+		return framehost.CommitRejected, err
 	}
 	id, err := changedInstallation(change)
 	if err != nil {
-		return frame.CommitRejected, err
+		return framehost.CommitRejected, err
 	}
 	request, err := json.Marshal(change)
 	if err != nil {
-		return frame.CommitRejected, err
+		return framehost.CommitRejected, err
 	}
 	submission, err := s.control.prepare(ctx, request)
 	if err != nil {
 		if errors.Is(err, ErrIndeterminate) {
-			return frame.CommitIndeterminate, err
+			return framehost.CommitIndeterminate, err
 		}
-		return frame.CommitRejected, err
+		return framehost.CommitRejected, err
 	}
 	commit := installationCommit{owner: s.control, id: submission, request: request}
 	defer func() {
 		cause := recover()
 		var cleanupErr error
-		if state != frame.CommitSucceeded {
+		if state != framehost.CommitSucceeded {
 			state, cleanupErr = commit.conclude(context.WithoutCancel(ctx))
 			err = errors.Join(err, cleanupErr)
 		}
@@ -63,21 +63,21 @@ type installationCommit struct {
 	request []byte
 }
 
-func (c installationCommit) conclude(ctx context.Context) (frame.CommitState, error) {
+func (c installationCommit) conclude(ctx context.Context) (framehost.CommitState, error) {
 	settlement, err := c.owner.settlePrepared(ctx, c.id, c.request)
-	if err != nil || settlement.State != frame.CommitRejected {
+	if err != nil || settlement.State != framehost.CommitRejected {
 		err = errors.Join(ErrIndeterminate, ErrUnsettled, err)
 		c.owner.store.admission.RequireRecovery(err)
-		return frame.CommitIndeterminate, err
+		return framehost.CommitIndeterminate, err
 	}
 	if _, err := c.owner.synchronize(settlement, nil, confirmOnCommit); err != nil {
-		return frame.CommitRejected, err
+		return framehost.CommitRejected, err
 	}
-	return frame.CommitRejected, c.owner.compactSettled(ctx)
+	return framehost.CommitRejected, c.owner.compactSettled(ctx)
 }
 
-func changedInstallation(change frame.InstallationChange) (frame.InstallationID, error) {
-	var id frame.InstallationID
+func changedInstallation(change framehost.InstallationChange) (framehost.InstallationID, error) {
+	var id framehost.InstallationID
 	if change.Before != nil {
 		id = change.Before.ID
 	}
@@ -90,7 +90,7 @@ func changedInstallation(change frame.InstallationChange) (frame.InstallationID,
 	return id, id.Validate()
 }
 
-func (s *Store) applyInstallation(ctx context.Context, tx Executor, id frame.InstallationID, change frame.InstallationChange) error {
+func (s *storeAuthority) applyInstallation(ctx context.Context, tx Executor, id framehost.InstallationID, change framehost.InstallationChange) error {
 	if err := checkInstalled(ctx, tx, id, change.Before); err != nil {
 		return err
 	}
@@ -121,7 +121,7 @@ func (s *Store) applyInstallation(ctx context.Context, tx Executor, id frame.Ins
 	return nil
 }
 
-func checkInstalled(ctx context.Context, tx Executor, id frame.InstallationID, expected *frame.InstallationRecord) error {
+func checkInstalled(ctx context.Context, tx Executor, id framehost.InstallationID, expected *framehost.InstallationRecord) error {
 	var stored []byte
 	err := tx.QueryRowContext(ctx, `SELECT record FROM frame_installations WHERE id=?`, id).Scan(&stored)
 	switch {
@@ -142,8 +142,8 @@ func checkInstalled(ctx context.Context, tx Executor, id frame.InstallationID, e
 	return nil
 }
 
-func cloneChange(change frame.InstallationChange) frame.InstallationChange {
-	var projection frame.InstallationChange
+func cloneChange(change framehost.InstallationChange) framehost.InstallationChange {
+	var projection framehost.InstallationChange
 	if change.Before != nil {
 		before := change.Before.Clone()
 		projection.Before = &before
@@ -155,7 +155,7 @@ func cloneChange(change frame.InstallationChange) frame.InstallationChange {
 	return projection
 }
 
-func (s *Store) ConfirmInstallation(ctx context.Context, id frame.InstallationID) error {
+func (s *storeAuthority) ConfirmInstallation(ctx context.Context, id framehost.InstallationID) error {
 	if err := s.admission.CheckAdmitted(ctx); err != nil {
 		return err
 	}
@@ -189,7 +189,7 @@ func (s *Store) ConfirmInstallation(ctx context.Context, id frame.InstallationID
 	return s.control.compactSettled(ctx)
 }
 
-func (s *Store) Installations(ctx context.Context) (records []frame.InstallationRecord, err error) {
+func (s *storeAuthority) Installations(ctx context.Context) (records []framehost.InstallationRecord, err error) {
 	err = s.transaction(ctx, func(tx Executor) error {
 		rows, err := tx.QueryContext(ctx, `SELECT id,record FROM frame_installations ORDER BY id`)
 		if err != nil {
@@ -197,12 +197,12 @@ func (s *Store) Installations(ctx context.Context) (records []frame.Installation
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var id frame.InstallationID
+			var id framehost.InstallationID
 			var data []byte
 			if err := rows.Scan(&id, &data); err != nil {
 				return err
 			}
-			var record frame.InstallationRecord
+			var record framehost.InstallationRecord
 			if err := jsonv2.Unmarshal(data, &record, jsonv2.RejectUnknownMembers(true)); err != nil {
 				return err
 			}
@@ -224,14 +224,14 @@ func (s *Store) Installations(ctx context.Context) (records []frame.Installation
 // RecoverInstallations settles old control intents after exclusive ownership is
 // acquired. The Host must then restore the returned records, confirm them and
 // restore every other owner before it clears RecoveryRequired.
-func (s *Store) RecoverInstallations(ctx context.Context) ([]frame.InstallationRecord, error) {
+func (s *storeAuthority) RecoverInstallations(ctx context.Context) ([]framehost.InstallationRecord, error) {
 	if err := s.control.RecoverPrepared(ctx); err != nil {
 		return nil, err
 	}
 	return s.Installations(ctx)
 }
 
-func (s *Store) ConfirmRestoredInstallations(ctx context.Context) error {
+func (s *storeAuthority) ConfirmRestoredInstallations(ctx context.Context) error {
 	return s.admission.Maintenance(ctx, func() error {
 		if err := s.transaction(ctx, func(tx Executor) error {
 			settlements, err := s.control.readSubmissions(ctx, tx)
@@ -239,7 +239,7 @@ func (s *Store) ConfirmRestoredInstallations(ctx context.Context) error {
 				return err
 			}
 			for _, settlement := range settlements {
-				if settlement.State != frame.CommitIndeterminate {
+				if settlement.State != framehost.CommitIndeterminate {
 					if err := s.control.confirmIn(ctx, tx, settlement.ID); err != nil {
 						return err
 					}

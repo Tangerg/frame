@@ -5,11 +5,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/Tangerg/frame/internal/cancellation"
-
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
-	"github.com/Tangerg/frame/process"
 	"github.com/Tangerg/frame/value"
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
@@ -25,8 +21,8 @@ type managedDelivery struct {
 	mu       sync.Mutex
 	abort    context.CancelCauseFunc
 	call     context.Context
-	method   *portable.Method
-	emit     process.Emit
+	method   *frame.Method
+	emit     frame.Emit
 	maxBytes int64
 	received uint64
 	pending  chan struct{}
@@ -78,13 +74,13 @@ func (d *managedDelivery) receive(wait context.Context, sequence uint64, chunk v
 		close(d.pending)
 		d.pending = nil
 	}()
-	if err := cancellation.Err(d.call); err != nil {
+	if err := frame.ContextError(d.call); err != nil {
 		return err
 	}
 	if wait == nil {
 		return frame.ErrInvalid
 	}
-	if err := cancellation.Err(wait); err != nil {
+	if err := frame.ContextError(wait); err != nil {
 		return err
 	}
 	if maxBytes == 0 || sequence == 0 || sequence != previous+1 {
@@ -97,12 +93,12 @@ func (d *managedDelivery) receive(wait context.Context, sequence uint64, chunk v
 		return err
 	}
 	ctx, cancel := context.WithCancelCause(d.call)
-	stop := context.AfterFunc(wait, func() { cancel(cancellation.Err(wait)) })
+	stop := context.AfterFunc(wait, func() { cancel(frame.ContextError(wait)) })
 	defer stop()
 	defer cancel(nil)
 	err = d.emit(ctx, chunk)
 	returned = true
-	return errors.Join(err, cancellation.Err(ctx))
+	return errors.Join(err, frame.ContextError(ctx))
 }
 
 func (d *managedDelivery) checkBytes(size int) error {
@@ -112,7 +108,7 @@ func (d *managedDelivery) checkBytes(size int) error {
 	return nil
 }
 
-func (s *ManagedService) stream(ctx context.Context, method *portable.Method, params *managedParams, emit process.Emit) (reply managedReply, returned error) {
+func (s *ManagedService) stream(ctx context.Context, method *frame.Method, params *managedParams, emit frame.Emit) (reply managedReply, returned error) {
 	call, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	delivery := &managedDelivery{call: call, abort: cancel, method: method, emit: emit}
@@ -134,22 +130,22 @@ func (s *ManagedService) stream(ctx context.Context, method *portable.Method, pa
 	delivery.mu.Lock()
 	delivery.maxBytes = grant.MaxResponseBytes
 	delivery.mu.Unlock()
-	if err := cancellation.Err(call); err != nil {
+	if err := frame.ContextError(call); err != nil {
 		return managedReply{}, err
 	}
 	reply, err = requestManaged(call, s.session, managedInvoke, params)
 	deliveryErr := delivery.finish()
 	if err != nil {
-		return managedReply{}, errors.Join(process.ErrOutcomeUnknown, err, deliveryErr)
+		return managedReply{}, errors.Join(frame.ErrOutcomeUnknown, err, deliveryErr)
 	}
 	if reply.refusal != nil {
 		return reply, deliveryErr
 	}
 	if deliveryErr != nil {
-		return managedReply{}, errors.Join(process.ErrOutcomeUnknown, deliveryErr)
+		return managedReply{}, errors.Join(frame.ErrOutcomeUnknown, deliveryErr)
 	}
 	if err := delivery.checkBytes(len(reply.value)); err != nil {
-		return managedReply{}, errors.Join(process.ErrOutcomeUnknown, err)
+		return managedReply{}, errors.Join(frame.ErrOutcomeUnknown, err)
 	}
 	return reply, nil
 }
@@ -171,7 +167,7 @@ func (d *managedDelivery) finish() error {
 	return d.failure
 }
 
-func (s *ManagedService) Stream(ctx context.Context, invocation portable.Invocation, emit process.Emit) (value.JSON, error) {
+func (s *ManagedService) Stream(ctx context.Context, invocation frame.Invocation, emit frame.Emit) (value.JSON, error) {
 	if emit == nil {
 		return value.JSON{}, frame.ErrInvalid
 	}

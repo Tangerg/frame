@@ -103,12 +103,20 @@ Exit observers may return promises. Their synchronous and asynchronous failures
 are isolated from release evidence, and their completion is not a resource
 dependency. This also applies to observing an exit that has already completed.
 
-`acquire` and `withResource` build resource handles on that same Lifetime. They
+`Lifetime.acquire` and `Lifetime.withResource` build resource handles on that same Lifetime. They
 reserve cleanup before asynchronous acquisition and release a late result when
 its owner has already begun closing. They do not create an independent cleanup
 manager.
+Pass the creation and release functions separately:
+`await owner.acquire("file", openFile, file => file.close())`.
+The Lifetime reserves cleanup before calling the creator and borrows its returned
+value directly. The creator transfers ownership only on success; it owns rollback
+if creation fails. The release policy is fixed before acquisition, without reading
+resource properties or constructing a separate resource wrapper. A terminal
+handle retains only the original exit observation, releasing both the borrowed
+value and the disposal callback's captured data.
 
-`withResource` returns a value only after clean release. Confirmed release with
+`Lifetime.withResource(label, create, release, work)` returns a value only after clean release. Confirmed release with
 cleanup diagnostics rejects with `FrameError` code `close_failed`; unconfirmed
 release uses `close_unconfirmed`. Both retain the Lifetime's bounded
 `CloseOutcome` as their cause without retaining thrown cleanup payloads. Work

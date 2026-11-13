@@ -6,7 +6,6 @@ import (
 	"sync"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/internal/cancellation"
 )
 
 // Reserve the lifetime slot before a broker can issue credentials. The runner's
@@ -21,7 +20,7 @@ type managedLease struct {
 	err      error
 }
 
-func reserveManagedLease(lifetime *frame.Lifetime) (*managedLease, error) {
+func reserveManagedLease(lifetime frame.Lifetime) (*managedLease, error) {
 	lease := &managedLease{ready: make(chan struct{}), revoked: make(chan struct{}), released: make(chan struct{})}
 	var err error
 	lease.owner, err = lifetime.Own(frame.Resource{Name: "managed MCP callback lease", Close: lease.close})
@@ -100,7 +99,7 @@ func (l *managedLease) close(ctx context.Context) (frame.ReleaseState, error) {
 	select {
 	case <-l.revoked:
 	case <-ctx.Done():
-		return frame.ResourceUnconfirmed, cancellation.Err(ctx)
+		return frame.ResourceUnconfirmed, frame.ContextError(ctx)
 	}
 	if l.err != nil {
 		select {
@@ -114,7 +113,7 @@ func (l *managedLease) close(ctx context.Context) (frame.ReleaseState, error) {
 	case <-l.released:
 		return frame.ResourceReleased, nil
 	case <-ctx.Done():
-		return frame.ResourceUnconfirmed, cancellation.Err(ctx)
+		return frame.ResourceUnconfirmed, frame.ContextError(ctx)
 	}
 }
 

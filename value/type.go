@@ -17,10 +17,11 @@ func ValidateType(target reflect.Type) error {
 }
 
 func validateType(target reflect.Type, visited map[reflect.Type]bool) (reflect.Type, error) {
-	model, err := encodingType(target)
+	encoding, err := encodingOf(target)
 	if err != nil {
 		return nil, err
 	}
+	model := encoding.model
 	if visited[model] {
 		return model, nil
 	}
@@ -45,8 +46,9 @@ func validateShape(target reflect.Type, visited map[reflect.Type]bool) error {
 		if target.Key().Kind() != reflect.String {
 			return fmt.Errorf("json: %s requires string object keys", target)
 		}
-		if customEncoder(target.Key()) || customDecoder(target.Key()) {
-			return fmt.Errorf("json: %s requires string keys without custom codecs", target)
+		if customEncoder(target.Key()) || customDecoder(target.Key()) ||
+			target.Key().Implements(reflect.TypeFor[stringEnumerator]()) || reflect.PointerTo(target.Key()).Implements(reflect.TypeFor[stringEnumerator]()) {
+			return fmt.Errorf("json: %s requires string keys without custom codecs or enums", target)
 		}
 		_, err := validateType(target.Elem(), visited)
 		return err
@@ -79,8 +81,8 @@ func opaqueType(target reflect.Type) bool {
 // Nullability belongs to the encoding model, including a custom codec's model.
 // Field omission is admitted separately because a nil value may lose presence.
 func AllowsNull(target reflect.Type) bool {
-	model, err := encodingType(target)
-	return err == nil && model.Kind() == reflect.Interface
+	encoding, err := encodingOf(target)
+	return err == nil && encoding.model.Kind() == reflect.Interface
 }
 
 func customDecoder(target reflect.Type) bool {

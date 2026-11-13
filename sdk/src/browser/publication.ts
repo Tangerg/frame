@@ -3,11 +3,11 @@ import { FrameError } from "../errors.js";
 import { canonicalJSON } from "../json.js";
 import type { Point } from "../contracts.js";
 import type { CloseOutcome, Lifetime } from "../lifetime.js";
-import {
-  DecisionValues,
-  type PublicationRequest,
-  type ObjectRef,
-  type PublicationResult,
+import type {
+  DecisionResult,
+  PublicationRequest,
+  ObjectRef,
+  PublicationResult,
 } from "../protocol.generated.js";
 import { sameObject } from "./identity.js";
 import { isControlRefusal, type ControlChannel } from "./control.js";
@@ -19,7 +19,7 @@ export interface PublicationHandle {
   readonly object: ObjectRef;
   readonly outcome: PublicationResult;
   observe(): Promise<PublicationResult>;
-  withdraw(): Promise<PublicationResult>;
+  withdraw(): Promise<DecisionResult>;
 }
 
 export class PublicationReceipt {
@@ -53,12 +53,14 @@ export class PublicationReceipt {
   }
 
   #checkShape(result: PublicationResult): void {
-    if (!result || !DecisionValues.includes(result.decision))
-      throw new FrameError("invalid_plan", "invalid publication decision");
-    if (result.decision === "accepted" && !result.publication)
+    const accepted = result.decision === "accepted";
+    if (
+      accepted !== (result.publication !== undefined) ||
+      (accepted && result.problem !== undefined)
+    )
       throw new FrameError(
         "invalid_plan",
-        "accepted publication has no exact publication identity",
+        "publication decision contradicts its result",
       );
   }
 
@@ -255,7 +257,7 @@ export class Publication<M, V> {
     );
   }
 
-  async withdraw(): Promise<PublicationResult> {
+  async withdraw(): Promise<DecisionResult> {
     const active = this.#active;
     if (!active)
       throw new FrameError("closed", "publication resource has exited");
@@ -267,10 +269,10 @@ export class Publication<M, V> {
         ),
       );
     const accepted = this.#receipt.acceptedPublication;
-    if (!accepted) return { decision: "unknown" };
+    if (!accepted) return this.#receipt.outcome;
     channel = this.#connectedChannel(active);
     const current = channel.channel;
-    const result = await current.observe((control, signal) =>
+    const received = await current.observe((control, signal) =>
       control.withdraw(
         {
           authority: current.authority,
@@ -279,6 +281,16 @@ export class Publication<M, V> {
         signal,
       ),
     );
+    let result: DecisionResult;
+    try {
+      result = captureProtocol("DecisionResult", received);
+    } catch (cause) {
+      throw new FrameError(
+        "outcome_unknown",
+        "withdrawal acknowledgement is invalid; original publication is retained",
+        { cause },
+      );
+    }
     if (result.decision === "accepted") {
       this.#receipt.acknowledgeWithdrawal();
       await active.lifetime.close();

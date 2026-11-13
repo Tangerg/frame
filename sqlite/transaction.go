@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"errors"
 
-	"github.com/Tangerg/frame/internal/cancellation"
+	"github.com/Tangerg/frame"
 )
 
 // The connection stays exclusively owned until COMMIT or rollback has settled.
@@ -65,7 +65,7 @@ func (s *databaseOwner) transaction(ctx context.Context, apply func(Executor) er
 	return s.transact(ctx, writeTransaction, apply, nil)
 }
 func (s *databaseOwner) transact(ctx context.Context, mode transactionMode, apply func(Executor) error, unresolvedCommit func(error)) (err error) {
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return err
 	}
 	if err := s.admitTransaction(); err != nil {
@@ -97,7 +97,7 @@ func (s *databaseOwner) transact(ctx context.Context, mode transactionMode, appl
 		scope.seal()
 		if phase != transactionSettled {
 			returnConnection, err = s.settleFailedTransaction(connection, scope, phase, err, unresolvedCommit)
-			err = scope.include(errors.Join(err, cancellation.Err(ctx)))
+			err = scope.include(errors.Join(err, frame.ContextError(ctx)))
 		}
 		if recovered != nil {
 			if phase != transactionSettled && err != nil {
@@ -109,7 +109,7 @@ func (s *databaseOwner) transact(ctx context.Context, mode transactionMode, appl
 	// A failed acknowledgement can follow a successful BEGIN. This owner must
 	// settle or close that same connection before it can return to the pool.
 	if err := beginTransaction(ctx, connection, mode); err != nil {
-		return errors.Join(err, cancellation.Err(ctx))
+		return errors.Join(err, frame.ContextError(ctx))
 	}
 	phase = transactionActive
 	if err := scope.enter(); err != nil {
@@ -123,11 +123,11 @@ func (s *databaseOwner) transact(ctx context.Context, mode transactionMode, appl
 		err = body()
 	}
 	scope.seal()
-	err = scope.include(errors.Join(err, cancellation.Err(ctx)))
+	err = scope.include(errors.Join(err, frame.ContextError(ctx)))
 	if err != nil {
 		return err
 	}
-	if err = cancellation.Err(ctx); err != nil {
+	if err = frame.ContextError(ctx); err != nil {
 		return err
 	}
 	phase = transactionCommitting

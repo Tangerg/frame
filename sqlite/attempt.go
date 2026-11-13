@@ -9,20 +9,21 @@ import (
 	"slices"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
 type Attempt struct {
-	ID              string                `json:"id"`
-	Epoch           uint64                `json:"epoch"`
-	Source          frame.UnitRef         `json:"source"`
-	Binding         frame.BindingSnapshot `json:"binding"`
-	Realm           string                `json:"realm"`
-	Profile         frame.Profile         `json:"profile"`
-	Parent          string                `json:"parent,omitempty"`
-	Scope           frame.ScopeID         `json:"scope,omitempty"`
-	ScopeGeneration uint64                `json:"scopeGeneration,omitempty"`
-	Generation      uint64                `json:"generation,omitempty"`
+	ID              string                    `json:"id"`
+	Epoch           uint64                    `json:"epoch"`
+	Source          framehost.UnitRef         `json:"source"`
+	Binding         framehost.BindingSnapshot `json:"binding"`
+	Realm           string                    `json:"realm"`
+	Profile         framehost.Profile         `json:"profile"`
+	Parent          string                    `json:"parent,omitempty"`
+	Scope           framehost.ScopeID         `json:"scope,omitempty"`
+	ScopeGeneration uint64                    `json:"scopeGeneration,omitempty"`
+	Generation      uint64                    `json:"generation,omitempty"`
 }
 
 func (a Attempt) Validate() error {
@@ -32,7 +33,7 @@ func (a Attempt) Validate() error {
 	if a.Parent != "" && (a.Parent == a.ID || !frame.ValidName(a.Parent)) {
 		return errors.New("sqlite: invalid parent attempt")
 	}
-	if a.Profile == frame.BrowserJS && (a.Scope.Validate() != nil || a.ScopeGeneration == 0 || a.Generation == 0) {
+	if a.Profile == framehost.BrowserJS && (a.Scope.Validate() != nil || a.ScopeGeneration == 0 || a.Generation == 0) {
 		return errors.New("sqlite: browser attempt requires its exact scope and generation")
 	}
 	if err := a.Source.Validate(); err != nil {
@@ -41,7 +42,7 @@ func (a Attempt) Validate() error {
 	if err := a.Binding.Validate(); err != nil {
 		return err
 	}
-	if !slices.ContainsFunc(a.Binding.Units, func(unit frame.UnitBinding) bool { return unit.Source == a.Source }) {
+	if !slices.ContainsFunc(a.Binding.Units, func(unit framehost.UnitBinding) bool { return unit.Source == a.Source }) {
 		return errors.New("sqlite: attempt source is outside its binding")
 	}
 	return nil
@@ -83,12 +84,12 @@ func (r AttemptRecord) ExitProven() bool {
 
 // RecordAttempt must complete before the runner or Realm can create anything.
 // Reusing its identity never authorizes a second creation or a wider binding.
-func (s *Store) RecordAttempt(ctx context.Context, attempt Attempt) error {
+func (s *storeAuthority) RecordAttempt(ctx context.Context, attempt Attempt) error {
 	if err := attempt.Validate(); err != nil {
 		return err
 	}
 	if attempt.Epoch != s.epoch {
-		return frame.ErrFenced
+		return framehost.ErrFenced
 	}
 	encoded, err := json.Marshal(attempt)
 	if err != nil {
@@ -134,17 +135,17 @@ func insertAttempt(ctx context.Context, tx Executor, attempt Attempt, encoded []
 const attemptRecords = `SELECT id,request,request_digest,state,proof FROM frame_attempts`
 const attemptByID = attemptRecords + ` WHERE id=?`
 
-func (s *Store) Attempts(ctx context.Context) ([]AttemptRecord, error) {
+func (s *storeAuthority) Attempts(ctx context.Context) ([]AttemptRecord, error) {
 	return readRecords(ctx, s, attemptRecords+" ORDER BY id", decodeAttempt)
 }
-func (s *Store) PendingAttempts(ctx context.Context) ([]AttemptRecord, error) {
+func (s *storeAuthority) PendingAttempts(ctx context.Context) ([]AttemptRecord, error) {
 	records, err := s.Attempts(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return slices.DeleteFunc(records, func(record AttemptRecord) bool { return !record.State.pending() }), nil
 }
-func (s *Store) Attempt(ctx context.Context, id string) (AttemptRecord, error) {
+func (s *storeAuthority) Attempt(ctx context.Context, id string) (AttemptRecord, error) {
 	return readRecord(ctx, s, attemptByID, decodeAttempt, id)
 }
 
@@ -182,8 +183,8 @@ func decodeAttempt(row protectedRecord) (AttemptRecord, error) {
 // ExecutionDependencies is deliberately separate from business Held queries.
 // A Ready idle instance may be retired first; its protection remains here until
 // actual exit is confirmed, including attempts with an unknown creation result.
-func (s *Store) ExecutionDependencies(ctx context.Context) ([]frame.Dependency, error) {
-	var dependencies []frame.Dependency
+func (s *storeAuthority) ExecutionDependencies(ctx context.Context) ([]framehost.Dependency, error) {
+	var dependencies []framehost.Dependency
 	err := s.Read(ctx, func(tx Reader) error {
 		protection, err := readProtectionSnapshot(ctx, tx)
 		if err != nil {
@@ -198,17 +199,17 @@ func (s *Store) ExecutionDependencies(ctx context.Context) ([]frame.Dependency, 
 	return dependencies, nil
 }
 
-func (s *Store) ReleaseAttempt(ctx context.Context, id string, proof ExitProof) error {
+func (s *storeAuthority) ReleaseAttempt(ctx context.Context, id string, proof ExitProof) error {
 	return s.recordRelease(ctx, id, proof, AttemptReleased)
 }
 
 // AcceptExit commits the original proof before its runner may reclaim capacity.
 // Recovery retains the outstanding acknowledgement across either process crashing.
-func (s *Store) AcceptExit(ctx context.Context, id string, proof ExitProof) error {
+func (s *storeAuthority) AcceptExit(ctx context.Context, id string, proof ExitProof) error {
 	return s.recordRelease(ctx, id, proof, AttemptHandoff)
 }
 
-func (s *Store) recordRelease(ctx context.Context, id string, proof ExitProof, target AttemptState) error {
+func (s *storeAuthority) recordRelease(ctx context.Context, id string, proof ExitProof, target AttemptState) error {
 	if !proof.proves(id) {
 		return errors.New("sqlite: exact exit evidence is required")
 	}
@@ -248,7 +249,7 @@ func (s *Store) recordRelease(ctx context.Context, id string, proof ExitProof, t
 // RecordExitProof records a verified subordinate exit without releasing the
 // enclosing attempt. The driver owns scope validation; an acknowledgement can
 // be repeated only for these exact original bytes.
-func (s *Store) RecordExitProof(ctx context.Context, attemptID, scope, proofID string, evidence []byte) error {
+func (s *storeAuthority) RecordExitProof(ctx context.Context, attemptID, scope, proofID string, evidence []byte) error {
 	if !frame.ValidName(attemptID) || !frame.ValidName(scope) || !frame.ValidName(proofID) {
 		return frame.ErrInvalid
 	}
@@ -271,7 +272,7 @@ func (s *Store) RecordExitProof(ctx context.Context, attemptID, scope, proofID s
 	})
 }
 
-func (s *Store) ExitProof(ctx context.Context, attemptID, proofID string) ([]byte, error) {
+func (s *storeAuthority) ExitProof(ctx context.Context, attemptID, proofID string) ([]byte, error) {
 	var evidence []byte
 	err := s.transaction(ctx, func(tx Executor) error {
 		return tx.QueryRowContext(ctx, `SELECT evidence FROM frame_exit_proofs WHERE attempt_id=? AND proof_id=?`, attemptID, proofID).Scan(&evidence)

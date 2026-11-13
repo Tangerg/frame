@@ -24,7 +24,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/internal/localfile"
 	framevalue "github.com/Tangerg/frame/value"
 )
@@ -341,7 +340,7 @@ func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ LaunchRes
 	if err := request.Validate(); err != nil {
 		return notDispatched(request), err
 	}
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return notDispatched(request), err
 	}
 	digest, err := requestIdentity(request)
@@ -359,7 +358,7 @@ func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ LaunchRes
 	if err := s.verifyDirectory(); err != nil {
 		return notDispatched(request), err
 	}
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return notDispatched(request), err
 	}
 	observation := Observation{AttemptID: request.AttemptID, Epoch: request.Epoch, RunnerID: s.id, State: Starting}
@@ -382,7 +381,7 @@ func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ LaunchRes
 			err = errors.Join(err, s.releaseExecutable(path))
 		}
 	}()
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return s.failedStart(request.AttemptID, "launch canceled before process creation", err)
 	}
 	if err := s.verifyDirectory(); err != nil {
@@ -477,6 +476,9 @@ func (s *Server) inspect(id string) (Observation, error) {
 }
 
 func (s *Server) CloseAttempt(ctx context.Context, ref AttemptRef) (Observation, error) {
+	if framevalue.IsNil(ctx) {
+		return Observation{}, frame.ErrInvalid
+	}
 	s.mu.Lock()
 	observation, err := s.inspect(ref.AttemptID)
 	if err != nil {
@@ -512,7 +514,7 @@ func (s *Server) CloseAttempt(ctx context.Context, ref AttemptRef) (Observation,
 		case <-done:
 			return s.Inspect(context.Background(), ref.AttemptID)
 		default:
-			return observation, cancellation.Err(ctx)
+			return observation, frame.ContextError(ctx)
 		}
 	case <-done:
 		return s.Inspect(context.Background(), ref.AttemptID)

@@ -7,12 +7,12 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/Tangerg/frame/portable"
+	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/value"
 )
 
 func TestManagedStreamCancellationPreservesCategoryAndCause(t *testing.T) {
-	method, err := portable.NewStreamingMethod[string, int, bool](portable.MethodConfig{Name: "deliver", Kind: portable.Query})
+	method, err := frame.NewStreamingMethod[string, int, bool](frame.MethodConfig{Name: "deliver", Kind: frame.Query})
 	if err != nil {
 		t.Fatal(err)
 	}

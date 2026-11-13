@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/Tangerg/frame/portable"
+	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -37,11 +37,11 @@ func (streamingJSON) JSONSchemaModel() any { return jsonv1.RawMessage{} }
 
 func modelRoundTrip[T any](t *testing.T, raw, expected string) {
 	t.Helper()
-	descriptor, err := portable.SchemaFor[T]()
+	descriptor, err := value.SchemaFor[T]()
 	if err != nil {
 		t.Fatal(err)
 	}
-	schema, err := portable.AdmitSchema(descriptor)
+	schema, err := value.AdmitSchema(descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,13 +113,13 @@ func rejectLossyType[T any](t *testing.T) {
 	if err := value.ValidateType(reflect.TypeFor[T]()); err == nil {
 		t.Fatal("unrepresentable declaration admitted")
 	}
-	if _, err := portable.SchemaFor[T](); err == nil {
+	if _, err := value.SchemaFor[T](); err == nil {
 		t.Fatal("unrepresentable declaration published a schema")
 	}
-	if _, err := portable.NewMethod[struct{}, T](portable.MethodConfig{Name: "read", Kind: portable.Query}); err == nil {
+	if _, err := frame.NewMethod[struct{}, T](frame.MethodConfig{Name: "read", Kind: frame.Query}); err == nil {
 		t.Fatal("unrepresentable output published a method")
 	}
-	if _, err := portable.NewStreamingMethod[struct{}, T, bool](portable.MethodConfig{Name: "read", Kind: portable.Query}); err == nil {
+	if _, err := frame.NewStreamingMethod[struct{}, T, bool](frame.MethodConfig{Name: "read", Kind: frame.Query}); err == nil {
 		t.Fatal("unrepresentable chunk published a stream")
 	}
 	var decoded T
@@ -202,7 +202,7 @@ func TestEncodingModelRequiresTheCodecThatOwnsIt(t *testing.T) {
 }
 
 func TestNullableModelAdmitsMethodOutputsAndChunks(t *testing.T) {
-	method, err := portable.NewStreamingMethod[struct{}, streamingJSON, wrappedJSON](portable.MethodConfig{Name: "read", Kind: portable.Query})
+	method, err := frame.NewStreamingMethod[struct{}, streamingJSON, wrappedJSON](frame.MethodConfig{Name: "read", Kind: frame.Query})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,11 +216,11 @@ func TestNullableModelAdmitsMethodOutputsAndChunks(t *testing.T) {
 
 func rejectTypedNull[T any](t *testing.T) {
 	t.Helper()
-	descriptor, err := portable.SchemaFor[T]()
+	descriptor, err := value.SchemaFor[T]()
 	if err != nil {
 		t.Fatal(err)
 	}
-	schema, err := portable.AdmitSchema(descriptor)
+	schema, err := value.AdmitSchema(descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}

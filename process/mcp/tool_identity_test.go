@@ -7,8 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tangerg/frame/portable"
-	"github.com/Tangerg/frame/process"
+	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/value"
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
@@ -19,8 +18,8 @@ func TestStandardToolRequestsCarryOnlyOriginalCommandIdentity(t *testing.T) {
 	server := sdk.NewServer(&sdk.Implementation{Name: "identity-test", Version: "1"}, nil)
 	observed := make(chan sdk.Meta, 1)
 	members := make(map[string]*toolMember)
-	for _, kind := range []portable.MethodKind{portable.Query, portable.Command} {
-		method, err := portable.AdmitMethod(portable.MethodDescriptor{Name: string(kind), Kind: kind, Input: []byte(`{"type":"object","additionalProperties":false}`), Output: []byte(`{"type":"string"}`)})
+	for _, kind := range []frame.MethodKind{frame.Query, frame.Command} {
+		method, err := frame.AdmitMethod(frame.MethodDescriptor{Name: string(kind), Kind: kind, Input: []byte(`{"type":"object","additionalProperties":false}`), Output: []byte(`{"type":"string"}`)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -41,14 +40,14 @@ func TestStandardToolRequestsCarryOnlyOriginalCommandIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer clientSession.Close()
-	var service process.Service = &toolService{connection: &toolsConnection{session: clientSession}, members: members}
+	var service frame.Service = &toolService{connection: &toolsConnection{session: clientSession}, members: members}
 	input, err := value.ParseJSON([]byte(`{}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, invocation := range []portable.Invocation{
-		queryInvocation(t, string(portable.Query), input),
-		commandInvocation(t, "original-身份", string(portable.Command), input),
+	for _, invocation := range []frame.Invocation{
+		queryInvocation(t, string(frame.Query), input),
+		commandInvocation(t, "original-身份", string(frame.Command), input),
 	} {
 		reply, err := service.Invoke(ctx, invocation)
 		if err != nil || reply.String() != `"ok"` {
@@ -56,7 +55,7 @@ func TestStandardToolRequestsCarryOnlyOriginalCommandIdentity(t *testing.T) {
 		}
 		metadata := <-observed
 		raw, present := metadata[commandIDMetadataKey]
-		if invocation.Kind() == portable.Query {
+		if invocation.Kind() == frame.Query {
 			if present {
 				t.Fatal("query acquired a command identity")
 			}

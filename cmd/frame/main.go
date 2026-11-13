@@ -9,7 +9,7 @@ import (
 	"os"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable/contractgen"
+	"github.com/Tangerg/frame/contractgen"
 )
 
 func main() {

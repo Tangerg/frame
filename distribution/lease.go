@@ -15,18 +15,18 @@ type Lease struct{ claim *leaseClaim }
 
 type leaseClaim struct {
 	mu      sync.Mutex
-	store   *Store
+	store   *storeAuthority
 	release Release
 }
 
-func (s *Store) claimRelease(release Release) *Lease {
+func (s *storeAuthority) claimRelease(release Release) *Lease {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.leases[release.Digest]++
 	return &Lease{claim: &leaseClaim{store: s, release: release}}
 }
 
-func (s *Store) Acquire(ctx context.Context, digest value.Digest) (_ *Lease, err error) {
+func (s *storeAuthority) Acquire(ctx context.Context, digest value.Digest) (_ *Lease, err error) {
 	done, err := s.beginOperation(newOperation)
 	if err != nil {
 		return nil, err
@@ -141,7 +141,7 @@ func (l *Lease) Directory() (string, error) {
 	return claim.store.Path(claim.release.Digest)
 }
 
-func (s *Store) readArtifact(ctx context.Context, release Release, name string) ([]byte, error) {
+func (s *storeAuthority) readArtifact(ctx context.Context, release Release, name string) ([]byte, error) {
 	done, err := s.beginOperation(leaseOperation)
 	if err != nil {
 		return nil, err

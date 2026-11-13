@@ -12,7 +12,7 @@ import (
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
 	"github.com/Tangerg/frame/distribution"
-	"github.com/Tangerg/frame/internal/cancellation"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/internal/localfile"
 	"github.com/Tangerg/frame/value"
 )
@@ -54,33 +54,33 @@ type Converter func(context.Context, DocumentRef) (Converted, error)
 type Validator func(context.Context, Converted) ([]Diagnostic, error)
 
 type Contracts struct {
-	Files      frame.Contract[FileReader]
-	Converters frame.Point[ConverterMetadata, Converter]
-	Validators frame.Point[ValidatorMetadata, Validator]
-	Previews   frame.Point[PreviewMetadata, browser.Object]
-	Theme      frame.Contract[*distribution.Resources]
+	Files      framehost.Contract[FileReader]
+	Converters framehost.Point[ConverterMetadata, Converter]
+	Validators framehost.Point[ValidatorMetadata, Validator]
+	Previews   framehost.Point[PreviewMetadata, browser.Object]
+	Theme      framehost.Contract[*distribution.Resources]
 }
 
 func NewContracts() (Contracts, error) {
 	var contracts Contracts
 	var err error
-	contracts.Files, err = frame.NewContract[FileReader]("documents.file-reader", "1")
+	contracts.Files, err = framehost.NewContract[FileReader]("documents.file-reader", "1")
 	if err != nil {
 		return contracts, err
 	}
-	contracts.Converters, err = frame.NewPoint[ConverterMetadata, Converter]("documents.converters", "1")
+	contracts.Converters, err = framehost.NewPoint[ConverterMetadata, Converter]("documents.converters", "1")
 	if err != nil {
 		return contracts, err
 	}
-	contracts.Validators, err = frame.NewPoint[ValidatorMetadata, Validator]("documents.validators", "1")
+	contracts.Validators, err = framehost.NewPoint[ValidatorMetadata, Validator]("documents.validators", "1")
 	if err != nil {
 		return contracts, err
 	}
-	contracts.Previews, err = frame.NewPoint[PreviewMetadata, browser.Object]("documents.previews", "1")
+	contracts.Previews, err = framehost.NewPoint[PreviewMetadata, browser.Object]("documents.previews", "1")
 	if err != nil {
 		return contracts, err
 	}
-	contracts.Theme, err = frame.NewContract[*distribution.Resources]("documents.theme", "1")
+	contracts.Theme, err = framehost.NewContract[*distribution.Resources]("documents.theme", "1")
 	return contracts, err
 }
 
@@ -116,7 +116,7 @@ func loadDocument(ctx context.Context, root *os.Root, path string) (Document, er
 	if info.Size() > maximumDocumentBytes {
 		return Document{}, frame.ErrCapacity
 	}
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return Document{}, err
 	}
 	data, err := io.ReadAll(io.LimitReader(file, maximumDocumentBytes+1))
@@ -126,7 +126,7 @@ func loadDocument(ctx context.Context, root *os.Root, path string) (Document, er
 	if len(data) > maximumDocumentBytes {
 		return Document{}, frame.ErrCapacity
 	}
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return Document{}, err
 	}
 	return Document{Ref: DocumentRef{Path: path, Revision: value.Hash(data)}, Text: string(data)}, nil

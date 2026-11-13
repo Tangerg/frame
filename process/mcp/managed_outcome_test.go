@@ -13,15 +13,13 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
-	"github.com/Tangerg/frame/process"
 	"github.com/Tangerg/frame/value"
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
 
-func managedServiceOverPipe(t *testing.T, ctx context.Context, method *portable.Method, invoke func(context.Context, *managedParams) (*managedResult, error), middleware ...sdk.Middleware) *ManagedService {
+func managedServiceOverPipe(t *testing.T, ctx context.Context, method *frame.Method, invoke func(context.Context, *managedParams) (*managedResult, error), middleware ...sdk.Middleware) *ManagedService {
 	t.Helper()
-	descriptor, err := value.EncodeJSON(managedDescriptor{managedVersion, "outcome.v1", managedSelection, "installation", []portable.MethodDescriptor{method.Descriptor()}})
+	descriptor, err := value.EncodeJSON(managedDescriptor{managedVersion, "outcome.v1", managedSelection, "installation", []frame.MethodDescriptor{method.Descriptor()}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,13 +60,13 @@ func managedServiceOverPipe(t *testing.T, ctx context.Context, method *portable.
 }
 
 func TestManagedCancellationPreservesDispatchBoundary(t *testing.T) {
-	for _, kind := range []portable.MethodKind{portable.Query, portable.Command} {
+	for _, kind := range []frame.MethodKind{frame.Query, frame.Command} {
 		for _, before := range []bool{true, false} {
 			for _, wrapped := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/before=%t/wrapped=%t", kind, before, wrapped), func(t *testing.T) {
 					ctx, timeout := context.WithTimeout(t.Context(), 5*time.Second)
 					defer timeout()
-					method, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "write", Kind: kind, Target: "document"})
+					method, err := frame.NewMethod[string, string](frame.MethodConfig{Name: "write", Kind: kind, Target: "document"})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -92,7 +90,7 @@ func TestManagedCancellationPreservesDispatchBoundary(t *testing.T) {
 						t.Fatal(err)
 					}
 					invocation := queryInvocation(t, method.Name(), input)
-					if kind == portable.Command {
+					if kind == frame.Command {
 						invocation = commandInvocation(t, "original-command", method.Name(), input)
 					}
 					if before {
@@ -116,7 +114,7 @@ func TestManagedCancellationPreservesDispatchBoundary(t *testing.T) {
 						if !errors.Is(err, context.Canceled) || !errors.Is(err, cause) || !errors.Is(err, local) {
 							t.Fatalf("local cancellation lost its cause: %v", err)
 						}
-						if unknown := errors.Is(err, process.ErrOutcomeUnknown); unknown == before {
+						if unknown := errors.Is(err, frame.ErrOutcomeUnknown); unknown == before {
 							t.Fatalf("local refusal changed dispatch evidence: before=%t unknown=%t error=%v", before, unknown, err)
 						}
 					case <-ctx.Done():
@@ -136,7 +134,7 @@ func TestManagedValidatedReplySurvivesCancellationAfterReceipt(t *testing.T) {
 		t.Run(fmt.Sprintf("refused=%t", refused), func(t *testing.T) {
 			ctx, timeout := context.WithTimeout(t.Context(), 5*time.Second)
 			defer timeout()
-			method, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "write", Kind: portable.Command, Target: "document"})
+			method, err := frame.NewMethod[string, string](frame.MethodConfig{Name: "write", Kind: frame.Command, Target: "document"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -166,7 +164,7 @@ func TestManagedValidatedReplySurvivesCancellationAfterReceipt(t *testing.T) {
 				t.Fatal(err)
 			}
 			output, err := service.Invoke(call, commandInvocation(t, "original-command", method.Name(), input))
-			if context.Cause(call) != cause || errors.Is(err, process.ErrOutcomeUnknown) || errors.Is(err, cause) {
+			if context.Cause(call) != cause || errors.Is(err, frame.ErrOutcomeUnknown) || errors.Is(err, cause) {
 				t.Fatalf("local cancellation replaced validated remote evidence: %v", err)
 			}
 			if refused {
@@ -186,7 +184,7 @@ func TestManagedStreamConsumerCannotCreateBackendRefusal(t *testing.T) {
 		t.Run(fmt.Sprintf("panic=%t", panics), func(t *testing.T) {
 			ctx, timeout := context.WithTimeout(t.Context(), 5*time.Second)
 			defer timeout()
-			method, err := portable.NewStreamingMethod[string, string, string](portable.MethodConfig{Name: "write", Kind: portable.Command, Target: "document"})
+			method, err := frame.NewStreamingMethod[string, string, string](frame.MethodConfig{Name: "write", Kind: frame.Command, Target: "document"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -221,7 +219,7 @@ func TestManagedStreamConsumerCannotCreateBackendRefusal(t *testing.T) {
 				}
 				return local
 			})
-			if !errors.Is(err, process.ErrOutcomeUnknown) || !errors.Is(err, local) {
+			if !errors.Is(err, frame.ErrOutcomeUnknown) || !errors.Is(err, local) {
 				t.Fatalf("local consumer refusal became a known backend outcome: %v", err)
 			}
 			if panics && strings.Contains(err.Error(), local.Message) {
@@ -242,7 +240,7 @@ func TestManagedStreamSeparatesReplyDeliveryAndCleanupEvidence(t *testing.T) {
 			t.Run(fmt.Sprintf("refused=%t/%s", refused, phase), func(t *testing.T) {
 				ctx, timeout := context.WithTimeout(t.Context(), 5*time.Second)
 				defer timeout()
-				method, err := portable.NewStreamingMethod[string, string, string](portable.MethodConfig{Name: "write", Kind: portable.Command, Target: "document"})
+				method, err := frame.NewStreamingMethod[string, string, string](frame.MethodConfig{Name: "write", Kind: frame.Command, Target: "document"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -295,7 +293,7 @@ func TestManagedStreamSeparatesReplyDeliveryAndCleanupEvidence(t *testing.T) {
 				if !errors.Is(err, local) {
 					t.Fatalf("reply discarded its separate local diagnostic: %v", err)
 				}
-				if unknown := errors.Is(err, process.ErrOutcomeUnknown); unknown != (phase == "delivery" && !refused) {
+				if unknown := errors.Is(err, frame.ErrOutcomeUnknown); unknown != (phase == "delivery" && !refused) {
 					t.Fatalf("reply provenance was replaced by %s: unknown=%t error=%v", phase, unknown, err)
 				}
 				if refused {
@@ -331,7 +329,7 @@ func TestManagedReceiptRequiresAnOriginalValidatedReply(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			ctx, timeout := context.WithTimeout(t.Context(), 5*time.Second)
 			defer timeout()
-			method, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "write", Kind: portable.Command, Target: "document"})
+			method, err := frame.NewMethod[string, string](frame.MethodConfig{Name: "write", Kind: frame.Command, Target: "document"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -341,7 +339,7 @@ func TestManagedReceiptRequiresAnOriginalValidatedReply(t *testing.T) {
 				}
 				return &managedResult{Value: jsontext.Value(test.receipt)}, nil
 			})
-			service.receipt, err = portable.AdmitMethod(portable.MethodDescriptor{Name: managedReceipt, Kind: portable.Query, Target: "installation", Input: []byte(`{"type":"object"}`), Output: []byte(`{"type":"object"}`)})
+			service.receipt, err = frame.AdmitMethod(frame.MethodDescriptor{Name: managedReceipt, Kind: frame.Query, Target: "installation", Input: []byte(`{"type":"object"}`), Output: []byte(`{"type":"object"}`)})
 			if err != nil {
 				t.Fatal(err)
 			}

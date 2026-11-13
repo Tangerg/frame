@@ -14,7 +14,7 @@ import (
 
 type httpProjectionPhase string
 
-func (httpProjectionPhase) Values() []string { return []string{"draft", "ready"} }
+func (httpProjectionPhase) JSONSchemaEnum() []string { return []string{"draft", "ready"} }
 
 type httpProjectionQuery struct {
 	ID string `json:"id"`
@@ -176,11 +176,11 @@ type HTTPInputs struct{}
 
 type wire string
 
-func (wire) Values() []string { return []string{"value"} }
+func (wire) JSONSchemaEnum() []string { return []string{"value"} }
 
 type matchesWire string
 
-func (matchesWire) Values() []string { return []string{"value"} }
+func (matchesWire) JSONSchemaEnum() []string { return []string{"value"} }
 
 type Values struct{}
 

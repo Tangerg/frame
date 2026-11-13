@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	framevalue "github.com/Tangerg/frame/value"
 )
 
@@ -33,12 +34,12 @@ func packageFixture(t *testing.T) (string, Manifest, []byte, Lock) {
 	return directory, manifest, archive.Bytes(), lock
 }
 
-func storeFixture(t *testing.T, retained func(context.Context, framevalue.Digest) (bool, error)) *Store {
+func storeFixture(t *testing.T, retained func(context.Context, framevalue.Digest) (bool, error)) Store {
 	t.Helper()
 	if retained == nil {
 		retained = func(context.Context, framevalue.Digest) (bool, error) { return false, nil }
 	}
-	store, err := Open(Config{Directory: t.TempDir(), Admission: frame.NewAdmission(), Trust: func(context.Context, Source, Manifest, Lock) error { return nil }, Retained: retained})
+	store, err := Open(Config{Directory: t.TempDir(), Admission: framehost.NewAdmission(), Trust: func(context.Context, Source, Manifest, Lock) error { return nil }, Retained: retained})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +56,7 @@ func storeFixture(t *testing.T, retained func(context.Context, framevalue.Digest
 	return store
 }
 
-func installArchive(t *testing.T, store *Store, data []byte) Release {
+func installArchive(t *testing.T, store Store, data []byte) Release {
 	t.Helper()
 	file := filepath.Join(t.TempDir(), "plugin.zip")
 	if err := os.WriteFile(file, data, 0600); err != nil {
@@ -323,14 +324,14 @@ func TestReadAndDurableProtectionPreventCollection(t *testing.T) {
 		t.Fatal(err)
 	}
 	retained = false
-	if err := store.Remove(context.Background(), release.Digest); !errors.Is(err, frame.ErrInUse) {
+	if err := store.Remove(context.Background(), release.Digest); !errors.Is(err, framehost.ErrInUse) {
 		t.Fatalf("live read removed: %v", err)
 	}
 	if err := lease.Close(); err != nil {
 		t.Fatal(err)
 	}
 	retained = true
-	if err := store.Remove(context.Background(), release.Digest); !errors.Is(err, frame.ErrInUse) {
+	if err := store.Remove(context.Background(), release.Digest); !errors.Is(err, framehost.ErrInUse) {
 		t.Fatalf("durable protection removed: %v", err)
 	}
 	retained = false

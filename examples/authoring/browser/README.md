@@ -85,9 +85,9 @@ From the repository root, build the SDK and application fixture, then regenerate
 ```sh
 npm ci
 npm run build
-GOWORK=off go run ./examples/authoring/cmd/authorhost \
+GOWORK=off go run ./cmd/authorhost \
   -generate examples/authoring/browser/src/contracts.generated.ts
-GOWORK=off go build -o /tmp/frame-authorhost ./examples/authoring/cmd/authorhost
+GOWORK=off go build -o /tmp/frame-authorhost ./cmd/authorhost
 ```
 
 From the same repository root:
@@ -109,7 +109,7 @@ reported as equivalent.
 
 For an independent author exercise, copy this directory into a new npm project,
 install the `@frame/sdk` tarball, create an independent lock and build the fixture with `go install
-github.com/Tangerg/frame/examples/authoring/cmd/authorhost@<release>`. Use
+github.com/Tangerg/frame/cmd/authorhost@<release>`. Use
 `GOWORK=off` and the public module artifact. The committed generated contract
 projection is sufficient; this npm author project does not need a Go compiler.
 When regenerating that projection, invoke the fixture from the exact same

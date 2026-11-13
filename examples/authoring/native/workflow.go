@@ -11,14 +11,15 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/examples/document"
+	framehost "github.com/Tangerg/frame/host"
 )
 
-const Installation frame.InstallationID = "authored-document"
+const Installation framehost.InstallationID = "authored-document"
 
 type Workbench struct {
-	Host      *frame.Host
+	Host      framehost.Host
 	Contracts document.Contracts
-	scope     frame.ScopeGrant
+	scope     framehost.ScopeGrant
 	output    string
 }
 
@@ -30,7 +31,7 @@ func Open(ctx context.Context, config Configuration, outputDirectory string) (_ 
 	if err != nil {
 		return nil, err
 	}
-	host, err := frame.NewHost(ctx, frame.HostConfig{})
+	host, err := framehost.New(ctx, framehost.Config{})
 	if err != nil {
 		return nil, err
 	}
@@ -51,14 +52,14 @@ func Open(ctx context.Context, config Configuration, outputDirectory string) (_ 
 	if err != nil {
 		return nil, err
 	}
-	installed, err := host.Install(ctx, frame.InstallationConfig{ID: Installation, Plugin: plugin, Configuration: configuration, Enabled: true})
+	installed, err := host.Install(ctx, framehost.InstallationConfig{ID: Installation, Plugin: plugin, Configuration: configuration, Enabled: true})
 	if err != nil {
 		return nil, err
 	}
-	var roots []frame.ExportRef
+	var roots []framehost.ExportRef
 	for _, unit := range installed.Units {
 		for _, export := range unit.Exports {
-			roots = append(roots, frame.ExportRef{InstallationID: installed.ID, Release: installed.Release, UnitID: unit.ID, Export: export.Name, Contract: export.Contract})
+			roots = append(roots, framehost.ExportRef{InstallationID: installed.ID, Release: installed.Release, UnitID: unit.ID, Export: export.Name, Contract: export.Contract})
 		}
 	}
 	if _, err := host.Activate(ctx, roots...); err != nil {
@@ -77,11 +78,11 @@ func (w *Workbench) Close(ctx context.Context) error {
 }
 
 type Prepared struct {
-	host       *frame.Host
-	scope      frame.ScopeGrant
-	plan       *frame.BindingPlan
-	converter  frame.Selection[document.ConverterMetadata, document.Converter]
-	validators frame.Selection[document.ValidatorMetadata, document.Validator]
+	host       framehost.Host
+	scope      framehost.ScopeGrant
+	plan       framehost.BindingPlan
+	converter  framehost.Selection[document.ConverterMetadata, document.Converter]
+	validators framehost.Selection[document.ValidatorMetadata, document.Validator]
 	output     string
 }
 
@@ -92,38 +93,38 @@ func (w *Workbench) Prepare(ctx context.Context) (*Prepared, error) {
 	if err != nil {
 		return nil, err
 	}
-	converter, err := frame.SelectOne(snapshot, w.Contracts.Converters, "authoring.text-priority/1", selectTextConverter)
+	converter, err := framehost.SelectOne(snapshot, w.Contracts.Converters, "authoring.text-priority/1", selectTextConverter)
 	if err != nil {
 		return nil, err
 	}
-	validators, err := frame.SelectMany(snapshot, w.Contracts.Validators, "authoring.validator-order/1", orderValidators)
+	validators, err := framehost.SelectMany(snapshot, w.Contracts.Validators, "authoring.validator-order/1", orderValidators)
 	if err != nil {
 		return nil, err
 	}
-	plan, err := frame.Capture(snapshot, converter.Ref(), validators.Ref())
+	plan, err := framehost.Capture(snapshot, converter.Ref(), validators.Ref())
 	if err != nil {
 		return nil, err
 	}
 	return &Prepared{host: w.Host, scope: w.scope, plan: plan, converter: converter, validators: validators, output: w.output}, nil
 }
 
-func selectTextConverter(values []frame.Candidate[document.ConverterMetadata, document.Converter]) (frame.Candidate[document.ConverterMetadata, document.Converter], error) {
+func selectTextConverter(values []framehost.Candidate[document.ConverterMetadata, document.Converter]) (framehost.Candidate[document.ConverterMetadata, document.Converter], error) {
 	type converterCandidate struct {
-		candidate frame.Candidate[document.ConverterMetadata, document.Converter]
+		candidate framehost.Candidate[document.ConverterMetadata, document.Converter]
 		metadata  document.ConverterMetadata
 	}
 	converters := make([]converterCandidate, 0, len(values))
 	for _, candidate := range values {
 		metadata, err := candidate.Metadata()
 		if err != nil {
-			return frame.Candidate[document.ConverterMetadata, document.Converter]{}, err
+			return framehost.Candidate[document.ConverterMetadata, document.Converter]{}, err
 		}
 		if metadata.Format == textFormat {
 			converters = append(converters, converterCandidate{candidate, metadata})
 		}
 	}
 	if len(converters) == 0 {
-		return frame.Candidate[document.ConverterMetadata, document.Converter]{}, errors.New("authoring: no text converter is available")
+		return framehost.Candidate[document.ConverterMetadata, document.Converter]{}, errors.New("authoring: no text converter is available")
 	}
 	selected := slices.MinFunc(converters, func(a, b converterCandidate) int {
 		return cmp.Or(cmp.Compare(b.metadata.Priority, a.metadata.Priority), cmp.Compare(a.candidate.ID(), b.candidate.ID()))
@@ -131,9 +132,9 @@ func selectTextConverter(values []frame.Candidate[document.ConverterMetadata, do
 	return selected.candidate, nil
 }
 
-func orderValidators(values []frame.Candidate[document.ValidatorMetadata, document.Validator]) ([]frame.Candidate[document.ValidatorMetadata, document.Validator], error) {
+func orderValidators(values []framehost.Candidate[document.ValidatorMetadata, document.Validator]) ([]framehost.Candidate[document.ValidatorMetadata, document.Validator], error) {
 	type validatorCandidate struct {
-		candidate frame.Candidate[document.ValidatorMetadata, document.Validator]
+		candidate framehost.Candidate[document.ValidatorMetadata, document.Validator]
 		metadata  document.ValidatorMetadata
 	}
 	validators := make([]validatorCandidate, len(values))
@@ -161,14 +162,19 @@ type Report struct {
 // View is an acquired resource result. Its real temporary file and all selected
 // providers remain in the original Use until Close or caller-lifetime closure.
 type View struct {
-	use    *frame.Use
+	resource *viewResource
+}
+
+// Cleanup retains the original resource even if a caller replaces its View.
+type viewResource struct {
+	use    *framehost.Use
 	file   *os.File
 	size   int64
 	report Report
 }
 
-func (p *Prepared) Acquire(ctx context.Context, owner *frame.Lifetime, reference document.DocumentRef) (view *View, err error) {
-	use, err := p.host.Acquire(ctx, p.plan, frame.UseConfig{Owner: owner, Scope: p.scope})
+func (p *Prepared) Acquire(ctx context.Context, owner frame.Lifetime, reference document.DocumentRef) (view *View, err error) {
+	use, err := p.host.Acquire(ctx, p.plan, framehost.UseConfig{Owner: owner, Scope: p.scope})
 	if err != nil {
 		return nil, err
 	}
@@ -179,14 +185,14 @@ func (p *Prepared) Acquire(ctx context.Context, owner *frame.Lifetime, reference
 		}
 	}()
 	var report Report
-	if err := frame.Borrow(ctx, use, p.converter, func(ctx context.Context, values []document.Converter) error {
+	if err := framehost.Borrow(ctx, use, p.converter, func(ctx context.Context, values []document.Converter) error {
 		var err error
 		report.Converted, err = values[0](ctx, reference)
 		return err
 	}); err != nil {
 		return nil, err
 	}
-	if err := frame.Borrow(ctx, use, p.validators, func(ctx context.Context, values []document.Validator) error {
+	if err := framehost.Borrow(ctx, use, p.validators, func(ctx context.Context, values []document.Validator) error {
 		for _, validate := range values {
 			diagnostics, err := validate(ctx, report.Converted)
 			if err != nil {
@@ -203,7 +209,7 @@ func (p *Prepared) Acquire(ctx context.Context, owner *frame.Lifetime, reference
 		return nil, err
 	}
 	defer work.Finish()
-	result := &View{use: use, report: report}
+	result := &viewResource{use: use, report: report}
 	if _, err := work.Cleanup("authored document view", result.releaseFile); err != nil {
 		return nil, err
 	}
@@ -215,14 +221,14 @@ func (p *Prepared) Acquire(ctx context.Context, owner *frame.Lifetime, reference
 	if err != nil {
 		return nil, err
 	}
-	if err := contextError(work.Context()); err != nil {
+	if err := frame.ContextError(work.Context()); err != nil {
 		return nil, err
 	}
 	result.size = int64(written)
-	return result, nil
+	return &View{resource: result}, nil
 }
 
-func (v *View) releaseFile() error {
+func (v *viewResource) releaseFile() error {
 	if v.file == nil {
 		return nil
 	}
@@ -235,26 +241,41 @@ func (v *View) releaseFile() error {
 }
 
 func (v *View) Report() Report {
-	result := v.report
+	if v == nil || v.resource == nil {
+		return Report{}
+	}
+	result := v.resource.report
 	result.Diagnostics = slices.Clone(result.Diagnostics)
 	return result
 }
 
-func (v *View) Binding() frame.BindingSnapshot { return v.use.Binding() }
+func (v *View) Binding() framehost.BindingSnapshot {
+	if v == nil || v.resource == nil {
+		return framehost.BindingSnapshot{}
+	}
+	return v.resource.use.Binding()
+}
 
 func (v *View) WithReader(ctx context.Context, read func(context.Context, io.Reader) error) error {
+	if v == nil || v.resource == nil {
+		return frame.ErrInvalid
+	}
 	if read == nil {
 		return errors.New("authoring: resource reader is required")
 	}
-	work, err := v.use.Enter(ctx)
+	resource := v.resource
+	work, err := resource.use.Enter(ctx)
 	if err != nil {
 		return err
 	}
 	defer work.Finish()
-	return read(work.Context(), io.NewSectionReader(v.file, 0, v.size))
+	return read(work.Context(), io.NewSectionReader(resource.file, 0, resource.size))
 }
 
 func (v *View) Close(ctx context.Context) error {
-	_, err := v.use.Close(ctx)
+	if v == nil || v.resource == nil {
+		return frame.ErrInvalid
+	}
+	_, err := v.resource.use.Close(ctx)
 	return err
 }

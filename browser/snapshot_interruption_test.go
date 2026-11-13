@@ -7,8 +7,8 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 	"github.com/Tangerg/frame/value"
 )
@@ -31,20 +31,20 @@ func (m interruptedSnapshotMetadata) MarshalJSON() ([]byte, error) {
 }
 
 type snapshotMetadataDriver struct {
-	point    frame.ContractRef
+	point    framehost.ContractRef
 	metadata interruptedSnapshotMetadata
 }
 
-func (snapshotMetadataDriver) Profile() frame.Profile { return "snapshot-metadata" }
-func (snapshotMetadataDriver) RealmBound() bool       { return true }
-func (d snapshotMetadataDriver) Prepare(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
-	return []frame.ExportValue{{Name: "metadata", Contract: d.point, Metadata: d.metadata, Value: "content"}}, nil
+func (snapshotMetadataDriver) Profile() framehost.Profile { return "snapshot-metadata" }
+func (snapshotMetadataDriver) RealmBound() bool           { return true }
+func (d snapshotMetadataDriver) Prepare(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+	return []framehost.ExportValue{{Name: "metadata", Contract: d.point, Metadata: d.metadata, Value: "content"}}, nil
 }
 
 func TestSnapshotInterruptionRetainsFailureAndReleasesCapacity(t *testing.T) {
 	for _, interruption := range []interruptedSnapshotMetadata{snapshotCodecPanic, snapshotCodecGoexit} {
 		t.Run(string(interruption), func(t *testing.T) {
-			point, err := frame.NewPoint[interruptedSnapshotMetadata, string]("test.snapshot-metadata", "1")
+			point, err := framehost.NewPoint[interruptedSnapshotMetadata, string]("test.snapshot-metadata", "1")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -59,18 +59,18 @@ func TestSnapshotInterruptionRetainsFailureAndReleasesCapacity(t *testing.T) {
 			if err := e.host.RegisterDriver(driver); err != nil {
 				t.Fatal(err)
 			}
-			plugin, err := frame.Define(frame.Definition{Revision: value.Hash([]byte("snapshot-metadata")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "metadata", Profile: driver.Profile(), Exports: []frame.ExportDeclaration{{Name: "metadata", Contract: point.Ref()}}}}}})
+			plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("snapshot-metadata")), Units: []framehost.Unit{{Declaration: framehost.UnitDeclaration{ID: "metadata", Profile: driver.Profile(), Exports: []framehost.ExportDeclaration{{Name: "metadata", Contract: point.Ref()}}}}}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := e.host.Install(e.ctx, frame.InstallationConfig{ID: "metadata", Plugin: plugin, Enabled: true}); err != nil {
+			if _, err := e.host.Install(e.ctx, framehost.InstallationConfig{ID: "metadata", Plugin: plugin, Enabled: true}); err != nil {
 				t.Fatal(err)
 			}
 			e.credentials, err = e.bridge.OpenRealm(e.ctx, "open", "0123456789abcdef0123456789abcdef")
 			if err != nil {
 				t.Fatal(err)
 			}
-			root := frame.ExportRef{InstallationID: "metadata", Release: plugin.Revision(), UnitID: "metadata", Export: "metadata", Contract: point.Ref()}
+			root := framehost.ExportRef{InstallationID: "metadata", Release: plugin.Revision(), UnitID: "metadata", Export: "metadata", Contract: point.Ref()}
 			if _, err := e.host.ActivateIn(e.ctx, browser.RealmID(e.credentials.Realm), root); err != nil {
 				t.Fatal(err)
 			}
@@ -94,7 +94,7 @@ func TestSnapshotInterruptionRetainsFailureAndReleasesCapacity(t *testing.T) {
 			}
 			for range 2 {
 				replayed, err := e.bridge.Snapshot(e.ctx, e.credentials.Token, request)
-				if !errors.Is(err, frame.ErrUnavailable) || replayed.ID != "" {
+				if !errors.Is(err, framehost.ErrUnavailable) || replayed.ID != "" {
 					t.Fatalf("interrupted capture replayed as success: %+v, %v", replayed, err)
 				}
 			}

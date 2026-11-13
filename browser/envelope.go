@@ -1,6 +1,8 @@
 package browser
 
-import "encoding/json"
+import (
+	"encoding/json"
+)
 
 type HTTPEnvelope struct {
 	Method string          `json:"method"`

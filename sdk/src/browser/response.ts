@@ -27,7 +27,14 @@ export async function readResponseBytes(
       length = required;
     }
   } catch (error) {
-    await reader.cancel(error);
+    try {
+      await reader.cancel(error);
+    } catch (cleanup) {
+      throw new AggregateError(
+        [error, cleanup],
+        "response admission and body cancellation failed",
+      );
+    }
     throw error;
   } finally {
     reader.releaseLock();

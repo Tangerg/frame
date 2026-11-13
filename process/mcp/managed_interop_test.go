@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/process"
 	"github.com/Tangerg/frame/value"
 )
@@ -25,7 +26,7 @@ func TestFlameHooksInterop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile := ManagedProtocol{Exports: func(frame.UnitBinding) (map[string]ManagedExport, error) {
+	profile := ManagedProtocol{Exports: func(framehost.UnitBinding) (map[string]ManagedExport, error) {
 		return map[string]ManagedExport{"service": {Name: "hook-provider", Contract: contract}}, nil
 	}}
 	checkExecution(t, profile, contract.Capability(), func(t *testing.T, dir string) process.Program {
@@ -34,7 +35,7 @@ func TestFlameHooksInterop(t *testing.T) {
 			t.Fatal(err)
 		}
 		return process.Program{Command: binary, ExecutableDigest: value.Hash(image), Directory: dir, Env: []string{"PLUGIN_DATA=" + dir}}
-	}, nil, func(ctx context.Context, borrowed process.Service, dir string) {
+	}, nil, func(ctx context.Context, borrowed frame.Service, dir string) {
 		service := borrowed.(*ManagedService)
 		query, err := value.EncodeJSON(map[string]any{"cwd": dir, "projectRoot": dir, "includeProject": false})
 		if err != nil {

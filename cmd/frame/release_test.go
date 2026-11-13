@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/distribution"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -22,7 +22,7 @@ func TestPackageAndVerifyPreserveTheExactArtifactAndRefusePartialOutput(t *testi
 	manifest := distribution.Manifest{
 		SchemaVersion: 1, Package: "example.theme", Version: "1.0.0",
 		Artifacts:    []distribution.Artifact{{Path: "theme.css"}},
-		Units:        []distribution.Unit{{ID: "theme", Profile: frame.StaticResource, Resources: []string{"theme.css"}}},
+		Units:        []distribution.Unit{{ID: "theme", Profile: framehost.StaticResource, Resources: []string{"theme.css"}}},
 		Dependencies: []distribution.LockedRelease{{Package: "example.dependency", Release: value.Hash([]byte("original dependency"))}},
 	}
 	writeManifest := func() {
@@ -91,7 +91,7 @@ func TestArchiveInspectionSeparatesIntegrityTrustAndExecution(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(source, "theme.css"), []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	manifest := distribution.Manifest{SchemaVersion: distribution.ManifestSchemaVersion, Package: "theme", Version: "1", Artifacts: []distribution.Artifact{{Path: "theme.css"}}, Units: []distribution.Unit{{ID: "theme", Profile: frame.StaticResource, Resources: []string{"theme.css"}}}}
+	manifest := distribution.Manifest{SchemaVersion: distribution.ManifestSchemaVersion, Package: "theme", Version: "1", Artifacts: []distribution.Artifact{{Path: "theme.css"}}, Units: []distribution.Unit{{ID: "theme", Profile: framehost.StaticResource, Resources: []string{"theme.css"}}}}
 	data, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)

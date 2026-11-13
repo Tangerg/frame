@@ -7,7 +7,7 @@ Frame is a general-purpose plugin framework for hosts that need exact service bi
 Use the Go toolchain specified in [go.mod](go.mod). For Node workspaces use Node 24 or newer and npm. The native build/check example needs only Go.
 
 ```sh
-printf '  TODO example  \n' | go run ./examples/buildcheck/cmd/buildcheck -apply
+printf '  TODO example  \n' | go run ./cmd/buildcheck -apply
 ```
 
 It composes compiler passes, analyzers, a formatter and decorators under one snapshot. The host decides their order. To run a real zero-export Node plugin with two host-owned imports, use Linux or macOS:
@@ -62,13 +62,14 @@ for the breaking changes since v0.0.1.
 
 | Responsibility | Physical owner |
 | --- | --- |
-| Declare, select, authorize, acquire and retire | Root Go package `frame` |
-| Immutable JSON and SHA-256 identities | `value/` |
-| Portable contract semantics and generated bindings | `portable/`, with its publisher tool in `portable/contractgen/` |
+| Callable contract semantics and structured resource lifetimes | Root Go package `frame` |
+| Plugin installation, contracts, selection, exact binding and admission | `host/` |
+| JSON/schema admission, Go codec models and SHA-256 identities | `value/` |
+| Published contract projections for Go and TypeScript | `contractgen/` |
 | Managed local execution | `process/` for admission of an attached session, `process/runner/` for child ownership, `process/mcp/` for optional MCP interoperability |
 | Browser execution and its control messages | `browser/` for the Go bridge and DTOs, `sdk/src/browser/` for the browser runtime |
 | Artifact distribution and durable evidence | `distribution/` and `sqlite/` |
 | TypeScript consumption | `sdk/`, published as `@frame/sdk` with subpath imports |
-| Executables | `cmd/frame` for archives and contracts, `cmd/frame-runner` for direct child supervision |
+| Executables | `cmd/frame` for archives and contracts, `cmd/frame-runner` for direct child supervision, and `cmd/authorhost`, `cmd/buildcheck`, `cmd/document` for the examples |
 
 [Architecture and migration](docs/architecture.md) · [Original design proposal (PDF)](docs/Frame-Framework-Proposal-ZH.pdf) · [Original proposal source](docs/Frame-Framework-Proposal-ZH.md) · [Development and verification](DEVELOPMENT.md) · [Code rules](AGENTS.md)

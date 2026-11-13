@@ -7,7 +7,7 @@ import (
 	"os"
 	"syscall"
 
-	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 // Lock the actual directory inode, not a replaceable child lock-file name.
@@ -17,7 +17,7 @@ func lockStore(root *os.Root) (*os.File, error) {
 		return nil, err
 	}
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return nil, errors.Join(frame.ErrInUse, err, file.Close())
+		return nil, errors.Join(framehost.ErrInUse, err, file.Close())
 	}
 	return file, nil
 }

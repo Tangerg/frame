@@ -1,7 +1,7 @@
 # SQLite settlement and execution protection
 
 This optional adapter uses one local SQLite file and the Host's existing
-`frame.Admission`. A held operating-system lock on a persistent `.frame-lock`
+`framehost.Admission`. A held operating-system lock on a persistent `.frame-lock`
 sidecar grants one Store authority; opening another Host on the same database
 fails. The sidecar stays in place after release and must not be replaced while a
 Store is alive. Database and lock paths must be regular files without hard links.
@@ -24,6 +24,19 @@ reference-count ledger. Every admission read uses a new current transaction.
 directly: reassigning a local variable cannot replace the Store's declaration or
 the reference reader already captured by Admission. A zero Owner refuses all
 operations with `frame.ErrInvalid`; its diagnostic `ID` is empty.
+
+`Open` returns a `Store` value handle. Hosts and drivers retain that value, so
+reassigning the caller's variable cannot redirect their original database. Copies
+compare by their one private authority. Issued Owners and receipt reservations
+retain that authority directly. Copying or replacing a caller's Store handle
+cannot redirect an accepted capability to another database, admission gate or
+epoch. Every retained copy joins the same physical database shutdown.
+Host construction validates each declared durable authority against its Admission
+and epoch before driver callbacks. When both installation persistence and execution
+protection are durable, they must retain the same original Store.
+Standalone transactions capture their original database owner before application
+callbacks. A lost commit acknowledgement fences and closes that owner even when
+the callback replaces its public Database handle.
 
 Schema admission derives each owner's write grant from the relations its original
 statements create. There is no separately maintained table allowlist. An owner
@@ -104,7 +117,7 @@ These obligations also survive `runtime.Goexit`: an entered mutation settles its
 original rolled-back intent before admission returns, and an interrupted
 post-commit synchronization keeps admission fenced until the owner restores it.
 
-`frame.CommitSucceeded` and `frame.CommitRejected` are terminal. Repeating the same identity returns its
+`framehost.CommitSucceeded` and `framehost.CommitRejected` are terminal. Repeating the same identity returns its
 original conclusion; changing its request is a conflict. Context cancellation is
 checked before COMMIT. Cleanup responsibility starts before BEGIN or an authorizer
 change is attempted, since a failed acknowledgement does not prove that the
@@ -144,7 +157,7 @@ If initialization fails and its cleanup is also unconfirmed, `Open` or
 `OpenSchema` returns the sealed Store or Database together with an error. Callers
 must preserve that cleanup handle and call `Close`; it is not a partially usable
 database. Normal initialization failures whose resources were released return a
-nil handle. An indeterminate
+zero Store value or nil Database pointer; closing either is safe. An indeterminate
 business commit reports `Indeterminate`, without speculative committed evidence.
 
 `Settlement` reads the original conclusion. `RecoverPrepared` may settle remaining

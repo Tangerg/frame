@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 // Publish retains the original operation before asking the sole Host catalog
@@ -31,7 +32,7 @@ func (b *Bridge) Publish(ctx context.Context, token string, request PublicationR
 	operation, replay, err := b.begin(ctx, request.OperationID, identity, func(operation *controlOperation) error {
 		entry := b.executions.get(request.Execution.ID)
 		if session.cleanupOnly || !entry.serves(session.realm, request.Execution) || !entry.hasReady() {
-			return frame.ErrUnavailable
+			return framehost.ErrUnavailable
 		}
 		if !request.Object.membershipOf(entry.plan.Units[0]) {
 			return frame.ErrContractMismatch
@@ -53,7 +54,7 @@ func (b *Bridge) Publish(ctx context.Context, token string, request PublicationR
 	}
 	// A metadata decoder may panic or exit this goroutine before producing a
 	// result. Only a completed publication can replace this failure.
-	returned = fmt.Errorf("%w: publication interrupted", frame.ErrUnavailable)
+	returned = fmt.Errorf("%w: publication interrupted", framehost.ErrUnavailable)
 	defer func() { returned = b.finish(ctx, request.OperationID, operation, returned) }()
 	if err := b.reserveReceipt(ctx, request.OperationID, operation); err != nil {
 		return PublicationResult{}, err
@@ -79,20 +80,20 @@ func (b *Bridge) Publish(ctx context.Context, token string, request PublicationR
 
 func (o ObjectRef) membershipOf(unit PlannedUnit) bool {
 	return o.validIn(unit.Instance.ID) &&
-		o.Export.Contract.Kind == frame.PointKind && declaresContract(unit, o.Export.Contract)
+		o.Export.Contract.Kind == framehost.PointKind && declaresContract(unit, o.Export.Contract)
 }
 
-func (b *Bridge) publishObject(ctx context.Context, request PublicationRequest) (frame.Publication, error) {
-	metadata, err := b.config.Host.DecodeMetadata(request.Object.Export.Contract, []byte(request.MetadataJSON))
+func (b *Bridge) publishObject(ctx context.Context, request PublicationRequest) (framehost.Publication, error) {
+	metadata, err := b.config.Host.PrepareMetadata(request.Object.Export.Contract, []byte(request.MetadataJSON))
 	if err != nil {
-		return frame.Publication{}, err
+		return framehost.Publication{}, err
 	}
-	prepared, err := b.config.Host.PreparePublication(ctx, request.Object.Export.InstanceID, frame.ExportValue{
+	prepared, err := b.config.Host.PreparePublication(ctx, request.Object.Export.InstanceID, framehost.ExportValue{
 		Name: request.Object.Export.Name, Contract: request.Object.Export.Contract,
 		Metadata: metadata, Value: Object{Reference: request.Object},
 	})
 	if err != nil {
-		return frame.Publication{}, err
+		return framehost.Publication{}, err
 	}
 	return b.config.Host.Publish(ctx, request.OperationID, prepared)
 }
@@ -125,26 +126,26 @@ func (b *Bridge) Publication(ctx context.Context, token, operationID string) (Pu
 	return b.awaitPublication(ctx, operation)
 }
 
-func (b *Bridge) Withdraw(ctx context.Context, token string, request Withdrawal) (PublicationResult, error) {
+func (b *Bridge) Withdraw(ctx context.Context, token string, request Withdrawal) (DecisionResult, error) {
 	session, err := b.anySession(token)
 	if err != nil {
-		return PublicationResult{}, err
+		return DecisionResult{}, err
 	}
 	if request.Authority != b.authority || request.PublicationID == "" {
-		return PublicationResult{}, frame.ErrInvalid
+		return DecisionResult{}, frame.ErrInvalid
 	}
 	b.mu.Lock()
 	original := b.publications[request.PublicationID]
 	b.mu.Unlock()
 	if original == nil {
-		return PublicationResult{Decision: Accepted}, nil
+		return DecisionResult{Decision: Accepted}, nil
 	}
 	if original.Realm != session.realm {
-		return PublicationResult{}, frame.ErrFenced
+		return DecisionResult{}, framehost.ErrFenced
 	}
 	err = b.config.Host.Withdraw(ctx, request.PublicationID)
-	if err != nil && !errors.Is(err, frame.ErrUnavailable) {
-		return rejected(classifyProblem(err).message), nil
+	if err != nil && !errors.Is(err, framehost.ErrUnavailable) {
+		return rejectedDecision(classifyProblem(err).message), nil
 	}
-	return PublicationResult{Decision: Accepted}, nil
+	return DecisionResult{Decision: Accepted}, nil
 }

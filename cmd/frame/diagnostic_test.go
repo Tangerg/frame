@@ -10,6 +10,7 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/distribution"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 func TestCommandUsageErrorsHaveInputCategory(t *testing.T) {
@@ -50,7 +51,7 @@ func TestArchiveOutputFailurePreservesOperationalCause(t *testing.T) {
 		Package:       "theme",
 		Version:       "1",
 		Artifacts:     []distribution.Artifact{{Path: "theme.css"}},
-		Units:         []distribution.Unit{{ID: "theme", Profile: frame.StaticResource, Resources: []string{"theme.css"}}},
+		Units:         []distribution.Unit{{ID: "theme", Profile: framehost.StaticResource, Resources: []string{"theme.css"}}},
 	}
 	data, err := json.Marshal(manifest)
 	if err != nil {

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/Tangerg/frame/internal/cancellation"
+	"github.com/Tangerg/frame"
 )
 
 var (
@@ -34,7 +34,7 @@ func newStreamCall(ctx context.Context) *streamCall {
 
 func (s *streamCall) failLocked(cause error) error {
 	if s.failure == nil {
-		s.failure = errors.Join(ErrOutcomeUnknown, cause)
+		s.failure = errors.Join(frame.ErrOutcomeUnknown, cause)
 		s.abort(s.failure)
 	}
 	return s.failure
@@ -72,22 +72,22 @@ func (s *streamCall) deliver(wait context.Context, emit func(context.Context) er
 		close(s.pending)
 		s.pending = nil
 	}()
-	if err := cancellation.Err(s.ctx); err != nil {
+	if err := frame.ContextError(s.ctx); err != nil {
 		return err
 	}
 	if wait == nil {
 		return errors.New("process: chunk wait context is required")
 	}
-	if err := cancellation.Err(wait); err != nil {
+	if err := frame.ContextError(wait); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithCancelCause(s.ctx)
-	stop := context.AfterFunc(wait, func() { cancel(cancellation.Err(wait)) })
+	stop := context.AfterFunc(wait, func() { cancel(frame.ContextError(wait)) })
 	defer stop()
 	defer cancel(nil)
 	err = emit(ctx)
 	returned = true
-	return errors.Join(err, cancellation.Err(ctx))
+	return errors.Join(err, frame.ContextError(ctx))
 }
 
 func (s *streamCall) finish(err error) error {

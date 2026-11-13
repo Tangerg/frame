@@ -6,8 +6,8 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/examples/document"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -24,12 +24,12 @@ func TestInterruptedAcquisitionClosesItsUndeliveredUse(t *testing.T) {
 		t.Run(interruption.name, func(t *testing.T) {
 			workbench, _, output, reference, ctx := authorWorkbench(t)
 			point := workbench.Contracts.Validators
-			plugin, err := frame.Define(frame.Definition{
+			plugin, err := framehost.Define(framehost.Definition{
 				Revision: value.Hash([]byte("interrupted-acquisition")),
-				Units: []frame.Unit{{
-					Declaration: frame.UnitDeclaration{ID: "validation", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "interrupt", Contract: point.Ref()}}},
-					Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
-						return []frame.ExportValue{frame.Contribute("interrupt", point, document.ValidatorMetadata{Name: "interrupt"}, document.Validator(func(context.Context, document.Converted) ([]document.Diagnostic, error) {
+				Units: []framehost.Unit{{
+					Declaration: framehost.UnitDeclaration{ID: "validation", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "interrupt", Contract: point.Ref()}}},
+					Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+						return []framehost.ExportValue{framehost.Contribute("interrupt", point, document.ValidatorMetadata{Name: "interrupt"}, document.Validator(func(context.Context, document.Converted) ([]document.Diagnostic, error) {
 							interruption.exit()
 							return nil, nil
 						}))}, nil
@@ -39,10 +39,10 @@ func TestInterruptedAcquisitionClosesItsUndeliveredUse(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := workbench.Host.Install(ctx, frame.InstallationConfig{ID: "interrupted", Plugin: plugin, Enabled: true}); err != nil {
+			if _, err := workbench.Host.Install(ctx, framehost.InstallationConfig{ID: "interrupted", Plugin: plugin, Enabled: true}); err != nil {
 				t.Fatal(err)
 			}
-			root := frame.ExportRef{InstallationID: "interrupted", Release: plugin.Revision(), UnitID: "validation", Export: "interrupt", Contract: point.Ref()}
+			root := framehost.ExportRef{InstallationID: "interrupted", Release: plugin.Revision(), UnitID: "validation", Export: "interrupt", Contract: point.Ref()}
 			if _, err := workbench.Host.Activate(ctx, root); err != nil {
 				t.Fatal(err)
 			}

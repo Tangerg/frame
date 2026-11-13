@@ -6,6 +6,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/Tangerg/frame"
 )
 
 func TestStreamCancellationPreservesCategoryAndCause(t *testing.T) {
@@ -57,7 +59,7 @@ func TestStreamCancellationPreservesCategoryAndCause(t *testing.T) {
 						return nil
 					})
 					err = stream.finish(err)
-					if !errors.Is(err, category) || !errors.Is(err, cause) || !errors.Is(err, ErrOutcomeUnknown) {
+					if !errors.Is(err, category) || !errors.Is(err, cause) || !errors.Is(err, frame.ErrOutcomeUnknown) {
 						t.Fatalf("chunk rejection lost outcome, cancellation category, or cause: %v", err)
 					}
 					if called == timing.before {

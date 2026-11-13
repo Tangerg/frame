@@ -5,7 +5,6 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -25,7 +24,7 @@ func TestUnallocatableEmbeddedPointerIsRejectedBeforePublishingItsSchema(t *test
 	if err := value.ValidateType(reflect.TypeFor[privatePointerEmbedding]()); err == nil {
 		t.Fatal("unexported embedded pointer was admitted")
 	}
-	if _, err := portable.SchemaFor[privatePointerEmbedding](); err == nil {
+	if _, err := value.SchemaFor[privatePointerEmbedding](); err == nil {
 		t.Fatal("published a schema that the fresh typed decoder cannot consume")
 	}
 	original := privatePointerEmbedding{privateEmbeddedValue: &privateEmbeddedValue{Value: "original"}}
@@ -43,8 +42,8 @@ func TestAllocatableEmbeddedFieldsShareSchemaAndCodec(t *testing.T) {
 		target reflect.Type
 		schema func() ([]byte, error)
 	}{
-		{"private value", reflect.TypeFor[privateValueEmbedding](), portable.SchemaFor[privateValueEmbedding]},
-		{"public pointer", reflect.TypeFor[publicPointerEmbedding](), portable.SchemaFor[publicPointerEmbedding]},
+		{"private value", reflect.TypeFor[privateValueEmbedding](), value.SchemaFor[privateValueEmbedding]},
+		{"public pointer", reflect.TypeFor[publicPointerEmbedding](), value.SchemaFor[publicPointerEmbedding]},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if err := value.ValidateType(test.target); err != nil {
@@ -54,7 +53,7 @@ func TestAllocatableEmbeddedFieldsShareSchemaAndCodec(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			schema, err := portable.AdmitSchema(descriptor)
+			schema, err := value.AdmitSchema(descriptor)
 			if err != nil {
 				t.Fatal(err)
 			}

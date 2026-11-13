@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -18,11 +19,11 @@ type SubmissionID struct {
 }
 
 type Settlement struct {
-	ID           SubmissionID      `json:"id"`
-	State        frame.CommitState `json:"state"`
-	Digest       value.Digest      `json:"digest"`
-	Evidence     []byte            `json:"evidence,omitempty"`
-	Synchronized bool              `json:"synchronized"`
+	ID           SubmissionID          `json:"id"`
+	State        framehost.CommitState `json:"state"`
+	Digest       value.Digest          `json:"digest"`
+	Evidence     []byte                `json:"evidence,omitempty"`
+	Synchronized bool                  `json:"synchronized"`
 }
 
 // Prepare issues an identity only after its sequence and original request are
@@ -175,7 +176,7 @@ func (m *submissionMutation) execute(ctx context.Context, mutate func(context.Co
 			return err
 		}
 		m.settlement = original
-		if original.State != frame.CommitIndeterminate {
+		if original.State != framehost.CommitIndeterminate {
 			return nil
 		}
 		m.entered = true
@@ -193,7 +194,7 @@ func (m *submissionMutation) execute(ctx context.Context, mutate func(context.Co
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE frame_submissions SET state=?,evidence=? WHERE owner_id=? AND sequence=? AND digest=? AND state=?`, submissionCommitted, evidence, m.owner.id, m.id.Sequence, original.Digest, submissionPrepared)
 		if err == nil {
-			m.settlement.State = frame.CommitSucceeded
+			m.settlement.State = framehost.CommitSucceeded
 			m.settlement.Evidence = bytes.Clone(evidence)
 		}
 		return err
@@ -209,15 +210,15 @@ func (m *submissionMutation) resolveInterruption() {
 	original, err := m.owner.settlePrepared(context.Background(), m.id, m.request)
 	m.settlement = original
 	if err != nil {
-		m.settlement = Settlement{ID: m.id, State: frame.CommitIndeterminate}
+		m.settlement = Settlement{ID: m.id, State: framehost.CommitIndeterminate}
 	}
-	if err == nil && original.State == frame.CommitRejected {
+	if err == nil && original.State == framehost.CommitRejected {
 		err = m.owner.confirm(context.Background(), m.id)
 		if err == nil {
 			m.settlement.Synchronized = true
 		}
 	}
-	if err != nil || original.State == frame.CommitSucceeded {
+	if err != nil || original.State == framehost.CommitSucceeded {
 		m.owner.store.admission.RequireRecovery(errors.Join(ErrUnsettled, err))
 	}
 }
@@ -234,17 +235,17 @@ func (m *submissionMutation) resolveFailure(failure error) error {
 	}
 	if errors.Is(failure, ErrIndeterminate) {
 		m.owner.store.admission.RequireRecovery(failure)
-		m.settlement = Settlement{ID: m.id, Digest: m.settlement.Digest, State: frame.CommitIndeterminate}
+		m.settlement = Settlement{ID: m.id, Digest: m.settlement.Digest, State: framehost.CommitIndeterminate}
 		return failure
 	}
 	original, err := m.owner.settlePrepared(context.Background(), m.id, m.request)
 	if err != nil {
-		m.settlement = Settlement{ID: m.id, State: frame.CommitIndeterminate}
+		m.settlement = Settlement{ID: m.id, State: framehost.CommitIndeterminate}
 		m.owner.store.admission.RequireRecovery(err)
 		return errors.Join(ErrIndeterminate, failure, err)
 	}
 	m.settlement = original
-	if original.State == frame.CommitSucceeded {
+	if original.State == framehost.CommitSucceeded {
 		return nil
 	}
 	m.settlement, err = m.owner.synchronize(original, nil, confirmOnCommit)
@@ -503,12 +504,12 @@ func (o Owner) settlePrepared(ctx context.Context, id SubmissionID, request []by
 	err := o.store.transaction(ctx, func(tx Executor) error {
 		var err error
 		result, err = o.readSettlement(ctx, tx, id, request)
-		if err != nil || result.State != frame.CommitIndeterminate {
+		if err != nil || result.State != framehost.CommitIndeterminate {
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE frame_submissions SET state=? WHERE owner_id=? AND sequence=? AND digest=? AND state=?`, submissionRejected, o.id, id.Sequence, result.Digest, submissionPrepared)
 		if err == nil {
-			result.State = frame.CommitRejected
+			result.State = framehost.CommitRejected
 		}
 		return err
 	})

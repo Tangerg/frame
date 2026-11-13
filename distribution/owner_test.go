@@ -10,14 +10,33 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	framevalue "github.com/Tangerg/frame/value"
 )
 
 func ownerConfig(directory string) Config {
-	return Config{Directory: directory, Admission: frame.NewAdmission(), Trust: func(context.Context, Source, Manifest, Lock) error { return nil }, Retained: func(context.Context, framevalue.Digest) (bool, error) { return false, nil }}
+	return Config{Directory: directory, Admission: framehost.NewAdmission(), Trust: func(context.Context, Source, Manifest, Lock) error { return nil }, Retained: func(context.Context, framevalue.Digest) (bool, error) { return false, nil }}
 }
 
-func closeStore(t *testing.T, store *Store) {
+type missingCloseContext struct{ context.Context }
+
+func TestStoreRejectsMissingCloseContextBeforeDraining(t *testing.T) {
+	_, _, archive, _ := packageFixture(t)
+	store := storeFixture(t, nil)
+	release := installArchive(t, store, archive)
+	if err := store.Close((*missingCloseContext)(nil)); !errors.Is(err, frame.ErrInvalid) {
+		t.Fatalf("missing wait context admitted: %v", err)
+	}
+	lease, err := store.Acquire(t.Context(), release.Digest)
+	if err != nil {
+		t.Fatalf("invalid close drained the store: %v", err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func closeStore(t *testing.T, store Store) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -30,7 +49,7 @@ func TestDirectoryHasOneOwnerAcrossConcurrentOpenAndPathAliases(t *testing.T) {
 	directory := filepath.Join(t.TempDir(), "content")
 	const contenders = 12
 	var group sync.WaitGroup
-	stores := make(chan *Store, contenders)
+	stores := make(chan Store, contenders)
 	failures := make(chan error, contenders)
 	for range contenders {
 		group.Go(func() {
@@ -50,7 +69,7 @@ func TestDirectoryHasOneOwnerAcrossConcurrentOpenAndPathAliases(t *testing.T) {
 	}
 	original := <-stores
 	for err := range failures {
-		if !errors.Is(err, frame.ErrInUse) {
+		if !errors.Is(err, framehost.ErrInUse) {
 			t.Fatalf("concurrent open = %v", err)
 		}
 	}
@@ -58,7 +77,7 @@ func TestDirectoryHasOneOwnerAcrossConcurrentOpenAndPathAliases(t *testing.T) {
 	if err := os.Symlink(directory, alias); err != nil {
 		t.Fatal(err)
 	}
-	if duplicate, err := Open(ownerConfig(alias)); !errors.Is(err, frame.ErrInUse) || duplicate != nil {
+	if duplicate, err := Open(ownerConfig(alias)); !errors.Is(err, framehost.ErrInUse) || duplicate.storeAuthority != nil {
 		t.Fatalf("alias acquired the original inode: %v", err)
 	}
 	closeStore(t, original)
@@ -82,6 +101,7 @@ func TestCloseJoinsAcceptedIOAndLeasesAfterItsOnlyWaiterCancels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	closing := store
 	archive := filepath.Join(t.TempDir(), "package.zip")
 	if err := os.WriteFile(archive, data, 0600); err != nil {
 		t.Fatal(err)
@@ -98,13 +118,13 @@ func TestCloseJoinsAcceptedIOAndLeasesAfterItsOnlyWaiterCancels(t *testing.T) {
 	<-entered
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := store.Close(ctx); !errors.Is(err, context.Canceled) {
+	if err := closing.Close(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled close wait = %v", err)
 	}
 	if _, err := store.Acquire(t.Context(), framevalue.Hash([]byte("unrelated"))); !errors.Is(err, frame.ErrClosed) {
 		t.Fatalf("closing store admitted new claim: %v", err)
 	}
-	if _, err := Open(ownerConfig(directory)); !errors.Is(err, frame.ErrInUse) {
+	if _, err := Open(ownerConfig(directory)); !errors.Is(err, framehost.ErrInUse) {
 		t.Fatalf("cancelled wait released directory lock: %v", err)
 	}
 	once.Do(func() { close(resume) })
@@ -223,7 +243,7 @@ func TestRecoveryReclaimsPrivateOperationsOnlyAfterExclusiveOwnership(t *testing
 			t.Fatal(err)
 		}
 	}
-	if _, err := Open(ownerConfig(directory)); !errors.Is(err, frame.ErrInUse) {
+	if _, err := Open(ownerConfig(directory)); !errors.Is(err, framehost.ErrInUse) {
 		t.Fatalf("second owner performed recovery: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(directory, ".stage-interrupted")); err != nil {

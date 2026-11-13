@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/internal/cancellation"
 )
 
 const (
@@ -54,13 +53,13 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return cancellation.Err(ctx)
+			return frame.ContextError(ctx)
 		case slots <- struct{}{}:
 		}
 		connection, err := listener.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
-				return cancellation.Err(ctx)
+				return frame.ContextError(ctx)
 			}
 			return err
 		}
@@ -292,7 +291,7 @@ const (
 )
 
 func (c *Client) request(ctx context.Context, request controlRequest) (controlResult, controlDispatch, error) {
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return nil, controlNotDispatched, err
 	}
 	data, err := encodeRequest(request)
@@ -301,7 +300,7 @@ func (c *Client) request(ctx context.Context, request controlRequest) (controlRe
 	}
 	connection, err := c.dial(ctx)
 	if err != nil {
-		return nil, controlNotDispatched, errors.Join(err, cancellation.Err(ctx))
+		return nil, controlNotDispatched, errors.Join(err, frame.ContextError(ctx))
 	}
 	defer connection.Close()
 	return exchangeControl(ctx, connection, request.method(), data)
@@ -310,17 +309,17 @@ func (c *Client) request(ctx context.Context, request controlRequest) (controlRe
 func exchangeControl(ctx context.Context, connection net.Conn, method controlMethod, data []byte) (controlResult, controlDispatch, error) {
 	stop := context.AfterFunc(ctx, func() { _ = connection.Close() })
 	defer stop()
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return nil, controlNotDispatched, err
 	}
 	// Once Write starts, a transport error cannot establish how much the original
 	// runner accepted. Only that runner's observation can settle this invocation.
 	if err := writeControl(connection, data); err != nil {
-		return nil, controlDispatchUnknown, errors.Join(err, cancellation.Err(ctx))
+		return nil, controlDispatchUnknown, errors.Join(err, frame.ContextError(ctx))
 	}
 	line, err := readLine(bufio.NewReader(connection))
 	if err != nil {
-		return nil, controlDispatchUnknown, errors.Join(err, cancellation.Err(ctx))
+		return nil, controlDispatchUnknown, errors.Join(err, frame.ContextError(ctx))
 	}
 	response, err := decodeResponse(line, method)
 	return response, controlDispatchUnknown, err
@@ -350,7 +349,7 @@ func (c *Client) Attach(ctx context.Context, ref AttemptRef) (result io.ReadWrit
 	stop := context.AfterFunc(ctx, func() { _ = control.Close() })
 	defer func() {
 		stop()
-		if cause := cancellation.Err(ctx); cause != nil {
+		if cause := frame.ContextError(ctx); cause != nil {
 			err = errors.Join(err, cause)
 		}
 		if err != nil {
@@ -371,13 +370,13 @@ func (c *Client) Attach(ctx context.Context, ref AttemptRef) (result io.ReadWrit
 func (c *Client) openAttachmentConnection(ctx context.Context, request controlRequest) (net.Conn, *bufio.Reader, error) {
 	connection, err := c.dial(ctx)
 	if err != nil {
-		return nil, nil, errors.Join(err, cancellation.Err(ctx))
+		return nil, nil, errors.Join(err, frame.ContextError(ctx))
 	}
 	stop := context.AfterFunc(ctx, func() { _ = connection.Close() })
 	if err := writeRequest(connection, request); err != nil {
 		stop()
 		_ = connection.Close()
-		return nil, nil, errors.Join(err, cancellation.Err(ctx))
+		return nil, nil, errors.Join(err, frame.ContextError(ctx))
 	}
 	reader := bufio.NewReader(connection)
 	line, err := readLine(reader)
@@ -385,7 +384,7 @@ func (c *Client) openAttachmentConnection(ctx context.Context, request controlRe
 		_, err = decodeResponse(line, request.method())
 	}
 	stop()
-	if cause := cancellation.Err(ctx); cause != nil {
+	if cause := frame.ContextError(ctx); cause != nil {
 		err = errors.Join(err, cause)
 	}
 	if err != nil {

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/distribution"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/process"
 	"github.com/Tangerg/frame/process/runner"
 	"github.com/Tangerg/frame/sqlite"
@@ -22,7 +22,7 @@ import (
 // needs its registered driver to validate the executable shape, without launch.
 func TestInstallToolArchive(t *testing.T) {
 	ctx := t.Context()
-	gate := frame.NewAdmission()
+	gate := framehost.NewAdmission()
 	state, err := sqlite.Open(ctx, sqlite.Config{Path: filepath.Join(t.TempDir(), "state.db"), Admission: gate})
 	if err != nil {
 		t.Fatal(err)
@@ -36,7 +36,7 @@ func TestInstallToolArchive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := frame.NewHost(ctx, frame.HostConfig{Admission: gate})
+	host, err := framehost.New(ctx, framehost.Config{Admission: gate})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestInstallToolArchive(t *testing.T) {
 			}()
 			config := distribution.Installation{ID: "tools", Enabled: true}
 			if i == 0 {
-				if _, err := lease.Install(ctx, host, config); !errors.Is(err, frame.ErrUnavailable) {
+				if _, err := lease.Install(ctx, host, config); !errors.Is(err, framehost.ErrUnavailable) {
 					t.Fatalf("unregistered driver: %v", err)
 				}
 				if err := host.RegisterDriver(driver); err != nil {

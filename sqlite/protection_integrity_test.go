@@ -6,23 +6,24 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
-func protectedAttempt(t *testing.T, store *Store) Attempt {
+func protectedAttempt(t *testing.T, store Store) Attempt {
 	t.Helper()
-	source := frame.UnitRef{InstallationID: "provider", Release: value.Hash(nil), UnitID: "main"}
-	binding := frame.BindingSnapshot{FormatVersion: 1, Roots: []frame.ExportRef{}, UnitRoots: []frame.UnitRef{source}, Units: []frame.UnitBinding{{Source: source, Configuration: value.Hash(nil)}}}
-	attempt := Attempt{ID: "execution", Epoch: store.Epoch(), Source: source, Binding: binding, Realm: "realm", Profile: frame.LocalProcess}
+	source := framehost.UnitRef{InstallationID: "provider", Release: value.Hash(nil), UnitID: "main"}
+	binding := framehost.BindingSnapshot{FormatVersion: 1, Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{source}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil)}}}
+	attempt := Attempt{ID: "execution", Epoch: store.Epoch(), Source: source, Binding: binding, Realm: "realm", Profile: framehost.LocalProcess}
 	if err := store.RecordAttempt(t.Context(), attempt); err != nil {
 		t.Fatal(err)
 	}
 	return attempt
 }
 
-func protectedUse(t *testing.T, store *Store, attempt Attempt) frame.UseApproval {
+func protectedUse(t *testing.T, store Store, attempt Attempt) framehost.UseApproval {
 	t.Helper()
-	approval := frame.UseApproval{ID: "use", ExecutionID: attempt.ID, Realm: frame.RealmID(attempt.Realm), Scope: "scope", ScopeGeneration: 1, Epoch: store.Epoch(), Binding: attempt.Binding}
+	approval := framehost.UseApproval{ID: "use", ExecutionID: attempt.ID, Realm: framehost.RealmID(attempt.Realm), Scope: "scope", ScopeGeneration: 1, Epoch: store.Epoch(), Binding: attempt.Binding}
 	if err := store.admission.Admit(t.Context(), func(ctx context.Context) error { return store.ApproveUse(ctx, approval) }); err != nil {
 		t.Fatal(err)
 	}

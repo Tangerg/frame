@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/process"
 	"github.com/Tangerg/frame/process/runner"
 	"github.com/Tangerg/frame/sqlite"
@@ -70,7 +70,7 @@ func TestRecoveryRequiresOriginalSealedNonCreationEvidence(t *testing.T) {
 			t.Cleanup(func() { _ = os.RemoveAll(directory) })
 			original := recoveryRunner(t, filepath.Join(directory, "original"))
 			path := filepath.Join(directory, "state.sqlite")
-			store, err := sqlite.Open(t.Context(), sqlite.Config{Path: path, Admission: frame.NewAdmission()})
+			store, err := sqlite.Open(t.Context(), sqlite.Config{Path: path, Admission: framehost.NewAdmission()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -88,7 +88,7 @@ func TestRecoveryRequiresOriginalSealedNonCreationEvidence(t *testing.T) {
 			if err := store.Close(); err != nil {
 				t.Fatal(err)
 			}
-			store, err = sqlite.Open(t.Context(), sqlite.Config{Path: path, Admission: frame.NewAdmission()})
+			store, err = sqlite.Open(t.Context(), sqlite.Config{Path: path, Admission: framehost.NewAdmission()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -137,16 +137,16 @@ func TestRecoveryRequiresOriginalSealedNonCreationEvidence(t *testing.T) {
 	}
 }
 
-func recordAttempt(t *testing.T, store *sqlite.Store, identity runner.Identity) sqlite.Attempt {
+func recordAttempt(t *testing.T, store sqlite.Store, identity runner.Identity) sqlite.Attempt {
 	t.Helper()
 	_, capability, err := echoContract()
 	if err != nil {
 		t.Fatal(err)
 	}
-	contract := frame.ContractRef{Name: capability.Descriptor().Reference, Version: "1", Digest: capability.Identity().Digest(), Kind: frame.ServiceKind, Mode: frame.PortableMode}
-	root := frame.ExportRef{InstallationID: "original", Release: value.Hash([]byte("release")), UnitID: "backend", Export: "echo", Contract: contract}
-	binding := frame.BindingSnapshot{FormatVersion: 1, Roots: []frame.ExportRef{root}, Units: []frame.UnitBinding{{Source: root.Unit(), Configuration: value.Hash([]byte(`{}`)), Imports: []frame.ImportDeclaration{}}}}
-	attempt := sqlite.Attempt{ID: "approved-before-crash", Epoch: store.Epoch(), Source: root.Unit(), Binding: binding, Realm: identity.ID, Profile: frame.LocalProcess}
+	contract := framehost.ContractRef{Name: capability.Descriptor().Reference, Version: "1", Digest: capability.Identity().Digest(), Kind: framehost.ServiceKind, Mode: framehost.PortableMode}
+	root := framehost.ExportRef{InstallationID: "original", Release: value.Hash([]byte("release")), UnitID: "backend", Export: "echo", Contract: contract}
+	binding := framehost.BindingSnapshot{FormatVersion: 1, Roots: []framehost.ExportRef{root}, Units: []framehost.UnitBinding{{Source: root.Unit(), Configuration: value.Hash([]byte(`{}`)), Imports: []framehost.ImportDeclaration{}}}}
+	attempt := sqlite.Attempt{ID: "approved-before-crash", Epoch: store.Epoch(), Source: root.Unit(), Binding: binding, Realm: identity.ID, Profile: framehost.LocalProcess}
 	if err := store.RecordAttempt(t.Context(), attempt); err != nil {
 		t.Fatal(err)
 	}
@@ -167,8 +167,8 @@ func TestRecoverOriginalExitHandoffAcrossHostRestart(t *testing.T) {
 			t.Cleanup(func() { os.RemoveAll(directory) })
 			ctx := t.Context()
 			hostPath := filepath.Join(directory, "state.sqlite")
-			open := func() *sqlite.Store {
-				store, err := sqlite.Open(ctx, sqlite.Config{Path: hostPath, Admission: frame.NewAdmission()})
+			open := func() sqlite.Store {
+				store, err := sqlite.Open(ctx, sqlite.Config{Path: hostPath, Admission: framehost.NewAdmission()})
 				if err != nil {
 					t.Fatal(err)
 				}

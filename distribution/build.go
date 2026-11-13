@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Tangerg/frame/internal/cancellation"
+	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -93,12 +93,12 @@ var zipEpoch = time.Date(1980, time.January, 1, 0, 0, 0, 0, time.UTC)
 func (c *releaseContents) writeArchive(ctx context.Context, output io.Writer, artifacts []Artifact) (err error) {
 	defer func() {
 		if err != nil {
-			err = errors.Join(err, cancellation.Err(ctx))
+			err = errors.Join(err, frame.ContextError(ctx))
 		}
 	}()
 	archive := zip.NewWriter(&limitedWriter{writer: output, remaining: c.limits.ArchiveBytes})
 	for _, name := range slices.Sorted(maps.Keys(c.files)) {
-		if err := cancellation.Err(ctx); err != nil {
+		if err := frame.ContextError(ctx); err != nil {
 			return errors.Join(err, archive.Close())
 		}
 		// Stored entries avoid a package tool producing an archive that its own

@@ -6,11 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/Tangerg/frame/internal/cancellation"
-
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
-	"github.com/Tangerg/frame/process"
+	framehost "github.com/Tangerg/frame/host"
 	framevalue "github.com/Tangerg/frame/value"
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
@@ -19,6 +16,9 @@ type managedInvocationKey struct{}
 
 // WithInvocation supplies caller-owned target evidence independently of command identity.
 func WithInvocation(ctx context.Context, invocation Invocation) (context.Context, error) {
+	if framevalue.IsNil(ctx) {
+		return nil, frame.ErrInvalid
+	}
 	if err := invocation.Validate(); err != nil {
 		return nil, err
 	}
@@ -31,17 +31,20 @@ func WithInvocation(ctx context.Context, invocation Invocation) (context.Context
 // ManagedService is a physical export bound to one verified session. Commands
 // require a caller-owned identity so transport failure never creates a new effect.
 type ManagedService struct {
-	lifetime   *frame.Lifetime
+	lifetime   frame.Lifetime
 	openCall   OpenManagedCall
 	openStream OpenManagedStream
 	session    *sdk.ClientSession
 	physical   string
-	source     frame.ExportRef
+	source     framehost.ExportRef
 	contract   *ManagedContract
-	receipt    *portable.Method
+	receipt    *frame.Method
 }
 
-func (s *ManagedService) params(ctx context.Context, method *portable.Method, input framevalue.JSON) (*managedParams, error) {
+func (s *ManagedService) params(ctx context.Context, method *frame.Method, input framevalue.JSON) (*managedParams, error) {
+	if framevalue.IsNil(ctx) {
+		return nil, frame.ErrInvalid
+	}
 	if err := method.ValidateInput(input); err != nil {
 		return nil, errors.Join(frame.ErrContractMismatch, err)
 	}
@@ -76,15 +79,12 @@ func (s *ManagedService) ValidateInput(ctx context.Context, member string, input
 	return nil
 }
 
-func (s *ManagedService) Invoke(ctx context.Context, invocation portable.Invocation) (framevalue.JSON, error) {
+func (s *ManagedService) Invoke(ctx context.Context, invocation frame.Invocation) (framevalue.JSON, error) {
 	return s.invoke(ctx, invocation, nil)
 }
 
-func (s *ManagedService) invoke(ctx context.Context, invocation portable.Invocation, emit process.Emit) (output framevalue.JSON, returned error) {
-	if ctx == nil {
-		return framevalue.JSON{}, frame.ErrInvalid
-	}
-	if err := cancellation.Err(ctx); err != nil {
+func (s *ManagedService) invoke(ctx context.Context, invocation frame.Invocation, emit frame.Emit) (output framevalue.JSON, returned error) {
+	if err := frame.ContextError(ctx); err != nil {
 		return framevalue.JSON{}, err
 	}
 	method, ok := s.contract.capability.Method(invocation.Member())
@@ -104,7 +104,7 @@ func (s *ManagedService) invoke(ctx context.Context, invocation portable.Invocat
 	if err != nil {
 		return framevalue.JSON{}, err
 	}
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return framevalue.JSON{}, err
 	}
 	return s.dispatch(ctx, method, params, emit)
@@ -112,7 +112,7 @@ func (s *ManagedService) invoke(ctx context.Context, invocation portable.Invocat
 
 // grantCallback lets the backend call back into Frame while this invocation
 // runs. The returned finish must run after the call settles, even on error.
-func (s *ManagedService) grantCallback(ctx context.Context, method *portable.Method, invocation portable.Invocation, metadata *sdk.ParamsBase) (finish func() error, err error) {
+func (s *ManagedService) grantCallback(ctx context.Context, method *frame.Method, invocation frame.Invocation, metadata *sdk.ParamsBase) (finish func() error, err error) {
 	finish = func() error { return nil }
 	if s.openCall == nil {
 		return finish, nil
@@ -131,7 +131,7 @@ func (s *ManagedService) grantCallback(ctx context.Context, method *portable.Met
 	return finish, grant.attach(metadata, managedCallback)
 }
 
-func (s *ManagedService) dispatch(ctx context.Context, method *portable.Method, params *managedParams, emit process.Emit) (framevalue.JSON, error) {
+func (s *ManagedService) dispatch(ctx context.Context, method *frame.Method, params *managedParams, emit frame.Emit) (framevalue.JSON, error) {
 	var reply managedReply
 	var err error
 	if emit != nil {
@@ -139,7 +139,7 @@ func (s *ManagedService) dispatch(ctx context.Context, method *portable.Method, 
 	} else {
 		reply, err = requestManaged(ctx, s.session, managedInvoke, params)
 		if err != nil {
-			err = errors.Join(process.ErrOutcomeUnknown, err)
+			err = errors.Join(frame.ErrOutcomeUnknown, err)
 		}
 	}
 	raw, refusal := reply.result()
@@ -150,20 +150,20 @@ func (s *ManagedService) dispatch(ctx context.Context, method *portable.Method, 
 		return framevalue.JSON{}, err
 	}
 	if validationErr := method.ValidateOutput(raw); validationErr != nil {
-		return framevalue.JSON{}, errors.Join(process.ErrOutcomeUnknown, err, validationErr)
+		return framevalue.JSON{}, errors.Join(frame.ErrOutcomeUnknown, err, validationErr)
 	}
 	output, parseErr := framevalue.ParseJSON(raw)
 	if parseErr != nil {
-		return framevalue.JSON{}, errors.Join(process.ErrOutcomeUnknown, err, parseErr)
+		return framevalue.JSON{}, errors.Join(frame.ErrOutcomeUnknown, err, parseErr)
 	}
 	return output, err
 }
 
 // ReadReceipt observes the backend's durable reply for the original admitted
 // input. Missing evidence never authorizes a new command.
-func (s *ManagedService) ReadReceipt(ctx context.Context, invocation portable.Invocation) (framevalue.JSON, bool, error) {
+func (s *ManagedService) ReadReceipt(ctx context.Context, invocation frame.Invocation) (framevalue.JSON, bool, error) {
 	method, ok := s.contract.capability.Method(invocation.Member())
-	if !ok || invocation.Kind() != portable.Command || method.ValidateInvocation(invocation) != nil || s.receipt == nil {
+	if !ok || invocation.Kind() != frame.Command || method.ValidateInvocation(invocation) != nil || s.receipt == nil {
 		return framevalue.JSON{}, false, fmt.Errorf("%w: exact receipt query and command evidence required", frame.ErrContractMismatch)
 	}
 	request, err := framevalue.EncodeJSON(struct {

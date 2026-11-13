@@ -9,18 +9,17 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
-	"github.com/Tangerg/frame/process"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
 
 func TestManagedFingerprintIsIndependentOfFrameProjection(t *testing.T) {
-	member, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "query", Kind: portable.Query, Target: "entry", Description: "Read an entry."})
+	member, err := frame.NewMethod[string, string](frame.MethodConfig{Name: "query", Kind: frame.Query, Target: "entry", Description: "Read an entry."})
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw := managedDescriptor{managedVersion, "collection.v1", "selection", "installation", []portable.MethodDescriptor{member.Descriptor()}}
+	raw := managedDescriptor{managedVersion, "collection.v1", "selection", "installation", []frame.MethodDescriptor{member.Descriptor()}}
 	parse := func(d managedDescriptor) (*ManagedContract, jsontext.Value) {
 		t.Helper()
 		data, err := value.EncodeJSON(d)
@@ -69,7 +68,7 @@ func TestManagedFingerprintIsIndependentOfFrameProjection(t *testing.T) {
 
 func TestManagedCallbackAddressRetainsOriginalUnit(t *testing.T) {
 	routes := make(managedRoutes)
-	source := frame.ExportRef{InstallationID: "files", UnitID: "first", Release: value.Hash([]byte("release")), Export: "read"}
+	source := framehost.ExportRef{InstallationID: "files", UnitID: "first", Release: value.Hash([]byte("release")), Export: "read"}
 	contract, _ := value.EncodeJSON("pinned")
 	if _, err := routes.bind(source, contract); err != nil {
 		t.Fatal(err)
@@ -110,7 +109,7 @@ func TestManagedLeaseWaitsForCallbackExitAfterRevocationFailure(t *testing.T) {
 }
 
 func TestManagedChunksCannotAdvanceAfterRejection(t *testing.T) {
-	method, err := portable.AdmitMethod(portable.MethodDescriptor{Name: "read", Kind: portable.Query, Target: "entry", Description: "Read.", Input: jsontext.Value(`{"type":"string"}`), Stream: jsontext.Value(`{"type":"integer"}`), Output: jsontext.Value(`{"type":"boolean"}`)})
+	method, err := frame.AdmitMethod(frame.MethodDescriptor{Name: "read", Kind: frame.Query, Target: "entry", Description: "Read.", Input: jsontext.Value(`{"type":"string"}`), Stream: jsontext.Value(`{"type":"integer"}`), Output: jsontext.Value(`{"type":"boolean"}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,11 +210,11 @@ func TestManagedLeaseKeepsUnprovenBrokerFailuresPending(t *testing.T) {
 }
 
 func TestManagedCallGrantDistinguishesAliasesOfOnePhysicalExport(t *testing.T) {
-	member, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "read", Kind: portable.Command, Target: "document", Description: "Read an entry."})
+	member, err := frame.NewMethod[string, string](frame.MethodConfig{Name: "read", Kind: frame.Command, Target: "document", Description: "Read an entry."})
 	if err != nil {
 		t.Fatal(err)
 	}
-	descriptor, err := value.EncodeJSON(managedDescriptor{managedVersion, "documents.v1", "selection", "installation", []portable.MethodDescriptor{member.Descriptor()}})
+	descriptor, err := value.EncodeJSON(managedDescriptor{managedVersion, "documents.v1", "selection", "installation", []frame.MethodDescriptor{member.Descriptor()}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,13 +222,13 @@ func TestManagedCallGrantDistinguishesAliasesOfOnePhysicalExport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registered, err := frame.NewPortableContract[process.Service]("1", contract.Capability())
+	registered, err := framehost.NewPortableContract[frame.Service]("1", contract.Capability())
 	if err != nil {
 		t.Fatal(err)
 	}
 	ref := registered.Ref()
-	unit := frame.UnitRef{InstallationID: "installed", Release: value.Hash([]byte("original")), UnitID: "reader"}
-	approved := frame.ExportRef{InstallationID: unit.InstallationID, Release: unit.Release, UnitID: unit.UnitID, Export: "private", Contract: ref}
+	unit := framehost.UnitRef{InstallationID: "installed", Release: value.Hash([]byte("original")), UnitID: "reader"}
+	approved := framehost.ExportRef{InstallationID: unit.InstallationID, Release: unit.Release, UnitID: unit.UnitID, Export: "private", Contract: ref}
 	denied := errors.New("grant denied")
 	recognized := errors.New("authorized source reached broker")
 	session := new(sdk.ClientSession)
@@ -240,7 +239,7 @@ func TestManagedCallGrantDistinguishesAliasesOfOnePhysicalExport(t *testing.T) {
 	}
 	c := managedConnection{session: session,
 		contributions: []managedContribution{{ID: "public", Export: "reader"}, {ID: "private", Export: "reader"}},
-		values:        []frame.ExportValue{{Name: "public", Contract: ref}, {Name: "private", Contract: ref}},
+		values:        []framehost.ExportValue{{Name: "public", Contract: ref}, {Name: "private", Contract: ref}},
 		openCall: func(_ context.Context, actual *sdk.ClientSession, call ManagedCall) (*ManagedCallback, error) {
 			if actual != session || call.Method.Name() != member.Name() || call.Input != input || call.CommandID != id {
 				t.Fatal("session or method changed")
@@ -263,7 +262,7 @@ func TestManagedCallGrantDistinguishesAliasesOfOnePhysicalExport(t *testing.T) {
 		}
 		cancelled, cancel := context.WithCancel(t.Context())
 		cancel()
-		if _, err := service.Invoke(cancelled, commandInvocation(t, id, member.Name(), input)); !errors.Is(err, context.Canceled) || errors.Is(err, process.ErrOutcomeUnknown) {
+		if _, err := service.Invoke(cancelled, commandInvocation(t, id, member.Name(), input)); !errors.Is(err, context.Canceled) || errors.Is(err, frame.ErrOutcomeUnknown) {
 			t.Fatalf("cancelled invocation reached the broker or SDK: %v", err)
 		}
 		_, err := service.Invoke(t.Context(), commandInvocation(t, id, member.Name(), input))

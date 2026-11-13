@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 )
 
@@ -16,7 +16,7 @@ func TestSharedStoreReservesSnapshotForItsOriginalRealm(t *testing.T) {
 		config.MaxPending = 1
 		config.Points = config.Points[:1]
 	})
-	other, err := browser.NewBridge(browser.BridgeConfig{Host: e.host, Store: e.store, Source: testModules{}, Points: []frame.ContractRef{e.first.Ref()}, MaxPending: 1})
+	other, err := browser.NewBridge(browser.BridgeConfig{Host: e.host, Store: e.store, Source: testModules{}, Points: []framehost.ContractRef{e.first.Ref()}, MaxPending: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestSharedStoreReservesSnapshotForItsOriginalRealm(t *testing.T) {
 					accepted = append(accepted, outcome)
 					continue
 				}
-				if errors.Is(outcome.err, sqlite.ErrIndeterminate) || !errors.Is(outcome.err, sqlite.ErrConflict) && !errors.Is(outcome.err, frame.ErrFenced) {
+				if errors.Is(outcome.err, sqlite.ErrIndeterminate) || !errors.Is(outcome.err, sqlite.ErrConflict) && !errors.Is(outcome.err, framehost.ErrFenced) {
 					t.Fatalf("another Realm was not refused before capture: %v", outcome.err)
 				}
 			case <-e.ctx.Done():

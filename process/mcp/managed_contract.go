@@ -5,7 +5,6 @@ import (
 	"regexp"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -23,29 +22,29 @@ const (
 )
 
 type managedDescriptor struct {
-	Protocol    string                      `json:"protocol"`
-	Reference   string                      `json:"reference"`
-	Composition managedComposition          `json:"composition"`
-	Scope       string                      `json:"scope"`
-	Methods     []portable.MethodDescriptor `json:"methods"`
+	Protocol    string                   `json:"protocol"`
+	Reference   string                   `json:"reference"`
+	Composition managedComposition       `json:"composition"`
+	Scope       string                   `json:"scope"`
+	Methods     []frame.MethodDescriptor `json:"methods"`
 }
 
 // ManagedContract projects both identities from the one descriptor shipped by
 // the contract owner. Qimu includes composition and scope in its wire identity.
 type ManagedContract struct {
-	capability *portable.Capability
+	capability *frame.Capability
 	wire       value.JSON
 }
 
 func ParseManagedContract(data []byte) (*ManagedContract, error) {
-	if err := portable.CheckDescriptor(data); err != nil {
+	if err := value.CheckDescriptor(data); err != nil {
 		return nil, err
 	}
 	var descriptor managedDescriptor
 	if err := value.DecodeValue(data, &descriptor, "managed capability"); err != nil {
 		return nil, err
 	}
-	if descriptor.Protocol != managedVersion || !portable.ValidToken(descriptor.Scope) {
+	if descriptor.Protocol != managedVersion || !frame.ValidName(descriptor.Scope) {
 		return nil, frame.ErrContractMismatch
 	}
 	switch descriptor.Composition {
@@ -58,7 +57,7 @@ func ParseManagedContract(data []byte) (*ManagedContract, error) {
 			return nil, fmt.Errorf("%w: missing managed method target", frame.ErrContractMismatch)
 		}
 	}
-	capability, err := portable.NewCapability(descriptor.Reference, descriptor.Methods...)
+	capability, err := frame.NewCapability(descriptor.Reference, descriptor.Methods...)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +72,7 @@ func ParseManagedContract(data []byte) (*ManagedContract, error) {
 	return &ManagedContract{capability: capability, wire: identity}, nil
 }
 
-func (c *ManagedContract) Capability() *portable.Capability {
+func (c *ManagedContract) Capability() *frame.Capability {
 	if c.capability == nil {
 		return nil
 	}

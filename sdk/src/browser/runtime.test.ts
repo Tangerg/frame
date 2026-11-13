@@ -9,12 +9,9 @@ import {
   Point,
   Service,
   type Cleanup,
-  type Unit,
 } from "../index.js";
 import {
-  PROTOCOL,
   type CloseProof,
-  type ContractRef,
   type Import,
   type LocalPlan,
   type PlanAdmission,
@@ -22,7 +19,6 @@ import {
   type Poll,
   type PublicationRequest,
   type PublicationResult,
-  type ReadyReport,
   type ReconnectResult,
   type UseGrant,
 } from "../protocol.generated.js";
@@ -30,171 +26,18 @@ import { Runtime, type RuntimeOptions } from "./runtime";
 import type { HostControl } from "./control";
 import { HTTPControl } from "./http";
 
-const digest = "a".repeat(64);
-const authority = { id: "host", epoch: "host-1" };
-const realm = { id: "window", epoch: "window-1" };
-const ref = (
-  name: string,
-  kind: ContractRef["kind"] = "service",
-): ContractRef => ({ name, version: "1", digest, kind, mode: "native" });
-const files = new Service<{ read(): string }>(ref("documents.files"));
-const preview = new Service<{ text(): string }>(ref("documents.preview"));
-const additions = new Point<{ title: string }, { value: string }>(
-  ref("documents.additions", "point"),
-);
-
-function unit(
-  id: string,
-  name: string,
-  exports: PlannedUnit["exports"],
-  imports: PlannedUnit["imports"] = [],
-  value = id,
-): PlannedUnit {
-  return {
-    instance: {
-      id,
-      generation: "1",
-      source: { installationId: id, release: digest, unitId: name },
-      configuration: digest,
-    },
-    configurationJson: JSON.stringify(value),
-    profile: "browser-js",
-    module: { path: name, digest },
-    imports,
-    exports,
-  };
-}
-
-function plan(id: string, units: readonly PlannedUnit[]): LocalPlan {
-  return {
-    protocol: PROTOCOL,
-    approvalToken: `plan:${id}`,
-    authority,
-    realm,
-    execution: { id, generation: "1" },
-    scopeId: id,
-    scopeGeneration: "1",
-    units,
-  };
-}
-
-function fixture(definitions: Record<string, Unit>, proofCapacity = 128) {
-  const ready = new Map<string, ReadyReport>();
-  const grants = new Map<string, UseGrant>();
-  const publications = new Map<string, PublicationResult>();
-  const proofs = new Map<string, CloseProof>();
-  let nextGrant = 0;
-  const control: HostControl = {
-    admitPlan: vi.fn<HostControl["admitPlan"]>(async (value) => {
-      if (value.approvalToken !== `plan:${value.execution.id}`)
-        throw new Error("invalid plan approval");
-      return {
-        authority,
-        realm,
-        execution: value.execution,
-        decision: "admitted",
-      };
-    }),
-    ready: vi.fn<HostControl["ready"]>(async (report) => {
-      ready.set(report.execution.id, report);
-      return { decision: "accepted" };
-    }),
-    acquire: vi.fn<HostControl["acquire"]>(async () => {
-      throw new Error("fixture requires an explicit grant");
-    }),
-    validateUse: vi.fn<HostControl["validateUse"]>(async (grant) => {
-      if (JSON.stringify(grants.get(grant.id)) !== JSON.stringify(grant))
-        throw new FrameError("stale_binding", "invalid use approval");
-    }),
-    validateRoute: vi.fn<HostControl["validateRoute"]>(async () => {}),
-    snapshot: vi.fn<HostControl["snapshot"]>(async () => ({
-      id: "snapshot",
-      authority,
-      points: [],
-    })),
-    closeSnapshot: vi.fn<HostControl["closeSnapshot"]>(async () => {}),
-    publish: vi.fn<HostControl["publish"]>(async (request) => {
-      const result: PublicationResult = {
-        decision: "accepted",
-        publication: {
-          id: `publication:${request.operationId}`,
-          operationId: request.operationId,
-          revision: "1",
-          object: request.object,
-        },
-      };
-      publications.set(request.operationId, result);
-      return result;
-    }),
-    publication: vi.fn<HostControl["publication"]>(
-      async (id) => publications.get(id) ?? { decision: "unknown" },
-    ),
-    withdraw: vi.fn<HostControl["withdraw"]>(async () => ({
-      decision: "accepted",
-    })),
-    prove: vi.fn<HostControl["prove"]>(async (proof) => {
-      const previous = proofs.get(proof.proofId);
-      if (previous && JSON.stringify(previous) !== JSON.stringify(proof))
-        throw new Error("proof changed");
-      proofs.set(proof.proofId, proof);
-      if (proof.useId) grants.delete(proof.useId);
-      return {
-        closeId: proof.closeId,
-        proofId: proof.proofId,
-        recorded: true,
-        authority,
-      };
-    }),
-    poll: vi.fn<HostControl["poll"]>(async () => ({
-      authority,
-      realm,
-      plans: [],
-      fences: [],
-    })),
-    reconnect: vi.fn<HostControl["reconnect"]>(async (request) => ({
-      authority,
-      realm,
-      mode: "revalidated",
-      executions: request.executions.map((execution) => ({
-        execution,
-        scopeId: execution.id,
-        scopeGeneration: "1",
-      })),
-    })),
-  };
-  const runtime = new Runtime({
-    authority,
-    realm,
-    control,
-    proofCapacity,
-    load: (entry) => definitions[entry.module.path]!,
-    remote: () => {
-      throw new Error("unexpected remote import");
-    },
-  });
-  function grant(
-    id: string,
-    objects = ready.get(id)!.objects,
-    operationId = `operation:${nextGrant + 1}`,
-    parentUseId?: string,
-  ): UseGrant {
-    const value: UseGrant = {
-      id: `use:${++nextGrant}`,
-      operationId,
-      ...(parentUseId ? { parentUseId } : {}),
-      approvalToken: `grant:${nextGrant}`,
-      authority,
-      realm,
-      execution: { id, generation: "1" },
-      scopeId: id,
-      scopeGeneration: "1",
-      objects,
-    };
-    grants.set(value.id, value);
-    return value;
-  }
-  return { runtime, control, ready, grants, grant, publications, proofs };
-}
+import {
+  digest,
+  authority,
+  realm,
+  ref,
+  files,
+  preview,
+  additions,
+  unit,
+  plan,
+  fixture,
+} from "./runtime.test.fixture.js";
 
 it("joins a pending manual revalidation before polling its replacement channel", async () => {
   const f = fixture({});
@@ -390,6 +233,47 @@ it("captures runtime callbacks once with their original class receiver", async (
     await runtime.close();
     await f.runtime.close();
   }
+});
+
+it("cannot reopen admission when capturing a reconnection reply closes the Runtime", async () => {
+  const f = fixture({});
+  let closing: ReturnType<Runtime["close"]> | undefined;
+  vi.mocked(f.control.reconnect).mockResolvedValueOnce({
+    authority,
+    get realm() {
+      closing ??= f.runtime.close();
+      return realm;
+    },
+    mode: "revalidated",
+    executions: [],
+  });
+  await expect(f.runtime.reconnect(f.control)).rejects.toMatchObject({
+    code: "unavailable",
+  });
+  await closing;
+  expect(f.runtime.connection).toBe("closed");
+});
+
+it("cannot schedule plans when capturing a poll reply closes the Runtime", async () => {
+  const f = fixture({ reader });
+  const original = plan("original", [
+    unit("source", "reader", [{ name: "files", contract: files.ref }]),
+  ]);
+  let closing: ReturnType<Runtime["close"]> | undefined;
+  vi.mocked(f.control.poll).mockResolvedValueOnce({
+    authority,
+    realm,
+    get plans() {
+      closing ??= f.runtime.close();
+      return [original];
+    },
+    fences: [],
+  });
+  const schedule = vi.fn();
+  await f.runtime.poll(schedule);
+  await closing;
+  expect(schedule).not.toHaveBeenCalled();
+  expect(f.runtime.connection).toBe("closed");
 });
 
 it("rejects a slower admission before it can replace an already owned instance", async () => {
@@ -731,6 +615,30 @@ describe("approved browser execution", () => {
     expect(await reentered).toBe(execution);
     expect(f.control.admitPlan).toHaveBeenCalledOnce();
     expect(setup).toHaveBeenCalledOnce();
+    await f.runtime.close();
+  });
+
+  it("captures one admission decision before advancing the original execution", async () => {
+    const setup = vi.fn(() => ({}));
+    const f = fixture({
+      owned: defineUnit({ id: "owned", imports: {}, exports: {}, setup }),
+    });
+    const original = plan("original", [unit("original-unit", "owned", [])]);
+    let reads = 0;
+    vi.mocked(f.control.admitPlan).mockResolvedValueOnce({
+      authority,
+      realm,
+      execution: original.execution,
+      get decision() {
+        return ++reads === 1 ? "admitted" : "settled";
+      },
+    });
+    const execution = await f.runtime.prepare(original);
+    expect(execution.identity).toEqual(original.execution);
+    expect(f.runtime.pendingProofs).toEqual([]);
+    expect(reads).toBe(1);
+    expect(setup).toHaveBeenCalledOnce();
+    expect(f.control.ready).toHaveBeenCalledOnce();
     await f.runtime.close();
   });
 
@@ -1423,6 +1331,7 @@ describe("approved browser execution", () => {
       snapshotId: "snapshot",
       selections: [],
     };
+    let identityReads = 0;
     vi.mocked(f.control.acquire)
       .mockRejectedValueOnce(
         new FrameError(
@@ -1430,16 +1339,70 @@ describe("approved browser execution", () => {
           "operation has a different original input",
         ),
       )
-      .mockResolvedValue(grant);
+      .mockResolvedValueOnce({
+        ...grant,
+        get id() {
+          return ++identityReads === 1 ? grant.id : "replacement";
+        },
+      });
     await expect(
       f.runtime.acquire({ ...request, snapshotId: "foreign" }),
     ).rejects.toMatchObject({ code: "invalid_plan" });
     expect(original.lifetime.closing).toBe(false);
     expect(await f.runtime.acquire(request)).toBe(original);
+    expect(identityReads).toBe(1);
     await expect(
       f.runtime.acquire({ ...request, snapshotId: "foreign" }),
     ).rejects.toMatchObject({ code: "invalid_plan" });
     expect(f.control.acquire).toHaveBeenCalledTimes(2);
+    await f.runtime.close();
+  });
+
+  it("captures one Ready decision before interpreting its acknowledgement", async () => {
+    const f = fixture({ reader });
+    let reads = 0;
+    vi.mocked(f.control.ready).mockResolvedValueOnce({
+      get decision() {
+        return ++reads === 1 ? "accepted" : "rejected";
+      },
+    });
+    const execution = await f.runtime.prepare(
+      plan("a", [
+        unit("source", "reader", [{ name: "files", contract: files.ref }]),
+      ]),
+    );
+    expect(execution.objects).toHaveLength(1);
+    expect(f.runtime.pendingProofs).toEqual([]);
+    expect(reads).toBe(1);
+    await f.runtime.close();
+  });
+
+  it("retains the prepared execution after a malformed Ready acknowledgement", async () => {
+    const setup = vi.fn(() => ({ files: { read: () => "original" } }));
+    const f = fixture({
+      owned: defineUnit({
+        id: "owned",
+        imports: {},
+        exports: { files },
+        setup,
+      }),
+    });
+    const original = plan("original", [
+      unit("original-unit", "owned", [{ name: "files", contract: files.ref }]),
+    ]);
+    vi.mocked(f.control.ready).mockResolvedValueOnce(null as never);
+    await expect(f.runtime.prepare(original)).rejects.toMatchObject({
+      code: "outcome_unknown",
+    });
+    expect(f.runtime.pendingProofs).toEqual([]);
+    const execution = await f.runtime.prepare(original);
+    expect(execution.objects).toHaveLength(1);
+    expect(f.runtime.pendingProofs).toEqual([]);
+    expect(setup).toHaveBeenCalledOnce();
+    const reports = vi
+      .mocked(f.control.ready)
+      .mock.calls.map(([report]) => report);
+    expect(reports[1]).toBe(reports[0]);
     await f.runtime.close();
   });
 
@@ -2341,7 +2304,9 @@ it("returns each confirmed refusal's reservation without closing the execution",
     control: f.control,
     proofCapacity: 2,
     load: () => definition,
-    remote: () => {},
+    remote: () => {
+      throw new Error("unexpected remote import");
+    },
   });
   const { identity } = await runtime.prepare(
     plan("scope", [
@@ -2490,25 +2455,78 @@ it("retains publication identity and retries the same withdrawal after refusal o
   }
   vi.mocked(f.control.publication).mockResolvedValue({ decision: "unknown" });
   expect(await publication.observe()).toBe(original);
+  let decisionReads = 0;
   vi.mocked(f.control.withdraw)
+    .mockResolvedValueOnce(null as never)
     .mockResolvedValueOnce({ decision: "rejected" })
-    .mockResolvedValueOnce({ decision: "unknown" });
+    .mockResolvedValueOnce({ decision: "unknown" })
+    .mockResolvedValueOnce({
+      get decision() {
+        return ++decisionReads === 1 ? "accepted" : "rejected";
+      },
+    });
+  await expect(publication.withdraw()).rejects.toMatchObject({
+    code: "outcome_unknown",
+  });
   expect((await publication.withdraw()).decision).toBe("rejected");
   expect((await publication.withdraw()).decision).toBe("unknown");
   expect((await publication.withdraw()).decision).toBe("accepted");
+  expect(decisionReads).toBe(1);
   const calls = vi.mocked(f.control.withdraw).mock.calls;
-  expect(calls[0]![0]).toEqual(calls[1]![0]);
-  expect(calls[0]![0]).toEqual(calls[2]![0]);
-  expect(calls[0]![0]).toEqual({
-    authority,
-    publicationId: original.publication!.id,
-  });
+  expect(calls).toHaveLength(4);
+  for (const [request] of calls)
+    expect(request).toEqual({
+      authority,
+      publicationId: original.publication!.id,
+    });
   expect(
     f.runtime.pendingProofs.find((proof) => proof.scopeKind === "publication")
       ?.publicationId,
   ).toBe(original.publication!.id);
   await f.runtime.close();
 });
+
+it.each(["rejected", "unknown"] as const)(
+  "preserves the Host's %s publication decision when withdrawal cannot proceed",
+  async (decision) => {
+    const contributor = defineUnit({
+      id: "contributor",
+      imports: {},
+      exports: { additions },
+      setup: () => ({
+        additions: contribution({ title: "base" }, { value: "base" }),
+      }),
+    });
+    const f = fixture({ contributor });
+    const approved = plan("withdraw-observation", [
+      unit("contributor", "contributor", [
+        { name: "additions", contract: additions.ref },
+      ]),
+    ]);
+    await f.runtime.prepare(approved);
+    vi.mocked(f.control.publish).mockResolvedValueOnce({ decision: "unknown" });
+    const publication = await f.runtime.publish(
+      approved.execution,
+      "contributor",
+      additions,
+      "dynamic",
+      { title: "dynamic" },
+      { value: "present" },
+    );
+    vi.mocked(f.control.publication).mockResolvedValueOnce({
+      decision,
+      problem: "original publication is unavailable",
+    });
+    const observed = await publication.withdraw();
+    expect(observed).toEqual({
+      decision,
+      problem: "original publication is unavailable",
+    });
+    expect(observed).toBe(publication.outcome);
+    expect(f.control.withdraw).not.toHaveBeenCalled();
+    await f.runtime.close();
+  },
+);
 
 it.each(["accepted", "unknown"] as const)(
   "preserves a rejected publication after an older observation returns %s",

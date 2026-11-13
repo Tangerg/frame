@@ -7,12 +7,188 @@ A service defines behavior. A point describes a collection of contributions to w
 | Installation, selected immutable release and enabled state | Host | Until an admitted installation transition |
 | Candidate order and business authorization | Host application | The application owns the rule, the Host validates the chosen members |
 | Exact approved providers and accepted optional absence | Original binding | Reacquisition cannot silently switch provider |
+| Catalog read and candidate provenance | Original Snapshot record | Copies retain the same immutable read |
+| Graph presented for admission | Original BindingPlan record | Replacing a caller's handle cannot replace an in-flight request |
 | Approval of a use | Host admission | Withdrawal fences new approvals |
 | Reachability of a borrowed object | Original use lifetime | Holds its accepted providers until admitted work has drained |
 | Completion of an admitted work interval | Original interval in its Lifetime | Copies of a Work handle observe and finish that same interval |
+| Cleanup progress and release proof | Original private close operation | Close value handles observe that same operation without copying progress |
 | Host admission and subscription lifetime | Original Host Lifetime | Its closure fences new Host work and closes registered Watches before release is confirmed |
 | Process exit | Runner holding the direct child | Its original wait result; a disconnected connection proves no exit |
 | Business result, pending task and command receipt | Original business owner | A lost response may require observing that same operation |
+
+## Contract and value owners
+
+The directory tree follows the facts each package owns. The root `frame` package
+owns callable identity, method kind and invocation semantics, typed service calls
+and resource lifetimes. `host` owns installation, declarations, catalog selection,
+exact binding and admission. `value` owns the pure JSON/schema language,
+codec/type admission and bounded validation. `process` translates those admitted
+calls into an attached process session. `process/runner` proves direct child exit;
+`process/mcp` translates optional external protocols. `browser`, `sqlite` and
+`distribution` keep their own realm, transaction and artifact guarantees.
+`contractgen` publishes language projections and is never a core dependency.
+
+The root kernel has no dependency on Host application state. Host construction
+composes the kernel through its public guarantees. A lifecycle domain issues
+internal lifetimes and checks their affiliation; the Host cannot assign a
+Lifetime's private authority field. Dependency validation reads immutable
+lifetime identities and original resource ownership, never another mutable graph.
+
+`frame.Lifetime`, `host.Host` and `host.Admission` are value handles over private
+state. Copying one cannot copy its lock, resource list, generation counter or
+recovery barrier. Domain grants, work intervals and callbacks retain those
+original owners; replacing an application variable cannot redirect them.
+
+Host export membership, original setup slots and dynamic publication receipts
+converge in `host/catalog.go`. Each instance delegates its exports to one owned
+set. Visibility comes only from the Catalog's member index. Durable
+reconstructibility comes from the original declared setup slot, including after
+a dynamic value takes its name. Publication requests and member records share
+one prepared native value, while operation identity and member identity retain
+their distinct replay semantics.
+
+Admission owns each original scope generation. ScopeGrant handles reference
+that record instead of copying its context and generation. Scope states are
+replaced on every fence, including repeated fences of an already closed
+generation. Installation recovery may advance only the exact state it admitted.
+Recovery reports likewise retain immutable identity; a later report invalidates
+an older restoration even when its cause is unchanged. Diagnostic counts cannot
+authorize recovery. These rules live together in `host/admission.go`.
+
+Installation creation, update, enable, replacement and removal share one
+transition lifecycle. Their existence and destructive-change policies are checked
+before the common commit, scope projection, retirement and confirmation sequence.
+
+Instance preparation owns explicit pending, ready and failed states. Catalog
+publication and readiness commit together before waking observers; a visible
+setup cannot remain preparing. Binding plans explicitly distinguish declaration
+resolution from exact instance capture. Candidate reads and Catalog revisions
+retain their own provenance rather than doubling as mode flags.
+
+Activation captures the actual instances it prepared into that same admission
+plan. Acquisition cannot replace them by looking up a successor, even if its
+setup graph has the same durable identity. A new acquisition may prepare a new
+instance plan from an accepted business binding; an in-flight handoff retains
+its original instances.
+
+Use settlement follows explicit pending, failed, retrying and complete states.
+Only a failed attempt observed by an explicit close may be retried. An immutable
+failure identity replaces report-number arbitration; channels project state
+changes and cannot independently authorize a transition.
+
+An instance hold pairs the original runtime with its actual Lifetime Work.
+Provider dependencies and Use dependencies retain these edges directly instead
+of synchronizing separate instance and hold lists. Admission reads the original
+Host, business owner and full held runtime closure. Cancellation notifications
+only start cleanup; they cannot keep a cancelled owner available for new work.
+An instance withdrawn for draining still serves work already accepted by a live
+Use. Preparation checks the same held closure before executing callbacks.
+
+New admission checks current membership across that original closure, including
+indirect providers. Captured plans cannot create fresh Uses through a consumer
+whose provider is already draining. Accepted Uses continue against their original
+execution permission; withdrawal alone does not cancel that permission. Both
+queries traverse the actual holds without another dependency or retirement index.
+
+Cancellation of an instance or provider follows its original Lifetime context,
+not the Work retaining it. That hold may wait for the very consumer cancellation
+must release. Revocation ends permission and starts the existing retirement
+worker while retaining all original resource and settlement evidence.
+
+Use parent reservations observe the original Host and business-owner contexts
+directly. Their cancellation starts the original Use close even when parent
+resource callbacks have not run. A Host-owned Use reserves and observes its one
+parent once; no second dependency or permission ledger is created.
+
+A Use observes the original grant it accepted, including installation scopes.
+Its held instance may have been activated earlier or already be draining, so
+instance shutdown cannot substitute for the Use's own scope-fence observation.
+That fence starts the original close and settlement without releasing holds early.
+
+Preparation owns its pending candidate evidence. Its completion transition
+drops that evidence together with the result, whether publication succeeds,
+preparation fails or graph planning abandons the instance. Ready instances keep
+their exact provider holds instead of continuing to validate discovery candidates.
+
+Use retirement commits hold release and Host-index removal together before
+forwarding diagnostics, which may reenter admission. Instance registration and
+retirement live together in `host/instance.go`; its retirement wait policy also
+serves Uses and start claims. An observer's cancellation cannot replace an
+already confirmed original completion.
+
+Instance retirement has one worker for the drain-to-close transition. Parent
+resource callbacks await its original exit instead of starting their own drain.
+The original Lifetime alone proves physical release; retaining a Host record for
+diagnostic forwarding does not keep an already released execution in the overlap
+set. Parent confirmation and Host-index retirement remain attached to that original
+instance, so a late finalizer cannot remove its successor.
+
+The current-instance index owns withdrawal. An instance withdraws
+its exact membership and exports in one Host commit. There is no independent
+retiring flag or finalizer that can repeat that transition. Preparation, start
+claims and observations derive withdrawal from this same membership, while
+accepted Uses retain their original runtime holds until settlement.
+
+The Use close continuation and its failed-settlement coordination live together
+in `host/use_retirement.go`. Retry notifications belong to the particular failed
+attempt that produced them. Settlement waits inspect the owner's current
+conclusion after wakeup or cancellation; a cancelled observer cannot hide a
+confirmed completion or a newly recorded failure.
+
+Event routes derive distinct participants from the original sender and receiver
+Uses. A shared borrow reserves one resource and one delivery interval. A delivery
+pairs each original Use with its actual Work, checking both before and after the
+application callback; a composed context is only a notification. Refused entry,
+panic and Goexit release the delivery's own intervals without changing another
+caller's capacity or replacing the route.
+
+The SDK's `Lifetime` owns resource acquisition as well as release. Creators
+return the resource directly; their disposal policy is supplied before creation.
+The creator owns rollback on failure, and the Lifetime owns every successful
+result, including one delivered after cancellation. An acquired handle projects
+the original exit and drops both the value and disposer on confirmed release.
+React mounting composes this capability for its root instead of maintaining a
+partially initialized root or a parallel cleanup path. Binding and mount callbacks
+are captured once with their original receivers.
+
+Lifecycle wait boundaries reject missing contexts, including typed nils, before
+starting an exit or changing admission. A cancelled valid context abandons only
+its caller's wait; completed release evidence remains with the original owner.
+
+A portable contract retains its admitted `Capability` beside the immutable
+identity document. `NewPortableContract` captures the original model;
+`BindContract` and `RegisterDescriptor` admit a received Frame descriptor before
+registration, including its reference and canonical identity. `Host.Capability`
+and `Setup.Capability` return read handles for that model, resolving a Point to
+its value contract through the same registry. Replacing a returned handle cannot
+change the registered model. Foreign published descriptor formats remain opaque;
+they cannot acquire Frame method semantics through this query.
+Method documentation stays in the publisher's descriptor. The registry retains
+the identity model, so descriptor-first and local-type-first registration expose
+the same callable semantics without importing publisher-only prose.
+
+Use `frame.NewTypedMethod[I, O]` to derive a unary method from its codec models.
+Bind a handler with `ImplementQuery` or `ImplementCommand`, then assemble the
+complete capability with `frame.Implement`. Typed callers use `TypedMethod.Query`
+or `TypedMethod.Command` against `frame.Service` in any execution realm. The
+business caller supplies the original command ID; relays preserve it.
+
+Typed callers check cancellation before encoding and dispatch. Implementations
+check again after decoding, before entering the handler. Failures at these
+boundaries preserve their original cause without implying an accepted effect.
+After dispatch, handler or result-projection failures retain
+`frame.ErrOutcomeUnknown`; cancellation cannot discard a validated success or
+authorize replay. Commands and queries share this result-certainty rule.
+
+Schemas and decoding consume the same `value.ValidateType` model. Integer values
+retain exact decimal and exponent spellings within the Go destination range.
+Machine floats, byte sequences and `time.Time` cannot represent the complete
+portable vocabulary and are refused as typed wire models. Use `value.Number` for
+exact numbers, constrained strings for textual encodings, and `value.JSON` for
+opaque JSON including null. A custom codec must provide both directions and a
+value-receiver `JSONSchemaModel` describing the values it can actually consume.
+Descriptor-only methods use `frame.AdmitMethod` with explicit schemas.
 
 ## Installation and offline tools
 
@@ -43,10 +219,19 @@ not turn altered cached content into trusted bytes.
 
 A Host.Install error is not sufficient to tell whether a persistence operation committed. InstallationConclusion(err) reads the owning transition's conclusion, including committed with diagnostics, rejected and indeterminate. Inspect the original installation after recovery; do not replay an unknown mutation blindly.
 
+The Host revalidates its original admission immediately before beginning an
+installation commit. Cancellation or recovery raised during a retention read
+cannot authorize a later in-memory change or storage call. Content collection
+applies the same boundary before withdrawing a release from its public directory.
+
 An installation commit or confirmation callback that panics or exits its
 goroutine establishes the Admission recovery barrier before releasing admission.
 The original interruption still propagates; missing acknowledgement cannot prove
 that a durable change did not occur.
+
+An interrupted business retention read or restoration callback also establishes
+that barrier before admission is released. Panic and Goexit propagate to their
+original caller; only a completed restoration can reopen admission.
 
 The Host retains that original transition's request and admitted scope revision
 until restoration projects its durable conclusion. Recovering a committed enable
@@ -57,7 +242,12 @@ another installation mutation to replace the unresolved transition.
 
 ## Execution boundaries
 
-Pass the same Admission, epoch and SQLite Store to the durable Host and its adapters, for both installation persistence and execution protection. The process driver and browser bridge refuse a mismatched authority. An ordinary scope named like an installation cannot fence the Host's internal installation scope. Validate an authorized grant before starting any unit and revalidate after preparation.
+Pass the same Admission, epoch and SQLite Store value to the durable Host and its adapters, for both installation persistence and execution protection. Each retains the original authority independently of the caller's variable. Host construction rejects a declared durable authority with a different Admission or epoch, and refuses distinct durable owners for installation and execution protection before invoking drivers. The process driver and browser bridge validate their own original authority. An ordinary scope named like an installation cannot fence the Host's internal installation scope. Validate an authorized grant before starting any unit and revalidate after preparation.
+
+Browser Realm affinity hashes one component-encoded identity tuple. The same
+tuple encoding is authenticated by its opaque credential, so punctuation cannot
+merge Realms or let a proof settle another Realm's execution. Each component's
+name limit remains valid independently of the bounded Frame affinity key.
 
 Accepted-binding reads, provider preparation, export validation and Use approval
 may outlast their original grant. Every following execution or publication
@@ -75,12 +265,24 @@ values; a descriptor alone cannot authorize an arbitrary Go implementation.
 Native event endpoints keep their nil value representation, with typed payload
 admission at delivery.
 
+`Host.PrepareMetadata` captures and validates incoming wire metadata against its
+contract and current local Go projection. Its immutable `PreparedMetadata`
+retains the original wire value; `JSON()` exposes that read projection. Pass the
+prepared value as `ExportValue.Metadata`. Publication consumes that same value
+without encoding a decoded Go view or invoking its decoder again. A different
+contract or a newly registered local projection requires fresh preparation.
+Portable Point constructors reject unsupported metadata projection types before
+they can create an unusable typed binding.
+
 `StartUnit` claims only an instance prepared under the same original scope grant.
 An existing installation-scoped root is refused before another preparation can
 begin; retire it explicitly before starting that root under a different authority.
 Installation-scoped providers remain shareable by consumers with independent
 grants. Copies of a `RunningUnit` share one private start claim; independent starts
 have independent claims, and only the final claim requests retirement.
+Start admission validates the prepared instance directly. A start claim does
+not create a Use or consume its capacity, and it needs no temporary borrow
+resource to be closed before the instance can drain.
 
 Configure subprocess environments explicitly. An empty environment is the default. Host service grants limit access through Frame, not the process's operating-system rights. Deploy native code only with appropriate OS permissions. Maintain one trusted source for executable artifacts, interpreter pins and dependencies. A local Runner confirms the exit of its direct child, not that child's descendants or effects outside the framework.
 
@@ -98,16 +300,16 @@ does not reread the caller's original object.
 
 The profile admits only `date`, `time`, `date-time`, `uuid`, `json-pointer` and
 `relative-json-pointer` formats. Unsupported format names are rejected when a
-descriptor is admitted. `portable.ProfileSchema` owns the dialect, keyword value
+descriptor is admitted. `value.ProfileSchema` owns the dialect, keyword value
 shapes and schema-child topology, including whether an edge consumes instance
 depth. Go exports that declaration, the format inventory, resource budgets,
 regular-expression atom meanings and variable-width syntax into
-`portable/profile.generated.json`; the
+`contract-profile.generated.json`; the
 Node adapter consumes that projection while each runtime keeps its own mature
 predicate compiler. In particular, whitespace uses Go's
 ASCII character set, a dot excludes LF, and the end anchor requires the end of
 the entire string. Fixed repetitions remain bounded by the profile. Both
-runtimes execute `portable/testdata/schema-profile.json`, including Unicode,
+runtimes execute `value/testdata/schema-profile.json`, including Unicode,
 pattern properties, references, and positive and negative format cases.
 
 Contract generation consumes one typed projection graph for both languages.
@@ -115,7 +317,7 @@ Generated Go numbers retain their JSON lexemes through `value.Number`, and
 open objects retain every admitted member. Shapes that cannot be represented
 faithfully as static fields retain a lossless JSON value; the original canonical
 schema still validates them. Date and time strings keep their original text.
-See [contract generation](../portable/contractgen/README.md) for its public
+See [contract generation](../contractgen/README.md) for its public
 surface and projection guarantees.
 
 Portable Point metadata and metadata received as JSON retain one admitted
@@ -130,6 +332,14 @@ metadata. Native metadata stays a detached native snapshot; encoding a candidate
 uses another detached value, so a custom marshaler cannot mutate the publication.
 
 ## Restoring accepted work
+
+The Go APIs return and consume `Snapshot` and `BindingPlan` value handles. A
+Snapshot retains one private immutable catalog read; its candidates and
+selections refer to that record rather than a caller's variable. A copied handle
+can use the same candidates, while a fresh read cannot rewrite an existing
+selection's provenance. Binding admission captures the original plan record
+before waiting, so the Use's binding, selected objects and durable approval all
+derive from the same graph. Zero handles are unissued and cannot admit work.
 
 A declared export always identifies its original setup value. Dynamic Point
 publications have separate operation identities and may reuse a withdrawn name
@@ -184,6 +394,18 @@ The live execution path admits the original plan. A durable host can configure R
 
 ## Local causes and terminal close reports
 
+`Lifetime.BeginClose` and `Use.BeginClose` return `Close` value handles. The
+Lifetime alone advances its private close operation. Copies observe current
+cleanup counters and late proof; replacing a caller's handle cannot reset the
+operation or its identity. An unissued Close cannot wait for or prove release.
+
+The original Lifetime context owns cancellation and its first cause. Parent
+propagation uses the standard context relationship; a delayed custom parent is
+read directly before local cancellation. Closing reads that same cause for Work
+and every resource notification, including resources acquired while unwinding.
+A later close request cannot introduce a second cancellation reason. Cancellation
+still requests shutdown; only the original close operation can prove release.
+
 The Host reads closing state from its original Lifetime. Closing an injected
 Lifetime or cancelling its parent fences the same operations as `Host.Close`;
 admission observes the original parent's cancellation even before its close
@@ -200,6 +422,20 @@ Closing a Use's original Lifetime also starts that Use's original retirement.
 `Use.WaitRetired` joins actual release, durable settlement and removal of Host
 references regardless of which close entry point was used. Admission publishes
 or refuses the Use before retirement reads its acquired holds.
+Public Use handles refer to one private borrow. Copies share its admission,
+held instances and settlement; replacing a caller's handle cannot change the
+borrow retained by the Host, an Access or an event route. Child admission captures
+that original parent before preparation can invoke application code. Retirement
+clears the shared borrow's Host and payload references for every retained copy.
+
+Every Setup handle refers to the original private call. Typed slot bindings and
+returned exports contribute to that same call's result; the author convenience
+wrapper allocates no separate staging owner. One seal closes export staging and
+activation registration together and drops their mutable references, including
+error, panic and Goexit. It uses the call's lock independently of Host membership.
+A retained or replaced public handle cannot redirect that conclusion. Complete
+export validation rejects duplicate names across both inputs before activation
+or publication.
 
 Before durable approval, the Use reserves capacity in both its owner and the
 Host's existing resource graph. Once approval starts, that Use remains there
@@ -281,7 +517,7 @@ cannot recover causes that no caller retained.
 
 ## How a host chooses an execution protocol
 
-A native host can use the root package alone. A host that runs local processes
+A native host composes `host` with the root execution kernel. A host that runs local processes
 composes one process driver per protocol with the same admission, durable store
 and original runner. A unit's profile selects that driver. Each driver freezes its
 declared service slots before launch. A peer's catalog is evidence of what the
@@ -302,18 +538,30 @@ command or release a durable attempt.
 
 See the [MCP guide](../process/mcp/README.md) for protocol-specific requirements.
 
-## Migrating from the v0.0.1 source layout
+## Migrating source imports
 
 | Previous import | Current owner |
 | --- | --- |
+| Root Host, Setup, Unit, declaration, selection, binding and admission APIs | `github.com/Tangerg/frame/host`; construct with `host.New(ctx, host.Config{})` and `host.Limits` |
+| Pointer Lifetime, Host and Admission values | `frame.Lifetime`, `host.Host` and `host.Admission` value handles; check `Valid()` for an issued owner |
+| Host-specific stale, unavailable, in-use, ambiguity, cycle, recovery, fenced and resync errors | `host.ErrStaleBinding`, `ErrUnavailable`, `ErrInUse`, `ErrAmbiguous`, `ErrDependencyCycle`, `ErrRecoveryRequired`, `ErrFenced`, `ErrResyncRequired` |
 | `frame/integrity`, `frame/jsonvalue` | `frame/value`: `Digest`, `Hash`, `ParseJSON`, `EncodeJSON` and `JSON.Bytes()` |
 | `frame/control`, `frame/control/host` | `frame/browser` for both control DTOs and the host bridge |
 | `frame/runner` | `frame/process/runner` |
-| `frame/contractgen` | `frame/portable/contractgen` |
+| `frame/portable/contractgen` | `frame/contractgen` |
+| `frame/portable` method, capability and invocation APIs | Root `frame` package |
+| `frame/portable` schema, codec projection and value-budget APIs | `frame/value` |
+| `portable.RuntimeProfile`, `portable.CurrentRuntimeProfile` | `frame.PortableProfile`, `frame.CurrentPortableProfile` |
+| `portable.Limits`, `portable.ProfileLimits` | `value.PortableProfileLimits`, `value.PortableLimits` for value budgets; Frame owns `MaxCapabilityMethods`, `MaxNameBytes`, `MaxCommandIDCharacters` |
+| `portable.Protocol`, `portable.ValidToken` | `frame.CapabilityProtocol`, `frame.ValidName` |
+| `process.Service`, `Handler`, `StreamingService`, `Emit`, `Implement`, `Implementation`, `ErrOutcomeUnknown` | Root `frame` package |
+| `process.Member`, `process.NewMember` | `frame.TypedMethod`, `frame.NewTypedMethod` |
 | `frame/protocol/process` | The local wire specification lives in `process/wire.json`; Go and Node consume that file |
 | `@frame/browser`, `@frame/node`, `@frame/react` | `@frame/sdk/browser`, `@frame/sdk/node`, `@frame/sdk/react` from one tarball |
+| SDK `acquire(owner, label, create)` and `AcquiredResource` wrappers | `owner.acquire(label, create, release)`; creators return resources directly |
+| SDK `withResource(owner, label, create, work)` | `owner.withResource(label, create, release, work)` |
 | Managed invocation, refusal and command-conflict evidence under `frame/portable` | `frame/process/mcp` owns this managed wire vocabulary |
-| `frame/cancellation` | Removed. SQLite privately preserves context causes at its transaction boundary |
+| `frame/cancellation` | Removed. `frame.ContextError` preserves the standard cancellation category and original owner cause across adapters |
 
 Here `frame/` stands for `github.com/Tangerg/frame/`. Native and local wire
 identities, browser control protocol values, and SQLite record encodings survive

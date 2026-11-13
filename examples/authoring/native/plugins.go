@@ -18,6 +18,7 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/examples/document"
+	framehost "github.com/Tangerg/frame/host"
 	framevalue "github.com/Tangerg/frame/value"
 )
 
@@ -41,7 +42,7 @@ type Configuration struct {
 	Template        document.DocumentRef `json:"template"`
 }
 
-func configuration(setup *frame.Setup) (Configuration, error) {
+func configuration(setup *framehost.Setup) (Configuration, error) {
 	var value Configuration
 	if err := json.Unmarshal(setup.Configuration(), &value); err != nil {
 		return value, err
@@ -54,14 +55,14 @@ func configuration(setup *frame.Setup) (Configuration, error) {
 
 // Plugin uses the bytes of the authored implementation as its release identity.
 // Contract names and identities come from their existing document owner.
-func Plugin(contracts document.Contracts) (*frame.Plugin, error) {
-	readOut := frame.Export("read", contracts.Files)
-	fileUnit, err := frame.DefineUnit(frame.UnitSpec{ID: "files", Exports: frame.Exports(readOut), Prepare: func(setup *frame.Setup) error {
+func Plugin(contracts document.Contracts) (*framehost.Plugin, error) {
+	readOut := framehost.Export("read", contracts.Files)
+	fileUnit, err := framehost.DefineUnit(framehost.UnitSpec{ID: "files", Exports: framehost.Exports(readOut), Prepare: func(setup *framehost.Setup) error {
 		config, err := configuration(setup)
 		if err != nil {
 			return err
 		}
-		root, _, err := frame.AcquireResource(setup, "authored file root", func(context.Context) (*os.Root, error) { return os.OpenRoot(config.SourceDirectory) }, (*os.Root).Close)
+		root, _, err := framehost.AcquireResource(setup, "authored file root", func(context.Context) (*os.Root, error) { return os.OpenRoot(config.SourceDirectory) }, (*os.Root).Close)
 		if err != nil {
 			return err
 		}
@@ -74,9 +75,9 @@ func Plugin(contracts document.Contracts) (*frame.Plugin, error) {
 		return nil, err
 	}
 
-	filesSlot := frame.Required("files", contracts.Files)
-	upper := frame.Offer("uppercase", contracts.Converters)
-	converterUnit, err := frame.DefineUnit(frame.UnitSpec{ID: "converter", Imports: frame.Imports(filesSlot), Exports: frame.Exports(upper), Prepare: func(setup *frame.Setup) error {
+	filesSlot := framehost.Required("files", contracts.Files)
+	upper := framehost.Offer("uppercase", contracts.Converters)
+	converterUnit, err := framehost.DefineUnit(framehost.UnitSpec{ID: "converter", Imports: framehost.Imports(filesSlot), Exports: framehost.Exports(upper), Prepare: func(setup *framehost.Setup) error {
 		config, err := configuration(setup)
 		if err != nil {
 			return err
@@ -85,7 +86,7 @@ func Plugin(contracts document.Contracts) (*frame.Plugin, error) {
 		if err != nil {
 			return err
 		}
-		workspace, _, err := frame.AcquireResource(setup, "authored converter workspace", func(context.Context) (string, error) { return os.MkdirTemp(config.WorkDirectory, "converter-") }, os.RemoveAll)
+		workspace, _, err := framehost.AcquireResource(setup, "authored converter workspace", func(context.Context) (string, error) { return os.MkdirTemp(config.WorkDirectory, "converter-") }, os.RemoveAll)
 		if err != nil {
 			return err
 		}
@@ -113,7 +114,7 @@ func Plugin(contracts document.Contracts) (*frame.Plugin, error) {
 			}
 			content := html.EscapeString(strings.ToUpper(source.Text))
 			output := strings.Replace(string(compiled), contentSlot, content, 1)
-			if err := contextError(ctx); err != nil {
+			if err := frame.ContextError(ctx); err != nil {
 				return document.Converted{}, err
 			}
 			return document.Converted{Source: ref, HTML: output, Title: strings.TrimSpace(strings.SplitN(source.Text, "\n", 2)[0])}, nil
@@ -134,9 +135,9 @@ func Plugin(contracts document.Contracts) (*frame.Plugin, error) {
 		message:    fmt.Sprintf("title is shorter than %d characters", minimumTitleRunes),
 		violatedBy: func(value document.Converted) bool { return utf8.RuneCountInString(value.Title) < minimumTitleRunes },
 	}
-	nonemptyOut := frame.Offer(nonempty.metadata.Name, contracts.Validators)
-	titleOut := frame.Offer(title.metadata.Name, contracts.Validators)
-	validatorUnit, err := frame.DefineUnit(frame.UnitSpec{ID: "validation", Exports: frame.Exports(nonemptyOut, titleOut), Prepare: func(setup *frame.Setup) error {
+	nonemptyOut := framehost.Offer(nonempty.metadata.Name, contracts.Validators)
+	titleOut := framehost.Offer(title.metadata.Name, contracts.Validators)
+	validatorUnit, err := framehost.DefineUnit(framehost.UnitSpec{ID: "validation", Exports: framehost.Exports(nonemptyOut, titleOut), Prepare: func(setup *framehost.Setup) error {
 		if err := nonemptyOut.Bind(setup, nonempty.metadata, document.Validator(nonempty.validate)); err != nil {
 			return err
 		}
@@ -149,7 +150,7 @@ func Plugin(contracts document.Contracts) (*frame.Plugin, error) {
 	if err != nil {
 		return nil, err
 	}
-	return frame.Define(frame.Definition{Revision: revision, Units: []frame.Unit{fileUnit, converterUnit, validatorUnit}})
+	return framehost.Define(framehost.Definition{Revision: revision, Units: []framehost.Unit{fileUnit, converterUnit, validatorUnit}})
 }
 
 type validationRule struct {
@@ -159,7 +160,7 @@ type validationRule struct {
 }
 
 func (r validationRule) validate(ctx context.Context, value document.Converted) ([]document.Diagnostic, error) {
-	if err := contextError(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return nil, err
 	}
 	if r.violatedBy(value) {
@@ -172,7 +173,7 @@ func readSource(ctx context.Context, root *os.Root, ref document.DocumentRef) (_
 	if !fs.ValidPath(ref.Path) || ref.Path == "." || ref.Revision.Validate() != nil {
 		return document.Document{}, errors.New("authoring: exact source identity is required")
 	}
-	if err := contextError(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return document.Document{}, err
 	}
 	file, err := root.OpenFile(ref.Path, os.O_RDONLY|sourceOpenFlags, 0)
@@ -200,15 +201,8 @@ func readSource(ctx context.Context, root *os.Root, ref document.DocumentRef) (_
 	if framevalue.Hash(data) != ref.Revision {
 		return document.Document{}, document.ErrSourceChanged
 	}
-	if err := contextError(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return document.Document{}, err
 	}
 	return document.Document{Ref: ref, Text: string(data)}, nil
-}
-
-func contextError(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return errors.Join(err, context.Cause(ctx))
-	}
-	return nil
 }

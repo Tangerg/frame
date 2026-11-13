@@ -7,8 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/Tangerg/frame/internal/cancellation"
-	"github.com/Tangerg/frame/portable"
+	"github.com/Tangerg/frame"
 	framevalue "github.com/Tangerg/frame/value"
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
@@ -29,7 +28,7 @@ type managedContribution struct {
 	ID         string              `json:"id"`
 	Export     string              `json:"export"`
 	Requires   []managedDependency `json:"requires"`
-	Background *portable.Target    `json:"background,omitzero"`
+	Background *frame.Target       `json:"background,omitzero"`
 }
 
 type managedParams struct {
@@ -95,7 +94,7 @@ func registerManaged(client *sdk.Client) error {
 func requestManaged(ctx context.Context, session *sdk.ClientSession, name string, params *managedParams) (managedReply, error) {
 	result, err := sdk.CallCustomMethod[*managedParams, *managedResult](ctx, session, name, params)
 	if err != nil {
-		return managedReply{}, errors.Join(err, cancellation.Err(ctx))
+		return managedReply{}, errors.Join(err, frame.ContextError(ctx))
 	}
 	return result.unpack()
 }

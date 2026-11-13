@@ -10,12 +10,11 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/value"
 )
 
 func TestManagedConsumerGoexitCannotAcknowledgeAChunk(t *testing.T) {
-	method, err := portable.NewStreamingMethod[string, string, string](portable.MethodConfig{Name: "read", Kind: portable.Query})
+	method, err := frame.NewStreamingMethod[string, string, string](frame.MethodConfig{Name: "read", Kind: frame.Query})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +114,7 @@ func TestManagedBrokerPanicRetainsItsLocalCauseWithoutExposingIt(t *testing.T) {
 }
 
 func TestManagedConsumerPanicRetainsItsLocalCauseWithoutExposingIt(t *testing.T) {
-	method, err := portable.NewStreamingMethod[string, string, string](portable.MethodConfig{Name: "read", Kind: portable.Query})
+	method, err := frame.NewStreamingMethod[string, string, string](frame.MethodConfig{Name: "read", Kind: frame.Query})
 	if err != nil {
 		t.Fatal(err)
 	}

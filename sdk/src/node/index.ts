@@ -115,7 +115,7 @@ export function defineProcessUnit<
 }
 
 type Phase =
-  "new" | "described" | "preparing" | "prepared" | "active" | "closed";
+  "new" | "described" | "preparing" | "prepared" | "activating" | "active";
 type Handler = (
   input: unknown,
   context: CallContext<unknown>,
@@ -242,8 +242,8 @@ class Instance<I extends Imports, E extends Exports> {
     readonly peer: Peer,
   ) {}
 
-  #expect(expected: Phase): void {
-    if (this.#phase !== expected)
+  #expect(...expected: readonly Phase[]): void {
+    if (this.lifetime.closing || !expected.includes(this.#phase))
       throw new ProcessError(
         wire.errors.closed,
         "operation outside its admitted phase",
@@ -258,7 +258,7 @@ class Instance<I extends Imports, E extends Exports> {
           return [
             descriptor.name,
             async (input: unknown, options: RequestOptions = {}) => {
-              this.#expect("active");
+              this.#expect("activating", "active");
               const commandID = options.commandID;
               const wait = options.signal;
               const onChunk = options.onChunk;
@@ -473,7 +473,6 @@ class Instance<I extends Imports, E extends Exports> {
       this.#phase = "prepared";
       return true;
     } catch (error) {
-      this.#phase = "closed";
       await this.lifetime.close();
       throw error;
     }
@@ -482,12 +481,12 @@ class Instance<I extends Imports, E extends Exports> {
   async #activateUnit(params: unknown, signal: AbortSignal) {
     this.#expect("prepared");
     exactFields(params, []);
-    this.#phase = "active";
+    this.#phase = "activating";
     try {
       await this.lifetime.run(() =>
         this.#activate?.({
           start: (job) => {
-            this.#expect("active");
+            this.#expect("activating", "active");
             void this.lifetime.run(job).catch((error) => {
               if (!this.lifetime.signal.aborted) this.peer.stop(error);
             });
@@ -495,9 +494,10 @@ class Instance<I extends Imports, E extends Exports> {
         }),
       );
       signal.throwIfAborted();
+      this.#expect("activating");
+      this.#phase = "active";
       return true;
     } catch (error) {
-      this.#phase = "closed";
       await this.lifetime.close();
       throw error;
     }
@@ -505,7 +505,6 @@ class Instance<I extends Imports, E extends Exports> {
 
   async #close(params: unknown) {
     exactFields(params, []);
-    this.#phase = "closed";
     const outcome = await this.lifetime.close();
     if (outcome.status !== "released")
       throw new ProcessError(
@@ -516,7 +515,7 @@ class Instance<I extends Imports, E extends Exports> {
   }
 
   async #chunk(params: unknown, signal: AbortSignal) {
-    this.#expect("active");
+    this.#expect("activating", "active");
     admitShape(params, shapes.chunk);
     const receive =
       typeof params.stream === "string"

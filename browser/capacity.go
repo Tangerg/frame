@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 const (
@@ -58,7 +59,7 @@ func (b *Bridge) checkPlanCapacity(plan LocalPlan) error {
 		for _, export := range unit.Exports {
 			object := ObjectRef{ObjectID: plan.ApprovalToken, Export: LocalExport{InstanceID: unit.Instance.ID, Name: export.Name, Contract: export.Contract}}
 			ready.Objects = append(ready.Objects, object)
-			if export.Contract.Kind == frame.PointKind {
+			if export.Contract.Kind == framehost.PointKind {
 				ready.Contributions = append(ready.Contributions, PreparedContribution{Object: object, MetadataJSON: jsonNull})
 			}
 		}
@@ -88,7 +89,7 @@ func (b *Bridge) checkRouteCapacity(grant UseGrant, source, receiver LocalExport
 // Reservations also cover the complete reconnect request and its response.
 func (b *Bridge) reserveProjectionLocked(session *realmSession, plan LocalPlan) (int64, error) {
 	if session.cleanupOnly || b.sessions.get(RealmID(session.realm)) != session {
-		return 0, frame.ErrFenced
+		return 0, framehost.ErrFenced
 	}
 	base := Poll{Authority: b.authority, Realm: session.realm, Plans: []LocalPlan{}, Fences: []Fence{}}
 	pollBytes, err := encodedSize(base)

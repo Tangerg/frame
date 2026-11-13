@@ -9,26 +9,8 @@ import (
 	"sync"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/value"
 )
-
-// Service is one already bound export. Only the member names in that export's
-// published contract can be invoked; equal member names across exports are independent.
-type Service interface {
-	Invoke(context.Context, portable.Invocation) (value.JSON, error)
-}
-type Handler func(context.Context, portable.Invocation) (value.JSON, error)
-
-func (f Handler) Invoke(ctx context.Context, invocation portable.Invocation) (value.JSON, error) {
-	return f(ctx, invocation)
-}
-
-type Emit func(context.Context, value.JSON) error
-type StreamingService interface {
-	Service
-	Stream(context.Context, portable.Invocation, Emit) (value.JSON, error)
-}
 
 type callParams struct {
 	Handle    string         `json:"handle"`
@@ -38,15 +20,15 @@ type callParams struct {
 	Stream    string         `json:"stream,omitzero"`
 }
 
-func (p callParams) invocation() (portable.Invocation, error) {
+func (p callParams) invocation() (frame.Invocation, error) {
 	if len(p.CommandID) != 0 {
 		var id string
 		if p.CommandID.Kind() != '"' || json.Unmarshal(p.CommandID, &id) != nil {
-			return portable.Invocation{}, mismatch()
+			return frame.Invocation{}, mismatch()
 		}
-		return portable.NewCommandInvocation(id, p.Member, p.Input)
+		return frame.NewCommandInvocation(id, p.Member, p.Input)
 	}
-	return portable.NewQueryInvocation(p.Member, p.Input)
+	return frame.NewQueryInvocation(p.Member, p.Input)
 }
 
 type chunkParams struct {
@@ -54,8 +36,8 @@ type chunkParams struct {
 	Value  value.JSON `json:"value"`
 }
 type binding struct {
-	contract *portable.Capability
-	service  Service
+	contract *frame.Capability
+	service  frame.Service
 }
 
 func mismatch() error { return &Problem{wire.Errors.Contract, "service contract mismatch"} }
@@ -66,11 +48,11 @@ type deliveries struct {
 }
 type sink struct {
 	call   *streamCall
-	method *portable.Method
-	emit   Emit
+	method *frame.Method
+	emit   frame.Emit
 }
 
-func (d *deliveries) open(call *streamCall, m *portable.Method, emit Emit) (string, func()) {
+func (d *deliveries) open(call *streamCall, m *frame.Method, emit frame.Emit) (string, func()) {
 	token := rand.Text()
 	s := &sink{call: call, method: m, emit: emit}
 	d.mu.Lock()
@@ -87,7 +69,7 @@ func (d *deliveries) open(call *streamCall, m *portable.Method, emit Emit) (stri
 }
 func (d *deliveries) receive(ctx context.Context, raw jsontext.Value) (jsontext.Value, error) {
 	var part chunkParams
-	if err := decode(raw, &part); err != nil {
+	if err := decodeRequest(raw, &part); err != nil {
 		return nil, err
 	}
 	d.mu.Lock()
@@ -110,20 +92,20 @@ func (d *deliveries) receive(ctx context.Context, raw jsontext.Value) (jsontext.
 type remote struct {
 	peer       *peer
 	handle     string
-	contract   *portable.Capability
+	contract   *frame.Capability
 	deliveries *deliveries
 }
 
-func (r *remote) Invoke(ctx context.Context, invocation portable.Invocation) (value.JSON, error) {
+func (r *remote) Invoke(ctx context.Context, invocation frame.Invocation) (value.JSON, error) {
 	return r.invoke(ctx, invocation, nil)
 }
-func (r *remote) Stream(ctx context.Context, invocation portable.Invocation, emit Emit) (value.JSON, error) {
+func (r *remote) Stream(ctx context.Context, invocation frame.Invocation, emit frame.Emit) (value.JSON, error) {
 	if emit == nil {
 		return value.JSON{}, frame.ErrInvalid
 	}
 	return r.invoke(ctx, invocation, emit)
 }
-func (r *remote) invoke(ctx context.Context, invocation portable.Invocation, emit Emit) (result value.JSON, err error) {
+func (r *remote) invoke(ctx context.Context, invocation frame.Invocation, emit frame.Emit) (result value.JSON, err error) {
 	method, ok := r.contract.Method(invocation.Member())
 	if !ok || (len(method.Descriptor().Stream) > 0) != (emit != nil) {
 		return value.JSON{}, mismatch()
@@ -132,7 +114,7 @@ func (r *remote) invoke(ctx context.Context, invocation portable.Invocation, emi
 		return value.JSON{}, errors.Join(frame.ErrContractMismatch, err)
 	}
 	params := callParams{Handle: r.handle, Member: invocation.Member(), Input: invocation.Input()}
-	if invocation.Kind() == portable.Command {
+	if invocation.Kind() == frame.Command {
 		params.CommandID, err = json.Marshal(invocation.CommandID())
 		if err != nil {
 			return value.JSON{}, err
@@ -155,14 +137,14 @@ func (r *remote) invoke(ctx context.Context, invocation portable.Invocation, emi
 		return result, err
 	}
 	if err := method.ValidateOutput(result.Bytes()); err != nil {
-		return value.JSON{}, errors.Join(ErrOutcomeUnknown, err)
+		return value.JSON{}, errors.Join(frame.ErrOutcomeUnknown, err)
 	}
 	return result, nil
 }
 
 func dispatchCall(ctx context.Context, conn *peer, services map[string]binding, raw jsontext.Value) (jsontext.Value, error) {
 	var params callParams
-	if err := decode(raw, &params); err != nil {
+	if err := decodeRequest(raw, &params); err != nil {
 		return nil, err
 	}
 	selected, ok := services[params.Handle]
@@ -176,7 +158,7 @@ func dispatchCall(ctx context.Context, conn *peer, services map[string]binding, 
 	}
 	var result value.JSON
 	if params.Stream != "" {
-		implementation, ok := selected.service.(StreamingService)
+		implementation, ok := selected.service.(frame.StreamingService)
 		if !ok {
 			return nil, mismatch()
 		}
@@ -187,15 +169,15 @@ func dispatchCall(ctx context.Context, conn *peer, services map[string]binding, 
 	if err != nil {
 		// Handler errors cannot prove that an admitted effect did not occur.
 		// Only the business owner can reconcile an absent result.
-		return nil, errors.Join(ErrOutcomeUnknown, err)
+		return nil, errors.Join(frame.ErrOutcomeUnknown, err)
 	}
 	if err := method.ValidateOutput(result.Bytes()); err != nil {
-		return nil, errors.Join(ErrOutcomeUnknown, err)
+		return nil, errors.Join(frame.ErrOutcomeUnknown, err)
 	}
 	return result.Bytes(), nil
 }
 
-func sendStream(ctx context.Context, conn *peer, source StreamingService, method *portable.Method, params callParams, invocation portable.Invocation) (result value.JSON, err error) {
+func sendStream(ctx context.Context, conn *peer, source frame.StreamingService, method *frame.Method, params callParams, invocation frame.Invocation) (result value.JSON, err error) {
 	call := newStreamCall(ctx)
 	defer func() { err = call.finish(err) }()
 	return source.Stream(call.ctx, invocation, func(wait context.Context, chunk value.JSON) error {

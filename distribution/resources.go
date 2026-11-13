@@ -2,10 +2,10 @@ package distribution
 
 import (
 	"context"
-	"errors"
 	"slices"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	framevalue "github.com/Tangerg/frame/value"
 )
 
@@ -27,47 +27,49 @@ func (r *Resources) Read(ctx context.Context, path string) ([]byte, error) {
 
 const contentResourceName = "static content"
 
-type ResourceDriver struct{ store *Store }
+type ResourceDriver struct{ store *storeAuthority }
 
-func NewResourceDriver(store *Store) (*ResourceDriver, error) {
-	if store == nil {
-		return nil, ErrInvalid
+func NewResourceDriver(store Store) (*ResourceDriver, error) {
+	if store.storeAuthority == nil {
+		return nil, frame.ErrInvalid
 	}
-	return &ResourceDriver{store: store}, nil
+	return &ResourceDriver{store: store.storeAuthority}, nil
 }
 
-func (*ResourceDriver) Profile() frame.Profile { return frame.StaticResource }
+func (*ResourceDriver) Profile() framehost.Profile { return framehost.StaticResource }
 
-func (d *ResourceDriver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.ExportValue, error) {
+func (d *ResourceDriver) Prepare(ctx context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
 	if setup == nil {
 		return nil, ErrInvalid
 	}
-	lease, err := d.store.Acquire(ctx, setup.Binding().Source.Release)
+	lease, _, err := framehost.AcquireResource(setup, contentResourceName,
+		func(context.Context) (*Lease, error) {
+			return d.store.Acquire(ctx, setup.Binding().Source.Release)
+		},
+		func(lease *Lease) error { return lease.Close() },
+	)
 	if err != nil {
 		return nil, err
-	}
-	if _, err := setup.Cleanup(contentResourceName, lease.Close); err != nil {
-		return nil, errors.Join(err, lease.Close())
 	}
 	declaration := setup.Unit()
 	manifest := lease.Snapshot().Manifest
 	declared, found := manifest.unit(declaration.ID)
-	if !found || declared.Profile != frame.StaticResource || len(declaration.Imports) != 0 || !slices.Equal(declared.Exports, declaration.Exports) {
+	if !found || declared.Profile != framehost.StaticResource || len(declaration.Imports) != 0 || !slices.Equal(declared.Exports, declaration.Exports) {
 		return nil, frame.ErrContractMismatch
 	}
 	resources := &Resources{lease: lease, files: slices.Clone(declared.Resources)}
-	values := make([]frame.ExportValue, 0, len(declaration.Exports))
+	values := make([]framehost.ExportValue, 0, len(declaration.Exports))
 	for _, export := range declaration.Exports {
 		metadata, err := manifest.contributionMetadata(declaration.ID, export.Name)
 		if err != nil {
 			return nil, err
 		}
-		values = append(values, frame.ExportValue{Name: export.Name, Contract: export.Contract, Metadata: metadata, Value: resources})
+		values = append(values, framehost.ExportValue{Name: export.Name, Contract: export.Contract, Metadata: metadata, Value: resources})
 	}
 	return values, nil
 }
 
-func (m Manifest) unit(id frame.UnitID) (Unit, bool) {
+func (m Manifest) unit(id framehost.UnitID) (Unit, bool) {
 	for _, unit := range m.Units {
 		if unit.ID == id {
 			return unit, true
@@ -76,7 +78,7 @@ func (m Manifest) unit(id frame.UnitID) (Unit, bool) {
 	return Unit{}, false
 }
 
-func (m Manifest) contributionMetadata(unit frame.UnitID, export string) (any, error) {
+func (m Manifest) contributionMetadata(unit framehost.UnitID, export string) (any, error) {
 	for _, contribution := range m.Contributions {
 		if contribution.Unit == unit && contribution.Export == export {
 			return framevalue.ParseJSON(contribution.Metadata)

@@ -16,7 +16,7 @@ const twoDigitInteger = /^[0-9]{2}$/;
 
 function date(value: string): boolean {
   const match = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(value);
-  if (!match || match[0] !== value) return false;
+  if (!match) return false;
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
@@ -31,9 +31,7 @@ function date(value: string): boolean {
 }
 
 function clockPart(value: string): number {
-  return twoDigitInteger.exec(value)?.[0] === value
-    ? Number(value)
-    : Number.NaN;
+  return twoDigitInteger.test(value) ? Number(value) : Number.NaN;
 }
 
 interface Clock {
@@ -118,11 +116,10 @@ export function validateFormat(name: string, value: unknown): boolean {
         date(value.slice(0, 10)) &&
         time(value.slice(11))
       );
-    case formats.uuid: {
-      const match =
-        /^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/.exec(value);
-      return match?.[0] === value;
-    }
+    case formats.uuid:
+      return /^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/.test(
+        value,
+      );
     case formats.jsonPointer:
       return pointer(value);
     case formats.relativeJSONPointer: {

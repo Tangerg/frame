@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/process"
 	"github.com/Tangerg/frame/process/runner"
 	"github.com/Tangerg/frame/sqlite"
@@ -18,12 +18,12 @@ import (
 
 type fixtureSource struct{ program process.Program }
 
-func (s fixtureSource) Program(context.Context, frame.UnitBinding) (process.Program, error) {
+func (s fixtureSource) Program(context.Context, framehost.UnitBinding) (process.Program, error) {
 	return s.program, nil
 }
 
 // Exercise the installed declaration, approved binding, durable launch and final exit proof.
-func checkExecution(t *testing.T, protocol process.Protocol, capability *portable.Capability, source func(*testing.T, string) process.Program, want error, check func(context.Context, process.Service, string)) {
+func checkExecution(t *testing.T, protocol process.Protocol, capability *frame.Capability, source func(*testing.T, string) process.Program, want error, check func(context.Context, frame.Service, string)) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -51,7 +51,7 @@ func checkExecution(t *testing.T, protocol process.Protocol, capability *portabl
 			t.Error(err)
 		}
 	}()
-	admission := frame.NewAdmission()
+	admission := framehost.NewAdmission()
 	store, err := sqlite.Open(ctx, sqlite.Config{Path: filepath.Join(dir, "state.db"), Admission: admission})
 	if err != nil {
 		t.Fatal(err)
@@ -66,7 +66,7 @@ func checkExecution(t *testing.T, protocol process.Protocol, capability *portabl
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := frame.NewHost(ctx, frame.HostConfig{Admission: admission, Epoch: store.Epoch(), Drivers: []frame.Driver{driver}, Installations: store, ExecutionProtection: store})
+	host, err := framehost.New(ctx, framehost.Config{Admission: admission, Epoch: store.Epoch(), Drivers: []framehost.Driver{driver}, Installations: store, ExecutionProtection: store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func checkExecution(t *testing.T, protocol process.Protocol, capability *portabl
 			t.Errorf("host close: %+v %v", outcome, err)
 		}
 	}()
-	contract, err := frame.NewPortableContract[process.Service]("1", capability)
+	contract, err := framehost.NewPortableContract[frame.Service]("1", capability)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,15 +83,15 @@ func checkExecution(t *testing.T, protocol process.Protocol, capability *portabl
 	if err := host.Register(contract); err != nil {
 		t.Fatal(err)
 	}
-	unit := frame.UnitDeclaration{ID: "main", Profile: protocol.Profile(), Exports: []frame.ExportDeclaration{{Name: "service", Contract: ref}}}
-	release, err := frame.Define(frame.Definition{Revision: value.Hash([]byte("process integration fixture")), Units: []frame.Unit{{Declaration: unit}}})
+	unit := framehost.UnitDeclaration{ID: "main", Profile: protocol.Profile(), Exports: []framehost.ExportDeclaration{{Name: "service", Contract: ref}}}
+	release, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("process integration fixture")), Units: []framehost.Unit{{Declaration: unit}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.Install(ctx, frame.InstallationConfig{ID: "installed", Plugin: release, Configuration: []byte("{}"), Enabled: true}); err != nil {
+	if _, err := host.Install(ctx, framehost.InstallationConfig{ID: "installed", Plugin: release, Configuration: []byte("{}"), Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	export := frame.ExportRef{InstallationID: "installed", Release: release.Revision(), UnitID: "main", Export: "service", Contract: ref}
+	export := framehost.ExportRef{InstallationID: "installed", Release: release.Revision(), UnitID: "main", Export: "service", Contract: ref}
 	plan, err := host.Plan(ctx, export)
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +101,7 @@ func checkExecution(t *testing.T, protocol process.Protocol, capability *portabl
 	if err != nil {
 		t.Fatal(err)
 	}
-	use, err := host.Acquire(ctx, plan, frame.UseConfig{Owner: owner, Scope: scope})
+	use, err := host.Acquire(ctx, plan, framehost.UseConfig{Owner: owner, Scope: scope})
 	if !errors.Is(err, want) {
 		t.Fatalf("acquire = %v, want %v", err, want)
 	}
@@ -115,7 +115,7 @@ func checkExecution(t *testing.T, protocol process.Protocol, capability *portabl
 		if err := neutral.Recover(ctx); err != nil {
 			t.Fatalf("neutral recovery touched another profile's live attempt: %v", err)
 		}
-		if err := frame.BorrowExport[process.Service](ctx, use, export, func(ctx context.Context, svc process.Service) error {
+		if err := framehost.BorrowExport[frame.Service](ctx, use, export, func(ctx context.Context, svc frame.Service) error {
 			check(ctx, svc, dir)
 			return nil
 		}); err != nil {

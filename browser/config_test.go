@@ -8,11 +8,12 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 type nilRemoteSource struct{}
 
-func (*nilRemoteSource) Import(context.Context, *frame.Setup, frame.BoundValue) (browser.RemoteImport, error) {
+func (*nilRemoteSource) Import(context.Context, *framehost.Setup, framehost.BoundValue) (browser.RemoteImport, error) {
 	return browser.RemoteImport{}, nil
 }
 
@@ -37,22 +38,22 @@ func TestBridgeRejectsTypedNilAdapters(t *testing.T) {
 
 func TestBridgeRejectsUnusablePointConfiguration(t *testing.T) {
 	e := openBridge(t, filepath.Join(t.TempDir(), "state.sqlite"), true)
-	service, err := frame.NewContract[string]("test.service", "1")
+	service, err := framehost.NewContract[string]("test.service", "1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherVersion, err := frame.NewPoint[testMetadata, browser.Object](e.first.Ref().Name, "2")
+	otherVersion, err := framehost.NewPoint[testMetadata, browser.Object](e.first.Ref().Name, "2")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
 		name   string
-		points []frame.ContractRef
+		points []framehost.ContractRef
 	}{
-		{name: "invalid reference", points: []frame.ContractRef{{}}},
-		{name: "service contract", points: []frame.ContractRef{service.Ref()}},
-		{name: "duplicate point", points: []frame.ContractRef{e.first.Ref(), e.first.Ref()}},
-		{name: "ambiguous versions", points: []frame.ContractRef{e.first.Ref(), otherVersion.Ref()}},
+		{name: "invalid reference", points: []framehost.ContractRef{{}}},
+		{name: "service contract", points: []framehost.ContractRef{service.Ref()}},
+		{name: "duplicate point", points: []framehost.ContractRef{e.first.Ref(), e.first.Ref()}},
+		{name: "ambiguous versions", points: []framehost.ContractRef{e.first.Ref(), otherVersion.Ref()}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := browser.NewBridge(browser.BridgeConfig{Host: e.host, Store: e.store, Source: testModules{}, Points: test.points})
@@ -61,7 +62,7 @@ func TestBridgeRejectsUnusablePointConfiguration(t *testing.T) {
 			}
 		})
 	}
-	for _, points := range [][]frame.ContractRef{nil, {e.first.Ref(), e.second.Ref()}} {
+	for _, points := range [][]framehost.ContractRef{nil, {e.first.Ref(), e.second.Ref()}} {
 		if _, err := browser.NewBridge(browser.BridgeConfig{Host: e.host, Store: e.store, Source: testModules{}, Points: points}); err != nil {
 			t.Fatalf("valid point configuration was refused: %v", err)
 		}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 )
 
@@ -19,7 +20,7 @@ func TestReturnedGrantCannotChangeAdmission(t *testing.T) {
 	p := e.start("component")
 	req, grant := e.acquire(p, "original")
 	grant.Objects[0].ObjectID = "changed"
-	if err := e.bridge.ValidateUse(e.ctx, e.credentials.Token, grant); !errors.Is(err, frame.ErrStaleBinding) {
+	if err := e.bridge.ValidateUse(e.ctx, e.credentials.Token, grant); !errors.Is(err, framehost.ErrStaleBinding) {
 		t.Fatalf("changed grant: %v", err)
 	}
 	replay, err := e.bridge.Acquire(e.ctx, e.credentials.Token, req)
@@ -53,7 +54,7 @@ func TestSealedEmptyRealmReturnsLiveCapacity(t *testing.T) {
 	if _, err = b.OpenRealm(e.ctx, "second", "1123456789abcdef0123456789abcdef"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = b.Snapshot(e.ctx, first.Token, snapshotRequest(e.first.Ref().Name)); !errors.Is(err, frame.ErrFenced) {
+	if _, err = b.Snapshot(e.ctx, first.Token, snapshotRequest(e.first.Ref().Name)); !errors.Is(err, framehost.ErrFenced) {
 		t.Fatal(err)
 	}
 	if _, err = b.Poll(e.ctx, first.Token); err != nil {
@@ -99,7 +100,7 @@ func TestApplicationUseRetainsItsRetiringProviderUntilExecutionProof(t *testing.
 
 type foreignSource struct{ called bool }
 
-func (s *foreignSource) Module(context.Context, frame.UnitBinding) (browser.Artifact, error) {
+func (s *foreignSource) Module(context.Context, framehost.UnitBinding) (browser.Artifact, error) {
 	s.called = true
 	return browser.Artifact{}, frame.ErrInvalid
 }
@@ -115,13 +116,13 @@ func TestPrepareRefusesForeignHostBeforeSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gate := frame.NewAdmission()
+	gate := framehost.NewAdmission()
 	db, err := sqlite.Open(e.ctx, sqlite.Config{Path: filepath.Join(t.TempDir(), "foreign.sqlite"), Admission: gate})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	h, err := frame.NewHost(e.ctx, frame.HostConfig{Admission: gate, Epoch: db.Epoch(), Installations: db, ExecutionProtection: db})
+	h, err := framehost.New(e.ctx, framehost.Config{Admission: gate, Epoch: db.Epoch(), Installations: db, ExecutionProtection: db})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,11 +133,11 @@ func TestPrepareRefusesForeignHostBeforeSource(t *testing.T) {
 	if err = h.RegisterDriver(b); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = h.Install(e.ctx, frame.InstallationConfig{ID: "foreign", Plugin: e.plugin, Enabled: true}); err != nil {
+	if _, err = h.Install(e.ctx, framehost.InstallationConfig{ID: "foreign", Plugin: e.plugin, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	_, err = h.ActivateUnit(e.ctx, browser.RealmID(cred.Realm), frame.UnitRef{InstallationID: "foreign", Release: e.plugin.Revision(), UnitID: "view"})
-	if !errors.Is(err, frame.ErrFenced) || source.called {
+	_, err = h.ActivateUnit(e.ctx, browser.RealmID(cred.Realm), framehost.UnitRef{InstallationID: "foreign", Release: e.plugin.Revision(), UnitID: "view"})
+	if !errors.Is(err, framehost.ErrFenced) || source.called {
 		t.Fatalf("foreign setup reached source=%v: %v", source.called, err)
 	}
 }
@@ -147,17 +148,17 @@ func TestAcquisitionRefusalDoesNotConsumePendingBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = e.host.Install(e.ctx, frame.InstallationConfig{ID: "component", Plugin: e.plugin, Enabled: true}); err != nil {
+	if _, err = e.host.Install(e.ctx, framehost.InstallationConfig{ID: "component", Plugin: e.plugin, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	root := frame.ExportRef{InstallationID: "component", Release: e.plugin.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
+	root := framehost.ExportRef{InstallationID: "component", Release: e.plugin.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
 	plan, err := e.host.PlanWith(e.ctx, browser.RealmID(r.Realm), nil, root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, op := range []string{"first", "second", "third", "first"} {
 		_, err = b.AcquirePlan(e.ctx, r.Token, op, plan, "missing")
-		if !errors.Is(err, frame.ErrStaleBinding) {
+		if !errors.Is(err, framehost.ErrStaleBinding) {
 			t.Fatalf("%s: %v", op, err)
 		}
 	}
@@ -170,12 +171,12 @@ func TestUnadmittedRetirementRetriesOriginalProof(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = e.host.Install(e.ctx, frame.InstallationConfig{ID: "component", Plugin: e.plugin, Enabled: true}); err != nil {
+	if _, err = e.host.Install(e.ctx, framehost.InstallationConfig{ID: "component", Plugin: e.plugin, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := e.host.ActivateUnit(e.ctx, browser.RealmID(cred.Realm), frame.UnitRef{InstallationID: "component", Release: e.plugin.Revision(), UnitID: "view"})
+		_, err := e.host.ActivateUnit(e.ctx, browser.RealmID(cred.Realm), framehost.UnitRef{InstallationID: "component", Release: e.plugin.Revision(), UnitID: "view"})
 		done <- err
 	}()
 	var id string
@@ -232,7 +233,7 @@ func TestUnadmittedRetirementRetriesOriginalProof(t *testing.T) {
 
 type blockingModules struct{ entered, resume chan struct{} }
 
-func (s blockingModules) Module(ctx context.Context, _ frame.UnitBinding) (browser.Artifact, error) {
+func (s blockingModules) Module(ctx context.Context, _ framehost.UnitBinding) (browser.Artifact, error) {
 	select {
 	case s.entered <- struct{}{}:
 	case <-ctx.Done():
@@ -240,7 +241,7 @@ func (s blockingModules) Module(ctx context.Context, _ frame.UnitBinding) (brows
 	}
 	select {
 	case <-s.resume:
-		return browser.Artifact{}, frame.ErrUnavailable
+		return browser.Artifact{}, framehost.ErrUnavailable
 	case <-ctx.Done():
 		return browser.Artifact{}, context.Cause(ctx)
 	}
@@ -253,13 +254,13 @@ func TestPrepareReservesCapacityBeforeResolvingAModule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []frame.InstallationID{"first", "second"} {
-		if _, err = e.host.Install(e.ctx, frame.InstallationConfig{ID: id, Plugin: e.plugin, Enabled: true}); err != nil {
+	for _, id := range []framehost.InstallationID{"first", "second"} {
+		if _, err = e.host.Install(e.ctx, framehost.InstallationConfig{ID: id, Plugin: e.plugin, Enabled: true}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	activate := func(id frame.InstallationID) error {
-		_, err := e.host.ActivateUnit(e.ctx, browser.RealmID(cred.Realm), frame.UnitRef{InstallationID: id, Release: e.plugin.Revision(), UnitID: "view"})
+	activate := func(id framehost.InstallationID) error {
+		_, err := e.host.ActivateUnit(e.ctx, browser.RealmID(cred.Realm), framehost.UnitRef{InstallationID: id, Release: e.plugin.Revision(), UnitID: "view"})
 		return err
 	}
 	done := make(chan error, 1)
@@ -285,7 +286,7 @@ func TestPrepareReservesCapacityBeforeResolvingAModule(t *testing.T) {
 		t.Fatal(e.ctx.Err())
 	}
 	close(source.resume)
-	if err = <-done; !errors.Is(err, frame.ErrUnavailable) {
+	if err = <-done; !errors.Is(err, framehost.ErrUnavailable) {
 		t.Fatal(err)
 	}
 }
@@ -307,7 +308,7 @@ func TestRetiredExecutionCannotProveAnotherPublication(t *testing.T) {
 	foreign.PublicationID = published.Publication.ID
 	foreign.ProofID = "forged-publication"
 	foreign.CloseID = "forged-close"
-	if _, err = e.bridge.Prove(e.ctx, e.credentials.Token, foreign); !errors.Is(err, frame.ErrStaleBinding) {
+	if _, err = e.bridge.Prove(e.ctx, e.credentials.Token, foreign); !errors.Is(err, framehost.ErrStaleBinding) {
 		t.Fatalf("foreign publication proof: %v", err)
 	}
 	withdrawn, err := e.bridge.Withdraw(e.ctx, e.credentials.Token, browser.Withdrawal{Authority: live.Authority, PublicationID: published.Publication.ID})
@@ -327,7 +328,7 @@ func TestRetiredExecutionCannotProveAnotherPublication(t *testing.T) {
 func TestUnicodeAcquisitionReceiptDoesNotConsumeCapacity(t *testing.T) {
 	e := openConfiguredBridge(t, filepath.Join(t.TempDir(), "state.sqlite"), true, func(c *browser.BridgeConfig) { c.MaxPending = 1 })
 	plan := e.start("test")
-	root := frame.ExportRef{InstallationID: "test", Release: e.plugin.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
+	root := framehost.ExportRef{InstallationID: "test", Release: e.plugin.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
 	binding, err := e.host.PlanWith(e.ctx, browser.RealmID(e.credentials.Realm), nil, root)
 	if err != nil {
 		t.Fatal(err)
@@ -406,7 +407,7 @@ func TestReceiptLookupsShareAndRespectPendingCapacity(t *testing.T) {
 
 func TestBrowserOwnsCleanupBeforeRecordingCreation(t *testing.T) {
 	e := openConfiguredBridge(t, filepath.Join(t.TempDir(), "state.sqlite"), true, func(c *browser.BridgeConfig) {
-		c.PublicConfiguration = func(_ context.Context, s *frame.Setup) ([]byte, error) {
+		c.PublicConfiguration = func(_ context.Context, s *framehost.Setup) ([]byte, error) {
 			for {
 				_, err := s.Cleanup("test resource", func() error { return nil })
 				if errors.Is(err, frame.ErrCapacity) {
@@ -422,10 +423,10 @@ func TestBrowserOwnsCleanupBeforeRecordingCreation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = e.host.Install(e.ctx, frame.InstallationConfig{ID: "component", Plugin: e.plugin, Enabled: true}); err != nil {
+	if _, err = e.host.Install(e.ctx, framehost.InstallationConfig{ID: "component", Plugin: e.plugin, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	_, err = e.host.ActivateUnit(e.ctx, browser.RealmID(cred.Realm), frame.UnitRef{InstallationID: "component", Release: e.plugin.Revision(), UnitID: "view"})
+	_, err = e.host.ActivateUnit(e.ctx, browser.RealmID(cred.Realm), framehost.UnitRef{InstallationID: "component", Release: e.plugin.Revision(), UnitID: "view"})
 	if !errors.Is(err, frame.ErrCapacity) {
 		t.Fatalf("full lifetime: %v", err)
 	}

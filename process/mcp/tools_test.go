@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/process"
 	"github.com/Tangerg/frame/value"
 	sdk "github.com/Tangerg/go-sdk/mcp"
@@ -82,11 +82,11 @@ func TestToolsOnApprovedRunner(t *testing.T) {
 		{"call", 4, false, nil}, {"catalog-budget", 1, false, frame.ErrCapacity}, {"schema-drift", 4, true, frame.ErrContractMismatch},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			capability, err := portable.NewCapability("thirdparty", portable.MethodDescriptor{Name: "read", Kind: portable.Query, Input: []byte(inputSchema), Output: []byte(outputSchema)}, portable.MethodDescriptor{Name: "text", Kind: portable.Command, Input: []byte(inputSchema), Output: []byte(`{"type":"object","required":["content"]}`)})
+			capability, err := frame.NewCapability("thirdparty", frame.MethodDescriptor{Name: "read", Kind: frame.Query, Input: []byte(inputSchema), Output: []byte(outputSchema)}, frame.MethodDescriptor{Name: "text", Kind: frame.Command, Input: []byte(inputSchema), Output: []byte(`{"type":"object","required":["content"]}`)})
 			if err != nil {
 				t.Fatal(err)
 			}
-			p := Tools{MaxCatalogPages: tc.pages, FullResult: func(_ frame.ExportDeclaration, name string) bool { return name == "text" }}
+			p := Tools{MaxCatalogPages: tc.pages, FullResult: func(_ framehost.ExportDeclaration, name string) bool { return name == "text" }}
 			checkExecution(t, p, capability, func(t *testing.T, dir string) process.Program {
 				executable, err := os.Executable()
 				if err != nil {
@@ -101,12 +101,12 @@ func TestToolsOnApprovedRunner(t *testing.T) {
 					env = append(env, "FRAME_MCP_SCHEMA_DRIFT=1")
 				}
 				return process.Program{Command: executable, ExecutableDigest: value.Hash(binary), Env: env, Args: []string{"-test.run=^TestStdioPeer$"}, Directory: dir}
-			}, tc.want, func(ctx context.Context, svc process.Service, dir string) { verifyCalls(t, ctx, svc, dir) })
+			}, tc.want, func(ctx context.Context, svc frame.Service, dir string) { verifyCalls(t, ctx, svc, dir) })
 		})
 	}
 }
 
-func verifyCalls(t *testing.T, ctx context.Context, svc process.Service, dir string) {
+func verifyCalls(t *testing.T, ctx context.Context, svc frame.Service, dir string) {
 	t.Helper()
 	call := func(ctx context.Context, name, args string) (value.JSON, error) {
 		in, err := value.ParseJSON([]byte(args))
@@ -140,7 +140,7 @@ func verifyCalls(t *testing.T, ctx context.Context, svc process.Service, dir str
 	if _, err := call(ctx, "read", `{"action":"fail"}`); !errors.As(err, &reported) || !strings.Contains(reported.Result.String(), "tool declined") {
 		t.Fatalf("explicit tool failure: %v", err)
 	}
-	if _, err := call(ctx, "read", `{"action":"invalid"}`); !errors.Is(err, process.ErrOutcomeUnknown) {
+	if _, err := call(ctx, "read", `{"action":"invalid"}`); !errors.Is(err, frame.ErrOutcomeUnknown) {
 		t.Fatalf("invalid output: %v", err)
 	}
 	request, cancel := context.WithCancel(ctx)
@@ -149,7 +149,7 @@ func verifyCalls(t *testing.T, ctx context.Context, svc process.Service, dir str
 	go func() { _, err := call(request, "read", `{"action":"wait"}`); done <- err }()
 	awaitMarker(t, ctx, filepath.Join(dir, "entered"))
 	cancel()
-	if err := <-done; !errors.Is(err, context.Canceled) || !errors.Is(err, process.ErrOutcomeUnknown) {
+	if err := <-done; !errors.Is(err, context.Canceled) || !errors.Is(err, frame.ErrOutcomeUnknown) {
 		t.Fatalf("canceled dispatched call: %v", err)
 	}
 	awaitMarker(t, ctx, filepath.Join(dir, "canceled"))
@@ -174,7 +174,7 @@ func awaitMarker(t *testing.T, ctx context.Context, path string) {
 }
 
 func TestToolCannotWeakenApprovedContract(t *testing.T) {
-	method, err := portable.AdmitMethod(portable.MethodDescriptor{Name: "read", Kind: portable.Query, Input: []byte(inputSchema), Output: []byte(outputSchema)})
+	method, err := frame.AdmitMethod(frame.MethodDescriptor{Name: "read", Kind: frame.Query, Input: []byte(inputSchema), Output: []byte(outputSchema)})
 	if err != nil {
 		t.Fatal(err)
 	}

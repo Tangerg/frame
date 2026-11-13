@@ -9,39 +9,39 @@ import (
 	"strings"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/internal/cancellation"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
 const (
-	fileReaderUnitID            frame.UnitID = "files"
-	fileReadExportName                       = "read"
-	fileReaderRevision                       = "document/file-reader/1"
-	converterUnitID             frame.UnitID = "converter"
-	converterRevisionPrefix                  = "document/converter/"
-	fileImportSlot                           = "files"
-	markdownExportName                       = "markdown"
-	markdownFormat                           = "markdown"
-	defaultMarkdownPriority                  = 10
-	validationUnitID            frame.UnitID = "validation"
-	validationRevision                       = "document/validation/1"
-	titleValidatorExportName                 = "title"
-	titleRuleName                            = "title"
-	defaultTitleValidationOrder              = 10
+	fileReaderUnitID            framehost.UnitID = "files"
+	fileReadExportName                           = "read"
+	fileReaderRevision                           = "document/file-reader/1"
+	converterUnitID             framehost.UnitID = "converter"
+	converterRevisionPrefix                      = "document/converter/"
+	fileImportSlot                               = "files"
+	markdownExportName                           = "markdown"
+	markdownFormat                               = "markdown"
+	defaultMarkdownPriority                      = 10
+	validationUnitID            framehost.UnitID = "validation"
+	validationRevision                           = "document/validation/1"
+	titleValidatorExportName                     = "title"
+	titleRuleName                                = "title"
+	defaultTitleValidationOrder                  = 10
 )
 
 type FileConfiguration struct {
 	Directory string `json:"directory"`
 }
 
-func FilePlugin(contracts Contracts) (*frame.Plugin, error) {
-	unit := frame.Unit{
-		Declaration: frame.UnitDeclaration{
+func FilePlugin(contracts Contracts) (*framehost.Plugin, error) {
+	unit := framehost.Unit{
+		Declaration: framehost.UnitDeclaration{
 			ID:      fileReaderUnitID,
-			Profile: frame.NativeGo,
-			Exports: []frame.ExportDeclaration{{Name: fileReadExportName, Contract: contracts.Files.Ref()}},
+			Profile: framehost.NativeGo,
+			Exports: []framehost.ExportDeclaration{{Name: fileReadExportName, Contract: contracts.Files.Ref()}},
 		},
-		Setup: func(_ context.Context, setup *frame.Setup) ([]frame.ExportValue, error) {
+		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
 			var configuration FileConfiguration
 			if err := json.Unmarshal(setup.Configuration(), &configuration); err != nil {
 				return nil, err
@@ -53,22 +53,22 @@ func FilePlugin(contracts Contracts) (*frame.Plugin, error) {
 			if _, err := setup.Cleanup("document files", root.Close); err != nil {
 				return nil, errors.Join(err, root.Close())
 			}
-			return []frame.ExportValue{frame.Provide(fileReadExportName, contracts.Files, FileReader(func(ctx context.Context, ref DocumentRef) (Document, error) { return readDocument(ctx, root, ref) }))}, nil
+			return []framehost.ExportValue{framehost.Provide(fileReadExportName, contracts.Files, FileReader(func(ctx context.Context, ref DocumentRef) (Document, error) { return readDocument(ctx, root, ref) }))}, nil
 		},
 	}
-	return frame.Define(frame.Definition{Revision: value.Hash([]byte(fileReaderRevision)), Units: []frame.Unit{unit}})
+	return framehost.Define(framehost.Definition{Revision: value.Hash([]byte(fileReaderRevision)), Units: []framehost.Unit{unit}})
 }
 
-func ConverterPlugin(contracts Contracts, revision string) (*frame.Plugin, error) {
-	unit := frame.Unit{
-		Declaration: frame.UnitDeclaration{
+func ConverterPlugin(contracts Contracts, revision string) (*framehost.Plugin, error) {
+	unit := framehost.Unit{
+		Declaration: framehost.UnitDeclaration{
 			ID:      converterUnitID,
-			Profile: frame.NativeGo,
-			Imports: []frame.ImportDeclaration{{Slot: fileImportSlot, Contract: contracts.Files.Ref()}},
-			Exports: []frame.ExportDeclaration{{Name: markdownExportName, Contract: contracts.Converters.Ref()}},
+			Profile: framehost.NativeGo,
+			Imports: []framehost.ImportDeclaration{{Slot: fileImportSlot, Contract: contracts.Files.Ref()}},
+			Exports: []framehost.ExportDeclaration{{Name: markdownExportName, Contract: contracts.Converters.Ref()}},
 		},
-		Setup: func(_ context.Context, setup *frame.Setup) ([]frame.ExportValue, error) {
-			files, err := frame.Import(setup, fileImportSlot, contracts.Files)
+		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+			files, err := framehost.Import(setup, fileImportSlot, contracts.Files)
 			if err != nil {
 				return nil, err
 			}
@@ -80,7 +80,7 @@ func ConverterPlugin(contracts Contracts, revision string) (*frame.Plugin, error
 				result := Converted{Source: reference}
 				var output strings.Builder
 				for _, line := range strings.Split(document.Text, "\n") {
-					if err := cancellation.Err(ctx); err != nil {
+					if err := frame.ContextError(ctx); err != nil {
 						return Converted{}, err
 					}
 					switch {
@@ -95,22 +95,22 @@ func ConverterPlugin(contracts Contracts, revision string) (*frame.Plugin, error
 				result.HTML = output.String()
 				return result, nil
 			})
-			return []frame.ExportValue{frame.Contribute(markdownExportName, contracts.Converters, ConverterMetadata{Format: markdownFormat, Priority: defaultMarkdownPriority}, convert)}, nil
+			return []framehost.ExportValue{framehost.Contribute(markdownExportName, contracts.Converters, ConverterMetadata{Format: markdownFormat, Priority: defaultMarkdownPriority}, convert)}, nil
 		},
 	}
-	return frame.Define(frame.Definition{Revision: value.Hash([]byte(converterRevisionPrefix + revision)), Units: []frame.Unit{unit}})
+	return framehost.Define(framehost.Definition{Revision: value.Hash([]byte(converterRevisionPrefix + revision)), Units: []framehost.Unit{unit}})
 }
 
-func ValidationPlugin(contracts Contracts) (*frame.Plugin, error) {
-	unit := frame.Unit{
-		Declaration: frame.UnitDeclaration{
+func ValidationPlugin(contracts Contracts) (*framehost.Plugin, error) {
+	unit := framehost.Unit{
+		Declaration: framehost.UnitDeclaration{
 			ID:      validationUnitID,
-			Profile: frame.NativeGo,
-			Exports: []frame.ExportDeclaration{{Name: titleValidatorExportName, Contract: contracts.Validators.Ref()}},
+			Profile: framehost.NativeGo,
+			Exports: []framehost.ExportDeclaration{{Name: titleValidatorExportName, Contract: contracts.Validators.Ref()}},
 		},
-		Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
-			return []frame.ExportValue{frame.Contribute(titleValidatorExportName, contracts.Validators, ValidatorMetadata{Name: titleRuleName, Order: defaultTitleValidationOrder}, Validator(func(ctx context.Context, converted Converted) ([]Diagnostic, error) {
-				if err := cancellation.Err(ctx); err != nil {
+		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+			return []framehost.ExportValue{framehost.Contribute(titleValidatorExportName, contracts.Validators, ValidatorMetadata{Name: titleRuleName, Order: defaultTitleValidationOrder}, Validator(func(ctx context.Context, converted Converted) ([]Diagnostic, error) {
+				if err := frame.ContextError(ctx); err != nil {
 					return nil, err
 				}
 				if converted.Title == "" {
@@ -120,5 +120,5 @@ func ValidationPlugin(contracts Contracts) (*frame.Plugin, error) {
 			}))}, nil
 		},
 	}
-	return frame.Define(frame.Definition{Revision: value.Hash([]byte(validationRevision)), Units: []frame.Unit{unit}})
+	return framehost.Define(framehost.Definition{Revision: value.Hash([]byte(validationRevision)), Units: []framehost.Unit{unit}})
 }

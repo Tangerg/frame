@@ -13,21 +13,22 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/examples/document"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
 func installRunValidator(t *testing.T, app *document.App, validate document.Validator) {
 	t.Helper()
-	plugin, err := frame.Define(frame.Definition{Revision: value.Hash([]byte("original-run-validator")), Units: []frame.Unit{{
-		Declaration: frame.UnitDeclaration{ID: "validator", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "validator", Contract: app.Contracts.Validators.Ref()}}},
-		Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
-			return []frame.ExportValue{frame.Contribute("validator", app.Contracts.Validators, document.ValidatorMetadata{Name: "original-run", Order: 100}, validate)}, nil
+	plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("original-run-validator")), Units: []framehost.Unit{{
+		Declaration: framehost.UnitDeclaration{ID: "validator", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "validator", Contract: app.Contracts.Validators.Ref()}}},
+		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+			return []framehost.ExportValue{framehost.Contribute("validator", app.Contracts.Validators, document.ValidatorMetadata{Name: "original-run", Order: 100}, validate)}, nil
 		},
 	}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.Host.Install(t.Context(), frame.InstallationConfig{ID: "original-run-validator", Plugin: plugin, Enabled: true}); err != nil {
+	if _, err := app.Host.Install(t.Context(), framehost.InstallationConfig{ID: "original-run-validator", Plugin: plugin, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -121,10 +122,10 @@ func TestActiveTaskDoesNotAcceptCancellationAsExitEvidence(t *testing.T) {
 	if err != nil || task.State != document.Unsettled || task.RunStatus != document.TaskRunActive {
 		t.Fatalf("active task projection: %+v, %v", task, err)
 	}
-	if err := app.Cancel(ctx, id); !errors.Is(err, frame.ErrInUse) {
+	if err := app.Cancel(ctx, id); !errors.Is(err, framehost.ErrInUse) {
 		t.Fatalf("cancel declared an active callback stopped: %v", err)
 	}
-	if _, err := app.Run(ctx, id); !errors.Is(err, frame.ErrInUse) {
+	if _, err := app.Run(ctx, id); !errors.Is(err, framehost.ErrInUse) {
 		t.Fatalf("repeated an active execution: %v", err)
 	}
 	unblock()

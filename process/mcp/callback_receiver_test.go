@@ -13,20 +13,19 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/value"
 )
 
-func callbackTestMethod(t *testing.T) *portable.Method {
+func callbackTestMethod(t *testing.T) *frame.Method {
 	t.Helper()
-	method, err := portable.AdmitMethod(portable.MethodDescriptor{Name: "document.read", Kind: portable.Command, Input: []byte(`{"type":"string"}`), Output: []byte(`{"type":"string"}`)})
+	method, err := frame.AdmitMethod(frame.MethodDescriptor{Name: "document.read", Kind: frame.Command, Input: []byte(`{"type":"string"}`), Output: []byte(`{"type":"string"}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return method
 }
 
-func callbackBody(t *testing.T, method *portable.Method, input string) []byte {
+func callbackBody(t *testing.T, method *frame.Method, input string) []byte {
 	t.Helper()
 	b, err := json.Marshal(managedParams{Protocol: managedVersion, Method: method.Name(), Contract: method.Identity().Digest(), CommandID: "original", Input: []byte(input)})
 	if err != nil {

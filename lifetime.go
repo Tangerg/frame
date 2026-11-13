@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"unicode/utf8"
 	"weak"
+
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 type ReleaseState string
@@ -19,7 +21,7 @@ const (
 	ResourceUnconfirmed ReleaseState = "unconfirmed"
 )
 
-func (ReleaseState) Values() []string {
+func (ReleaseState) JSONSchemaEnum() []string {
 	return []string{string(ResourceReleased), string(ResourceUnconfirmed)}
 }
 
@@ -79,7 +81,7 @@ type resourceEntry struct {
 // ResourceHandle reports evidence to the original resource owner. It cannot
 // restart cleanup or transfer release ownership to a different lifetime.
 type ResourceHandle struct {
-	lifetime *Lifetime
+	lifetime *lifetimeRecord
 	entry    *resourceEntry
 }
 
@@ -88,10 +90,24 @@ type LifetimeLimits struct {
 	MaxResources int
 }
 
-type Lifetime struct {
+// Copies share the owner; replacing a handle cannot redirect existing work.
+type Lifetime struct{ *lifetimeRecord }
+
+// Identity permits dependency inspection without granting control of the lifetime.
+type LifetimeID struct{ owner *lifetimeRecord }
+
+func (l *lifetimeRecord) Identity() LifetimeID { return LifetimeID{l} }
+func (h *ResourceHandle) OwnerID() LifetimeID {
+	if h == nil {
+		return LifetimeID{}
+	}
+	return LifetimeID{h.lifetime}
+}
+
+type lifetimeRecord struct {
 	// Host-created lifetimes stay inside the admission domain that can inspect
 	// their provider dependencies. Application lifetimes have no such affinity.
-	authority       *authorityIdentity
+	authority       *LifetimeDomain
 	mu              sync.Mutex
 	ctx             context.Context
 	cancelContext   context.CancelCauseFunc
@@ -102,7 +118,7 @@ type Lifetime struct {
 	holds           int
 	resources       []*resourceEntry
 	limits          LifetimeLimits
-	closing         *Close
+	closing         *closeOperation
 	released        bool
 	causes          weak.Pointer[CloseCauses]
 	failures        []CloseFailure
@@ -111,8 +127,11 @@ type Lifetime struct {
 
 // Close is one owned retirement, independent of all callers waiting for it.
 // It settles once no cleanup is running, even if some release is unconfirmed.
-type Close struct {
-	lifetime    *Lifetime
+// Copies observe the original operation without copying its mutable progress.
+type Close struct{ *closeOperation }
+
+type closeOperation struct {
+	lifetime    *lifetimeRecord
 	id          uint64
 	settled     chan struct{}
 	settledOnce sync.Once
@@ -123,7 +142,7 @@ type Close struct {
 	running   int
 }
 
-func (c *Close) settle() { c.settledOnce.Do(func() { close(c.settled) }) }
+func (c *closeOperation) settle() { c.settledOnce.Do(func() { close(c.settled) }) }
 
 var closeSequence atomic.Uint64
 
@@ -137,7 +156,7 @@ const (
 	cancellationResource    = "cancellation"
 )
 
-func NewLifetime(parent context.Context) *Lifetime {
+func NewLifetime(parent context.Context) Lifetime {
 	lifetime, err := NewLifetimeWithLimits(parent, LifetimeLimits{})
 	if err != nil {
 		panic(err)
@@ -147,18 +166,27 @@ func NewLifetime(parent context.Context) *Lifetime {
 
 // Limits count resources until their original release is proved, including
 // resources whose cleanup returned without a release conclusion.
-func NewLifetimeWithLimits(parent context.Context, limits LifetimeLimits) (*Lifetime, error) {
-	if parent == nil {
-		return nil, ErrInvalid
+func NewLifetimeWithLimits(parent context.Context, limits LifetimeLimits) (Lifetime, error) {
+	if framevalue.IsNil(parent) {
+		return Lifetime{}, ErrInvalid
 	}
-	if err := resolveLimit("lifetime work", &limits.MaxWork, defaultLifetimeWork); err != nil {
-		return nil, err
+	if err := ResolveLimit("lifetime work", &limits.MaxWork, defaultLifetimeWork); err != nil {
+		return Lifetime{}, err
 	}
-	if err := resolveLimit("lifetime resources", &limits.MaxResources, defaultLifetimeResources); err != nil {
-		return nil, err
+	if err := ResolveLimit("lifetime resources", &limits.MaxResources, defaultLifetimeResources); err != nil {
+		return Lifetime{}, err
 	}
-	ctx, cancel := context.WithCancelCause(context.WithoutCancel(parent))
-	l := &Lifetime{ctx: ctx, cancelContext: cancel, parentDone: parent.Done(), changed: make(chan struct{}), work: make(map[*workInterval]struct{}), limits: limits}
+	ctx, cancel := context.WithCancelCause(parent)
+	parentDone := parent.Done()
+	// A custom parent's cancellation may precede its propagation callback.
+	// Its original cause must reach the single context owner before local close.
+	cancelContext := func(cause error) {
+		if isClosed(parentDone) {
+			cause = context.Cause(parent)
+		}
+		cancel(cause)
+	}
+	l := &lifetimeRecord{ctx: ctx, cancelContext: cancelContext, parentDone: parentDone, changed: make(chan struct{}), work: make(map[*workInterval]struct{}), limits: limits}
 	stop := context.AfterFunc(parent, func() { l.BeginClose(context.Cause(parent)) })
 	l.mu.Lock()
 	if l.released {
@@ -168,24 +196,39 @@ func NewLifetimeWithLimits(parent context.Context, limits LifetimeLimits) (*Life
 		l.stopParent = stop
 		l.mu.Unlock()
 	}
-	return l, nil
+	return Lifetime{l}, nil
 }
 
-func (l *Lifetime) Context() context.Context { l.mu.Lock(); defer l.mu.Unlock(); return l.ctx }
+func (l Lifetime) Valid() bool { return l.lifetimeRecord != nil }
 
-func (l *Lifetime) isClosing() bool {
+func (l *lifetimeRecord) Context() context.Context {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.ctx
+}
+
+func (l *lifetimeRecord) IsClosing() bool {
+	if l == nil {
+		return false
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.closingLocked()
 }
 
-func (l *Lifetime) closingLocked() bool {
+func (l *lifetimeRecord) closingLocked() bool {
 	// The parent's cancellation is already authoritative while its AfterFunc
 	// notification is still queued. The notification only starts retirement.
 	return l.closing != nil || l.released || l.ctx.Err() != nil || isClosed(l.parentDone)
 }
 
-func (l *Lifetime) closeOutcome() (CloseOutcome, bool) {
+func (l *lifetimeRecord) CloseOutcome() (CloseOutcome, bool) {
+	if l == nil {
+		return CloseOutcome{}, false
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.closing == nil {
@@ -194,16 +237,22 @@ func (l *Lifetime) closeOutcome() (CloseOutcome, bool) {
 	return l.outcomeLocked(l.closing.id), true
 }
 
-func (l *Lifetime) cancel(cause error) {
+func (l *lifetimeRecord) Cancel(cause error) {
+	if l == nil {
+		return
+	}
 	l.mu.Lock()
 	cancel := l.cancelContext
 	l.mu.Unlock()
 	cancel(cause)
 }
 
-func (l *Lifetime) signalLocked() { close(l.changed); l.changed = make(chan struct{}) }
+func (l *lifetimeRecord) signalLocked() { close(l.changed); l.changed = make(chan struct{}) }
 
-func (l *Lifetime) Own(resource Resource, dependencies ...*ResourceHandle) (*ResourceHandle, error) {
+func (l *lifetimeRecord) Own(resource Resource, dependencies ...*ResourceHandle) (*ResourceHandle, error) {
+	if l == nil {
+		return nil, ErrInvalid
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.closingLocked() {
@@ -212,14 +261,14 @@ func (l *Lifetime) Own(resource Resource, dependencies ...*ResourceHandle) (*Res
 	return l.ownLocked(resource, dependencies)
 }
 
-func (l *Lifetime) ownLocked(resource Resource, dependencies []*ResourceHandle) (*ResourceHandle, error) {
+func (l *lifetimeRecord) ownLocked(resource Resource, dependencies []*ResourceHandle) (*ResourceHandle, error) {
 	if resource.Name == "" || resource.Close == nil {
 		return nil, ErrInvalid
 	}
 	if len(l.resources) >= l.limits.MaxResources {
 		return nil, fmt.Errorf("%w: lifetime resources", ErrCapacity)
 	}
-	resource.Name = boundedDiagnostic(resource.Name)
+	resource.Name = BoundedDiagnostic(resource.Name)
 	entry := &resourceEntry{resource: resource, index: len(l.resources)}
 	seen := make(map[*resourceEntry]bool)
 	for _, dependency := range dependencies {
@@ -253,20 +302,26 @@ func cleanupResource(name string, closeResource func() error) Resource {
 	return resource
 }
 
-func (l *Lifetime) Cleanup(name string, closeResource func() error, dependencies ...*ResourceHandle) (*ResourceHandle, error) {
+func (l *lifetimeRecord) Cleanup(name string, closeResource func() error, dependencies ...*ResourceHandle) (*ResourceHandle, error) {
 	return l.Own(cleanupResource(name, closeResource), dependencies...)
 }
-func (l *Lifetime) BeginClose(cause error) *Close {
-	l.mu.Lock()
-	if l.closing != nil {
-		result := l.closing
-		l.mu.Unlock()
-		return result
+func (l *lifetimeRecord) BeginClose(cause error) Close {
+	if l == nil {
+		return Close{}
 	}
 	if cause == nil {
 		cause = ErrClosed
 	}
-	operation := &Close{lifetime: l, id: closeSequence.Add(1), settled: make(chan struct{})}
+	// Late acquisitions must see the original cause as soon as close is visible.
+	l.Cancel(cause)
+	l.mu.Lock()
+	if l.closing != nil {
+		result := l.closing
+		l.mu.Unlock()
+		return Close{result}
+	}
+	cause = context.Cause(l.ctx)
+	operation := &closeOperation{lifetime: l, id: closeSequence.Add(1), settled: make(chan struct{})}
 	l.closing = operation
 	work := make([]*workInterval, 0, len(l.work))
 	for item := range l.work {
@@ -281,23 +336,20 @@ func (l *Lifetime) BeginClose(cause error) *Close {
 	}
 	l.signalLocked()
 	l.mu.Unlock()
-	l.cancel(cause)
-	// Seal synchronously, then deliver every cancellation before waiting for any
-	// work or resource. Cleanup callbacks always execute outside state locks.
 	for _, item := range work {
 		item.cancel(cause)
 	}
 	go l.retire(operation, cancellations, cause)
-	return operation
+	return Close{operation}
 }
 
-func (l *Lifetime) retire(operation *Close, cancellations []func(error), cause error) {
+func (l *lifetimeRecord) retire(operation *closeOperation, cancellations []func(error), cause error) {
 	l.deliverCancellations(cancellations, cause)
 	l.awaitWork()
 	l.releaseResources(operation)
 }
 
-func (l *Lifetime) deliverCancellations(cancellations []func(error), cause error) {
+func (l *lifetimeRecord) deliverCancellations(cancellations []func(error), cause error) {
 	for _, cancel := range cancellations {
 		if err := invokeCancel(cancel, cause); err != nil {
 			detail := closeFailureDetail(err)
@@ -308,7 +360,7 @@ func (l *Lifetime) deliverCancellations(cancellations []func(error), cause error
 	}
 }
 
-func (l *Lifetime) awaitWork() {
+func (l *lifetimeRecord) awaitWork() {
 	for {
 		l.mu.Lock()
 		idle, changed := len(l.work) == 0, l.changed
@@ -322,7 +374,7 @@ func (l *Lifetime) awaitWork() {
 
 // releaseResources closes resources in dependency order, each as soon as its
 // consumers have been released, until every release is proved.
-func (l *Lifetime) releaseResources(operation *Close) {
+func (l *lifetimeRecord) releaseResources(operation *closeOperation) {
 	l.mu.Lock()
 	operation.releasing = true
 	for _, entry := range l.resources {
@@ -353,7 +405,7 @@ func (l *Lifetime) releaseResources(operation *Close) {
 	}
 }
 
-func (c *Close) startReadyLocked() []*resourceEntry {
+func (c *closeOperation) startReadyLocked() []*resourceEntry {
 	ready := c.ready
 	c.ready = nil
 	started := ready[:0]
@@ -371,7 +423,7 @@ func (c *Close) startReadyLocked() []*resourceEntry {
 	return started
 }
 
-func (l *Lifetime) releaseLocked() func() bool {
+func (l *lifetimeRecord) releaseLocked() func() bool {
 	l.released = true
 	l.resources = nil
 	l.work = nil
@@ -387,7 +439,7 @@ func (l *Lifetime) releaseLocked() func() bool {
 	return stop
 }
 
-func (l *Lifetime) enqueueResourceLocked(entry *resourceEntry) {
+func (l *lifetimeRecord) enqueueResourceLocked(entry *resourceEntry) {
 	if l.closing != nil && l.closing.releasing && entry.consumers == 0 && entry.cleanup == cleanupPending && !entry.released {
 		l.closing.ready = append(l.closing.ready, entry)
 	}
@@ -395,7 +447,7 @@ func (l *Lifetime) enqueueResourceLocked(entry *resourceEntry) {
 
 // Only the original release transition updates both the graph and its ready
 // index. A running cleanup keeps its dependency holds even after late proof.
-func (l *Lifetime) forgetResourceLocked(entry *resourceEntry) {
+func (l *lifetimeRecord) forgetResourceLocked(entry *resourceEntry) {
 	for _, dependency := range entry.dependencies {
 		dependency.consumers--
 		l.enqueueResourceLocked(dependency)
@@ -409,7 +461,7 @@ func (l *Lifetime) forgetResourceLocked(entry *resourceEntry) {
 	l.resources = l.resources[:last]
 }
 
-func callbackPanicError(callback string, value any) error {
+func CallbackPanicError(callback string, value any) error {
 	// Formatting an arbitrary panic value could reenter plugin code or Goexit.
 	diagnostic := fmt.Errorf("frame: %s panicked", callback)
 	if cause, ok := value.(error); ok {
@@ -419,13 +471,16 @@ func callbackPanicError(callback string, value any) error {
 }
 
 func invokeCancel(cancel func(error), cause error) error {
-	return joinCallback("resource cancellation", func() error {
+	return InvokeCallback("resource cancellation", func() error {
 		cancel(cause)
 		return nil
 	})
 }
 
-func joinCallback(name string, callback func() error) error {
+func InvokeCallback(name string, callback func() error) error {
+	if callback == nil {
+		return ErrInvalid
+	}
 	// Goexit cannot be recovered. Join the original callback's goroutine so
 	// its exit cannot abandon the caller's remaining cleanup or settlement.
 	done := make(chan struct{})
@@ -435,7 +490,7 @@ func joinCallback(name string, callback func() error) error {
 		err = fmt.Errorf("frame: %s exited without returning", name)
 		defer func() {
 			if value := recover(); value != nil {
-				err = callbackPanicError(name, value)
+				err = CallbackPanicError(name, value)
 			}
 		}()
 		err = callback()
@@ -449,17 +504,17 @@ func invokeResourceClose(closeResource func(context.Context) (ReleaseState, erro
 	defer func() {
 		if value := recover(); value != nil {
 			state = ResourceUnconfirmed
-			err = callbackPanicError("resource close", value)
+			err = CallbackPanicError("resource close", value)
 		}
 	}()
 	state, err = closeResource(ctx)
-	if state != ResourceReleased && state != ResourceUnconfirmed {
+	if !slices.Contains(state.JSONSchemaEnum(), string(state)) {
 		return ResourceUnconfirmed, errors.Join(err, fmt.Errorf("%w: resource close state", ErrInvalid))
 	}
 	return state, err
 }
 
-func (l *Lifetime) closeResource(entry *resourceEntry) {
+func (l *lifetimeRecord) closeResource(entry *resourceEntry) {
 	l.mu.Lock()
 	closeResource := entry.resource.Close
 	ctx := context.WithoutCancel(l.ctx)
@@ -495,16 +550,16 @@ func closeFailureDetail(err error) string {
 		return ""
 	}
 	var detail string
-	if failure := joinCallback("close diagnostic", func() error {
+	if failure := InvokeCallback("close diagnostic", func() error {
 		detail = fmt.Sprint(err)
 		return nil
 	}); failure != nil {
 		detail = failure.Error()
 	}
-	return boundedDiagnostic(detail)
+	return BoundedDiagnostic(detail)
 }
 
-func boundedDiagnostic(text string) string {
+func BoundedDiagnostic(text string) string {
 	text = strings.ToValidUTF8(text, string(utf8.RuneError))
 	if len(text) > maxCloseDiagnosticBytes {
 		text = text[:maxCloseDiagnosticBytes]
@@ -516,7 +571,7 @@ func boundedDiagnostic(text string) string {
 	return text
 }
 
-func (l *Lifetime) recordFailureLocked(name, detail string, cause error) {
+func (l *lifetimeRecord) recordFailureLocked(name, detail string, cause error) {
 	if observation := l.causes.Value(); observation != nil {
 		observation.record(name, cause)
 	}
@@ -549,7 +604,7 @@ func (h *ResourceHandle) ConfirmReleased(diagnostic error) error {
 	return nil
 }
 
-func (l *Lifetime) outcomeLocked(id uint64) CloseOutcome {
+func (l *lifetimeRecord) outcomeLocked(id uint64) CloseOutcome {
 	outcome := CloseOutcome{ID: id, Released: l.released, Failures: slices.Clone(l.failures), OmittedFailures: l.omittedFailures, Pending: []string{}}
 	for _, entry := range l.resources {
 		if !entry.released {
@@ -562,7 +617,7 @@ func (l *Lifetime) outcomeLocked(id uint64) CloseOutcome {
 	return outcome
 }
 
-func outcomeError(outcome CloseOutcome) error {
+func (outcome CloseOutcome) Err() error {
 	failed := len(outcome.Failures) > 0 || outcome.OmittedFailures > 0
 	if !outcome.Released {
 		if failed {
@@ -602,20 +657,23 @@ func withoutUnconfirmedState(err error) error {
 
 // releaseState concludes a resource whose release is a nested close. A pending
 // nested release is reported as unconfirmed, not as a cleanup failure.
-func releaseState(outcome CloseOutcome, err error) (ReleaseState, error) {
+func (outcome CloseOutcome) ResourceState(err error) (ReleaseState, error) {
 	if outcome.Released {
 		return ResourceReleased, err
 	}
 	return ResourceUnconfirmed, withoutUnconfirmedState(err)
 }
 
-func (c *Close) Outcome() CloseOutcome {
+func (c *closeOperation) Outcome() CloseOutcome {
+	if c == nil {
+		return CloseOutcome{}
+	}
 	c.lifetime.mu.Lock()
 	defer c.lifetime.mu.Unlock()
 	return c.lifetime.outcomeLocked(c.id)
 }
 
-func (c *Close) ReleaseProof() (ReleaseProof, error) {
+func (c *closeOperation) ReleaseProof() (ReleaseProof, error) {
 	if c == nil || c.lifetime == nil {
 		return ReleaseProof{}, ErrInvalid
 	}
@@ -630,8 +688,8 @@ func (c *Close) ReleaseProof() (ReleaseProof, error) {
 // Wait reports bounded evidence from the original close. Resource causes belong
 // to an explicit CloseCauses observation, so retaining this terminal operation
 // cannot retain arbitrary plugin objects through an error chain.
-func (c *Close) Wait(ctx context.Context) (CloseOutcome, error) {
-	if ctx == nil {
+func (c *closeOperation) Wait(ctx context.Context) (CloseOutcome, error) {
+	if c == nil || framevalue.IsNil(ctx) {
 		return CloseOutcome{}, ErrInvalid
 	}
 	select {
@@ -649,9 +707,9 @@ func (c *Close) Wait(ctx context.Context) (CloseOutcome, error) {
 		changed := l.changed
 		l.mu.Unlock()
 		if settled {
-			return outcome, outcomeError(outcome)
+			return outcome, outcome.Err()
 		}
-		if err := contextError(ctx); err != nil {
+		if err := ContextError(ctx); err != nil {
 			return outcome, err
 		}
 		select {
@@ -661,8 +719,8 @@ func (c *Close) Wait(ctx context.Context) (CloseOutcome, error) {
 	}
 }
 
-func (c *Close) WaitReleased(ctx context.Context) (CloseOutcome, error) {
-	if ctx == nil {
+func (c *closeOperation) WaitReleased(ctx context.Context) (CloseOutcome, error) {
+	if c == nil || framevalue.IsNil(ctx) {
 		return CloseOutcome{}, ErrInvalid
 	}
 	for {
@@ -672,22 +730,34 @@ func (c *Close) WaitReleased(ctx context.Context) (CloseOutcome, error) {
 		changed := l.changed
 		l.mu.Unlock()
 		if outcome.Released {
-			return outcome, outcomeError(outcome)
+			return outcome, outcome.Err()
 		}
 		select {
 		case <-changed:
 		case <-ctx.Done():
 			outcome = c.Outcome()
 			if outcome.Released {
-				return outcome, outcomeError(outcome)
+				return outcome, outcome.Err()
 			}
-			return outcome, contextError(ctx)
+			return outcome, ContextError(ctx)
 		}
 	}
 }
 
-func (l *Lifetime) Close(ctx context.Context) (CloseOutcome, error) {
+func (l *lifetimeRecord) Close(ctx context.Context) (CloseOutcome, error) {
+	if l == nil || framevalue.IsNil(ctx) {
+		return CloseOutcome{}, ErrInvalid
+	}
 	causes := l.ObserveCloseCauses()
 	outcome, err := l.BeginClose(ErrClosed).Wait(ctx)
-	return outcome, causes.join(err)
+	return outcome, causes.Join(err)
+}
+
+func isClosed(signal <-chan struct{}) bool {
+	select {
+	case <-signal:
+		return true
+	default:
+		return false
+	}
 }

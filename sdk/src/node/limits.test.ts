@@ -296,6 +296,10 @@ describe("Go-owned portable profile budgets", () => {
       PORTABLE_LIMITS.maxDescriptorBytes,
     );
     expect(() => compileSchema(source)).toThrow(/equality work/);
+    const repeated = { enum: Array(3).fill(large) };
+    expect(() => compileSchema(repeated)).not.toThrow();
+    repeated.enum.push(large);
+    expect(() => compileSchema(repeated)).toThrow(/equality work/);
     const unique = compileSchema({ type: "array", uniqueItems: true });
     const ordinary = compileSchema({ type: "array" });
     const keys = values.map((_, index) => ({ [index + large]: index }));
@@ -315,7 +319,7 @@ describe("Go-owned portable profile budgets", () => {
 it("checks the portable size corpus without changing descriptor lexemes", () => {
   const cases = JSON.parse(
     readFileSync(
-      new URL("../../../portable/testdata/schema_sizes.json", import.meta.url),
+      new URL("../../../value/testdata/schema_sizes.json", import.meta.url),
       "utf8",
     ),
   ) as { literal: string; admitted: boolean }[];

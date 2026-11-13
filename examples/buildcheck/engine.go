@@ -6,14 +6,14 @@ import (
 	"errors"
 	"slices"
 
-	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 type Engine struct {
-	Host      *frame.Host
+	Host      framehost.Host
 	Contracts Contracts
 	Source    *Source
-	scope     frame.ScopeGrant
+	scope     framehost.ScopeGrant
 }
 
 func New(ctx context.Context, source *Source) (*Engine, error) {
@@ -24,7 +24,7 @@ func New(ctx context.Context, source *Source) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	host, err := frame.NewHost(ctx, frame.HostConfig{})
+	host, err := framehost.New(ctx, framehost.Config{})
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +36,7 @@ func New(ctx context.Context, source *Source) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	var roots []frame.ExportRef
+	var roots []framehost.ExportRef
 	for _, installation := range installations {
 		if _, err := host.Install(ctx, installation); err != nil {
 			return nil, err
@@ -61,28 +61,28 @@ func (e *Engine) Run(ctx context.Context) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	passSelection, err := frame.SelectMany(snapshot, e.Contracts.Passes, "build.passes/1", orderCompilerPasses)
+	passSelection, err := framehost.SelectMany(snapshot, e.Contracts.Passes, "build.passes/1", orderCompilerPasses)
 	if err != nil {
 		return Result{}, err
 	}
-	analyzerSelection, err := frame.SelectMany(snapshot, e.Contracts.Analyzers, "build.analyzers/1", orderAnalyzers)
+	analyzerSelection, err := framehost.SelectMany(snapshot, e.Contracts.Analyzers, "build.analyzers/1", orderAnalyzers)
 	if err != nil {
 		return Result{}, err
 	}
-	formatterSelection, err := frame.SelectOne(snapshot, e.Contracts.Formatters, "build.formatter/1", selectFormatter)
+	formatterSelection, err := framehost.SelectOne(snapshot, e.Contracts.Formatters, "build.formatter/1", selectFormatter)
 	if err != nil {
 		return Result{}, err
 	}
-	aroundSelection, err := frame.SelectMany(snapshot, e.Contracts.Around, "build.around/1", orderWrappers)
+	aroundSelection, err := framehost.SelectMany(snapshot, e.Contracts.Around, "build.around/1", orderWrappers)
 	if err != nil {
 		return Result{}, err
 	}
-	plan, err := frame.Capture(snapshot, passSelection.Ref(), analyzerSelection.Ref(), formatterSelection.Ref(), aroundSelection.Ref())
+	plan, err := framehost.Capture(snapshot, passSelection.Ref(), analyzerSelection.Ref(), formatterSelection.Ref(), aroundSelection.Ref())
 	if err != nil {
 		return Result{}, err
 	}
 	var result Result
-	err = e.Host.With(ctx, e.scope, plan, func(access *frame.Access) error {
+	err = e.Host.With(ctx, e.scope, plan, func(access *framehost.Access) error {
 		orderedPasses, err := passSelection.Members(access)
 		if err != nil {
 			return err
@@ -105,9 +105,9 @@ func (e *Engine) Run(ctx context.Context) (Result, error) {
 	return result, err
 }
 
-func orderCompilerPasses(values []frame.Candidate[PassMetadata, CompilerPass]) ([]frame.Candidate[PassMetadata, CompilerPass], error) {
+func orderCompilerPasses(values []framehost.Candidate[PassMetadata, CompilerPass]) ([]framehost.Candidate[PassMetadata, CompilerPass], error) {
 	type passCandidate struct {
-		candidate frame.Candidate[PassMetadata, CompilerPass]
+		candidate framehost.Candidate[PassMetadata, CompilerPass]
 		metadata  PassMetadata
 	}
 	passes := make([]passCandidate, len(values))
@@ -125,9 +125,9 @@ func orderCompilerPasses(values []frame.Candidate[PassMetadata, CompilerPass]) (
 	return values, nil
 }
 
-func orderAnalyzers(values []frame.Candidate[AnalyzerMetadata, Analyzer]) ([]frame.Candidate[AnalyzerMetadata, Analyzer], error) {
+func orderAnalyzers(values []framehost.Candidate[AnalyzerMetadata, Analyzer]) ([]framehost.Candidate[AnalyzerMetadata, Analyzer], error) {
 	type analyzerCandidate struct {
-		candidate frame.Candidate[AnalyzerMetadata, Analyzer]
+		candidate framehost.Candidate[AnalyzerMetadata, Analyzer]
 		metadata  AnalyzerMetadata
 	}
 	analyzers := make([]analyzerCandidate, len(values))
@@ -145,21 +145,21 @@ func orderAnalyzers(values []frame.Candidate[AnalyzerMetadata, Analyzer]) ([]fra
 	return values, nil
 }
 
-func selectFormatter(values []frame.Candidate[FormatterMetadata, Formatter]) (frame.Candidate[FormatterMetadata, Formatter], error) {
+func selectFormatter(values []framehost.Candidate[FormatterMetadata, Formatter]) (framehost.Candidate[FormatterMetadata, Formatter], error) {
 	type formatterCandidate struct {
-		candidate frame.Candidate[FormatterMetadata, Formatter]
+		candidate framehost.Candidate[FormatterMetadata, Formatter]
 		metadata  FormatterMetadata
 	}
 	formatters := make([]formatterCandidate, len(values))
 	for index, candidate := range values {
 		metadata, err := candidate.Metadata()
 		if err != nil {
-			return frame.Candidate[FormatterMetadata, Formatter]{}, err
+			return framehost.Candidate[FormatterMetadata, Formatter]{}, err
 		}
 		formatters[index] = formatterCandidate{candidate, metadata}
 	}
 	if len(formatters) == 0 {
-		return frame.Candidate[FormatterMetadata, Formatter]{}, errors.New("buildcheck: no formatter is available")
+		return framehost.Candidate[FormatterMetadata, Formatter]{}, errors.New("buildcheck: no formatter is available")
 	}
 	selected := slices.MinFunc(formatters, func(a, b formatterCandidate) int {
 		return cmp.Or(cmp.Compare(b.metadata.Priority, a.metadata.Priority), cmp.Compare(a.metadata.Name, b.metadata.Name))
@@ -167,9 +167,9 @@ func selectFormatter(values []frame.Candidate[FormatterMetadata, Formatter]) (fr
 	return selected.candidate, nil
 }
 
-func orderWrappers(values []frame.Candidate[AroundMetadata, Around]) ([]frame.Candidate[AroundMetadata, Around], error) {
+func orderWrappers(values []framehost.Candidate[AroundMetadata, Around]) ([]framehost.Candidate[AroundMetadata, Around], error) {
 	type wrapperCandidate struct {
-		candidate frame.Candidate[AroundMetadata, Around]
+		candidate framehost.Candidate[AroundMetadata, Around]
 		metadata  AroundMetadata
 	}
 	wrappers := make([]wrapperCandidate, len(values))

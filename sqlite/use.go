@@ -10,12 +10,13 @@ import (
 	"math"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
-var _ frame.ExecutionProtection = (*Store)(nil)
+var _ framehost.ExecutionProtection = Store{}
 
-func (s *Store) ApproveUse(ctx context.Context, approval frame.UseApproval) error {
+func (s *storeAuthority) ApproveUse(ctx context.Context, approval framehost.UseApproval) error {
 	if err := s.admission.CheckAdmitted(ctx); err != nil {
 		return err
 	}
@@ -23,7 +24,7 @@ func (s *Store) ApproveUse(ctx context.Context, approval frame.UseApproval) erro
 		return err
 	}
 	if approval.Epoch != s.epoch {
-		return frame.ErrFenced
+		return framehost.ErrFenced
 	}
 	encoded, err := json.Marshal(approval)
 	if err != nil {
@@ -49,7 +50,7 @@ func (s *Store) ApproveUse(ctx context.Context, approval frame.UseApproval) erro
 	}))
 }
 
-func insertUse(ctx context.Context, tx Executor, approval frame.UseApproval, encoded []byte) error {
+func insertUse(ctx context.Context, tx Executor, approval framehost.UseApproval, encoded []byte) error {
 	if approval.ParentID != "" {
 		row, err := readProtectionRow(ctx, tx, useByID, approval.ParentID)
 		if err != nil {
@@ -68,7 +69,7 @@ func insertUse(ctx context.Context, tx Executor, approval frame.UseApproval, enc
 }
 
 type UseRecord struct {
-	Approval frame.UseApproval
+	Approval framehost.UseApproval
 	Released bool
 	Proof    *UseProof
 }
@@ -78,7 +79,7 @@ type UseProof struct {
 	Realm *ExitProof          `json:"realm,omitempty"`
 }
 
-func (p *UseProof) proves(approval frame.UseApproval) bool {
+func (p *UseProof) proves(approval framehost.UseApproval) bool {
 	if p == nil || (p.Host == nil) == (p.Realm == nil) {
 		return false
 	}
@@ -91,13 +92,13 @@ func (p *UseProof) proves(approval frame.UseApproval) bool {
 const useRecords = `SELECT id,request,request_digest,state,proof FROM frame_use_approvals`
 const useByID = useRecords + ` WHERE id=?`
 
-func (s *Store) Uses(ctx context.Context) ([]UseRecord, error) {
+func (s *storeAuthority) Uses(ctx context.Context) ([]UseRecord, error) {
 	return readRecords(ctx, s, useRecords+" ORDER BY id", decodeUse)
 }
-func (s *Store) Use(ctx context.Context, id string) (UseRecord, error) {
+func (s *storeAuthority) Use(ctx context.Context, id string) (UseRecord, error) {
 	return readRecord(ctx, s, useByID, decodeUse, id)
 }
-func (s *Store) ExecutionUses(ctx context.Context, id string) ([]UseRecord, error) {
+func (s *storeAuthority) ExecutionUses(ctx context.Context, id string) ([]UseRecord, error) {
 	return readRecords(ctx, s, useRecords+` WHERE execution_id=? ORDER BY id`, decodeUse, id)
 }
 
@@ -132,7 +133,7 @@ func decodeUse(row protectedRecord) (UseRecord, error) {
 	return record, nil
 }
 
-func (s *Store) SettleUse(ctx context.Context, id string, proof frame.ReleaseProof) error {
+func (s *storeAuthority) SettleUse(ctx context.Context, id string, proof frame.ReleaseProof) error {
 	if !frame.ValidName(id) || proof.CloseID == 0 {
 		return frame.ErrInvalid
 	}
@@ -170,7 +171,7 @@ func (s *Store) SettleUse(ctx context.Context, id string, proof frame.ReleasePro
 // ReleaseRealmUse settles an original delegated use after Host reconstruction.
 // The trusted bridge verifies the actual Realm proof; it cannot release another
 // execution which merely shares the Realm or installation scope.
-func (s *Store) ReleaseRealmUse(ctx context.Context, id string, realm frame.RealmID, executionID string, proof ExitProof) error {
+func (s *storeAuthority) ReleaseRealmUse(ctx context.Context, id string, realm framehost.RealmID, executionID string, proof ExitProof) error {
 	if !frame.ValidName(id) || realm.Validate() != nil || !proof.proves(executionID) || proof.Realm != string(realm) {
 		return frame.ErrInvalid
 	}

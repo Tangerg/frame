@@ -17,7 +17,7 @@ decide whether a formatter's patch should be applied.
 From the Frame module:
 
 ```sh
-printf '  TODO example  \n' | go run ./examples/buildcheck/cmd/buildcheck -apply
+printf '  TODO example  \n' | go run ./cmd/buildcheck -apply
 go test -race ./examples/buildcheck
 ```
 

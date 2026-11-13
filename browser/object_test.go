@@ -8,6 +8,7 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -18,7 +19,7 @@ func TestNativeAndBrowserShareContractWithRealmLocalValues(t *testing.T) {
 	}{{"typed first", false}, {"descriptor first", true}} {
 		t.Run(order.name, func(t *testing.T) {
 			e := openBridge(t, filepath.Join(t.TempDir(), "state.sqlite"), true)
-			point, err := frame.NewPoint[testMetadata, string]("test.shared-realm-contract", "1")
+			point, err := framehost.NewPoint[testMetadata, string]("test.shared-realm-contract", "1")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -37,19 +38,19 @@ func TestNativeAndBrowserShareContractWithRealmLocalValues(t *testing.T) {
 			if !order.descriptorFirst {
 				registerDescriptor()
 			}
-			native, err := frame.Define(frame.Definition{Revision: value.Hash([]byte("native-shared-contract")), Units: []frame.Unit{{
-				Declaration: frame.UnitDeclaration{ID: "view", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "shared", Contract: point.Ref()}}},
-				Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
-					return []frame.ExportValue{frame.Contribute("shared", point, testMetadata{Label: "native"}, "native value")}, nil
+			native, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("native-shared-contract")), Units: []framehost.Unit{{
+				Declaration: framehost.UnitDeclaration{ID: "view", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "shared", Contract: point.Ref()}}},
+				Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+					return []framehost.ExportValue{framehost.Contribute("shared", point, testMetadata{Label: "native"}, "native value")}, nil
 				},
 			}}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := e.host.Install(e.ctx, frame.InstallationConfig{ID: "native", Plugin: native, Enabled: true}); err != nil {
+			if _, err := e.host.Install(e.ctx, framehost.InstallationConfig{ID: "native", Plugin: native, Enabled: true}); err != nil {
 				t.Fatal(err)
 			}
-			nativeSource := frame.ExportRef{InstallationID: "native", Release: native.Revision(), UnitID: "view", Export: "shared", Contract: point.Ref()}
+			nativeSource := framehost.ExportRef{InstallationID: "native", Release: native.Revision(), UnitID: "view", Export: "shared", Contract: point.Ref()}
 			plan, err := e.host.Plan(e.ctx, nativeSource)
 			if err != nil {
 				t.Fatal(err)
@@ -58,11 +59,11 @@ func TestNativeAndBrowserShareContractWithRealmLocalValues(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			use, err := e.host.Acquire(e.ctx, plan, frame.UseConfig{Owner: frame.NewLifetime(e.ctx), Scope: scope})
+			use, err := e.host.Acquire(e.ctx, plan, framehost.UseConfig{Owner: frame.NewLifetime(e.ctx), Scope: scope})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := frame.BorrowExport(e.ctx, use, nativeSource, func(_ context.Context, actual string) error {
+			if err := framehost.BorrowExport(e.ctx, use, nativeSource, func(_ context.Context, actual string) error {
 				if actual != "native value" {
 					t.Errorf("native value was replaced: %q", actual)
 				}
@@ -73,9 +74,9 @@ func TestNativeAndBrowserShareContractWithRealmLocalValues(t *testing.T) {
 			if _, err := use.Close(e.ctx); err != nil {
 				t.Fatal(err)
 			}
-			e.plugin, err = frame.Define(frame.Definition{Revision: value.Hash([]byte("browser-shared-contract")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{
-				ID: "view", Profile: frame.BrowserJS,
-				Exports: []frame.ExportDeclaration{{Name: "preview", Contract: e.first.Ref()}, {Name: "theme", Contract: e.second.Ref()}, {Name: "shared", Contract: point.Ref()}},
+			e.plugin, err = framehost.Define(framehost.Definition{Revision: value.Hash([]byte("browser-shared-contract")), Units: []framehost.Unit{{Declaration: framehost.UnitDeclaration{
+				ID: "view", Profile: framehost.BrowserJS,
+				Exports: []framehost.ExportDeclaration{{Name: "preview", Contract: e.first.Ref()}, {Name: "theme", Contract: e.second.Ref()}, {Name: "shared", Contract: point.Ref()}},
 			}}}})
 			if err != nil {
 				t.Fatal(err)
@@ -95,16 +96,16 @@ func TestNativeAndBrowserShareContractWithRealmLocalValues(t *testing.T) {
 
 func TestBrowserMetadataSurvivesGoTypeRegistrationAfterPublication(t *testing.T) {
 	e := openBridge(t, filepath.Join(t.TempDir(), "state.sqlite"), true)
-	point, err := frame.NewPoint[testMetadata, string]("test.late-go-projection", "1")
+	point, err := framehost.NewPoint[testMetadata, string]("test.late-go-projection", "1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := e.host.RegisterDescriptor(point.Ref(), point.Descriptor()); err != nil {
 		t.Fatal(err)
 	}
-	e.plugin, err = frame.Define(frame.Definition{Revision: value.Hash([]byte("browser-late-projection")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{
-		ID: "view", Profile: frame.BrowserJS,
-		Exports: []frame.ExportDeclaration{{Name: "preview", Contract: e.first.Ref()}, {Name: "theme", Contract: e.second.Ref()}, {Name: "shared", Contract: point.Ref()}},
+	e.plugin, err = framehost.Define(framehost.Definition{Revision: value.Hash([]byte("browser-late-projection")), Units: []framehost.Unit{{Declaration: framehost.UnitDeclaration{
+		ID: "view", Profile: framehost.BrowserJS,
+		Exports: []framehost.ExportDeclaration{{Name: "preview", Contract: e.first.Ref()}, {Name: "theme", Contract: e.second.Ref()}, {Name: "shared", Contract: point.Ref()}},
 	}}}})
 	if err != nil {
 		t.Fatal(err)
@@ -129,9 +130,9 @@ func TestBrowserMetadataSurvivesGoTypeRegistrationAfterPublication(t *testing.T)
 	if err := e.host.Register(point); err != nil {
 		t.Fatal(err)
 	}
-	assertMetadata := func(snapshot *frame.Snapshot, labels map[string]string) {
+	assertMetadata := func(snapshot framehost.Snapshot, labels map[string]string) {
 		t.Helper()
-		candidates, err := frame.Candidates(snapshot, point)
+		candidates, err := framehost.Candidates(snapshot, point)
 		if err != nil || len(candidates) != len(labels) {
 			t.Fatalf("typed projection cannot read the original publication: %+v %v", candidates, err)
 		}
@@ -175,7 +176,7 @@ func TestBrowserPublicationRejectsInvalidObjectRepresentations(t *testing.T) {
 		{"invalid object identity", browser.Object{Reference: invalidID}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := e.host.PreparePublication(e.ctx, plan.Execution.ID, frame.ExportValue{
+			_, err := e.host.PreparePublication(e.ctx, plan.Execution.ID, framehost.ExportValue{
 				Name: reference.Export.Name, Contract: e.first.Ref(), Metadata: testMetadata{Label: "dynamic"}, Value: test.value,
 			})
 			if !errors.Is(err, frame.ErrContractMismatch) {
@@ -183,7 +184,7 @@ func TestBrowserPublicationRejectsInvalidObjectRepresentations(t *testing.T) {
 			}
 		})
 	}
-	if _, err := e.host.PreparePublication(e.ctx, plan.Execution.ID, frame.ExportValue{
+	if _, err := e.host.PreparePublication(e.ctx, plan.Execution.ID, framehost.ExportValue{
 		Name: reference.Export.Name, Contract: e.first.Ref(), Metadata: testMetadata{Label: "dynamic"}, Value: browser.Object{Reference: reference},
 	}); err != nil {
 		t.Fatalf("exact browser representation was refused: %v", err)

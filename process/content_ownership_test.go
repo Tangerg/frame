@@ -10,22 +10,23 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/process"
 	"github.com/Tangerg/frame/sqlite"
 	"github.com/Tangerg/frame/value"
 )
 
-type contentSource func(context.Context, frame.UnitBinding) (process.Program, error)
+type contentSource func(context.Context, framehost.UnitBinding) (process.Program, error)
 
-func (s contentSource) Program(ctx context.Context, binding frame.UnitBinding) (process.Program, error) {
+func (s contentSource) Program(ctx context.Context, binding framehost.UnitBinding) (process.Program, error) {
 	return s(ctx, binding)
 }
 
 type saturatedProcessDriver struct{ process *process.Driver }
 
-func (d saturatedProcessDriver) Profile() frame.Profile { return d.process.Profile() }
+func (d saturatedProcessDriver) Profile() framehost.Profile { return d.process.Profile() }
 
-func (d saturatedProcessDriver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.ExportValue, error) {
+func (d saturatedProcessDriver) Prepare(ctx context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
 	for ctx.Err() == nil {
 		_, err := setup.Cleanup("occupied capacity", func() error { return nil })
 		if errors.Is(err, frame.ErrCapacity) {
@@ -38,9 +39,9 @@ func (d saturatedProcessDriver) Prepare(ctx context.Context, setup *frame.Setup)
 	return nil, ctx.Err()
 }
 
-func contentHost(t *testing.T, source contentSource, saturated bool) (*frame.Host, frame.UnitRef) {
+func contentHost(t *testing.T, source contentSource, saturated bool) (framehost.Host, framehost.UnitRef) {
 	t.Helper()
-	gate := frame.NewAdmission()
+	gate := framehost.NewAdmission()
 	store, err := sqlite.Open(t.Context(), sqlite.Config{Path: filepath.Join(t.TempDir(), "state.sqlite"), Admission: gate})
 	if err != nil {
 		t.Fatal(err)
@@ -53,13 +54,13 @@ func contentHost(t *testing.T, source contentSource, saturated bool) (*frame.Hos
 	if err != nil {
 		t.Fatal(err)
 	}
-	var driver frame.Driver = processDriver
+	var driver framehost.Driver = processDriver
 	if saturated {
 		driver = saturatedProcessDriver{process: processDriver}
 	}
-	host, err := frame.NewHost(t.Context(), frame.HostConfig{
+	host, err := framehost.New(t.Context(), framehost.Config{
 		Admission: gate, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store,
-		Drivers: []frame.Driver{driver},
+		Drivers: []framehost.Driver{driver},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -69,22 +70,22 @@ func contentHost(t *testing.T, source contentSource, saturated bool) (*frame.Hos
 		defer cancel()
 		_, _ = host.Close(ctx)
 	})
-	plugin, err := frame.Define(frame.Definition{
+	plugin, err := framehost.Define(framehost.Definition{
 		Revision: value.Hash([]byte("content-ownership")),
-		Units:    []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "worker", Profile: frame.LocalProcess}}},
+		Units:    []framehost.Unit{{Declaration: framehost.UnitDeclaration{ID: "worker", Profile: framehost.LocalProcess}}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.Install(t.Context(), frame.InstallationConfig{ID: "provider", Plugin: plugin, Enabled: true}); err != nil {
+	if _, err := host.Install(t.Context(), framehost.InstallationConfig{ID: "provider", Plugin: plugin, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	return host, frame.UnitRef{InstallationID: "provider", Release: plugin.Revision(), UnitID: "worker"}
+	return host, framehost.UnitRef{InstallationID: "provider", Release: plugin.Revision(), UnitID: "worker"}
 }
 
 func TestContentCapacityIsReservedBeforeSourceAcquisition(t *testing.T) {
 	var acquisitions atomic.Int32
-	host, unit := contentHost(t, func(context.Context, frame.UnitBinding) (process.Program, error) {
+	host, unit := contentHost(t, func(context.Context, framehost.UnitBinding) (process.Program, error) {
 		acquisitions.Add(1)
 		return process.Program{}, errors.New("source must not run without ownership capacity")
 	}, true)
@@ -107,7 +108,7 @@ func TestSourceFailureRetainsItsReturnedContentLease(t *testing.T) {
 	resolutionFailure := errors.New("program resolution failed after content acquisition")
 	releaseFailure := errors.New("content lease release temporarily failed")
 	var releases atomic.Int32
-	host, unit := contentHost(t, func(context.Context, frame.UnitBinding) (process.Program, error) {
+	host, unit := contentHost(t, func(context.Context, framehost.UnitBinding) (process.Program, error) {
 		return process.Program{ReleaseContent: func() error {
 			releases.Add(1)
 			return releaseFailure
@@ -130,7 +131,7 @@ func TestSourceFailureRetainsItsReturnedContentLease(t *testing.T) {
 func TestSourceFailureReleasesReturnedContentExactlyOnce(t *testing.T) {
 	failure := errors.New("program resolution failed after acquisition")
 	var releases atomic.Int32
-	host, unit := contentHost(t, func(context.Context, frame.UnitBinding) (process.Program, error) {
+	host, unit := contentHost(t, func(context.Context, framehost.UnitBinding) (process.Program, error) {
 		return process.Program{ReleaseContent: func() error { releases.Add(1); return nil }}, failure
 	}, false)
 	if _, err := host.ActivateUnit(t.Context(), "application", unit); !errors.Is(err, failure) {
@@ -143,7 +144,7 @@ func TestSourceFailureReleasesReturnedContentExactlyOnce(t *testing.T) {
 
 func TestSourceFailureWithoutContentLeavesNoResource(t *testing.T) {
 	failure := errors.New("program resolution refused")
-	host, unit := contentHost(t, func(context.Context, frame.UnitBinding) (process.Program, error) {
+	host, unit := contentHost(t, func(context.Context, framehost.UnitBinding) (process.Program, error) {
 		return process.Program{}, failure
 	}, false)
 	if _, err := host.ActivateUnit(t.Context(), "application", unit); !errors.Is(err, failure) {

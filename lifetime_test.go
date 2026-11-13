@@ -11,7 +11,7 @@ import (
 	"github.com/Tangerg/frame"
 )
 
-type lifetimeDiagnostic struct{ owner *frame.Lifetime }
+type lifetimeDiagnostic struct{ owner frame.Lifetime }
 
 func (e lifetimeDiagnostic) Error() string {
 	_ = e.owner.Context()
@@ -163,7 +163,7 @@ func TestResourceNamesRemainBoundedInCloseEvidence(t *testing.T) {
 				return frame.ResourceReleased, diagnostic
 			}}
 			var handle *frame.ResourceHandle
-			var closing *frame.Close
+			var closing frame.Close
 			var err error
 			if late {
 				work, err := lifetime.Enter(ctx)

@@ -10,18 +10,17 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
 	framevalue "github.com/Tangerg/frame/value"
 )
 
 func TestDuplexStreamingAllowsNestedCallsWithAcknowledgedChunks(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	method, err := portable.NewStreamingMethod[string, string, string](portable.MethodConfig{Name: "read", Kind: portable.Query})
+	method, err := frame.NewStreamingMethod[string, string, string](frame.MethodConfig{Name: "read", Kind: frame.Query})
 	if err != nil {
 		t.Fatal(err)
 	}
-	contract, err := portable.NewCapability("test.stream", method.Descriptor())
+	contract, err := frame.NewCapability("test.stream", method.Descriptor())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +33,7 @@ func TestDuplexStreamingAllowsNestedCallsWithAcknowledgedChunks(t *testing.T) {
 		return nil, mismatch()
 	})
 	var called atomic.Int32
-	implementation := testStream{func(ctx context.Context, chunk framevalue.JSON, emit Emit) (framevalue.JSON, error) {
+	implementation := testStream{func(ctx context.Context, chunk framevalue.JSON, emit frame.Emit) (framevalue.JSON, error) {
 		if err := emit(ctx, chunk); err != nil {
 			return framevalue.JSON{}, err
 		}
@@ -66,13 +65,13 @@ func TestDuplexStreamingAllowsNestedCallsWithAcknowledgedChunks(t *testing.T) {
 }
 
 type testStream struct {
-	emit func(context.Context, framevalue.JSON, Emit) (framevalue.JSON, error)
+	emit func(context.Context, framevalue.JSON, frame.Emit) (framevalue.JSON, error)
 }
 
-func (testStream) Invoke(context.Context, portable.Invocation) (framevalue.JSON, error) {
+func (testStream) Invoke(context.Context, frame.Invocation) (framevalue.JSON, error) {
 	return framevalue.JSON{}, mismatch()
 }
-func (s testStream) Stream(ctx context.Context, invocation portable.Invocation, emit Emit) (framevalue.JSON, error) {
+func (s testStream) Stream(ctx context.Context, invocation frame.Invocation, emit frame.Emit) (framevalue.JSON, error) {
 	return s.emit(ctx, invocation.Input(), emit)
 }
 
@@ -93,7 +92,7 @@ func TestCancellationTargetsOriginalCall(t *testing.T) {
 	defer right.end(context.Canceled)
 	go func() { <-started; cancel() }()
 	err := left.acknowledge(ctx, "wait", struct{}{})
-	if !errors.Is(err, context.Canceled) || !errors.Is(err, ErrOutcomeUnknown) {
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, frame.ErrOutcomeUnknown) {
 		t.Fatal(err)
 	}
 	select {

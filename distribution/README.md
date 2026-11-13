@@ -4,8 +4,11 @@ This package owns release-byte validation, bounded archive extraction, immutable
 content snapshots and read leases. Installation state, trust decisions, dependency
 selection and execution remain with the Host and application.
 
-One `Store` owns an open directory root and an exclusive lock on that directory
-inode. A second process or Store cannot open the same original directory while
+`Open` returns a `Store` value handle to one private directory authority. Copies,
+issued Leases and resource drivers retain that authority when the caller replaces
+its handle. The zero handle grants no access and its `Close` releases nothing.
+The authority owns an open directory root and an exclusive lock on that directory
+inode. A second process or authority cannot open the same original directory while
 its owner is alive. Operations use root-relative filesystem APIs and reject a
 changed canonical parent, symlink or replacement root. Startup reclaims only
 private abandoned staging and retirement directories after obtaining that lock.
@@ -95,6 +98,8 @@ application's current retention query. That query includes installation, durable
 business and execution protections as appropriate. Storage errors or recovery
 barriers cannot become permission to collect. Closing a lease releases only that
 read; it does not disable an installation or delete application data.
+Cancellation and recovery raised during the retention read are checked before
+withdrawal; an invalidated query cannot remove the original immutable release.
 
 Copies of a Lease share its original content claim. Closing any copy closes that
 claim once, while independent acquisitions keep their own protection. A closed

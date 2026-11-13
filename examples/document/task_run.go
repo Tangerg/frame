@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/internal/cancellation"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 )
 
@@ -22,7 +22,7 @@ const (
 	TaskOutcomeUnknown    TaskRunStatus = "outcome_unknown"
 )
 
-func (TaskRunStatus) Values() []string {
+func (TaskRunStatus) JSONSchemaEnum() []string {
 	return []string{string(TaskRunActive), string(TaskSettlementPending), string(TaskOutcomeUnknown)}
 }
 
@@ -83,7 +83,7 @@ func (a *App) taskRun(id string) *taskRun {
 	return a.runs[id]
 }
 
-func (a *App) claimTaskRun(ctx context.Context, id string) (*taskRun, bool, frame.ScopeGrant, error) {
+func (a *App) claimTaskRun(ctx context.Context, id string) (*taskRun, bool, framehost.ScopeGrant, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if original := a.runs[id]; original != nil {
@@ -91,7 +91,7 @@ func (a *App) claimTaskRun(ctx context.Context, id string) (*taskRun, bool, fram
 	}
 	work, err := a.lifetime.Enter(ctx)
 	if err != nil {
-		return nil, false, frame.ScopeGrant{}, err
+		return nil, false, framehost.ScopeGrant{}, err
 	}
 	run := &taskRun{app: a, id: id, epoch: a.Store.Epoch(), work: work}
 	a.runs[id] = run
@@ -155,7 +155,7 @@ func (r *taskRun) resume(ctx context.Context) (Task, error) {
 	phase, conclusion := r.phase, r.conclusion
 	r.mu.Unlock()
 	if phase != taskRunExited {
-		return Task{}, frame.ErrInUse
+		return Task{}, framehost.ErrInUse
 	}
 	if conclusion == nil {
 		task, err := r.app.Task(ctx, r.id)
@@ -178,16 +178,13 @@ func (r *taskRun) resume(ctx context.Context) (Task, error) {
 }
 
 func (r *taskRun) cancel(ctx context.Context) error {
-	if ctx == nil {
-		return frame.ErrInvalid
-	}
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return err
 	}
 	r.mu.Lock()
 	if r.phase != taskRunExited {
 		r.mu.Unlock()
-		return frame.ErrInUse
+		return framehost.ErrInUse
 	}
 	if r.conclusion == nil {
 		r.conclusion = &taskConclusion{state: Cancelled}
@@ -216,10 +213,7 @@ func (a *App) settlePendingTasks(ctx context.Context) error {
 }
 
 func (r *taskRun) settle(ctx context.Context) (err error) {
-	if ctx == nil {
-		return frame.ErrInvalid
-	}
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return err
 	}
 	r.mu.Lock()
@@ -233,7 +227,7 @@ func (r *taskRun) settle(ctx context.Context) (err error) {
 		case <-pending.done:
 			return pending.err
 		case <-ctx.Done():
-			return cancellation.Err(ctx)
+			return frame.ContextError(ctx)
 		}
 	}
 	pending := &taskSettlement{done: make(chan struct{})}

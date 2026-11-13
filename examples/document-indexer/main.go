@@ -14,8 +14,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/internal/cancellation"
-	"github.com/Tangerg/frame/portable"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/process"
 	"github.com/Tangerg/frame/process/runner"
 	"github.com/Tangerg/frame/sqlite"
@@ -26,7 +25,7 @@ import (
 var domain []byte
 
 type definition struct {
-	Descriptor portable.CapabilityDescriptor `json:"descriptor"`
+	Descriptor frame.CapabilityDescriptor `json:"descriptor"`
 }
 
 type fileRead struct {
@@ -48,7 +47,7 @@ const documentText = "Frame indexes this document without an agent."
 
 type documents struct{ indexed chan document }
 
-func (d *documents) read(_ context.Context, invocation portable.Invocation) (value.JSON, error) {
+func (d *documents) read(_ context.Context, invocation frame.Invocation) (value.JSON, error) {
 	var request fileRead
 	if err := value.DecodeValue(invocation.Input().Bytes(), &request, invocation.Member()); err != nil {
 		return value.JSON{}, err
@@ -59,7 +58,7 @@ func (d *documents) read(_ context.Context, invocation portable.Invocation) (val
 	return value.EncodeJSON(textResult{documentText})
 }
 
-func (d *documents) replace(ctx context.Context, invocation portable.Invocation) (value.JSON, error) {
+func (d *documents) replace(ctx context.Context, invocation frame.Invocation) (value.JSON, error) {
 	var request document
 	if err := value.DecodeValue(invocation.Input().Bytes(), &request, invocation.Member()); err != nil {
 		return value.JSON{}, err
@@ -70,63 +69,63 @@ func (d *documents) replace(ctx context.Context, invocation portable.Invocation)
 	select {
 	case d.indexed <- request:
 	case <-ctx.Done():
-		return value.JSON{}, cancellation.Err(ctx)
+		return value.JSON{}, frame.ContextError(ctx)
 	}
 	return value.EncodeJSON(writeResult{true})
 }
 
-func install(ctx context.Context, h *frame.Host, id frame.InstallationID, revision value.Digest, u frame.Unit) (frame.UnitRef, error) {
-	plugin, err := frame.Define(frame.Definition{Revision: revision, Units: []frame.Unit{u}})
+func install(ctx context.Context, h framehost.Host, id framehost.InstallationID, revision value.Digest, u framehost.Unit) (framehost.UnitRef, error) {
+	plugin, err := framehost.Define(framehost.Definition{Revision: revision, Units: []framehost.Unit{u}})
 	if err != nil {
-		return frame.UnitRef{}, err
+		return framehost.UnitRef{}, err
 	}
-	_, err = h.Install(ctx, frame.InstallationConfig{ID: id, Plugin: plugin, Enabled: true})
-	return frame.UnitRef{InstallationID: id, Release: revision, UnitID: u.Declaration.ID}, err
+	_, err = h.Install(ctx, framehost.InstallationConfig{ID: id, Plugin: plugin, Enabled: true})
+	return framehost.UnitRef{InstallationID: id, Release: revision, UnitID: u.Declaration.ID}, err
 }
 
-func (d *documents) install(ctx context.Context, h *frame.Host, pluginRevision value.Digest) (frame.UnitRef, error) {
+func (d *documents) install(ctx context.Context, h framehost.Host, pluginRevision value.Digest) (framehost.UnitRef, error) {
 	var definitions map[string]definition
 	if err := json.Unmarshal(domain, &definitions); err != nil {
-		return frame.UnitRef{}, err
+		return framehost.UnitRef{}, err
 	}
 	const hostID = "documents"
-	host := frame.Unit{Declaration: frame.UnitDeclaration{ID: "services", Profile: frame.NativeGo}}
-	child := frame.Unit{Declaration: frame.UnitDeclaration{ID: "document-indexer", Profile: frame.LocalProcess}}
+	host := framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "services", Profile: framehost.NativeGo}}
+	child := framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "document-indexer", Profile: framehost.LocalProcess}}
 	hostRevision := value.Hash(domain)
 	services := []struct {
 		slot           string
-		implementation process.Service
+		implementation frame.Service
 	}{
-		{"files", process.Handler(d.read)},
-		{"index", process.Handler(d.replace)},
+		{"files", frame.Handler(d.read)},
+		{"index", frame.Handler(d.replace)},
 	}
-	values := []frame.ExportValue{}
+	values := []framehost.ExportValue{}
 	for _, service := range services {
 		slot := service.slot
 		spec, exists := definitions[slot]
 		if !exists {
-			return frame.UnitRef{}, fmt.Errorf("missing contract for service %q", slot)
+			return framehost.UnitRef{}, fmt.Errorf("missing contract for service %q", slot)
 		}
-		c, err := portable.AdmitCapability(spec.Descriptor)
+		c, err := frame.AdmitCapability(spec.Descriptor)
 		if err != nil {
-			return frame.UnitRef{}, err
+			return framehost.UnitRef{}, err
 		}
-		contract, err := frame.NewPortableContract[process.Service]("1", c)
+		contract, err := framehost.NewPortableContract[frame.Service]("1", c)
 		if err != nil {
-			return frame.UnitRef{}, err
+			return framehost.UnitRef{}, err
 		}
 		ref := contract.Ref()
 		if err = h.Register(contract); err != nil {
-			return frame.UnitRef{}, err
+			return framehost.UnitRef{}, err
 		}
-		host.Declaration.Exports = append(host.Declaration.Exports, frame.ExportDeclaration{Name: slot, Contract: ref})
-		values = append(values, frame.Provide(slot, contract, service.implementation))
-		provider := frame.ExportRef{InstallationID: hostID, Release: hostRevision, UnitID: host.Declaration.ID, Export: slot, Contract: ref}
-		child.Declaration.Imports = append(child.Declaration.Imports, frame.ImportDeclaration{Slot: slot, Contract: ref, Providers: []frame.ExportRef{provider}})
+		host.Declaration.Exports = append(host.Declaration.Exports, framehost.ExportDeclaration{Name: slot, Contract: ref})
+		values = append(values, framehost.Provide(slot, contract, service.implementation))
+		provider := framehost.ExportRef{InstallationID: hostID, Release: hostRevision, UnitID: host.Declaration.ID, Export: slot, Contract: ref}
+		child.Declaration.Imports = append(child.Declaration.Imports, framehost.ImportDeclaration{Slot: slot, Contract: ref, Providers: []framehost.ExportRef{provider}})
 	}
-	host.Setup = func(context.Context, *frame.Setup) ([]frame.ExportValue, error) { return values, nil }
+	host.Setup = func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) { return values, nil }
 	if _, err := install(ctx, h, hostID, hostRevision, host); err != nil {
-		return frame.UnitRef{}, err
+		return framehost.UnitRef{}, err
 	}
 	return install(ctx, h, "indexer", pluginRevision, child)
 }
@@ -136,7 +135,7 @@ type approvedProgram struct {
 	revision value.Digest
 }
 
-func (p approvedProgram) Program(_ context.Context, binding frame.UnitBinding) (process.Program, error) {
+func (p approvedProgram) Program(_ context.Context, binding framehost.UnitBinding) (process.Program, error) {
 	if binding.Source.Release != p.revision {
 		return process.Program{}, frame.ErrContractMismatch
 	}
@@ -193,8 +192,16 @@ func run(ctx context.Context, entry string) (answer string, returned error) {
 	control, stop := context.WithCancel(context.Background())
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(control, listener) }()
-	defer func() { stop(); _ = listener.Close(); <-served }()
-	gate := frame.NewAdmission()
+	defer func() {
+		stop()
+		closeErr := listener.Close()
+		serveErr := <-served
+		if errors.Is(serveErr, context.Canceled) {
+			serveErr = nil
+		}
+		returned = errors.Join(returned, closeErr, serveErr)
+	}()
+	gate := framehost.NewAdmission()
 	store, err := sqlite.Open(ctx, sqlite.Config{Path: filepath.Join(dir, "state.db"), Admission: gate})
 	if err != nil {
 		return "", err
@@ -208,7 +215,7 @@ func run(ctx context.Context, entry string) (answer string, returned error) {
 	if err != nil {
 		return "", err
 	}
-	host, err := frame.NewHost(ctx, frame.HostConfig{Admission: gate, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store, Drivers: []frame.Driver{driver}})
+	host, err := framehost.New(ctx, framehost.Config{Admission: gate, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store, Drivers: []framehost.Driver{driver}})
 	if err != nil {
 		return "", err
 	}
@@ -243,7 +250,7 @@ func run(ctx context.Context, entry string) (answer string, returned error) {
 		}
 		answer = doc.Text
 	case <-ctx.Done():
-		return "", cancellation.Err(ctx)
+		return "", frame.ContextError(ctx)
 	}
 	return answer, nil
 }

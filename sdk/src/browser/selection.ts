@@ -10,8 +10,8 @@ export interface Choice<M> {
 
 function frozen<T>(value: T): T {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {
-    for (const child of Object.values(value)) frozen(child);
     Object.freeze(value);
+    for (const child of Object.values(value)) frozen(child);
   }
   return value;
 }
@@ -42,19 +42,20 @@ export function select<M, V>(
       }),
     ),
   );
-  const selected = choose(choices);
+  const candidates: string[] = [];
   const seen = new Set<Choice<M>>();
-  for (const entry of selected) {
+  for (const entry of choose(choices)) {
     if (!choices.includes(entry) || seen.has(entry))
       throw new FrameError(
         "stale_binding",
         "selection contains a foreign or repeated candidate",
       );
     seen.add(entry);
+    candidates.push(entry.candidate.token);
   }
   return Object.freeze({
     point: point.ref,
-    candidates: Object.freeze(selected.map((entry) => entry.candidate.token)),
+    candidates: Object.freeze(candidates),
     rule,
   });
 }

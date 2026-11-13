@@ -4,7 +4,7 @@ import (
 	"encoding/json/jsontext"
 	"reflect"
 
-	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	framevalue "github.com/Tangerg/frame/value"
 )
 
@@ -81,8 +81,8 @@ func Shapes() WireShapes {
 		Hello:       framevalue.ShapeOf(reflect.TypeFor[hello]()),
 		Preparation: framevalue.ShapeOf(reflect.TypeFor[preparation]()),
 		Grant:       framevalue.ShapeOf(reflect.TypeFor[offered]()),
-		Source:      framevalue.ShapeOf(reflect.TypeFor[frame.ExportRef]()),
-		Contract:    framevalue.ShapeOf(reflect.TypeFor[frame.ContractRef]()),
+		Source:      framevalue.ShapeOf(reflect.TypeFor[framehost.ExportRef]()),
+		Contract:    framevalue.ShapeOf(reflect.TypeFor[framehost.ContractRef]()),
 		Call:        framevalue.ShapeOf(reflect.TypeFor[callParams]()),
 		Chunk:       framevalue.ShapeOf(reflect.TypeFor[chunkParams]()),
 		Cancelled:   framevalue.ShapeOf(reflect.TypeFor[cancelParams]()),

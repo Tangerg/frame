@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 func TestAroundPanicCancelsAndJoinsOriginalContinuation(t *testing.T) {
@@ -33,5 +33,5 @@ func TestAroundPanicCancelsAndJoinsOriginalContinuation(t *testing.T) {
 			t.Fatal("around callback escaped its captured work")
 		}
 	}()
-	_, _ = execute(ctx, SourceRevision{Revision: 1}, []frame.Member[PassMetadata, CompilerPass]{{Value: pass}}, nil, nil, []frame.Member[AroundMetadata, Around]{{Value: wrapper}})
+	_, _ = execute(ctx, SourceRevision{Revision: 1}, []framehost.Member[PassMetadata, CompilerPass]{{Value: pass}}, nil, nil, []framehost.Member[AroundMetadata, Around]{{Value: wrapper}})
 }

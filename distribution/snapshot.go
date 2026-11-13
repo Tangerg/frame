@@ -1,6 +1,8 @@
 package distribution
 
-import "slices"
+import (
+	"slices"
+)
 
 func (u Unit) snapshot() Unit {
 	u.Imports = slices.Clone(u.Imports)

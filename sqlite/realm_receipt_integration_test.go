@@ -13,30 +13,31 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 )
 
 type receiptModules struct{}
 
-func (receiptModules) Module(context.Context, frame.UnitBinding) (browser.Artifact, error) {
-	return browser.Artifact{}, frame.ErrUnavailable
+func (receiptModules) Module(context.Context, framehost.UnitBinding) (browser.Artifact, error) {
+	return browser.Artifact{}, framehost.ErrUnavailable
 }
 
 type receiptBridge struct {
-	store       *sqlite.Store
+	store       sqlite.Store
 	bridge      *browser.Bridge
 	credentials browser.Credentials
-	point       frame.ContractRef
+	point       framehost.ContractRef
 }
 
 func openReceiptBridge(t *testing.T) receiptBridge {
 	t.Helper()
-	admission := frame.NewAdmission()
+	admission := framehost.NewAdmission()
 	store, err := sqlite.Open(t.Context(), sqlite.Config{Path: filepath.Join(t.TempDir(), "receipt.db"), Admission: admission})
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := frame.NewHost(context.Background(), frame.HostConfig{Admission: admission, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store})
+	host, err := framehost.New(context.Background(), framehost.Config{Admission: admission, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,14 +49,14 @@ func openReceiptBridge(t *testing.T) receiptBridge {
 			t.Error(err)
 		}
 	})
-	point, err := frame.NewPoint[struct{}, browser.Object]("test.receipt", "1")
+	point, err := framehost.NewPoint[struct{}, browser.Object]("test.receipt", "1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := host.Register(point); err != nil {
 		t.Fatal(err)
 	}
-	bridge, err := browser.NewBridge(browser.BridgeConfig{Host: host, Store: store, Source: receiptModules{}, Points: []frame.ContractRef{point.Ref()}, MaxPending: 1})
+	bridge, err := browser.NewBridge(browser.BridgeConfig{Host: host, Store: store, Source: receiptModules{}, Points: []framehost.ContractRef{point.Ref()}, MaxPending: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

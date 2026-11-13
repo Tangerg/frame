@@ -15,7 +15,7 @@ interface ProfileCase {
 
 const cases = parseJSON(
   readFileSync(
-    new URL("../../../portable/testdata/schema-profile.json", import.meta.url),
+    new URL("../../../value/testdata/schema-profile.json", import.meta.url),
     "utf8",
   ),
 ) as unknown as ProfileCase[];

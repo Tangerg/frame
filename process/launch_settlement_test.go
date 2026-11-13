@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/process"
 	"github.com/Tangerg/frame/process/runner"
 	"github.com/Tangerg/frame/sqlite"
@@ -36,12 +37,12 @@ func (*settlementRunner) Attach(context.Context, runner.AttemptRef) (io.ReadWrit
 }
 
 type settlementEnvironment struct {
-	host            *frame.Host
-	store           *sqlite.Store
+	host            framehost.Host
+	store           sqlite.Store
 	driver          *process.Driver
 	runner          *settlementRunner
 	source          *source
-	unit            frame.UnitRef
+	unit            framehost.UnitRef
 	contentReleased atomic.Int32
 }
 
@@ -58,7 +59,7 @@ func newSettlementEnvironment(t *testing.T) *settlementEnvironment {
 		}
 	})
 	e.runner = &settlementRunner{Server: server}
-	admission := frame.NewAdmission()
+	admission := framehost.NewAdmission()
 	e.store, err = sqlite.Open(t.Context(), sqlite.Config{Path: filepath.Join(t.TempDir(), "state.sqlite"), Admission: admission})
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +85,7 @@ func newSettlementEnvironment(t *testing.T) *settlementEnvironment {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.host, err = frame.NewHost(t.Context(), frame.HostConfig{Admission: admission, Epoch: e.store.Epoch(), Drivers: []frame.Driver{e.driver}, Installations: e.store, ExecutionProtection: e.store})
+	e.host, err = framehost.New(t.Context(), framehost.Config{Admission: admission, Epoch: e.store.Epoch(), Drivers: []framehost.Driver{e.driver}, Installations: e.store, ExecutionProtection: e.store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,14 +96,14 @@ func newSettlementEnvironment(t *testing.T) *settlementEnvironment {
 			t.Errorf("host close: %+v %v", outcome, err)
 		}
 	})
-	plugin, err := frame.Define(frame.Definition{Revision: value.Hash(nil), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.LocalProcess}}}})
+	plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash(nil), Units: []framehost.Unit{{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.LocalProcess}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.host.Install(t.Context(), frame.InstallationConfig{ID: "provider", Plugin: plugin, Enabled: true}); err != nil {
+	if _, err := e.host.Install(t.Context(), framehost.InstallationConfig{ID: "provider", Plugin: plugin, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	e.unit = frame.UnitRef{InstallationID: "provider", Release: plugin.Revision(), UnitID: "main"}
+	e.unit = framehost.UnitRef{InstallationID: "provider", Release: plugin.Revision(), UnitID: "main"}
 	return e
 }
 

@@ -9,16 +9,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tangerg/frame/portable"
+	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/value"
 )
 
 func TestHandlerGoexitReturnsUnknownAndReleasesCallCapacity(t *testing.T) {
-	method, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "exit", Kind: portable.Query})
+	method, err := frame.NewMethod[string, string](frame.MethodConfig{Name: "exit", Kind: frame.Query})
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := connectedService(t, method.Descriptor(), Handler(func(context.Context, portable.Invocation) (value.JSON, error) {
+	service := connectedService(t, method.Descriptor(), frame.Handler(func(context.Context, frame.Invocation) (value.JSON, error) {
 		runtime.Goexit()
 		return value.JSON{}, nil
 	}))
@@ -30,18 +30,18 @@ func TestHandlerGoexitReturnsUnknownAndReleasesCallCapacity(t *testing.T) {
 	defer cancel()
 	for attempt := range wire.MaxInFlight + 1 {
 		_, err := service.Invoke(ctx, queryInvocation(t, method.Name(), input))
-		if !errors.Is(err, ErrOutcomeUnknown) || errors.Is(err, context.DeadlineExceeded) {
+		if !errors.Is(err, frame.ErrOutcomeUnknown) || errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("handler exit %d did not return its unknown outcome: %v", attempt, err)
 		}
 	}
 }
 
 func TestStreamConsumerGoexitRejectsAnUnconfirmedFinalResult(t *testing.T) {
-	method, err := portable.NewStreamingMethod[string, string, string](portable.MethodConfig{Name: "read", Kind: portable.Query})
+	method, err := frame.NewStreamingMethod[string, string, string](frame.MethodConfig{Name: "read", Kind: frame.Query})
 	if err != nil {
 		t.Fatal(err)
 	}
-	contract, err := portable.NewCapability("test.interrupted-stream", method.Descriptor())
+	contract, err := frame.NewCapability("test.interrupted-stream", method.Descriptor())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestStreamConsumerGoexitRejectsAnUnconfirmedFinalResult(t *testing.T) {
 	var right *peer
 	right = newPeer(b, wire.MaxFrameBytes, func(ctx context.Context, _ string, raw jsontext.Value) (jsontext.Value, error) {
 		var params callParams
-		if err := decode(raw, &params); err != nil {
+		if err := decodeRequest(raw, &params); err != nil {
 			return nil, err
 		}
 		_ = right.acknowledge(ctx, wire.Methods.Chunk, chunkParams{params.Stream, params.Input})
@@ -78,7 +78,7 @@ func TestStreamConsumerGoexitRejectsAnUnconfirmedFinalResult(t *testing.T) {
 		runtime.Goexit()
 		return nil
 	})
-	if result.Validate() == nil || !errors.Is(err, ErrOutcomeUnknown) || errors.Is(err, context.DeadlineExceeded) {
+	if result.Validate() == nil || !errors.Is(err, frame.ErrOutcomeUnknown) || errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("consumer exit lost its rejection: result=%s error=%v", result.String(), err)
 	}
 }

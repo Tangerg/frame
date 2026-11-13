@@ -7,12 +7,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 func TestDatabaseAuthoritiesInOneDirectoryRemainIndependent(t *testing.T) {
 	directory := t.TempDir()
-	first, err := Open(t.Context(), testConfig(filepath.Join(directory, "first.db"), frame.NewAdmission()))
+	first, err := Open(t.Context(), testConfig(filepath.Join(directory, "first.db"), framehost.NewAdmission()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +21,7 @@ func TestDatabaseAuthoritiesInOneDirectoryRemainIndependent(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	second, err := Open(t.Context(), testConfig(filepath.Join(directory, "second.db"), frame.NewAdmission()))
+	second, err := Open(t.Context(), testConfig(filepath.Join(directory, "second.db"), framehost.NewAdmission()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestDatabaseAuthorityRejectsHardLinkAliases(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{path, alias} {
-		if store, err := Open(t.Context(), testConfig(name, frame.NewAdmission())); err == nil {
+		if store, err := Open(t.Context(), testConfig(name, framehost.NewAdmission())); err == nil {
 			_ = store.Close()
 			t.Fatal("database authority accepted a hard-link alias")
 		}

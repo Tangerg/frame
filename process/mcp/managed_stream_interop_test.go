@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/process"
 	"github.com/Tangerg/frame/value"
 )
@@ -32,11 +32,11 @@ func TestQimuStreamInterop(t *testing.T) {
 	if vectors.Receipt != receiptFingerprint {
 		t.Fatal("upstream receipt identity changed")
 	}
-	var deliveryDescriptor portable.MethodDescriptor
+	var deliveryDescriptor frame.MethodDescriptor
 	if err := value.DecodeValue([]byte(vectors.Stream), &deliveryDescriptor, "upstream chunk delivery"); err != nil {
 		t.Fatal(err)
 	}
-	delivery, err := portable.AdmitMethod(deliveryDescriptor)
+	delivery, err := frame.AdmitMethod(deliveryDescriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestQimuStreamInterop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	protocol := ManagedProtocol{Exports: func(frame.UnitBinding) (map[string]ManagedExport, error) {
+	protocol := ManagedProtocol{Exports: func(framehost.UnitBinding) (map[string]ManagedExport, error) {
 		return map[string]ManagedExport{"service": {Name: "records", Contract: contract}}, nil
 	}, OpenStream: receiver.Stream}
 	checkExecution(t, protocol, contract.Capability(), func(t *testing.T, dir string) process.Program {
@@ -65,13 +65,13 @@ func TestQimuStreamInterop(t *testing.T) {
 			t.Fatal(err)
 		}
 		return process.Program{Command: binary, ExecutableDigest: value.Hash(image), Directory: dir}
-	}, nil, func(ctx context.Context, svc process.Service, _ string) {
+	}, nil, func(ctx context.Context, svc frame.Service, _ string) {
 		input, err := value.EncodeJSON("two")
 		if err != nil {
 			t.Fatal(err)
 		}
 		var chunks []string
-		result, err := svc.(process.StreamingService).Stream(ctx, commandInvocation(t, "original-stream", "records.read", input), func(_ context.Context, chunk value.JSON) error {
+		result, err := svc.(frame.StreamingService).Stream(ctx, commandInvocation(t, "original-stream", "records.read", input), func(_ context.Context, chunk value.JSON) error {
 			chunks = append(chunks, chunk.String())
 			return nil
 		})

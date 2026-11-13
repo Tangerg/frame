@@ -16,15 +16,15 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 type transactionCut struct {
-	Phase    string            `json:"phase"`
-	IDs      []SubmissionID    `json:"ids,omitempty"`
-	State    frame.CommitState `json:"state,omitempty"`
-	Recovery bool              `json:"recovery,omitempty"`
-	CloseErr string            `json:"closeError,omitempty"`
+	Phase    string                `json:"phase"`
+	IDs      []SubmissionID        `json:"ids,omitempty"`
+	State    framehost.CommitState `json:"state,omitempty"`
+	Recovery bool                  `json:"recovery,omitempty"`
+	CloseErr string                `json:"closeError,omitempty"`
 }
 
 func startTransactionCut(t *testing.T, phase string) (string, transactionCut, func()) {
@@ -71,7 +71,7 @@ func startTransactionCut(t *testing.T, phase string) (string, transactionCut, fu
 
 func TestUnconfirmedDisposalRetainsAuthorityUntilOriginalProcessExit(t *testing.T) {
 	path, cut, kill := startTransactionCut(t, "unconfirmed-disposal")
-	if cut.State != frame.CommitIndeterminate || !cut.Recovery || cut.CloseErr == "" || len(cut.IDs) != 1 {
+	if cut.State != framehost.CommitIndeterminate || !cut.Recovery || cut.CloseErr == "" || len(cut.IDs) != 1 {
 		t.Errorf("unconfirmed original transaction was reported as settled: %+v", cut)
 	}
 	// The old connection can still commit. Its Store must retain the real file
@@ -81,7 +81,7 @@ func TestUnconfirmedDisposalRetainsAuthorityUntilOriginalProcessExit(t *testing.
 		t.Error("unconfirmed connection disposal released the original authority")
 	}
 	kill()
-	admission := frame.NewAdmission()
+	admission := framehost.NewAdmission()
 	store, err := Open(t.Context(), testConfig(path, admission))
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +101,7 @@ func TestUnconfirmedDisposalRetainsAuthorityUntilOriginalProcessExit(t *testing.
 		t.Fatal("child did not report its original issued intent")
 	}
 	settlement, err := owner.Settlement(t.Context(), cut.IDs[0], []byte("unconfirmed-disposal"))
-	if err != nil || settlement.State != frame.CommitRejected {
+	if err != nil || settlement.State != framehost.CommitRejected {
 		t.Fatalf("original connection committed after process exit: %+v error=%v", settlement, err)
 	}
 	assertFaultDocumentCount(t, store, 0)
@@ -126,7 +126,7 @@ func TestUnconfirmedDisposalRetainsAuthorityUntilOriginalProcessExit(t *testing.
 func TestPrepareAcknowledgementCrashRecoversAllocatedOriginalIntent(t *testing.T) {
 	path, _, kill := startTransactionCut(t, "prepare-committed")
 	kill()
-	admission := frame.NewAdmission()
+	admission := framehost.NewAdmission()
 	store, err := Open(t.Context(), testConfig(path, admission))
 	if err != nil {
 		t.Fatal(err)
@@ -134,7 +134,7 @@ func TestPrepareAcknowledgementCrashRecoversAllocatedOriginalIntent(t *testing.T
 	defer store.Close()
 	owner, _ := store.Owner("documents")
 	pending, err := owner.Pending(t.Context())
-	if err != nil || len(pending) != 1 || pending[0].ID.Sequence != 1 || pending[0].State != frame.CommitIndeterminate {
+	if err != nil || len(pending) != 1 || pending[0].ID.Sequence != 1 || pending[0].State != framehost.CommitIndeterminate {
 		t.Fatalf("allocation response loss left a missing or duplicate intent: %+v error=%v", pending, err)
 	}
 	if admission.RecoveryError() == nil {
@@ -146,7 +146,7 @@ func TestPrepareAcknowledgementCrashRecoversAllocatedOriginalIntent(t *testing.T
 	}
 	id := pending[0].ID
 	settlement, err := owner.Settlement(t.Context(), id, []byte("prepare-committed"))
-	if err != nil || settlement.State != frame.CommitRejected {
+	if err != nil || settlement.State != framehost.CommitRejected {
 		t.Fatalf("undispatched allocation was not settled from its original evidence: %+v error=%v", settlement, err)
 	}
 	if err := owner.Confirm(t.Context(), id); err != nil {
@@ -173,7 +173,7 @@ func TestCompactionCrashKeepsWatermarkAndEvidenceAtomic(t *testing.T) {
 		t.Run(phase, func(t *testing.T) {
 			path, cut, kill := startTransactionCut(t, phase)
 			kill()
-			store, err := Open(t.Context(), testConfig(path, frame.NewAdmission()))
+			store, err := Open(t.Context(), testConfig(path, framehost.NewAdmission()))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -202,7 +202,7 @@ func TestCompactionCrashKeepsWatermarkAndEvidenceAtomic(t *testing.T) {
 					if !errors.Is(err, ErrEvidenceExpired) {
 						t.Fatalf("committed watermark retained/recreated expired evidence: %+v error=%v", settlement, err)
 					}
-				} else if err != nil || settlement.State != frame.CommitSucceeded || !settlement.Synchronized {
+				} else if err != nil || settlement.State != framehost.CommitSucceeded || !settlement.Synchronized {
 					t.Fatalf("uncommitted compaction lost original evidence: %+v error=%v", settlement, err)
 				}
 				_, err = owner.Commit(t.Context(), id, request, func(context.Context, Executor) ([]byte, error) {
@@ -231,7 +231,7 @@ func TestSQLiteTransactionCutChild(t *testing.T) {
 	if phase == "" {
 		return
 	}
-	admission := frame.NewAdmission()
+	admission := framehost.NewAdmission()
 	store, err := Open(context.Background(), testConfig(os.Getenv("FRAME_TRANSACTION_PATH"), admission))
 	if err != nil {
 		t.Fatal(err)
@@ -278,11 +278,11 @@ func TestSQLiteTransactionCutChild(t *testing.T) {
 			t.Fatalf("original transaction was not left unresolved: %+v error=%v", settlement, err)
 		}
 		cut.State = settlement.State
-		cut.Recovery = errors.Is(admission.RecoveryError(), frame.ErrRecoveryRequired)
+		cut.Recovery = errors.Is(admission.RecoveryError(), framehost.ErrRecoveryRequired)
 		if err := store.Close(); err != nil {
 			cut.CloseErr = err.Error()
 		}
-		owner, store = Owner{}, nil
+		owner, store = Owner{}, Store{}
 		runtime.GC()
 		runtime.GC()
 		pause()

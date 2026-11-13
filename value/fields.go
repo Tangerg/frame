@@ -69,13 +69,13 @@ func parseFieldTag(field reflect.StructField) (string, wireTagOptions, error) {
 		return "", wireTagOptions{}, err
 	}
 	if options.omitZero && !options.omitEmpty && (field.Type.Kind() == reflect.Pointer || field.Type.Kind() == reflect.Interface) {
-		model, err := encodingType(field.Type)
+		encoding, err := encodingOf(field.Type)
 		if err != nil {
 			return "", wireTagOptions{}, err
 		}
 		// omitempty intentionally omits JSON null. With omitzero alone, decoding
 		// null to nil would erase presence before the value's codec can retain it.
-		if model.Kind() == reflect.Interface {
+		if encoding.model.Kind() == reflect.Interface {
 			return "", wireTagOptions{}, errors.New("omitzero cannot preserve null in a pointer or interface field")
 		}
 	}

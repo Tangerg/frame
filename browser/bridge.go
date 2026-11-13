@@ -9,34 +9,35 @@ import (
 	"sync"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/internal/nilness"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 type ModuleSource interface {
-	Module(context.Context, frame.UnitBinding) (Artifact, error)
+	Module(context.Context, framehost.UnitBinding) (Artifact, error)
 }
 
 // RemoteSource binds a declared Portable transport to an exact approved import.
 // The adapter registers all sessions and call resources with the original Setup
 // before returning. A descriptor alone never creates a callable transport.
 type RemoteSource interface {
-	Import(context.Context, *frame.Setup, frame.BoundValue) (RemoteImport, error)
+	Import(context.Context, *framehost.Setup, framehost.BoundValue) (RemoteImport, error)
 }
 
 type BridgeConfig struct {
-	Host   *frame.Host
-	Store  *sqlite.Store
+	Host   framehost.Host
+	Store  sqlite.Store
 	Source ModuleSource
 	Remote RemoteSource
 	// PublicConfiguration is the consumer's explicit public projection. Opaque
 	// installation configuration may contain credentials and is never sent by
 	// default. The instance keeps the original configuration digest as identity.
-	PublicConfiguration func(context.Context, *frame.Setup) ([]byte, error)
+	PublicConfiguration func(context.Context, *framehost.Setup) ([]byte, error)
 	MaxRealms           int
 	MaxPending          int
 	MaxMessageBytes     int64
-	Points              []frame.ContractRef
+	Points              []framehost.ContractRef
 }
 
 // Credentials authenticate one original Realm. They are returned only to the
@@ -59,7 +60,7 @@ type Bridge struct {
 	// mu guards every table below and the mutable state of their entries.
 	mu         sync.Mutex
 	openings   map[string]*realmOpening
-	sessions   boundedTable[frame.RealmID, *realmSession]
+	sessions   boundedTable[framehost.RealmID, *realmSession]
 	executions boundedTable[string, *browserExecution]
 	// operations are live control operations; receiptReads join concurrent
 	// reads of an archived one.
@@ -75,7 +76,7 @@ type Bridge struct {
 // that released it; until then the Realm may still use and delegate it.
 type browserUse struct {
 	grant      UseGrant
-	use        *frame.Use
+	use        *framehost.Use
 	resource   *frame.ResourceHandle
 	releasedBy string
 }
@@ -84,14 +85,14 @@ func (u *browserUse) released() bool { return u.releasedBy != "" }
 
 type browserRoute struct {
 	grant    RouteGrant
-	original *frame.EventRoute
+	original *framehost.EventRoute
 }
 
 func NewBridge(config BridgeConfig) (*Bridge, error) {
-	if config.Host == nil || config.Store == nil || nilness.Is(config.Source) || !config.Host.UsesAuthority(config.Store) {
+	if !config.Host.Valid() || framevalue.IsNil(config.Source) || !config.Host.UsesAuthority(config.Store) {
 		return nil, frame.ErrInvalid
 	}
-	if config.Remote != nil && nilness.Is(config.Remote) {
+	if config.Remote != nil && framevalue.IsNil(config.Remote) {
 		return nil, frame.ErrInvalid
 	}
 	config.MaxRealms = cmp.Or(config.MaxRealms, defaultMaxRealms)
@@ -109,7 +110,7 @@ func NewBridge(config BridgeConfig) (*Bridge, error) {
 		authority:    Authority{ID: config.Store.ID(), Epoch: strconv.FormatUint(config.Store.Epoch(), 10)},
 		signer:       newRealmSigner(),
 		openings:     make(map[string]*realmOpening),
-		sessions:     newBoundedTable[frame.RealmID, *realmSession]("realms", config.MaxRealms),
+		sessions:     newBoundedTable[framehost.RealmID, *realmSession]("realms", config.MaxRealms),
 		executions:   newBoundedTable[string, *browserExecution]("pending executions", config.MaxPending),
 		operations:   make(map[string]*controlOperation),
 		receiptReads: make(map[string]*receiptRead),
@@ -120,13 +121,13 @@ func NewBridge(config BridgeConfig) (*Bridge, error) {
 	}, nil
 }
 
-func validateConfiguredPoints(points []frame.ContractRef) error {
+func validateConfiguredPoints(points []framehost.ContractRef) error {
 	names := make(map[string]struct{}, len(points))
 	for _, point := range points {
 		if err := point.Validate(); err != nil {
 			return fmt.Errorf("browser: configured point: %w", err)
 		}
-		if point.Kind != frame.PointKind {
+		if point.Kind != framehost.PointKind {
 			return fmt.Errorf("%w: browser configured point requires a point contract", frame.ErrInvalid)
 		}
 		if _, duplicate := names[point.Name]; duplicate {
@@ -137,9 +138,9 @@ func validateConfiguredPoints(points []frame.ContractRef) error {
 	return nil
 }
 
-func (*Bridge) Profile() frame.Profile { return frame.BrowserJS }
-func (*Bridge) RealmBound() bool       { return true }
-func (b *Bridge) Authority() Authority { return b.authority }
+func (*Bridge) Profile() framehost.Profile { return framehost.BrowserJS }
+func (*Bridge) RealmBound() bool           { return true }
+func (b *Bridge) Authority() Authority     { return b.authority }
 
 const useResourcePrefix = "browser use "
 

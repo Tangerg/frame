@@ -10,13 +10,14 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 	"github.com/Tangerg/frame/value"
 )
 
 func TestUseReleasePersistsOriginalCloseWithoutDiagnostics(t *testing.T) {
 	const requestBytes = 4096
-	admission := frame.NewAdmission()
+	admission := framehost.NewAdmission()
 	store, err := sqlite.Open(t.Context(), sqlite.Config{Path: filepath.Join(t.TempDir(), "state.sqlite"), Admission: admission, MaxRequestBytes: requestBytes})
 	if err != nil {
 		t.Fatal(err)
@@ -26,7 +27,7 @@ func TestUseReleasePersistsOriginalCloseWithoutDiagnostics(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	host, err := frame.NewHost(t.Context(), frame.HostConfig{Admission: admission, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store})
+	host, err := framehost.New(t.Context(), framehost.Config{Admission: admission, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,27 +42,27 @@ func TestUseReleasePersistsOriginalCloseWithoutDiagnostics(t *testing.T) {
 			t.Errorf("Host did not release: %v", err)
 		}
 	})
-	contract, err := frame.NewContract[string]("value", "1")
+	contract, err := framehost.NewContract[string]("value", "1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := host.Register(contract); err != nil {
 		t.Fatal(err)
 	}
-	plugin, err := frame.Define(frame.Definition{Revision: value.Hash(nil), Units: []frame.Unit{{
-		Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "value", Contract: contract.Ref()}}},
-		Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
-			return []frame.ExportValue{frame.Provide("value", contract, "value")}, nil
+	plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash(nil), Units: []framehost.Unit{{
+		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: contract.Ref()}}},
+		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+			return []framehost.ExportValue{framehost.Provide("value", contract, "value")}, nil
 		},
 	}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.Install(t.Context(), frame.InstallationConfig{ID: "provider", Plugin: plugin, Enabled: true}); err != nil {
+	if _, err := host.Install(t.Context(), framehost.InstallationConfig{ID: "provider", Plugin: plugin, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	const realm frame.RealmID = "application"
-	root := frame.ExportRef{InstallationID: "provider", Release: plugin.Revision(), UnitID: "main", Export: "value", Contract: contract.Ref()}
+	const realm framehost.RealmID = "application"
+	root := framehost.ExportRef{InstallationID: "provider", Release: plugin.Revision(), UnitID: "main", Export: "value", Contract: contract.Ref()}
 	if _, err := host.ActivateIn(t.Context(), realm, root); err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +74,7 @@ func TestUseReleasePersistsOriginalCloseWithoutDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	use, err := host.Acquire(t.Context(), plan, frame.UseConfig{Owner: owner, Scope: scope, Realm: realm, ExecutionID: "execution"})
+	use, err := host.Acquire(t.Context(), plan, framehost.UseConfig{Owner: owner, Scope: scope, Realm: realm, ExecutionID: "execution"})
 	if err != nil {
 		t.Fatal(err)
 	}

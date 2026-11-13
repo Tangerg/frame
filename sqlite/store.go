@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	framevalue "github.com/Tangerg/frame/value"
 	_ "modernc.org/sqlite"
 )
@@ -54,24 +55,29 @@ type Executor interface {
 type OwnerSchema struct {
 	ID         string
 	Statements []string
-	References func(context.Context, Reader, frame.InstallationID) ([]frame.Dependency, error)
+	References func(context.Context, Reader, framehost.InstallationID) ([]framehost.Dependency, error)
 	// ProjectInstallation writes this owner's projection in the original
 	// installation transaction, without authority over Frame's state.
-	ProjectInstallation func(context.Context, Executor, frame.InstallationChange) error
+	ProjectInstallation func(context.Context, Executor, framehost.InstallationChange) error
 }
 
 type Config struct {
 	Path                   string
-	Admission              *frame.Admission
+	Admission              framehost.Admission
 	Owners                 []OwnerSchema
 	MaxRequestBytes        int
 	MaxSubmissionsPerOwner int
 	MaxRealmHistoryBytes   int64
 }
 
-type Store struct {
+// Store is a value handle. Passing it to a Host or driver captures the original
+// authority rather than a caller-owned variable that can later be rebound.
+type Store struct{ *storeAuthority }
+
+// Issued capabilities retain this authority, never a caller-owned Store handle.
+type storeAuthority struct {
 	*databaseOwner
-	admission            *frame.Admission
+	admission            framehost.Admission
 	id                   string
 	epoch                uint64
 	owners               map[string]Owner
@@ -84,11 +90,11 @@ type Store struct {
 // Owner is a value capability for an admitted schema. Copies keep that original
 // authority even when a caller reassigns its handle after registering it.
 type Owner struct {
-	store               *Store
+	store               *storeAuthority
 	id                  string
-	references          func(context.Context, Reader, frame.InstallationID) ([]frame.Dependency, error)
+	references          func(context.Context, Reader, framehost.InstallationID) ([]framehost.Dependency, error)
 	schema              schemaWriteSet
-	projectInstallation func(context.Context, Executor, frame.InstallationChange) error
+	projectInstallation func(context.Context, Executor, framehost.InstallationChange) error
 }
 
 const schema = `
@@ -150,9 +156,24 @@ func readSchemaShape(ctx context.Context, executor interface {
 	return framevalue.Hash(data), nil
 }
 
-func (s *Store) ID() string    { return s.id }
-func (s *Store) Epoch() uint64 { return s.epoch }
-func (s *Store) Owner(id string) (Owner, error) {
+func (s Store) ID() string {
+	if s.storeAuthority == nil {
+		return ""
+	}
+	return s.id
+}
+
+func (s Store) Epoch() uint64 {
+	if s.storeAuthority == nil {
+		return 0
+	}
+	return s.epoch
+}
+
+func (s *storeAuthority) Owner(id string) (Owner, error) {
+	if s == nil {
+		return Owner{}, frame.ErrInvalid
+	}
 	owner, ok := s.owners[id]
 	if !ok {
 		return Owner{}, fmt.Errorf("sqlite: required owner %q is unavailable", id)
@@ -164,11 +185,11 @@ func (o Owner) ID() string { return o.id }
 
 // Held starts a new read after admission. It must not be called from an owner
 // mutation callback; that callback already has the current transaction.
-func (o Owner) Held(ctx context.Context, installation frame.InstallationID) ([]frame.Dependency, error) {
+func (o Owner) Held(ctx context.Context, installation framehost.InstallationID) ([]framehost.Dependency, error) {
 	if err := o.validate(); err != nil {
 		return nil, err
 	}
-	var dependencies []frame.Dependency
+	var dependencies []framehost.Dependency
 	err := o.store.Read(ctx, func(tx Reader) error {
 		var err error
 		dependencies, err = o.references(ctx, tx, installation)
@@ -180,20 +201,20 @@ func (o Owner) Held(ctx context.Context, installation frame.InstallationID) ([]f
 // fenceUnlessRefused requires recovery after a protection write fails for any
 // reason other than a known refusal: the Store can no longer vouch for the
 // durable state that write meant to change.
-func (s *Store) fenceUnlessRefused(err error) error {
+func (s *storeAuthority) fenceUnlessRefused(err error) error {
 	if err != nil && !errors.Is(err, ErrConflict) && !errors.Is(err, frame.ErrClosed) && !errors.Is(err, sql.ErrNoRows) {
 		s.admission.RequireRecovery(err)
 	}
 	return err
 }
 
-func (s *Store) IsAuthority(admission *frame.Admission, epoch uint64) bool {
-	return s != nil && s.admission == admission && s.epoch == epoch
+func (s Store) IsAuthority(admission framehost.Admission, epoch uint64) bool {
+	return s.storeAuthority != nil && s.admission == admission && s.epoch == epoch
 }
 
 // Recovery and diagnostics may read without reopening admission. Mutations
 // require an Owner so they cannot bypass the recovery barrier.
-func (s *Store) Read(ctx context.Context, query func(Reader) error) error {
+func (s *storeAuthority) Read(ctx context.Context, query func(Reader) error) error {
 	if query == nil {
 		return errors.New("sqlite: query is required")
 	}

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 func pendingBrowserPlan(e *bridgeEnvironment, id string) (browser.LocalPlan, <-chan error) {
@@ -24,7 +24,7 @@ func pendingBrowserPlan(e *bridgeEnvironment, id string) (browser.LocalPlan, <-c
 			e.t.Fatal(err)
 		}
 		for _, plan := range poll.Plans {
-			if plan.Units[0].Instance.Source.InstallationID == frame.InstallationID(id) {
+			if plan.Units[0].Instance.Source.InstallationID == framehost.InstallationID(id) {
 				return plan, done
 			}
 		}
@@ -48,7 +48,7 @@ func TestPollKeepsUnadmittedExitWithHost(t *testing.T) {
 		}
 	}
 	proof := executionProof(plan)
-	if _, err := e.bridge.Prove(e.ctx, e.credentials.Token, proof); !errors.Is(err, frame.ErrStaleBinding) {
+	if _, err := e.bridge.Prove(e.ctx, e.credentials.Token, proof); !errors.Is(err, framehost.ErrStaleBinding) {
 		t.Fatalf("unadmitted plan acquired a browser proof owner: %v", err)
 	}
 	if _, err := e.store.ExitProof(e.ctx, plan.Execution.ID, proof.ProofID); !errors.Is(err, sql.ErrNoRows) {
@@ -71,7 +71,7 @@ func TestPollKeepsUnadmittedExitWithHost(t *testing.T) {
 	if err != nil || !record.ExitProven() || record.Proof.Kind != "not-admitted" {
 		t.Fatalf("poll transferred the Host's exit ownership: %+v %v", record, err)
 	}
-	if _, err := e.bridge.Prove(e.ctx, e.credentials.Token, proof); !errors.Is(err, frame.ErrStaleBinding) {
+	if _, err := e.bridge.Prove(e.ctx, e.credentials.Token, proof); !errors.Is(err, framehost.ErrStaleBinding) {
 		t.Fatalf("settled non-admission accepted a competing proof: %v", err)
 	}
 }
@@ -116,7 +116,7 @@ func TestReconnectBeforeFirstAdmissionPreservesTheRealm(t *testing.T) {
 	if err != nil || result.Mode != browser.Revalidated || len(result.Executions) != 2 {
 		t.Fatalf("pending local owner sealed an otherwise current Realm: %+v %v", result, err)
 	}
-	if _, err := e.bridge.Prove(e.ctx, e.credentials.Token, executionProof(pending)); !errors.Is(err, frame.ErrStaleBinding) {
+	if _, err := e.bridge.Prove(e.ctx, e.credentials.Token, executionProof(pending)); !errors.Is(err, framehost.ErrStaleBinding) {
 		t.Fatalf("reconnect advanced the plan's admission: %v", err)
 	}
 	_, grant := e.acquire(live, "after-reconnect")
@@ -295,7 +295,7 @@ func TestReconstructedHostResolvesOriginalPendingAdmission(t *testing.T) {
 			} {
 				forged := fixture.Plan
 				change(&forged)
-				if _, err := e.bridge.AdmitPlan(e.ctx, credentials.Token, forged); !errors.Is(err, frame.ErrStaleBinding) {
+				if _, err := e.bridge.AdmitPlan(e.ctx, credentials.Token, forged); !errors.Is(err, framehost.ErrStaleBinding) {
 					t.Fatalf("recovery accepted another original identity: %v", err)
 				}
 			}

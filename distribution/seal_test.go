@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -52,7 +52,7 @@ func TestNestedReleaseRetainsItsFinalSealWhenTheStoreReopens(t *testing.T) {
 	if err := store.Close(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := Open(Config{Directory: store.directory, Admission: frame.NewAdmission(), Trust: store.trust, Retained: store.retained})
+	reopened, err := Open(Config{Directory: store.directory, Admission: framehost.NewAdmission(), Trust: store.trust, Retained: store.retained})
 	if err != nil {
 		t.Fatal(err)
 	}

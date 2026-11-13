@@ -84,3 +84,46 @@ func TestPreparationDoesNotRunAfterItsLifetimeRetires(t *testing.T) {
 		t.Fatal("retired lifetime executed plugin preparation")
 	}
 }
+
+func TestActivationCannotAcknowledgeItsRetiredLifetime(t *testing.T) {
+	lifetime := frame.NewLifetime(t.Context())
+	s := &server{state: prepared, life: lifetime, activate: func(context.Context) error {
+		lifetime.BeginClose(frame.ErrClosed)
+		return nil
+	}}
+	if _, err := s.activateUnit(t.Context(), []byte(`{}`)); err == nil {
+		t.Fatal("activation acknowledged after its original lifetime closed admission")
+	}
+	if _, err := lifetime.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLifecycleCannotAcknowledgeCancelledWork(t *testing.T) {
+	for _, method := range []string{wire.Methods.Prepare, wire.Methods.Activate} {
+		t.Run(method, func(t *testing.T) {
+			ctx, cancel := context.WithCancelCause(t.Context())
+			defer cancel(nil)
+			cause := errors.New("original lifecycle request cancelled")
+			lifetime := frame.NewLifetime(t.Context())
+			defer lifetime.Close(t.Context())
+			s := &server{state: described, life: lifetime, unit: Unit{
+				Prepare: func(context.Context, Setup) (Prepared, error) {
+					cancel(cause)
+					return Prepared{}, nil
+				},
+			}, activate: func(context.Context) error {
+				cancel(cause)
+				return nil
+			}}
+			payload := []byte(`{"imports":{}}`)
+			if method == wire.Methods.Activate {
+				s.state = prepared
+				payload = []byte(`{}`)
+			}
+			if _, err := s.handle(ctx, method, payload); !errors.Is(err, context.Canceled) || !errors.Is(err, cause) {
+				t.Fatalf("lifecycle acknowledged cancelled work or lost its cause: %v", err)
+			}
+		})
+	}
+}

@@ -58,7 +58,7 @@ export interface RuntimeOptions {
   readonly control: HostControl;
   readonly proofCapacity: number;
   load(unit: PlannedUnit, lifetime: Lifetime, plan: LocalPlan): Awaitable<Unit>;
-  remote(binding: Import, lifetime: Lifetime): Awaitable<unknown>;
+  remote(binding: Import, lifetime: Lifetime): Awaitable<NonNullable<unknown>>;
 }
 
 export interface ExecutionHandle {
@@ -374,10 +374,16 @@ export class Runtime {
       } else if (binding.kind === "local") {
         imports[binding.slot] = this.#localImport(binding.local!);
       } else {
-        imports[binding.slot] = await owner.run(() =>
+        const implementation = await owner.run(() =>
           this.#remote(binding, owner),
         );
         live();
+        if (implementation === null || implementation === undefined)
+          throw new FrameError(
+            "contract_mismatch",
+            "remote import is missing its approved implementation",
+          );
+        imports[binding.slot] = implementation;
       }
     }
     return imports;
@@ -411,8 +417,13 @@ export class Runtime {
     const revision = this.#connectionRevision;
     const channel = this.#channel;
     if (previous && !previous.hasRequest) {
-      const grant = await admission.lifetime.run(() =>
-        channel.observe((control, signal) => control.acquire(request, signal)),
+      const grant = captureProtocol(
+        "UseGrant",
+        await admission.lifetime.run(() =>
+          channel.observe((control, signal) =>
+            control.acquire(request, signal),
+          ),
+        ),
       );
       admission.verifyGrant(grant);
       admission.bindRequest(request);
@@ -713,20 +724,23 @@ export class Runtime {
     signal: AbortSignal,
   ): Promise<void> {
     const closing = this.#connection === "closed";
-    const result = await observePromise(
-      control.reconnect(
-        {
-          authority: this.#authority,
-          realm: this.#realm,
-          executions: [...this.#executions.values()]
-            .filter(
-              (entry) => entry.lifetime.exit?.outcome.status !== "released",
-            )
-            .map((entry) => entry.plan.execution),
-        },
+    const result = captureProtocol(
+      "ReconnectResult",
+      await observePromise(
+        control.reconnect(
+          {
+            authority: this.#authority,
+            realm: this.#realm,
+            executions: [...this.#executions.values()]
+              .filter(
+                (entry) => entry.lifetime.exit?.outcome.status !== "released",
+              )
+              .map((entry) => entry.plan.execution),
+          },
+          signal,
+        ),
         signal,
       ),
-      signal,
     );
     if (revision !== this.#connectionRevision)
       throw new FrameError("unavailable", "reconnection was superseded");
@@ -776,8 +790,9 @@ export class Runtime {
       }
       if (revision !== this.#connectionRevision) return;
       const executionProjectionRevision = this.#executionProjectionRevision;
-      const pending = await this.#channel.observe((control, signal) =>
-        control.poll(signal),
+      const pending = captureProtocol(
+        "Poll",
+        await this.#channel.observe((control, signal) => control.poll(signal)),
       );
       // A replacement channel owns current admission. A late observation from
       // the retired channel cannot fence it or turn it back into a paused one.

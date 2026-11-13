@@ -10,7 +10,7 @@ import (
 	"github.com/Tangerg/frame/value"
 )
 
-func (s *Store) publishHeld(ctx context.Context, staged *staging, source Source) (result *Lease, err error) {
+func (s *storeAuthority) publishHeld(ctx context.Context, staged *staging, source Source) (result *Lease, err error) {
 	release, err := s.validate(ctx, staged.root, unsealedTree)
 	if err != nil {
 		return nil, err
@@ -72,7 +72,7 @@ func (s *Store) publishHeld(ctx context.Context, staged *staging, source Source)
 
 // A crash can leave a renamed root writable. The original lease pins that
 // directory while application trust evaluates the exact cached projection.
-func (s *Store) admitCached(ctx context.Context, source Source, digest value.Digest, original fs.FileInfo) (_ Release, err error) {
+func (s *storeAuthority) admitCached(ctx context.Context, source Source, digest value.Digest, original fs.FileInfo) (_ Release, err error) {
 	if !original.IsDir() || original.Mode()&specialFileModes != 0 || original.Mode().Perm() != sealedDirectoryMode && original.Mode().Perm() != privateDirectoryMode {
 		return Release{}, ErrIntegrity
 	}
@@ -118,7 +118,7 @@ func (s *Store) admitCached(ctx context.Context, source Source, digest value.Dig
 }
 
 // Policy receives only detached metadata; it cannot rewrite verified content.
-func (s *Store) checkTrust(ctx context.Context, source Source, release Release) error {
+func (s *storeAuthority) checkTrust(ctx context.Context, source Source, release Release) error {
 	view := release.snapshot()
 	return s.trust(ctx, source, view.Manifest, view.Lock)
 }

@@ -7,20 +7,20 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 	"github.com/Tangerg/frame/value"
 	modernc "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
-func noSchemaReferences(context.Context, sqlite.Reader, frame.InstallationID) ([]frame.Dependency, error) {
+func noSchemaReferences(context.Context, sqlite.Reader, framehost.InstallationID) ([]framehost.Dependency, error) {
 	return nil, nil
 }
 
-func schemaOwnerStore(t *testing.T, owners ...sqlite.OwnerSchema) (*sqlite.Store, *frame.Admission) {
+func schemaOwnerStore(t *testing.T, owners ...sqlite.OwnerSchema) (sqlite.Store, framehost.Admission) {
 	t.Helper()
-	admission := frame.NewAdmission()
+	admission := framehost.NewAdmission()
 	store, err := sqlite.Open(t.Context(), sqlite.Config{Path: filepath.Join(t.TempDir(), "owners.db"), Admission: admission, Owners: owners})
 	if err != nil {
 		t.Fatal(err)
@@ -47,9 +47,9 @@ func TestBusinessOwnerCannotEraseExecutionProtection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := frame.UnitRef{InstallationID: "provider", Release: value.Hash(nil), UnitID: "main"}
-	binding := frame.BindingSnapshot{FormatVersion: 1, Roots: []frame.ExportRef{}, UnitRoots: []frame.UnitRef{source}, Units: []frame.UnitBinding{{Source: source, Configuration: value.Hash(nil)}}}
-	if err := store.RecordAttempt(t.Context(), sqlite.Attempt{ID: "running", Epoch: store.Epoch(), Source: source, Binding: binding, Realm: "realm", Profile: frame.LocalProcess}); err != nil {
+	source := framehost.UnitRef{InstallationID: "provider", Release: value.Hash(nil), UnitID: "main"}
+	binding := framehost.BindingSnapshot{FormatVersion: 1, Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{source}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil)}}}
+	if err := store.RecordAttempt(t.Context(), sqlite.Attempt{ID: "running", Epoch: store.Epoch(), Source: source, Binding: binding, Realm: "realm", Profile: framehost.LocalProcess}); err != nil {
 		t.Fatal(err)
 	}
 	err = owner.Update(t.Context(), func(ctx context.Context, tx sqlite.Executor) error {
@@ -89,7 +89,7 @@ func TestBusinessOwnerCannotReopenSettledSubmission(t *testing.T) {
 	})
 	requireSchemaDenied(t, err)
 	settlement, err := owner.Commit(t.Context(), id, request, mutate, nil)
-	if err != nil || settlement.State != frame.CommitSucceeded || runs != 1 {
+	if err != nil || settlement.State != framehost.CommitSucceeded || runs != 1 {
 		t.Fatalf("original conclusion changed: settlement=%+v runs=%d error=%v", settlement, runs, err)
 	}
 }
@@ -178,12 +178,10 @@ func TestSchemaDeclarationCannotChangeAnotherOwnersFacts(t *testing.T) {
 	} {
 		t.Run(statement, func(t *testing.T) {
 			store, err := sqlite.Open(t.Context(), sqlite.Config{
-				Path: filepath.Join(t.TempDir(), "invalid.db"), Admission: frame.NewAdmission(),
+				Path: filepath.Join(t.TempDir(), "invalid.db"), Admission: framehost.NewAdmission(),
 				Owners: []sqlite.OwnerSchema{{ID: "documents", Statements: []string{statement}, References: noSchemaReferences}},
 			})
-			if store != nil {
-				_ = store.Close()
-			}
+			_ = store.Close()
 			requireSchemaDenied(t, err)
 		})
 	}
@@ -197,7 +195,7 @@ func TestInstallationProjectionUsesItsOriginalSchemaOwner(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			declaration := sqlite.OwnerSchema{ID: "documents", Statements: []string{`CREATE TABLE projections (id TEXT PRIMARY KEY)`}, References: noSchemaReferences}
-			declaration.ProjectInstallation = func(ctx context.Context, tx sqlite.Executor, change frame.InstallationChange) error {
+			declaration.ProjectInstallation = func(ctx context.Context, tx sqlite.Executor, change framehost.InstallationChange) error {
 				if !allowed {
 					_, err := tx.ExecContext(ctx, `DELETE FROM frame_installations`)
 					return err
@@ -206,16 +204,16 @@ func TestInstallationProjectionUsesItsOriginalSchemaOwner(t *testing.T) {
 				return err
 			}
 			store, admission := schemaOwnerStore(t, declaration)
-			host, err := frame.NewHost(t.Context(), frame.HostConfig{Admission: admission, Installations: store})
+			host, err := framehost.New(t.Context(), framehost.Config{Admission: admission, Installations: store})
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer host.Close(context.Background())
-			plugin, err := frame.Define(frame.Definition{Revision: value.Hash(nil)})
+			plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash(nil)})
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = host.Install(t.Context(), frame.InstallationConfig{ID: "plugin", Plugin: plugin})
+			_, err = host.Install(t.Context(), framehost.InstallationConfig{ID: "plugin", Plugin: plugin})
 			if !allowed {
 				requireSchemaDenied(t, err)
 			} else if err != nil {

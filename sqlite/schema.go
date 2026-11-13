@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/internal/cancellation"
-
 	sqlitedriver "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -49,7 +47,7 @@ func OpenSchema(ctx context.Context, path string, statements []string) (result *
 
 	if path != ":memory:" {
 		if err := admitWAL(ctx, db); err != nil {
-			return nil, errors.Join(fmt.Errorf("sqlite: admit wal: %w", err), cancellation.Err(ctx))
+			return nil, errors.Join(fmt.Errorf("sqlite: admit wal: %w", err), frame.ContextError(ctx))
 		}
 	}
 	if err := InstallSchema(ctx, database, statements); err != nil {
@@ -90,7 +88,7 @@ func waitForSQLite(ctx context.Context, limit time.Duration, attempt func() erro
 	deadline := time.NewTimer(limit)
 	defer deadline.Stop()
 	for {
-		if err := cancellation.Err(ctx); err != nil {
+		if err := frame.ContextError(ctx); err != nil {
 			return err
 		}
 		err := attempt()
@@ -103,7 +101,7 @@ func waitForSQLite(ctx context.Context, limit time.Duration, attempt func() erro
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return cancellation.Err(ctx)
+			return frame.ContextError(ctx)
 		case <-deadline.C:
 			timer.Stop()
 			return err
@@ -116,6 +114,8 @@ func InstallSchema(ctx context.Context, db *Database, stmts []string) error {
 	if db == nil || db.databaseOwner == nil {
 		return frame.ErrInvalid
 	}
+	original := *db
+	db = &original
 	expected, err := schemaShape(ctx, stmts)
 	if err != nil {
 		return fmt.Errorf("sqlite: declared schema: %w", err)
@@ -134,7 +134,7 @@ func InstallSchema(ctx context.Context, db *Database, stmts []string) error {
 		return true, nil
 	}
 	var current bool
-	err = runIndependentTx(ctx, db, readTransaction, func(ctx context.Context) error {
+	err = db.databaseOwner.runIndependentTx(ctx, readTransaction, func(ctx context.Context) error {
 		var err error
 		current, err = inspect(ctx, Connection(ctx, db))
 		return err

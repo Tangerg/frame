@@ -16,7 +16,7 @@ contract, err := mcp.ParseManagedContract(descriptor)
 if err != nil {
 	return err
 }
-service, err := frame.NewPortableContract[process.Service]("1", contract.Capability())
+service, err := framehost.NewPortableContract[frame.Service]("1", contract.Capability())
 if err != nil {
 	return err
 }
@@ -24,7 +24,7 @@ if err != nil {
 // This example registers one pinned backend. A multi-package source resolves
 // the mapping using the installation, release and unit in binding.Source.
 cfg.Protocol = mcp.ManagedProtocol{
-	Exports: func(binding frame.UnitBinding) (map[string]mcp.ManagedExport, error) {
+	Exports: func(binding framehost.UnitBinding) (map[string]mcp.ManagedExport, error) {
 		if binding.Source != approvedUnit {
 			return nil, frame.ErrContractMismatch
 		}
@@ -36,7 +36,7 @@ cfg.Protocol = mcp.ManagedProtocol{
 driver, err := process.New(cfg)
 ```
 
-Pass the driver to `frame.NewHost`, register `service` and declare the logical export `hooks` with `service.Ref()` and the unit profile `mcp.ManagedProfile`. Supply the executable digest, directory and exact environment through the process source. Frame owns installation, grants, process launch and release. The host owns package discovery, credentials and application policy.
+Pass the driver to `framehost.New`, register `service` and declare the logical export `hooks` with `service.Ref()` and the unit profile `mcp.ManagedProfile`. Supply the executable digest, directory and exact environment through the process source. Frame owns installation, grants, process launch and release. The host owns package discovery, credentials and application policy.
 
 Before launch, preparation admits one contract per physical export and one
 identity per global method name. Multiple exports may share a method only when
@@ -47,8 +47,8 @@ After MCP initialization the adapter calls `operations.describe`. It compares th
 
 ## Call semantics
 
-Borrow the registered `process.Service` through Frame. `Invoke` accepts the same
-immutable `portable.Invocation` used by native and neutral process services.
+Borrow the registered `frame.Service` through Frame. `Invoke` accepts the same
+immutable `frame.Invocation` used by native and neutral process services.
 `NewQueryInvocation` constructs a query; `NewCommandInvocation` requires the
 business caller's original identity. A managed command can pass through a neutral
 process relay without a concrete MCP type assertion or a replacement identity.
@@ -56,7 +56,7 @@ Inside the borrow, use `*mcp.ManagedService` for backend input admission and rec
 
 Cancellation before handing an invocation to the SDK returns its local cause.
 After that handoff, cancellation, transport failure and invalid results retain
-`process.ErrOutcomeUnknown` together with their cause for both queries and
+`frame.ErrOutcomeUnknown` together with their cause for both queries and
 commands. The SDK owns the sending queue, so this adapter does not infer
 non-dispatch from a cancelled SDK wait. A validated `*mcp.Refusal` is the backend's
 explicit business reply and remains distinct from missing outcome evidence; it
@@ -73,7 +73,7 @@ remains known alongside any separate delivery diagnostic.
 
 Callback retirement is separate from the business outcome. If its release wait
 fails after the result is validated, the result remains available together with
-the cleanup error; that error alone does not add `process.ErrOutcomeUnknown`.
+the cleanup error; that error alone does not add `frame.ErrOutcomeUnknown`.
 The original lifetime resource continues waiting for its own release evidence.
 
 | Operation | Calling contract |

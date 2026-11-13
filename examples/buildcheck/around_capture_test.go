@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/examples/buildcheck"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -18,7 +18,7 @@ func TestAroundContinuationKeepsItsOriginalRemainderAfterPointChanges(t *testing
 	release := sync.OnceFunc(func() { close(resume) })
 	defer release()
 	var first atomic.Bool
-	install(t, ctx, e, "blocking-wrapper", frame.Contribute("outer", e.Contracts.Around, buildcheck.AroundMetadata{Name: "outer", Order: -100}, buildcheck.Around(func(ctx context.Context, source buildcheck.SourceRevision, next buildcheck.Next) (buildcheck.Result, error) {
+	install(t, ctx, e, "blocking-wrapper", framehost.Contribute("outer", e.Contracts.Around, buildcheck.AroundMetadata{Name: "outer", Order: -100}, buildcheck.Around(func(ctx context.Context, source buildcheck.SourceRevision, next buildcheck.Next) (buildcheck.Result, error) {
 		if first.CompareAndSwap(false, true) {
 			close(entered)
 			select {
@@ -37,20 +37,20 @@ func TestAroundContinuationKeepsItsOriginalRemainderAfterPointChanges(t *testing
 		}
 	}
 	var instanceID string
-	plugin, err := frame.Define(frame.Definition{Revision: value.Hash([]byte("mutable-around")), Units: []frame.Unit{{
-		Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "tail", Contract: e.Contracts.Around.Ref()}}},
-		Setup: func(_ context.Context, setup *frame.Setup) ([]frame.ExportValue, error) {
+	plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("mutable-around")), Units: []framehost.Unit{{
+		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "tail", Contract: e.Contracts.Around.Ref()}}},
+		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
 			instanceID = setup.InstanceID()
-			return []frame.ExportValue{frame.Contribute("tail", e.Contracts.Around, buildcheck.AroundMetadata{Name: "tail", Order: 20}, marked("original remainder"))}, nil
+			return []framehost.ExportValue{framehost.Contribute("tail", e.Contracts.Around, buildcheck.AroundMetadata{Name: "tail", Order: 20}, marked("original remainder"))}, nil
 		},
 	}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.Host.Install(ctx, frame.InstallationConfig{ID: "mutable-around", Plugin: plugin, Enabled: true}); err != nil {
+	if _, err := e.Host.Install(ctx, framehost.InstallationConfig{ID: "mutable-around", Plugin: plugin, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	root := frame.ExportRef{InstallationID: "mutable-around", Release: plugin.Revision(), UnitID: "main", Export: "tail", Contract: e.Contracts.Around.Ref()}
+	root := framehost.ExportRef{InstallationID: "mutable-around", Release: plugin.Revision(), UnitID: "main", Export: "tail", Contract: e.Contracts.Around.Ref()}
 	if _, err := e.Host.Activate(ctx, root); err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestAroundContinuationKeepsItsOriginalRemainderAfterPointChanges(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidates, err := frame.Candidates(snapshot, e.Contracts.Around)
+	candidates, err := framehost.Candidates(snapshot, e.Contracts.Around)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestAroundContinuationKeepsItsOriginalRemainderAfterPointChanges(t *testing
 	if err := e.Host.Withdraw(ctx, originalID); err != nil {
 		t.Fatal(err)
 	}
-	request, err := e.Host.PreparePublication(ctx, instanceID, frame.Contribute("tail", e.Contracts.Around, buildcheck.AroundMetadata{Name: "tail", Order: 20}, marked("new remainder")))
+	request, err := e.Host.PreparePublication(ctx, instanceID, framehost.Contribute("tail", e.Contracts.Around, buildcheck.AroundMetadata{Name: "tail", Order: 20}, marked("new remainder")))
 	if err != nil {
 		t.Fatal(err)
 	}

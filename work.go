@@ -3,6 +3,8 @@ package frame
 import (
 	"context"
 	"fmt"
+
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 // workKind separates a Lifetime's own work, which closing cancels, from a
@@ -21,25 +23,28 @@ type Work struct {
 }
 
 type workInterval struct {
-	lifetime *Lifetime
+	lifetime *lifetimeRecord
 	ctx      context.Context
 	cancel   context.CancelCauseFunc
 	kind     workKind
 	finished bool
 }
 
-func (l *Lifetime) Enter(ctx context.Context) (*Work, error) {
+func (l *lifetimeRecord) Enter(ctx context.Context) (*Work, error) {
 	return l.enter(ctx, ownWork)
 }
 
 // hold registers a consumer that retirement drains instead of cancelling. Its
 // context ends only when the Lifetime itself begins closing.
-func (l *Lifetime) hold() (*Work, error) {
+func (l *lifetimeRecord) Hold() (*Work, error) {
 	return l.enter(context.Background(), consumerHold)
 }
 
-func (l *Lifetime) enter(ctx context.Context, kind workKind) (*Work, error) {
-	if err := contextError(ctx); err != nil {
+func (l *lifetimeRecord) enter(ctx context.Context, kind workKind) (*Work, error) {
+	if l == nil {
+		return nil, ErrInvalid
+	}
+	if err := ContextError(ctx); err != nil {
 		return nil, err
 	}
 	l.mu.Lock()
@@ -59,7 +64,10 @@ func (l *Lifetime) enter(ctx context.Context, kind workKind) (*Work, error) {
 	return &Work{interval: work}, nil
 }
 
-func (l *Lifetime) awaitUnheld(ctx context.Context) error {
+func (l *lifetimeRecord) AwaitUnheld(ctx context.Context) error {
+	if l == nil || framevalue.IsNil(ctx) {
+		return ErrInvalid
+	}
 	for {
 		l.mu.Lock()
 		holds, changed := l.holds, l.changed
@@ -70,7 +78,7 @@ func (l *Lifetime) awaitUnheld(ctx context.Context) error {
 		select {
 		case <-changed:
 		case <-ctx.Done():
-			return contextError(ctx)
+			return ContextError(ctx)
 		}
 	}
 }
@@ -128,7 +136,7 @@ func (w *Work) Own(resource Resource, dependencies ...*ResourceHandle) (*Resourc
 func (w *Work) Cleanup(name string, closeResource func() error, dependencies ...*ResourceHandle) (*ResourceHandle, error) {
 	return w.Own(cleanupResource(name, closeResource), dependencies...)
 }
-func (l *Lifetime) Go(ctx context.Context, run func(context.Context)) error {
+func (l *lifetimeRecord) Go(ctx context.Context, run func(context.Context)) error {
 	if run == nil {
 		return ErrInvalid
 	}

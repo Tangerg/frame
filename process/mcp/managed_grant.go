@@ -9,8 +9,7 @@ import (
 	"net/url"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
-	"github.com/Tangerg/frame/process"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
@@ -49,13 +48,13 @@ func (g ManagedCallback) attach(metadata *sdk.ParamsBase, key string) error {
 
 // OpenManagedCallbacks creates the host's route for one approved setup. The
 // host authenticates every callback against this session and its frozen imports.
-type OpenManagedCallbacks func(context.Context, *frame.Setup, *sdk.ClientSession) (ManagedCallback, error)
+type OpenManagedCallbacks func(context.Context, *framehost.Setup, *sdk.ClientSession) (ManagedCallback, error)
 
 // ManagedCall carries the already-admitted request to the host that decides
 // reverse permissions. The physical backend cannot replace any of this evidence.
 type ManagedCall struct {
-	Source    frame.ExportRef
-	Method    *portable.Method
+	Source    framehost.ExportRef
+	Method    *frame.Method
 	Input     value.JSON
 	CommandID string
 }
@@ -79,26 +78,26 @@ type managedDependency struct {
 	Bindings []managedBinding `json:"bindings"`
 }
 type managedBinding struct {
-	InstallationID frame.InstallationID `json:"installationId"`
-	Digest         value.Digest         `json:"digest"`
-	Contribution   string               `json:"contribution"`
-	Contract       value.JSON           `json:"contract"`
+	InstallationID framehost.InstallationID `json:"installationId"`
+	Digest         value.Digest             `json:"digest"`
+	Contribution   string                   `json:"contribution"`
+	Contract       value.JSON               `json:"contract"`
 }
 
 type managedAddress struct {
-	installation frame.InstallationID
+	installation framehost.InstallationID
 	release      value.Digest
 	contribution string
 }
 
 type managedRoute struct {
-	source   frame.ExportRef
+	source   framehost.ExportRef
 	contract value.JSON
 }
 
 type managedRoutes map[managedAddress]managedRoute
 
-func (routes managedRoutes) bind(source frame.ExportRef, contract value.JSON) (managedBinding, error) {
+func (routes managedRoutes) bind(source framehost.ExportRef, contract value.JSON) (managedBinding, error) {
 	key := managedAddress{source.InstallationID, source.Release, source.Export}
 	route := managedRoute{source, contract}
 	if existing, found := routes[key]; found && existing != route {
@@ -108,17 +107,17 @@ func (routes managedRoutes) bind(source frame.ExportRef, contract value.JSON) (m
 	return managedBinding{source.InstallationID, source.Release, source.Export, contract}, nil
 }
 
-func projectDependencies(setup *frame.Setup, imports map[string]frame.ImportDeclaration, used map[string]bool, routes managedRoutes, declared []ManagedImport) ([]managedDependency, error) {
+func projectDependencies(setup *framehost.Setup, imports map[string]framehost.ImportDeclaration, used map[string]bool, routes managedRoutes, declared []ManagedImport) ([]managedDependency, error) {
 	dependencies := make([]managedDependency, 0, len(declared))
 	names := make(map[string]bool, len(declared))
 	for _, item := range declared {
 		slot, found := imports[item.Slot]
-		if !found || item.Contract == nil || item.Contract.capability == nil || frame.UnitID(item.ID).Validate() != nil || names[item.ID] {
+		if !found || item.Contract == nil || item.Contract.capability == nil || framehost.UnitID(item.ID).Validate() != nil || names[item.ID] {
 			return nil, fmt.Errorf("%w: invalid managed dependency %q", frame.ErrContractMismatch, item.ID)
 		}
 		names[item.ID] = true
 		used[item.Slot] = true
-		contract, err := process.DeclaredCapability(setup, slot.Contract)
+		contract, err := setup.Capability(slot.Contract)
 		if err != nil {
 			return nil, err
 		}
@@ -144,8 +143,8 @@ func projectDependencies(setup *frame.Setup, imports map[string]frame.ImportDecl
 
 // installationTarget addresses the installation a background contribution
 // runs for, independently of any foreground Use.
-func installationTarget(setup *frame.Setup) *portable.Target {
-	return &portable.Target{Scope: installationTargetScope, Reference: setup.Binding().Source.InstallationID.String()}
+func installationTarget(setup *framehost.Setup) *frame.Target {
+	return &frame.Target{Scope: installationTargetScope, Reference: setup.Binding().Source.InstallationID.String()}
 }
 
 const installationTargetScope = "installation"

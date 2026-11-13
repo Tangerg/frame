@@ -72,7 +72,7 @@ export class RealmModules {
       return current;
     };
     currentEvaluation();
-    let lease: ModuleLease | undefined;
+    let lease: Pick<ModuleLease, "close"> | undefined;
     let evaluation: Evaluation | undefined;
     const retire = () => {
       if (!lease) return;
@@ -96,14 +96,17 @@ export class RealmModules {
       return result;
     }, `module:${path}`);
     const bytes = await owner.run(async (signal) => {
-      lease = await this.#open(unit, signal);
-      const captured = lease;
+      const captured = await this.#open(unit, signal);
+      lease = captured;
+      const held = { close: captured.close.bind(captured) };
+      lease = held;
       const bytes = new Uint8Array(captured.bytes);
-      if (captured.closed) {
+      const closed = captured.closed;
+      if (closed) {
         const ended = () => {
-          if (lease === captured) owner.beginClose();
+          if (lease === held) owner.beginClose();
         };
-        void captured.closed.then(ended, ended);
+        void closed.then(ended, ended);
       }
       return bytes;
     });

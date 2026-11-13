@@ -45,11 +45,11 @@ input, err := value.ParseJSON([]byte(`{"id":"invoice-37"}`))
 if err != nil {
     return err
 }
-invocation, err := portable.NewQueryInvocation("lookup", input)
+invocation, err := frame.NewQueryInvocation("lookup", input)
 if err != nil {
     return err
 }
-return frame.BorrowExport[process.Service](ctx, use, export, func(ctx context.Context, service process.Service) error {
+return framehost.BorrowExport[frame.Service](ctx, use, export, func(ctx context.Context, service frame.Service) error {
     reply, err := service.Invoke(ctx, invocation)
     if err != nil {
         return err
@@ -58,7 +58,7 @@ return frame.BorrowExport[process.Service](ctx, use, export, func(ctx context.Co
 })
 ```
 
-Commands use `portable.NewCommandInvocation` with the business caller's original
+Commands use `frame.NewCommandInvocation` with the business caller's original
 identity. The adapter carries it unchanged in the standard MCP request metadata
 at `_meta["io.github.tangerg.frame/commandID"]`; queries omit that entry. This
 metadata identifies the invocation. It does not add receipt storage or idempotent
@@ -70,13 +70,13 @@ By default the host expects `structuredContent`. The tool must advertise the dec
 ```go
 protocol := mcp.Tools{
     MaxCatalogPages: 16,
-    FullResult: func(export frame.ExportDeclaration, method string) bool {
+    FullResult: func(export framehost.ExportDeclaration, method string) bool {
         return export.Name == "documents" && method == "preview"
     },
 }
 ```
 
-The host freezes this choice before the child starts. A server cannot change it by adding or removing its output schema. An MCP `isError` response produces a `*mcp.ToolError`. Its `Result` retains the response content for the caller. A missing or invalid successful reply, or a canceled call after dispatch, carries `process.ErrOutcomeUnknown`. The SDK's automatic multi-round-trip middleware is disabled, and input-required results retain an unknown outcome. The adapter closes catalog discovery after the original bounded admission. Its SDK sending boundary refuses later `tools/list` requests, including the SDK's implicit header-mismatch refresh. Stdio has no HTTP headers to refresh, so this path never expands the catalog budget or repeats `tools/call`. The original `HeaderMismatch` error remains inspectable with `errors.As`, alongside `process.ErrOutcomeUnknown`; the original command ID is unchanged. Only the original runner's terminal evidence releases a durable process attempt.
+The host freezes this choice before the child starts. A server cannot change it by adding or removing its output schema. An MCP `isError` response produces a `*mcp.ToolError`. Its `Result` retains the response content for the caller. A missing or invalid successful reply, or a canceled call after dispatch, carries `frame.ErrOutcomeUnknown`. The SDK's automatic multi-round-trip middleware is disabled, and input-required results retain an unknown outcome. The adapter closes catalog discovery after the original bounded admission. Its SDK sending boundary refuses later `tools/list` requests, including the SDK's implicit header-mismatch refresh. Stdio has no HTTP headers to refresh, so this path never expands the catalog budget or repeats `tools/call`. The original `HeaderMismatch` error remains inspectable with `errors.As`, alongside `frame.ErrOutcomeUnknown`; the original command ID is unchanged. Only the original runner's terminal evidence releases a durable process attempt.
 
 Full results and tool errors retain the original response envelope, including
 extension fields and exact numbers. The adapter validates the original required
@@ -89,6 +89,8 @@ An already cancelled local context is rejected before SDK handoff and retains
 only its cancellation cause. Once the SDK owns the request, a cancelled wait
 cannot establish whether the peer received it. An explicit ToolError preserves
 the tool's reported failure; it does not prove rollback or non-execution.
+Managed invocation evidence and parameter admission reject a missing context
+with `frame.ErrInvalid` before calling the SDK.
 
 Canceling a request queued for stdio leaves the active sender and other readers alone. After a request is written, the SDK can notify the peer that the call was canceled. Cancellation while bytes are being written closes the shared stream because the peer may already have received part of a frame. Other in-flight calls on that stream can then lose their replies. The process still requires its original exit proof.
 
@@ -113,7 +115,7 @@ budget the driver gave `Prepare`. The session then has the same inbound and
 outbound frame admission and write cancellation as the protocols above.
 
 ```go
-func (c *connection) Connect(ctx context.Context, channel io.ReadWriteCloser) ([]frame.ExportValue, error) {
+func (c *connection) Connect(ctx context.Context, channel io.ReadWriteCloser) ([]framehost.ExportValue, error) {
     transport, err := mcp.NewTransport(channel, c.maxFrameBytes)
     if err != nil {
         return nil, err

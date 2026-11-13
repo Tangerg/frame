@@ -10,7 +10,7 @@ import (
 	"github.com/Tangerg/frame/value"
 )
 
-func (s *Store) ImportDirectoryHeld(ctx context.Context, directory string) (lease *Lease, err error) {
+func (s *storeAuthority) ImportDirectoryHeld(ctx context.Context, directory string) (lease *Lease, err error) {
 	done, err := s.beginOperation(newOperation)
 	if err != nil {
 		return nil, err
@@ -46,7 +46,7 @@ func (s *Store) ImportDirectoryHeld(ctx context.Context, directory string) (leas
 
 // Networking and trust policy belong to the application. This operation keeps
 // the digest-pinned archive and its installed content under one original lease.
-func (s *Store) ImportArchiveHeld(ctx context.Context, fileName string, expected value.Digest) (lease *Lease, err error) {
+func (s *storeAuthority) ImportArchiveHeld(ctx context.Context, fileName string, expected value.Digest) (lease *Lease, err error) {
 	done, err := s.beginOperation(newOperation)
 	if err != nil {
 		return nil, err
@@ -95,7 +95,7 @@ func (s *Store) ImportArchiveHeld(ctx context.Context, fileName string, expected
 	return s.publishHeld(ctx, staged, Source{Location: fileName, ArchiveDigest: expected})
 }
 
-func (s *Store) ImportDirectory(ctx context.Context, directory string) (Release, error) {
+func (s *storeAuthority) ImportDirectory(ctx context.Context, directory string) (Release, error) {
 	lease, err := s.ImportDirectoryHeld(ctx, directory)
 	if err != nil {
 		return Release{}, err
@@ -103,7 +103,7 @@ func (s *Store) ImportDirectory(ctx context.Context, directory string) (Release,
 	return lease.Snapshot(), lease.Close()
 }
 
-func (s *Store) ImportArchive(ctx context.Context, fileName string, expected value.Digest) (Release, error) {
+func (s *storeAuthority) ImportArchive(ctx context.Context, fileName string, expected value.Digest) (Release, error) {
 	lease, err := s.ImportArchiveHeld(ctx, fileName, expected)
 	if err != nil {
 		return Release{}, err

@@ -8,13 +8,13 @@ import (
 	"slices"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/internal/cancellation"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 )
 
 // Prove acknowledges an actual original exit only after its evidence and every
-// affected durable protection have settled. A transport retry performs no new
-// cleanup and cannot relabel another Realm, Use or scope generation.
+// affected durable protection have settled. An exact replay must finish any
+// interrupted projection cleanup without creating another exit.
 func (b *Bridge) Prove(ctx context.Context, token string, proof CloseProof) (ProofAcknowledgement, error) {
 	session, err := b.anySession(token)
 	if err != nil {
@@ -42,18 +42,17 @@ func (b *Bridge) Prove(ctx context.Context, token string, proof CloseProof) (Pro
 		return ProofAcknowledgement{}, err
 	}
 	ack := ProofAcknowledgement{CloseID: proof.CloseID, ProofID: proof.ProofID, Recorded: true, Authority: b.authority}
-	if err == nil && proof.ScopeKind == PublicationScope {
-		return ack, nil
-	}
-	scope, publication, err := b.bindProofScope(ctx, session, attempt, proof)
-	if err != nil {
-		return ProofAcknowledgement{}, err
-	}
-	if err := b.config.Store.RecordExitProof(ctx, attempt.ID, scope, proof.ProofID, encoded); err != nil {
-		return ProofAcknowledgement{}, err
+	if err != nil || proof.ScopeKind != PublicationScope {
+		scope, err := b.bindProofScope(ctx, session, attempt, proof)
+		if err != nil {
+			return ProofAcknowledgement{}, err
+		}
+		if err := b.config.Store.RecordExitProof(ctx, attempt.ID, scope, proof.ProofID, encoded); err != nil {
+			return ProofAcknowledgement{}, err
+		}
 	}
 	exit := proof.exitProof(encoded)
-	if err := b.releaseProven(ctx, proof, attempt, publication, exit); err != nil {
+	if err := b.releaseProven(ctx, proof, attempt, exit); err != nil {
 		return ProofAcknowledgement{}, err
 	}
 	return ack, nil
@@ -75,7 +74,7 @@ func (p CloseProof) exitProof(encoded []byte) sqlite.ExitProof {
 	return sqlite.ExitProof{AttemptID: p.Execution.ID, Realm: string(RealmID(p.Realm)), ExitID: p.CloseID, Kind: p.exitKind(), Evidence: encoded}
 }
 
-func (b *Bridge) releaseProven(ctx context.Context, proof CloseProof, attempt sqlite.Attempt, publication *controlOperation, exit sqlite.ExitProof) error {
+func (b *Bridge) releaseProven(ctx context.Context, proof CloseProof, attempt sqlite.Attempt, exit sqlite.ExitProof) error {
 	switch proof.ScopeKind {
 	case UseScope:
 		return b.releaseUseTree(ctx, proof.UseID, attempt, exit)
@@ -83,9 +82,7 @@ func (b *Bridge) releaseProven(ctx context.Context, proof CloseProof, attempt sq
 		return b.releaseExecution(ctx, attempt, exit)
 	case PublicationScope:
 		b.mu.Lock()
-		if publication != nil && b.publications[proof.PublicationID] == publication {
-			delete(b.publications, proof.PublicationID)
-		}
+		delete(b.publications, proof.PublicationID)
 		b.mu.Unlock()
 	}
 	return nil
@@ -97,88 +94,87 @@ func (b *Bridge) provenAttempt(ctx context.Context, session *realmSession, proof
 	unadmitted := entry != nil && !entry.runtimeOwnsExit()
 	b.mu.Unlock()
 	if unadmitted {
-		return sqlite.Attempt{}, frame.ErrStaleBinding
+		return sqlite.Attempt{}, framehost.ErrStaleBinding
 	}
 	record, err := b.config.Store.Attempt(ctx, proof.Execution.ID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return sqlite.Attempt{}, frame.ErrUnavailable
+		return sqlite.Attempt{}, framehost.ErrUnavailable
 	}
 	if err != nil {
 		return sqlite.Attempt{}, err
 	}
 	attempt := record.Attempt
 	if isUnadmittedRecord(record) || !matchesAttempt(attempt, proof.Authority, session.realm, proof.Execution, proof.ScopeID, proof.ScopeGeneration) {
-		return sqlite.Attempt{}, frame.ErrStaleBinding
+		return sqlite.Attempt{}, framehost.ErrStaleBinding
 	}
 	return attempt, nil
 }
 
-func (b *Bridge) bindProofScope(ctx context.Context, session *realmSession, attempt sqlite.Attempt, proof CloseProof) (string, *controlOperation, error) {
+func (b *Bridge) bindProofScope(ctx context.Context, session *realmSession, attempt sqlite.Attempt, proof CloseProof) (string, error) {
 	scope := string(proof.ScopeKind)
 	switch proof.ScopeKind {
 	case ExecutionScope:
 		if proof.UseID != "" || proof.PublicationID != "" || len(proof.Instances) != 1 || proof.Instances[0] != attempt.ID {
-			return "", nil, frame.ErrInvalid
+			return "", frame.ErrInvalid
 		}
-		return scope, nil, nil
+		return scope, nil
 	case UseScope:
 		if proof.UseID == "" || proof.PublicationID != "" {
-			return "", nil, frame.ErrInvalid
+			return "", frame.ErrInvalid
 		}
 		if err := b.bindProofUse(ctx, session, attempt, proof); err != nil {
-			return "", nil, err
+			return "", err
 		}
-		return scope + ":" + proof.UseID, nil, nil
+		return scope + ":" + proof.UseID, nil
 	case PublicationScope:
 		if proof.PublicationID == "" || proof.UseID != "" || len(proof.Instances) != 1 || proof.Instances[0] != attempt.ID {
-			return "", nil, frame.ErrInvalid
+			return "", frame.ErrInvalid
 		}
-		publication, err := b.bindProofPublication(session, attempt, proof)
-		return scope + ":" + proof.PublicationID, publication, err
+		return scope + ":" + proof.PublicationID, b.bindProofPublication(session, attempt, proof)
 	default:
-		return "", nil, frame.ErrInvalid
+		return "", frame.ErrInvalid
 	}
 }
 
 func (b *Bridge) bindProofUse(ctx context.Context, session *realmSession, attempt sqlite.Attempt, proof CloseProof) error {
 	record, err := b.config.Store.Use(ctx, proof.UseID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return frame.ErrStaleBinding
+		return framehost.ErrStaleBinding
 	}
 	if err != nil {
 		return err
 	}
 	approval := record.Approval
 	if approval.ExecutionID != attempt.ID || approval.Realm != RealmID(session.realm) || approval.Epoch != attempt.Epoch || approval.Scope != attempt.Scope || approval.ScopeGeneration != attempt.ScopeGeneration || !sameSet(approval.Instances, proof.Instances) {
-		return frame.ErrStaleBinding
+		return framehost.ErrStaleBinding
 	}
 	return nil
 }
 
-func (b *Bridge) bindProofPublication(session *realmSession, attempt sqlite.Attempt, proof CloseProof) (*controlOperation, error) {
+func (b *Bridge) bindProofPublication(session *realmSession, attempt sqlite.Attempt, proof CloseProof) error {
 	b.mu.Lock()
 	publication := b.publications[proof.PublicationID]
 	executing := b.executions.get(attempt.ID) != nil
 	b.mu.Unlock()
 	if publication != nil {
 		if publication.execution != attempt.ID || publication.Realm != session.realm {
-			return nil, frame.ErrStaleBinding
+			return framehost.ErrStaleBinding
 		}
 		result, err := publication.publicationResult()
 		if err != nil || result.Publication == nil {
-			return nil, errors.Join(frame.ErrStaleBinding, err)
+			return errors.Join(framehost.ErrStaleBinding, err)
 		}
-		if _, err := b.config.Host.Publication(publication.execution, result.Publication.OperationID); !errors.Is(err, frame.ErrUnavailable) {
-			return nil, errors.Join(frame.ErrStaleBinding, err)
+		if _, err := b.config.Host.Publication(publication.execution, result.Publication.OperationID); !errors.Is(err, framehost.ErrUnavailable) {
+			return errors.Join(framehost.ErrStaleBinding, err)
 		}
-		return publication, nil
+		return nil
 	}
 	if executing {
-		return nil, frame.ErrStaleBinding
+		return framehost.ErrStaleBinding
 	}
 	// Reconstruction may retain a subordinate proof after its catalog is gone.
 	// Such evidence owns no transition in the current catalog.
-	return nil, nil
+	return nil
 }
 
 // A Use's actual exit covers the child range delegated through that original
@@ -228,7 +224,7 @@ func (b *Bridge) releaseUseTree(ctx context.Context, id string, attempt sqlite.A
 
 type useDelegation struct {
 	id, parentID, executionID string
-	realm                     frame.RealmID
+	realm                     framehost.RealmID
 }
 
 func coverDelegated(covered map[string]bool, delegations []useDelegation, attempt sqlite.Attempt) error {
@@ -238,8 +234,8 @@ func coverDelegated(covered map[string]bool, delegations []useDelegation, attemp
 			if !covered[delegation.parentID] || covered[delegation.id] {
 				continue
 			}
-			if delegation.executionID != attempt.ID || delegation.realm != frame.RealmID(attempt.Realm) {
-				return frame.ErrStaleBinding
+			if delegation.executionID != attempt.ID || delegation.realm != framehost.RealmID(attempt.Realm) {
+				return framehost.ErrStaleBinding
 			}
 			covered[delegation.id] = true
 			changed = true
@@ -350,7 +346,7 @@ func (b *Bridge) releaseUse(ctx context.Context, record sqlite.UseRecord, attemp
 	if attempt.Epoch == b.config.Store.Epoch() {
 		return frame.ErrUnconfirmedRelease
 	}
-	return b.config.Store.ReleaseRealmUse(ctx, id, frame.RealmID(attempt.Realm), attempt.ID, proof)
+	return b.config.Store.ReleaseRealmUse(ctx, id, framehost.RealmID(attempt.Realm), attempt.ID, proof)
 }
 
 // releaseExecution settles an admitted execution from its exit proof: its
@@ -370,7 +366,7 @@ func (b *Bridge) releaseExecution(ctx context.Context, attempt sqlite.Attempt, p
 		return err
 	}
 	if entry != nil {
-		if err := b.config.Host.RetireInstance(ctx, attempt.ID); err != nil && !errors.Is(err, frame.ErrUnavailable) {
+		if err := b.config.Host.RetireInstance(ctx, attempt.ID); err != nil && !errors.Is(err, framehost.ErrUnavailable) {
 			return err
 		}
 	}
@@ -380,7 +376,7 @@ func (b *Bridge) releaseExecution(ctx context.Context, attempt sqlite.Attempt, p
 	}
 	served := make(map[string]bool, len(records))
 	for _, record := range records {
-		if record.Approval.ExecutionID == attempt.ID && record.Approval.Realm == frame.RealmID(attempt.Realm) {
+		if record.Approval.ExecutionID == attempt.ID && record.Approval.Realm == framehost.RealmID(attempt.Realm) {
 			served[record.Approval.ID] = true
 		}
 	}
@@ -429,7 +425,7 @@ func (b *Bridge) forgetExecutionLocked(attempt sqlite.Attempt, entry *browserExe
 // An unavailable validation does not prove that the original authority ended.
 // Only an observed stale or closed owner permits sealing the Realm.
 func (b *Bridge) revalidate(ctx context.Context, token string, session *realmSession, request ReconnectRequest) ([]*browserExecution, bool, error) {
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return nil, false, err
 	}
 	entries, current := b.reportedExecutions(session, request)
@@ -440,9 +436,9 @@ func (b *Bridge) revalidate(ctx context.Context, token string, session *realmSes
 		err := b.validateCurrentPlan(ctx, token, entry.plan)
 		switch {
 		case err == nil:
-		case cancellation.Err(ctx) != nil || errors.Is(err, frame.ErrRecoveryRequired):
+		case frame.ContextError(ctx) != nil || errors.Is(err, framehost.ErrRecoveryRequired):
 			return nil, false, err
-		case errors.Is(err, frame.ErrStaleBinding), errors.Is(err, frame.ErrClosed), errors.Is(err, frame.ErrFenced):
+		case errors.Is(err, framehost.ErrStaleBinding), errors.Is(err, frame.ErrClosed), errors.Is(err, framehost.ErrFenced):
 			return nil, false, nil
 		default:
 			return nil, false, err

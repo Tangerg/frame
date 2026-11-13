@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -64,7 +64,7 @@ func TestControlResponsesMatchGeneratedSDK(t *testing.T) {
 	capture("reconnect", browser.ReconnectRequest{Authority: plan.Authority, Realm: plan.Realm, Executions: []browser.Execution{plan.Execution}})
 
 	var err error
-	e.plugin, err = frame.Define(frame.Definition{Revision: value.Hash([]byte("no-export-unit")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "view", Profile: frame.BrowserJS}}}})
+	e.plugin, err = framehost.Define(framehost.Definition{Revision: value.Hash([]byte("no-export-unit")), Units: []framehost.Unit{{Declaration: framehost.UnitDeclaration{ID: "view", Profile: framehost.BrowserJS}}}})
 	if err != nil {
 		t.Fatal(err)
 	}

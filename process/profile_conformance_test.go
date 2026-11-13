@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -15,26 +16,26 @@ func TestRealProcessDriverRejectsNativeObjectsBeforeCreationOrBusiness(t *testin
 	for _, direction := range []string{"export", "import"} {
 		t.Run(direction, func(t *testing.T) {
 			e := newEnvironment(t, false)
-			native, err := frame.NewContract[func() *int]("document.shared-native", "1")
+			native, err := framehost.NewContract[func() *int]("document.shared-native", "1")
 			if err != nil {
 				t.Fatal(err)
 			}
 			if err := e.host.Register(native); err != nil {
 				t.Fatal(err)
 			}
-			declaration := frame.UnitDeclaration{ID: "backend", Profile: frame.LocalProcess, Exports: []frame.ExportDeclaration{{Name: "native", Contract: native.Ref()}}}
+			declaration := framehost.UnitDeclaration{ID: "backend", Profile: framehost.LocalProcess, Exports: []framehost.ExportDeclaration{{Name: "native", Contract: native.Ref()}}}
 			if direction == "import" {
-				declaration.Exports = []frame.ExportDeclaration{{Name: "echo", Contract: e.ref.Contract}}
-				declaration.Imports = []frame.ImportDeclaration{{Slot: "shared", Contract: native.Ref(), Optional: true}}
+				declaration.Exports = []framehost.ExportDeclaration{{Name: "echo", Contract: e.ref.Contract}}
+				declaration.Imports = []framehost.ImportDeclaration{{Slot: "shared", Contract: native.Ref(), Optional: true}}
 			}
-			plugin, err := frame.Define(frame.Definition{Revision: value.Hash([]byte(direction)), Units: []frame.Unit{{Declaration: declaration}}})
+			plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte(direction)), Units: []framehost.Unit{{Declaration: declaration}}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := e.host.Install(e.ctx, frame.InstallationConfig{ID: "invalid-native", Plugin: plugin, Enabled: true}); err != nil {
+			if _, err := e.host.Install(e.ctx, framehost.InstallationConfig{ID: "invalid-native", Plugin: plugin, Enabled: true}); err != nil {
 				t.Fatal(err)
 			}
-			root := frame.ExportRef{InstallationID: "invalid-native", Release: plugin.Revision(), UnitID: "backend", Export: declaration.Exports[0].Name, Contract: declaration.Exports[0].Contract}
+			root := framehost.ExportRef{InstallationID: "invalid-native", Release: plugin.Revision(), UnitID: "backend", Export: declaration.Exports[0].Name, Contract: declaration.Exports[0].Contract}
 			if _, err := e.host.Activate(e.ctx, root); !errors.Is(err, frame.ErrContractMismatch) {
 				t.Fatalf("process profile accepted a synchronous shared object: %v", err)
 			}
@@ -66,23 +67,23 @@ func TestRealProcessDriverRejectsNativeObjectsBeforeCreationOrBusiness(t *testin
 func TestUnsupportedPortableDescriptorDoesNotCreateAnAttempt(t *testing.T) {
 	e := newEnvironment(t, false)
 	descriptor := []byte(`{"type":"string"}`)
-	ref := frame.ContractRef{Name: "domain.data", Version: "1", Kind: frame.ServiceKind, Mode: frame.PortableMode, Digest: value.Hash(descriptor)}
-	contract, err := frame.BindContract[string](ref, descriptor)
+	ref := framehost.ContractRef{Name: "domain.data", Version: "1", Kind: framehost.ServiceKind, Mode: framehost.PortableMode, Digest: value.Hash(descriptor)}
+	contract, err := framehost.BindContract[string](ref, descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = e.host.Register(contract); err != nil {
 		t.Fatal(err)
 	}
-	definition, err := frame.Define(frame.Definition{Revision: value.Hash([]byte("data")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "backend", Profile: frame.LocalProcess, Exports: []frame.ExportDeclaration{{Name: "data", Contract: ref}}}}}})
+	definition, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("data")), Units: []framehost.Unit{{Declaration: framehost.UnitDeclaration{ID: "backend", Profile: framehost.LocalProcess, Exports: []framehost.ExportDeclaration{{Name: "data", Contract: ref}}}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = e.host.Install(e.ctx, frame.InstallationConfig{ID: "data", Plugin: definition, Enabled: true})
+	_, err = e.host.Install(e.ctx, framehost.InstallationConfig{ID: "data", Plugin: definition, Enabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = e.host.Activate(e.ctx, frame.ExportRef{InstallationID: "data", Release: definition.Revision(), UnitID: "backend", Export: "data", Contract: ref})
+	_, err = e.host.Activate(e.ctx, framehost.ExportRef{InstallationID: "data", Release: definition.Revision(), UnitID: "backend", Export: "data", Contract: ref})
 	if !errors.Is(err, frame.ErrContractMismatch) {
 		t.Fatalf("descriptor not refused: %v", err)
 	}

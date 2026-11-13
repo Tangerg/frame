@@ -28,20 +28,28 @@ type pragmaRequirement struct {
 // Open returns a sealed Store together with an error only when its original
 // cleanup is unconfirmed. That Store permits Close and identity diagnostics,
 // not database work.
-func Open(ctx context.Context, config Config) (result *Store, err error) {
-	if config.Admission == nil || config.Path == "" || config.Path == ":memory:" {
-		return nil, errors.New("sqlite: a file path and the host admission are required")
+func Open(ctx context.Context, config Config) (result Store, err error) {
+	if !config.Admission.Valid() || config.Path == "" || config.Path == ":memory:" {
+		return Store{}, errors.New("sqlite: a file path and the host admission are required")
 	}
 	path, err := databasePath(config.Path)
 	if err != nil {
-		return nil, err
+		return Store{}, err
 	}
 	lock, err := acquireAuthority(path)
 	if err != nil {
-		return nil, err
+		return Store{}, err
 	}
-	store := &Store{databaseOwner: &databaseOwner{lock: lock, onFailure: config.Admission.RequireRecovery}, admission: config.Admission, owners: make(map[string]Owner), maxRequestBytes: config.MaxRequestBytes, maxSubmissions: config.MaxSubmissionsPerOwner, maxRealmHistoryBytes: config.MaxRealmHistoryBytes}
-	store.control = Owner{store: store, id: installationOwnerID}
+	authority := &storeAuthority{
+		databaseOwner:        &databaseOwner{lock: lock, onFailure: config.Admission.RequireRecovery},
+		admission:            config.Admission,
+		owners:               make(map[string]Owner),
+		maxRequestBytes:      config.MaxRequestBytes,
+		maxSubmissions:       config.MaxSubmissionsPerOwner,
+		maxRealmHistoryBytes: config.MaxRealmHistoryBytes,
+	}
+	store := Store{storeAuthority: authority}
+	store.control = Owner{store: authority, id: installationOwnerID}
 	defer func() {
 		if err != nil {
 			err = errors.Join(err, store.Close())
@@ -53,7 +61,7 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 		}
 	}()
 	if err := store.resolveLimits(); err != nil {
-		return nil, err
+		return Store{}, err
 	}
 	owners := slices.SortedFunc(slices.Values(config.Owners), func(a, b OwnerSchema) int { return strings.Compare(a.ID, b.ID) })
 	for index := range owners {
@@ -61,22 +69,22 @@ func Open(ctx context.Context, config Config) (result *Store, err error) {
 	}
 	digest, err := store.registerOwners(owners)
 	if err != nil {
-		return nil, err
+		return Store{}, err
 	}
 	expectedShape, err := store.admitSchema(ctx, owners)
 	if err != nil {
-		return nil, fmt.Errorf("sqlite: owner schema: %w", err)
+		return Store{}, fmt.Errorf("sqlite: owner schema: %w", err)
 	}
 	if err := store.openDatabase(ctx, path); err != nil {
-		return nil, err
+		return Store{}, err
 	}
 	if err := store.openEpoch(ctx, owners, digest, expectedShape); err != nil {
-		return nil, err
+		return Store{}, err
 	}
 	return store, nil
 }
 
-func (s *Store) resolveLimits() error {
+func (s *storeAuthority) resolveLimits() error {
 	if s.maxRequestBytes == 0 {
 		s.maxRequestBytes = defaultMaxRequestBytes
 	}
@@ -99,7 +107,7 @@ type ownerSchemaIdentity struct {
 	Statements []string
 }
 
-func (s *Store) registerOwners(owners []OwnerSchema) (framevalue.Digest, error) {
+func (s *storeAuthority) registerOwners(owners []OwnerSchema) (framevalue.Digest, error) {
 	declarations := struct {
 		Frame  string
 		Owners []ownerSchemaIdentity
@@ -139,7 +147,7 @@ func databasePath(requested string) (string, error) {
 	return path, nil
 }
 
-func (s *Store) openDatabase(ctx context.Context, path string) error {
+func (s *storeAuthority) openDatabase(ctx context.Context, path string) error {
 	database, err := openDatabase(storeDataSource(path))
 	if err != nil {
 		return err
@@ -177,7 +185,7 @@ func storeDataSource(path string) string {
 	)
 }
 
-func (s *Store) openEpoch(ctx context.Context, owners []OwnerSchema, digest, expectedShape framevalue.Digest) error {
+func (s *storeAuthority) openEpoch(ctx context.Context, owners []OwnerSchema, digest, expectedShape framevalue.Digest) error {
 	return s.transaction(ctx, func(tx Executor) error {
 		actualShape, err := readSchemaShape(ctx, tx)
 		if err != nil {
@@ -193,7 +201,7 @@ func (s *Store) openEpoch(ctx context.Context, owners []OwnerSchema, digest, exp
 	})
 }
 
-func (s *Store) createSchema(ctx context.Context, tx Executor, owners []OwnerSchema, digest framevalue.Digest) error {
+func (s *storeAuthority) createSchema(ctx context.Context, tx Executor, owners []OwnerSchema, digest framevalue.Digest) error {
 	if _, err := tx.ExecContext(ctx, schema); err != nil {
 		return err
 	}
@@ -222,7 +230,7 @@ func (s *Store) createSchema(ctx context.Context, tx Executor, owners []OwnerSch
 	return nil
 }
 
-func (s *Store) resumeEpoch(ctx context.Context, tx Executor, digest framevalue.Digest) error {
+func (s *storeAuthority) resumeEpoch(ctx context.Context, tx Executor, digest framevalue.Digest) error {
 	var storedDigest framevalue.Digest
 	if err := tx.QueryRowContext(ctx, `SELECT store_id,schema_digest,epoch FROM frame_meta WHERE singleton=1`).Scan(&s.id, &storedDigest, &s.epoch); err != nil {
 		return fmt.Errorf("sqlite: incompatible schema: %w", err)
@@ -260,7 +268,7 @@ func (s *Store) resumeEpoch(ctx context.Context, tx Executor, digest framevalue.
 	return nil
 }
 
-func (s *Store) validateRegisteredOwners(ctx context.Context, tx Reader) error {
+func (s *storeAuthority) validateRegisteredOwners(ctx context.Context, tx Reader) error {
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM frame_owners`)
 	if err != nil {
 		return err

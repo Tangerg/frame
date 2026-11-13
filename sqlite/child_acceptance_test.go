@@ -16,39 +16,40 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
 var errParentFinal = errors.New("jobs: parent is final")
 
 type childAcceptanceFixture struct {
-	store     *Store
+	store     Store
 	owner     Owner
-	admission *frame.Admission
-	host      *frame.Host
-	parent    frame.ExportRef
-	child     frame.ExportRef
-	contract  frame.Contract[func() string]
+	admission framehost.Admission
+	host      framehost.Host
+	parent    framehost.ExportRef
+	child     framehost.ExportRef
+	contract  framehost.Contract[func() string]
 	calls     atomic.Int64
 }
 
-func childAcceptanceConfig(path string, admission *frame.Admission) Config {
+func childAcceptanceConfig(path string, admission framehost.Admission) Config {
 	return Config{Path: path, Admission: admission, Owners: []OwnerSchema{{
 		ID: "jobs",
 		Statements: []string{
 			`CREATE TABLE parent_jobs (id TEXT PRIMARY KEY, active INTEGER NOT NULL, binding BLOB NOT NULL)`,
 			`CREATE TABLE child_jobs (id TEXT PRIMARY KEY, operation TEXT UNIQUE NOT NULL, parent TEXT NOT NULL REFERENCES parent_jobs(id), active INTEGER NOT NULL, binding BLOB NOT NULL)`,
 		},
-		References: func(ctx context.Context, tx Reader, installation frame.InstallationID) ([]frame.Dependency, error) {
+		References: func(ctx context.Context, tx Reader, installation framehost.InstallationID) ([]framehost.Dependency, error) {
 			rows, err := tx.QueryContext(ctx, `SELECT binding FROM parent_jobs WHERE active=1 UNION ALL SELECT binding FROM child_jobs WHERE active=1`)
 			if err != nil {
 				return nil, err
 			}
 			defer rows.Close()
-			var retained []frame.Dependency
+			var retained []framehost.Dependency
 			for rows.Next() {
 				var encoded []byte
-				var binding frame.BindingSnapshot
+				var binding framehost.BindingSnapshot
 				if err := rows.Scan(&encoded); err != nil {
 					return nil, err
 				}
@@ -68,14 +69,11 @@ func childAcceptanceConfig(path string, admission *frame.Admission) Config {
 
 func openChildAcceptance(t *testing.T, path string, initialize bool) *childAcceptanceFixture {
 	t.Helper()
-	f := &childAcceptanceFixture{admission: frame.NewAdmission()}
+	f := &childAcceptanceFixture{admission: framehost.NewAdmission()}
 	var err error
 	f.store, err = Open(t.Context(), childAcceptanceConfig(path, f.admission))
 	if err != nil {
-		if f.store != nil {
-			err = errors.Join(err, f.store.Close())
-		}
-		t.Fatal(err)
+		t.Fatal(errors.Join(err, f.store.Close()))
 	}
 	t.Cleanup(func() {
 		if err := f.store.Close(); err != nil {
@@ -109,14 +107,14 @@ func openChildAcceptance(t *testing.T, path string, initialize bool) *childAccep
 			t.Fatal(err)
 		}
 	}
-	f.host, err = frame.NewHost(t.Context(), frame.HostConfig{Admission: f.admission, ReadAcceptedBinding: func(ctx context.Context, id string, _ frame.ScopeGrant) (frame.BindingSnapshot, error) {
+	f.host, err = framehost.New(t.Context(), framehost.Config{Admission: f.admission, ReadAcceptedBinding: func(ctx context.Context, id string, _ framehost.ScopeGrant) (framehost.BindingSnapshot, error) {
 		var data []byte
 		if err := f.store.Read(ctx, func(tx Reader) error {
 			return tx.QueryRowContext(ctx, "SELECT binding FROM child_jobs WHERE operation=? AND active=1", id).Scan(&data)
 		}); err != nil {
-			return frame.BindingSnapshot{}, err
+			return framehost.BindingSnapshot{}, err
 		}
-		return frame.ParseBinding(data)
+		return framehost.ParseBinding(data)
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -129,27 +127,27 @@ func openChildAcceptance(t *testing.T, path string, initialize bool) *childAccep
 			t.Errorf("close consumer Host: %+v, %v", outcome, err)
 		}
 	})
-	f.contract, err = frame.NewContract[func() string]("jobs.run", "1")
+	f.contract, err = framehost.NewContract[func() string]("jobs.run", "1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := f.host.Register(f.contract); err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []frame.InstallationID{"parent-provider", "child-provider"} {
-		plugin, err := frame.Define(frame.Definition{Revision: value.Hash([]byte(id)), Units: []frame.Unit{{
-			Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "run", Contract: f.contract.Ref()}}},
-			Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
-				return []frame.ExportValue{frame.Provide("run", f.contract, func() string { f.calls.Add(1); return string(id) })}, nil
+	for _, id := range []framehost.InstallationID{"parent-provider", "child-provider"} {
+		plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte(id)), Units: []framehost.Unit{{
+			Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "run", Contract: f.contract.Ref()}}},
+			Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+				return []framehost.ExportValue{framehost.Provide("run", f.contract, func() string { f.calls.Add(1); return string(id) })}, nil
 			},
 		}}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.host.Install(t.Context(), frame.InstallationConfig{ID: id, Plugin: plugin, Enabled: true}); err != nil {
+		if _, err := f.host.Install(t.Context(), framehost.InstallationConfig{ID: id, Plugin: plugin, Enabled: true}); err != nil {
 			t.Fatal(err)
 		}
-		root := frame.ExportRef{InstallationID: id, Release: plugin.Revision(), UnitID: "main", Export: "run", Contract: f.contract.Ref()}
+		root := framehost.ExportRef{InstallationID: id, Release: plugin.Revision(), UnitID: "main", Export: "run", Contract: f.contract.Ref()}
 		if id == "parent-provider" {
 			f.parent = root
 		} else {
@@ -172,7 +170,7 @@ func openChildAcceptance(t *testing.T, path string, initialize bool) *childAccep
 			_, err = tx.ExecContext(ctx, `INSERT INTO parent_jobs VALUES('parent',1,?)`, encoded)
 			return []byte("parent"), err
 		}, nil)
-		if err != nil || settlement.State != frame.CommitSucceeded {
+		if err != nil || settlement.State != framehost.CommitSucceeded {
 			t.Fatalf("initialize parent: %+v, %v", settlement, err)
 		}
 	}
@@ -188,7 +186,7 @@ func (f *childAcceptanceFixture) prepare(t *testing.T, request []byte) Submissio
 	return id
 }
 
-func (f *childAcceptanceFixture) plan(t *testing.T, root frame.ExportRef) *frame.BindingPlan {
+func (f *childAcceptanceFixture) plan(t *testing.T, root framehost.ExportRef) framehost.BindingPlan {
 	t.Helper()
 	plan, err := f.host.Plan(t.Context(), root)
 	if err != nil {
@@ -197,7 +195,7 @@ func (f *childAcceptanceFixture) plan(t *testing.T, root frame.ExportRef) *frame
 	return plan
 }
 
-func (f *childAcceptanceFixture) accept(plan *frame.BindingPlan, operation string) func(context.Context, Executor) ([]byte, error) {
+func (f *childAcceptanceFixture) accept(plan framehost.BindingPlan, operation string) func(context.Context, Executor) ([]byte, error) {
 	return func(ctx context.Context, tx Executor) ([]byte, error) {
 		var active int
 		if err := tx.QueryRowContext(ctx, `SELECT active FROM parent_jobs WHERE id='parent'`).Scan(&active); err != nil {
@@ -224,7 +222,7 @@ func finishChildParent(ctx context.Context, tx Executor) ([]byte, error) {
 	return []byte("parent is final"), err
 }
 
-func (f *childAcceptanceFixture) childBinding(t *testing.T) (string, frame.BindingSnapshot) {
+func (f *childAcceptanceFixture) childBinding(t *testing.T) (string, framehost.BindingSnapshot) {
 	t.Helper()
 	var operation string
 	var encoded []byte
@@ -233,7 +231,7 @@ func (f *childAcceptanceFixture) childBinding(t *testing.T) (string, frame.Bindi
 	}); err != nil {
 		t.Fatal(err)
 	}
-	var binding frame.BindingSnapshot
+	var binding framehost.BindingSnapshot
 	if err := json.Unmarshal(encoded, &binding); err != nil {
 		t.Fatal(err)
 	}
@@ -291,22 +289,22 @@ func TestDurableChildAcceptanceAndParentFinalizationShareOneAdmission(t *testing
 			}
 			resume()
 			parentResult, childResult := <-parentDone, <-childDone
-			if parentResult.err != nil || parentResult.settlement.State != frame.CommitSucceeded {
+			if parentResult.err != nil || parentResult.settlement.State != framehost.CommitSucceeded {
 				t.Fatalf("parent finalization: %+v", parentResult)
 			}
 			if first == "child" {
-				if childResult.err != nil || childResult.settlement.State != frame.CommitSucceeded {
+				if childResult.err != nil || childResult.settlement.State != framehost.CommitSucceeded {
 					t.Fatalf("original child acceptance: %+v", childResult)
 				}
 				operation, binding := f.childBinding(t)
 				if operation != string(childRequest) || len(binding.Roots) != 1 || binding.Roots[0] != f.child {
 					t.Fatalf("child lost its original operation or binding: %q, %+v", operation, binding)
 				}
-				if err := f.host.Uninstall(t.Context(), f.child.InstallationID); !errors.Is(err, frame.ErrInUse) {
+				if err := f.host.Uninstall(t.Context(), f.child.InstallationID); !errors.Is(err, framehost.ErrInUse) {
 					t.Fatalf("parent finalization discarded child retention: %v", err)
 				}
 			} else {
-				if !errors.Is(childResult.err, errParentFinal) || childResult.settlement.State != frame.CommitRejected {
+				if !errors.Is(childResult.err, errParentFinal) || childResult.settlement.State != framehost.CommitRejected {
 					t.Fatalf("child bypassed final parent precondition: %+v", childResult)
 				}
 				var children int
@@ -334,7 +332,7 @@ func TestCommittedChildSurvivesParentUseClosureWithoutAutomaticDispatch(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	parentUse, err := f.host.Acquire(t.Context(), f.plan(t, f.parent), frame.UseConfig{Owner: caller, Scope: scope})
+	parentUse, err := f.host.Acquire(t.Context(), f.plan(t, f.parent), framehost.UseConfig{Owner: caller, Scope: scope})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +348,7 @@ func TestCommittedChildSurvivesParentUseClosureWithoutAutomaticDispatch(t *testi
 		return nil
 	}})
 	settlement, err := f.owner.Commit(t.Context(), id, request, f.accept(plan, string(request)), nil)
-	if err != nil || settlement.State != frame.CommitSucceeded || !lost.Load() {
+	if err != nil || settlement.State != framehost.CommitSucceeded || !lost.Load() {
 		t.Fatalf("original accepted child was not settled: %+v, %v", settlement, err)
 	}
 	if outcome, err := parentUse.Close(t.Context()); err != nil || !outcome.Released {
@@ -363,7 +361,7 @@ func TestCommittedChildSurvivesParentUseClosureWithoutAutomaticDispatch(t *testi
 	if _, err := f.owner.Commit(t.Context(), f.prepare(t, finishRequest), finishRequest, finishChildParent, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.host.Uninstall(t.Context(), f.child.InstallationID); !errors.Is(err, frame.ErrInUse) {
+	if err := f.host.Uninstall(t.Context(), f.child.InstallationID); !errors.Is(err, framehost.ErrInUse) {
 		t.Fatalf("parent Use closure erased durable child acceptance: %v", err)
 	}
 	operation, binding := f.childBinding(t)
@@ -374,7 +372,7 @@ func TestCommittedChildSurvivesParentUseClosureWithoutAutomaticDispatch(t *testi
 		t.Fatal("observing accepted child replayed its mutation")
 		return nil, nil
 	}, nil)
-	if err != nil || repeated.State != frame.CommitSucceeded || string(repeated.Evidence) != string(request) {
+	if err != nil || repeated.State != framehost.CommitSucceeded || string(repeated.Evidence) != string(request) {
 		t.Fatalf("child acceptance was rewritten after parent exit: %+v, %v", repeated, err)
 	}
 }
@@ -434,7 +432,7 @@ func TestDurableChildCrashRecoveryUsesOriginalAcceptanceAndOperation(t *testing.
 				t.Fatal(err)
 			}
 			if phase != "committed-before-response" {
-				if settlement.State != frame.CommitRejected {
+				if settlement.State != framehost.CommitRejected {
 					t.Fatalf("uncommitted child became accepted: %+v", settlement)
 				}
 				var children int
@@ -449,10 +447,10 @@ func TestDurableChildCrashRecoveryUsesOriginalAcceptanceAndOperation(t *testing.
 				return
 			}
 			operation, binding := f.childBinding(t)
-			if settlement.State != frame.CommitSucceeded || operation != string(request) || string(settlement.Evidence) != operation || len(binding.Roots) != 1 || binding.Roots[0] != f.child {
+			if settlement.State != framehost.CommitSucceeded || operation != string(request) || string(settlement.Evidence) != operation || len(binding.Roots) != 1 || binding.Roots[0] != f.child {
 				t.Fatalf("committed child lost its original evidence: %+v; operation=%q binding=%+v", settlement, operation, binding)
 			}
-			if err := f.host.Uninstall(t.Context(), f.child.InstallationID); !errors.Is(err, frame.ErrInUse) {
+			if err := f.host.Uninstall(t.Context(), f.child.InstallationID); !errors.Is(err, framehost.ErrInUse) {
 				t.Fatalf("recovered child lost durable retention: %v", err)
 			}
 			caller := frame.NewLifetime(context.Background())
@@ -461,11 +459,11 @@ func TestDurableChildCrashRecoveryUsesOriginalAcceptanceAndOperation(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			use, err := f.host.AcquireRecord(t.Context(), operation, frame.UseConfig{Owner: caller, Scope: scope})
+			use, err := f.host.AcquireRecord(t.Context(), operation, framehost.UseConfig{Owner: caller, Scope: scope})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := frame.BorrowExport(t.Context(), use, binding.Roots[0], func(_ context.Context, run func() string) error {
+			if err := framehost.BorrowExport(t.Context(), use, binding.Roots[0], func(_ context.Context, run func() string) error {
 				if run() != "child-provider" {
 					t.Fatal("recovery invoked another provider")
 				}
@@ -522,7 +520,7 @@ func TestDurableChildCommitCutProcess(t *testing.T) {
 		},
 	})
 	settlement, err := f.owner.Commit(t.Context(), id, request, f.accept(plan, string(request)), nil)
-	if phase == "commit-unconfirmed" && errors.Is(err, ErrIndeterminate) && settlement.State == frame.CommitIndeterminate && errors.Is(f.admission.RecoveryError(), frame.ErrRecoveryRequired) {
+	if phase == "commit-unconfirmed" && errors.Is(err, ErrIndeterminate) && settlement.State == framehost.CommitIndeterminate && errors.Is(f.admission.RecoveryError(), framehost.ErrRecoveryRequired) {
 		cut.Unknown = true
 		pause()
 	}

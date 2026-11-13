@@ -9,17 +9,16 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/value"
 )
 
-func admissionClient(t *testing.T, life *frame.Lifetime, callback bool, handler Handler) *remote {
+func admissionClient(t *testing.T, life frame.Lifetime, callback bool, handler frame.Handler) *remote {
 	t.Helper()
-	method, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "write", Kind: portable.Command})
+	method, err := frame.NewMethod[string, string](frame.MethodConfig{Name: "write", Kind: frame.Command})
 	if err != nil {
 		t.Fatal(err)
 	}
-	contract, err := portable.NewCapability("test.admission", method.Descriptor())
+	contract, err := frame.NewCapability("test.admission", method.Descriptor())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,14 +72,14 @@ func TestLifetimeRejectionsStayBeforeHandlerDispatch(t *testing.T) {
 					}
 					defer work.Finish()
 				}
-				client := admissionClient(t, life, direction.callback, func(context.Context, portable.Invocation) (value.JSON, error) {
+				client := admissionClient(t, life, direction.callback, func(context.Context, frame.Invocation) (value.JSON, error) {
 					t.Error("rejected command entered its handler")
 					return value.EncodeJSON("unexpected")
 				})
 				input, _ := value.EncodeJSON("input")
 				_, err = client.Invoke(t.Context(), commandInvocation(t, "original-command", "write", input))
 				problem, ok := errors.AsType[*Problem](err)
-				if !ok || problem.Code != rejection.code || errors.Is(err, ErrOutcomeUnknown) {
+				if !ok || problem.Code != rejection.code || errors.Is(err, frame.ErrOutcomeUnknown) {
 					t.Fatalf("known pre-dispatch rejection: %v", err)
 				}
 			})
@@ -94,13 +93,13 @@ func TestDispatchedHandlerErrorsCannotClaimAdmissionRejection(t *testing.T) {
 			life := frame.NewLifetime(t.Context())
 			defer life.Close(context.Background())
 			var effects atomic.Int32
-			client := admissionClient(t, life, callback, func(context.Context, portable.Invocation) (value.JSON, error) {
+			client := admissionClient(t, life, callback, func(context.Context, frame.Invocation) (value.JSON, error) {
 				effects.Add(1)
 				return value.JSON{}, cause
 			})
 			input, _ := value.EncodeJSON("input")
 			_, err := client.Invoke(t.Context(), commandInvocation(t, "original-command", "write", input))
-			if !errors.Is(err, ErrOutcomeUnknown) || effects.Load() != 1 {
+			if !errors.Is(err, frame.ErrOutcomeUnknown) || effects.Load() != 1 {
 				t.Fatalf("callback=%t handler cause=%v effects=%d: %v", callback, cause, effects.Load(), err)
 			}
 		}

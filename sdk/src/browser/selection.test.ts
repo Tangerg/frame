@@ -99,3 +99,52 @@ it("captures every candidate before metadata decoding can change the input", () 
   expect(selection.candidates).toEqual(["original-token", "second-token"]);
   expect(next.token).toBe("replacement-token");
 });
+
+it("returns the exact choices admitted from a policy's single result traversal", () => {
+  const { point, snapshot } = fixture();
+  let reads = 0;
+  const selection = select(
+    snapshot,
+    point,
+    "captured-policy-result",
+    (choices) => {
+      const selected = [choices[0]!];
+      Object.defineProperty(selected, 0, {
+        get() {
+          reads++;
+          return reads === 1
+            ? choices[0]
+            : {
+                ...choices[0],
+                candidate: {
+                  ...choices[0]!.candidate,
+                  token: "unadmitted-token",
+                },
+              };
+        },
+      });
+      return selected;
+    },
+    decodePriority,
+  );
+  expect(selection.candidates).toEqual(["original-token"]);
+  expect(reads).toBe(1);
+});
+
+it("freezes a decoded metadata graph without treating a cycle as another value", () => {
+  const { point, snapshot } = fixture();
+  const metadata: Priority & { self?: Priority } = { priority: 1 };
+  metadata.self = metadata;
+  const selection = select(
+    snapshot,
+    point,
+    "native-metadata",
+    (choices) => {
+      expect(choices[0]!.metadata).toBe(metadata);
+      expect(Object.isFrozen(metadata)).toBe(true);
+      return choices;
+    },
+    () => metadata,
+  );
+  expect(selection.candidates).toEqual(["original-token"]);
+});

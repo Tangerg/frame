@@ -19,6 +19,6 @@ func TestGeneratedWireShapesMatchOwners(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(generated, process.Shapes()) {
-		t.Fatal("wire shapes projection is stale; run go generate ./internal/sdkgen")
+		t.Fatal("wire shapes projection is stale; run go generate ./scripts")
 	}
 }

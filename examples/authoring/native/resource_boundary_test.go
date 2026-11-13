@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 func TestUnlinkedViewReleasesItsOriginalFileAndProviders(t *testing.T) {
@@ -21,13 +22,13 @@ func TestUnlinkedViewReleasesItsOriginalFileAndProviders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(view.file.Name()); err != nil {
+	if err := os.Remove(view.resource.file.Name()); err != nil {
 		t.Fatal(err)
 	}
 	if err := view.Close(ctx); err != nil {
 		t.Fatalf("already absent path prevented release: %v", err)
 	}
-	if _, err := view.file.Stat(); !errors.Is(err, os.ErrClosed) {
+	if _, err := view.resource.file.Stat(); !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("original file descriptor remained open: %v", err)
 	}
 	if err := workbench.Host.Uninstall(ctx, Installation); err != nil {
@@ -54,7 +55,7 @@ func TestViewReaderRejectsItsFencedOriginalGrant(t *testing.T) {
 	workbench.Host.Admission().FenceScope(workbench.scope.ID())
 	called := false
 	err = view.WithReader(ctx, func(context.Context, io.Reader) error { called = true; return nil })
-	if called || !errors.Is(err, frame.ErrFenced) && !errors.Is(err, frame.ErrClosed) {
+	if called || !errors.Is(err, framehost.ErrFenced) && !errors.Is(err, frame.ErrClosed) {
 		t.Fatalf("fenced grant reached a new reader: called=%v, %v", called, err)
 	}
 }

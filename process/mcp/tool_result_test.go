@@ -11,8 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tangerg/frame/portable"
-	"github.com/Tangerg/frame/process"
+	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/value"
 	"github.com/Tangerg/go-sdk/jsonrpc"
 	sdk "github.com/Tangerg/go-sdk/mcp"
@@ -52,7 +51,7 @@ func toolWireService(t *testing.T, result string, fullResult bool, outputSchema 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = session.Close() })
-	method, err := portable.AdmitMethod(portable.MethodDescriptor{Name: "write", Kind: portable.Command, Input: []byte(`{"type":"object","additionalProperties":false}`), Output: []byte(outputSchema)})
+	method, err := frame.AdmitMethod(frame.MethodDescriptor{Name: "write", Kind: frame.Command, Input: []byte(`{"type":"object","additionalProperties":false}`), Output: []byte(outputSchema)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +64,7 @@ func TestToolResultRequiresOriginalContentArray(t *testing.T) {
 			service := toolWireService(t, result, true, `{"type":"object","required":["content"]}`)
 			input, _ := value.ParseJSON([]byte(`{}`))
 			_, err := service.Invoke(t.Context(), commandInvocation(t, "original-command", "write", input))
-			if !errors.Is(err, process.ErrOutcomeUnknown) {
+			if !errors.Is(err, frame.ErrOutcomeUnknown) {
 				t.Fatalf("invalid original result became success: %v", err)
 			}
 		})
@@ -84,8 +83,8 @@ func TestToolResultExtensionsCannotChangeOutcomeClassification(t *testing.T) {
 }
 
 func TestToolResultAdmitsNegotiatedCompleteEnvelope(t *testing.T) {
-	method, err := portable.AdmitMethod(portable.MethodDescriptor{
-		Name: "read", Kind: portable.Query, Input: []byte(`{"type":"object","additionalProperties":false}`),
+	method, err := frame.AdmitMethod(frame.MethodDescriptor{
+		Name: "read", Kind: frame.Query, Input: []byte(`{"type":"object","additionalProperties":false}`),
 		Output: []byte(`{"type":"object","required":["content","resultType"],"properties":{"resultType":{"const":"complete"}}}`),
 	})
 	if err != nil {

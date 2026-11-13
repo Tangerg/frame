@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/process"
 	"github.com/Tangerg/frame/value"
 	sdk "github.com/Tangerg/go-sdk/mcp"
@@ -21,12 +21,12 @@ import (
 
 type catalogExport struct {
 	name       string
-	capability *portable.Capability
+	capability *frame.Capability
 }
 
-func prepareCatalog(t *testing.T, ctx context.Context, exports []catalogExport, check func(context.Context, *frame.Setup) error) error {
+func prepareCatalog(t *testing.T, ctx context.Context, exports []catalogExport, check func(context.Context, *framehost.Setup) error) error {
 	t.Helper()
-	host, err := frame.NewHost(ctx, frame.HostConfig{})
+	host, err := framehost.New(ctx, framehost.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,23 +37,23 @@ func prepareCatalog(t *testing.T, ctx context.Context, exports []catalogExport, 
 			t.Errorf("catalog host cleanup: %+v %v", outcome, err)
 		}
 	})
-	var declarations []frame.ExportDeclaration
+	var declarations []framehost.ExportDeclaration
 	for _, export := range exports {
-		contract, err := frame.NewPortableContract[process.Service]("1", export.capability)
+		contract, err := framehost.NewPortableContract[frame.Service]("1", export.capability)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := host.Register(contract); err != nil {
 			t.Fatal(err)
 		}
-		declarations = append(declarations, frame.ExportDeclaration{Name: export.name, Contract: contract.Ref()})
+		declarations = append(declarations, framehost.ExportDeclaration{Name: export.name, Contract: contract.Ref()})
 	}
 	prepared := errors.New("catalog preparation observed")
-	plugin, err := frame.Define(frame.Definition{
+	plugin, err := framehost.Define(framehost.Definition{
 		Revision: value.Hash([]byte("catalog-admission")),
-		Units: []frame.Unit{{
-			Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.NativeGo, Exports: declarations},
-			Setup: func(ctx context.Context, setup *frame.Setup) ([]frame.ExportValue, error) {
+		Units: []framehost.Unit{{
+			Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: declarations},
+			Setup: func(ctx context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
 				if err := check(ctx, setup); err != nil {
 					return nil, err
 				}
@@ -64,10 +64,10 @@ func prepareCatalog(t *testing.T, ctx context.Context, exports []catalogExport, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.Install(ctx, frame.InstallationConfig{ID: "catalog", Plugin: plugin, Enabled: true}); err != nil {
+	if _, err := host.Install(ctx, framehost.InstallationConfig{ID: "catalog", Plugin: plugin, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	root := frame.ExportRef{InstallationID: "catalog", Release: plugin.Revision(), UnitID: "main", Export: declarations[0].Name, Contract: declarations[0].Contract}
+	root := framehost.ExportRef{InstallationID: "catalog", Release: plugin.Revision(), UnitID: "main", Export: declarations[0].Name, Contract: declarations[0].Contract}
 	_, err = host.Activate(ctx, root)
 	if errors.Is(err, prepared) {
 		return nil
@@ -75,7 +75,7 @@ func prepareCatalog(t *testing.T, ctx context.Context, exports []catalogExport, 
 	return err
 }
 
-func connectPreparedCatalog(t *testing.T, ctx context.Context, connection process.Connection, server *sdk.Server) ([]frame.ExportValue, error) {
+func connectPreparedCatalog(t *testing.T, ctx context.Context, connection process.Connection, server *sdk.Server) ([]framehost.ExportValue, error) {
 	t.Helper()
 	clientPipe, serverPipe := net.Pipe()
 	t.Cleanup(func() { _ = clientPipe.Close(); _ = serverPipe.Close() })
@@ -95,7 +95,7 @@ func TestToolsPrepareRejectsContradictorySharedSchemas(t *testing.T) {
 			defer cancel()
 			var exports []catalogExport
 			for index, name := range []string{"first", "second"} {
-				member := portable.MethodDescriptor{Name: "write", Kind: portable.Command, Input: []byte(inputSchema), Output: []byte(outputSchema)}
+				member := frame.MethodDescriptor{Name: "write", Kind: frame.Command, Input: []byte(inputSchema), Output: []byte(outputSchema)}
 				if index == 1 {
 					if conflict == "input" {
 						member.Input = []byte(`{"type":"object","properties":{"action":{"type":"integer"}},"additionalProperties":false}`)
@@ -103,13 +103,13 @@ func TestToolsPrepareRejectsContradictorySharedSchemas(t *testing.T) {
 						member.Output = []byte(`{"type":"boolean"}`)
 					}
 				}
-				capability, err := portable.NewCapability("catalog."+name, member)
+				capability, err := frame.NewCapability("catalog."+name, member)
 				if err != nil {
 					t.Fatal(err)
 				}
 				exports = append(exports, catalogExport{name, capability})
 			}
-			err := prepareCatalog(t, ctx, exports, func(_ context.Context, setup *frame.Setup) error {
+			err := prepareCatalog(t, ctx, exports, func(_ context.Context, setup *framehost.Setup) error {
 				connection, err := (Tools{MaxCatalogPages: 1}).Prepare(setup, nil, 1<<20)
 				if connection != nil {
 					_ = connection.Close(context.Background())
@@ -136,13 +136,13 @@ func TestToolsPrepareRetainsSharedViewsAndRemoteRequirements(t *testing.T) {
 				defer cancel()
 				var exports []catalogExport
 				for _, name := range []string{"structured", "envelope"} {
-					member := portable.MethodDescriptor{Name: "read", Kind: portable.Query, Input: []byte(inputSchema), Output: []byte(outputSchema)}
+					member := frame.MethodDescriptor{Name: "read", Kind: frame.Query, Input: []byte(inputSchema), Output: []byte(outputSchema)}
 					if name == "envelope" {
-						member.Kind = portable.Command
+						member.Kind = frame.Command
 						member.Input = []byte(`{"properties":{"action":{"type":"string"}},"additionalProperties":false,"type":"object"}`)
 						member.Output = []byte(`{"type":"object","required":["content"],"properties":{"content":{"type":"array"}}}`)
 					}
-					capability, err := portable.NewCapability("catalog."+name, member)
+					capability, err := frame.NewCapability("catalog."+name, member)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -151,8 +151,8 @@ func TestToolsPrepareRetainsSharedViewsAndRemoteRequirements(t *testing.T) {
 				if envelopeFirst {
 					slices.Reverse(exports)
 				}
-				protocol := Tools{MaxCatalogPages: 1, FullResult: func(export frame.ExportDeclaration, _ string) bool { return export.Name == "envelope" }}
-				err := prepareCatalog(t, ctx, exports, func(ctx context.Context, setup *frame.Setup) error {
+				protocol := Tools{MaxCatalogPages: 1, FullResult: func(export framehost.ExportDeclaration, _ string) bool { return export.Name == "envelope" }}
+				err := prepareCatalog(t, ctx, exports, func(ctx context.Context, setup *framehost.Setup) error {
 					connection, err := protocol.Prepare(setup, nil, 1<<20)
 					if err != nil {
 						return err
@@ -175,7 +175,7 @@ func TestToolsPrepareRetainsSharedViewsAndRemoteRequirements(t *testing.T) {
 						if exported.Name == "envelope" {
 							invocation = commandInvocation(t, "original-command", "read", input)
 						}
-						output, err := exported.Value.(process.Service).Invoke(ctx, invocation)
+						output, err := exported.Value.(frame.Service).Invoke(ctx, invocation)
 						if err != nil {
 							return err
 						}
@@ -202,7 +202,7 @@ func TestManagedPrepareOwnsGlobalMethodIdentity(t *testing.T) {
 			var exports []catalogExport
 			description := managedDescription{Protocol: managedVersion}
 			for index, name := range []string{"first", "second"} {
-				member := portable.MethodDescriptor{Name: "write", Kind: portable.Command, Target: "document", Input: []byte(inputSchema), Output: []byte(outputSchema)}
+				member := frame.MethodDescriptor{Name: "write", Kind: frame.Command, Target: "document", Input: []byte(inputSchema), Output: []byte(outputSchema)}
 				if index == 1 {
 					member.Description = "A different presentation of the shared operation."
 					switch change {
@@ -211,12 +211,12 @@ func TestManagedPrepareOwnsGlobalMethodIdentity(t *testing.T) {
 					case "output":
 						member.Output = []byte(`{"type":"boolean"}`)
 					case "kind":
-						member.Kind = portable.Query
+						member.Kind = frame.Query
 					case "target":
 						member.Target = "workspace"
 					}
 				}
-				descriptor, err := value.EncodeJSON(managedDescriptor{managedVersion, "catalog." + name, managedSelection, "installation", []portable.MethodDescriptor{member}})
+				descriptor, err := value.EncodeJSON(managedDescriptor{managedVersion, "catalog." + name, managedSelection, "installation", []frame.MethodDescriptor{member}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -231,15 +231,15 @@ func TestManagedPrepareOwnsGlobalMethodIdentity(t *testing.T) {
 					Contract jsontext.Value `json:"contract"`
 				}{name, descriptor.Bytes()})
 				if index == 0 {
-					description.Methods = []portable.MethodDescriptor{member}
+					description.Methods = []frame.MethodDescriptor{member}
 				}
 			}
 			if change == "remote" {
 				description.Methods[0].Target = "workspace"
 			}
-			protocol := ManagedProtocol{Exports: func(frame.UnitBinding) (map[string]ManagedExport, error) { return declared, nil }}
+			protocol := ManagedProtocol{Exports: func(framehost.UnitBinding) (map[string]ManagedExport, error) { return declared, nil }}
 			connected := false
-			err := prepareCatalog(t, ctx, exports, func(ctx context.Context, setup *frame.Setup) error {
+			err := prepareCatalog(t, ctx, exports, func(ctx context.Context, setup *framehost.Setup) error {
 				connection, err := protocol.Prepare(setup, nil, 1<<20)
 				if err != nil {
 					return err

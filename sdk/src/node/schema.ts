@@ -135,13 +135,6 @@ function admitChoiceConstraints(key: string, field: unknown): void {
     (!Array.isArray(field) || field.length === 0)
   )
     throw new Error("plugin: schema enum is invalid");
-  if (
-    keywords[key]!.value === "enum" &&
-    (field as unknown[]).some((item, index, values) =>
-      values.slice(0, index).some((previous) => equal(item, previous)),
-    )
-  )
-    throw new Error("plugin: schema enum has duplicate values");
   if (keywords[key]!.value === "types") {
     const types = Array.isArray(field) ? field : [field];
     if (

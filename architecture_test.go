@@ -47,28 +47,72 @@ func TestFrameworkSourceTestsAndCommandsDoNotImportConsumers(t *testing.T) {
 	}
 }
 
-func TestPortableValuesCannotImportHostOrExecutionCapabilities(t *testing.T) {
-	for _, directory := range []string{"portable", "value"} {
-		entries, err := os.ReadDir(directory)
+func TestValuesCannotImportHostOrExecutionCapabilities(t *testing.T) {
+	directory := "value"
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		path := filepath.Join(directory, entry.Name())
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
-				continue
+		for _, imported := range file.Imports {
+			name := strings.Trim(imported.Path.Value, `"`)
+			frameworkCapability := name == modulePath || strings.HasPrefix(name, modulePath+"/") && name != modulePath+"/value"
+			externalCapability := name == "os" || name == "io/fs" || name == "database/sql" || name == "net" || strings.HasPrefix(name, "net/") && name != "net/url" && name != "net/netip"
+			if frameworkCapability || externalCapability {
+				t.Errorf("pure value %s imports capability %s", path, name)
 			}
-			path := filepath.Join(directory, entry.Name())
-			file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
-			if err != nil {
-				t.Fatal(err)
+		}
+	}
+}
+
+func TestCoreCannotDependOnAdaptersOrPublisherTools(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), entry.Name(), nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, imported := range file.Imports {
+			name := strings.Trim(imported.Path.Value, `"`)
+			if strings.HasPrefix(name, modulePath+"/") && name != modulePath+"/value" {
+				t.Errorf("core %s imports adapter or publisher tool %s", entry.Name(), name)
 			}
-			for _, imported := range file.Imports {
-				name := strings.Trim(imported.Path.Value, `"`)
-				frameworkCapability := name == modulePath || strings.HasPrefix(name, modulePath+"/") && name != modulePath+"/portable" && name != modulePath+"/value"
-				externalCapability := name == "os" || name == "io/fs" || name == "database/sql" || name == "net" || strings.HasPrefix(name, "net/") && name != "net/url" && name != "net/netip"
-				if frameworkCapability || externalCapability {
-					t.Errorf("pure value %s imports capability %s", path, name)
-				}
+		}
+	}
+}
+
+func TestHostCannotDependOnAdaptersOrPublisherTools(t *testing.T) {
+	entries, err := os.ReadDir("host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		path := filepath.Join("host", entry.Name())
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, imported := range file.Imports {
+			name := strings.Trim(imported.Path.Value, `"`)
+			if strings.HasPrefix(name, modulePath+"/") && name != modulePath+"/value" {
+				t.Errorf("Host owner %s imports adapter or publisher %s", path, name)
 			}
 		}
 	}

@@ -14,7 +14,7 @@ const realmReceiptSchema = `CREATE TABLE frame_realm_receipts(operation_id TEXT 
 // The row owns both pending capacity and the eventual reply, so completion never
 // competes with another operation for space it was already promised.
 type ReceiptReservation struct {
-	store        *Store
+	store        *storeAuthority
 	id           string
 	request      value.Digest
 	maximumBytes int64
@@ -23,7 +23,7 @@ type ReceiptReservation struct {
 // A reservation can accompany an error after its transaction body accepted the
 // original request. Record must still settle that identity: a missing row proves
 // rollback, while an unavailable read leaves acceptance unknown.
-func (s *Store) ReserveRealmReceipt(ctx context.Context, id string, request value.Digest, maximumBytes int64) (*ReceiptReservation, error) {
+func (s *storeAuthority) ReserveRealmReceipt(ctx context.Context, id string, request value.Digest, maximumBytes int64) (*ReceiptReservation, error) {
 	if !frame.ValidName(id) || request.Validate() != nil || maximumBytes < 1 {
 		return nil, frame.ErrInvalid
 	}
@@ -52,7 +52,7 @@ func (s *Store) ReserveRealmReceipt(ctx context.Context, id string, request valu
 	return &ReceiptReservation{store: s, id: id, request: request, maximumBytes: maximumBytes}, err
 }
 
-func (s *Store) checkRealmHistoryCapacity(ctx context.Context, tx Reader) error {
+func (s *storeAuthority) checkRealmHistoryCapacity(ctx context.Context, tx Reader) error {
 	var used int64
 	if err := tx.QueryRowContext(ctx, `SELECT coalesce((SELECT sum(history_bytes) FROM frame_realms),0)+coalesce((SELECT sum(history_bytes) FROM frame_realm_receipts),0)`).Scan(&used); err != nil {
 		return err
@@ -65,7 +65,7 @@ func (s *Store) checkRealmHistoryCapacity(ctx context.Context, tx Reader) error 
 
 // Reconstruction admits only cleanup for old Realms. Their execution and exit
 // evidence remain with their original owners when these epoch-local replies go.
-func (s *Store) RealmReceipt(ctx context.Context, id string) ([]byte, error) {
+func (s *storeAuthority) RealmReceipt(ctx context.Context, id string) ([]byte, error) {
 	if !frame.ValidName(id) {
 		return nil, frame.ErrInvalid
 	}

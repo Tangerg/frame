@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 )
 
@@ -34,15 +35,15 @@ func (state TaskState) terminal() bool {
 	return state == Completed || state == Failed || state == Cancelled
 }
 
-func (TaskState) Values() []string {
+func (TaskState) JSONSchemaEnum() []string {
 	return []string{string(Queued), string(Unsettled), string(Completed), string(Failed), string(Cancelled)}
 }
 
 type TaskDefinition struct {
-	ID      string                `json:"id"`
-	Source  DocumentRef           `json:"source"`
-	Policy  string                `json:"policy"`
-	Binding frame.BindingSnapshot `json:"binding"`
+	ID      string                    `json:"id"`
+	Source  DocumentRef               `json:"source"`
+	Policy  string                    `json:"policy"`
+	Binding framehost.BindingSnapshot `json:"binding"`
 }
 type TaskResult struct {
 	Converted   Converted    `json:"converted"`
@@ -64,22 +65,22 @@ type PreparedTask struct {
 	Submission sqlite.SubmissionID
 	definition TaskDefinition
 	request    []byte
-	plan       *frame.BindingPlan
+	plan       framehost.BindingPlan
 }
 
 func taskSchema() sqlite.OwnerSchema {
-	states := TaskState("").Values()
+	states := TaskState("").JSONSchemaEnum()
 	for i, state := range states {
 		states[i] = "'" + strings.ReplaceAll(state, "'", "''") + "'"
 	}
 	taskTable := fmt.Sprintf(`CREATE TABLE document_tasks (id TEXT PRIMARY KEY,admission_sequence INTEGER NOT NULL UNIQUE,definition BLOB NOT NULL,state TEXT NOT NULL CHECK(state IN (%s)),run_epoch INTEGER NOT NULL DEFAULT 0,result BLOB,failure TEXT NOT NULL DEFAULT '')`, strings.Join(states, ","))
-	return sqlite.OwnerSchema{ID: taskOwnerID, Statements: []string{taskTable, `CREATE TABLE document_bootstrap (singleton INTEGER PRIMARY KEY CHECK(singleton=1))`}, References: func(ctx context.Context, tx sqlite.Reader, id frame.InstallationID) ([]frame.Dependency, error) {
+	return sqlite.OwnerSchema{ID: taskOwnerID, Statements: []string{taskTable, `CREATE TABLE document_bootstrap (singleton INTEGER PRIMARY KEY CHECK(singleton=1))`}, References: func(ctx context.Context, tx sqlite.Reader, id framehost.InstallationID) ([]framehost.Dependency, error) {
 		rows, err := tx.QueryContext(ctx, `SELECT definition FROM document_tasks WHERE state IN (?,?)`, Queued, Unsettled)
 		if err != nil {
 			return nil, err
 		}
 		defer rows.Close()
-		var dependencies []frame.Dependency
+		var dependencies []framehost.Dependency
 		for rows.Next() {
 			var encoded []byte
 			if err := rows.Scan(&encoded); err != nil {
@@ -98,7 +99,7 @@ func taskSchema() sqlite.OwnerSchema {
 				}
 			}
 		}
-		return frame.CompactDependencies(dependencies), rows.Err()
+		return framehost.CompactDependencies(dependencies), rows.Err()
 	}}
 }
 
@@ -116,7 +117,7 @@ func (a *App) Reference(ctx context.Context, path string) (DocumentRef, error) {
 		}
 	}
 	if configuration.Directory == "" {
-		return DocumentRef{}, frame.ErrUnavailable
+		return DocumentRef{}, framehost.ErrUnavailable
 	}
 	root, err := os.OpenRoot(configuration.Directory)
 	if err != nil {
@@ -128,7 +129,7 @@ func (a *App) Reference(ctx context.Context, path string) (DocumentRef, error) {
 }
 
 func (a *App) PrepareTask(ctx context.Context, id string, source DocumentRef) (*PreparedTask, error) {
-	if frame.InstallationID(id).Validate() != nil || !fs.ValidPath(source.Path) || source.Path == "." || source.Revision.Validate() != nil {
+	if framehost.InstallationID(id).Validate() != nil || !fs.ValidPath(source.Path) || source.Path == "." || source.Revision.Validate() != nil {
 		return nil, frame.ErrInvalid
 	}
 	plan, err := a.plan(ctx)
@@ -182,7 +183,7 @@ func (a *App) CommitTask(ctx context.Context, prepared *PreparedTask) (sqlite.Se
 			return nil, err
 		}
 		if !bytes.Equal(left, right) {
-			return nil, frame.ErrStaleBinding
+			return nil, framehost.ErrStaleBinding
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO document_tasks(id,admission_sequence,definition,state) VALUES(?,?,?,?)`, prepared.definition.ID, prepared.Submission.Sequence, prepared.request, Queued); err != nil {
 			return nil, err
@@ -216,7 +217,7 @@ func (a *App) Queue(ctx context.Context, id, path string) (Task, sqlite.Submissi
 		return Task{}, sqlite.SubmissionID{}, err
 	}
 	settlement, err := a.CommitTask(ctx, prepared)
-	if err != nil || settlement.State != frame.CommitSucceeded {
+	if err != nil || settlement.State != framehost.CommitSucceeded {
 		if original, observed := a.Task(ctx, id); observed == nil && original.Definition.Source.Path == path {
 			return original, original.Submission, nil
 		}
@@ -254,19 +255,19 @@ func (a *App) Task(ctx context.Context, id string) (Task, error) {
 	return task, err
 }
 
-func (a *App) readQueuedBinding(ctx context.Context, id string, grant frame.ScopeGrant) (frame.BindingSnapshot, error) {
+func (a *App) readQueuedBinding(ctx context.Context, id string, grant framehost.ScopeGrant) (framehost.BindingSnapshot, error) {
 	a.mu.Lock()
 	authorized := a.scope == grant
 	a.mu.Unlock()
 	if !authorized {
-		return frame.BindingSnapshot{}, frame.ErrFenced
+		return framehost.BindingSnapshot{}, framehost.ErrFenced
 	}
 	task, err := a.Task(ctx, id)
 	if err != nil {
-		return frame.BindingSnapshot{}, err
+		return framehost.BindingSnapshot{}, err
 	}
 	if task.State != Queued || task.Definition.ID != id || task.Definition.Policy != taskPolicy {
-		return frame.BindingSnapshot{}, frame.ErrUnavailable
+		return framehost.BindingSnapshot{}, framehost.ErrUnavailable
 	}
 	return task.Definition.Binding, nil
 }
@@ -299,7 +300,7 @@ func (a *App) Run(ctx context.Context, id string) (returned Task, returnErr erro
 	if task.Definition.Policy != taskPolicy {
 		return task, errors.New("document: retained policy is unavailable")
 	}
-	use, err := a.Host.AcquireRecord(ctx, id, frame.UseConfig{Owner: a.lifetime, Scope: scope})
+	use, err := a.Host.AcquireRecord(ctx, id, framehost.UseConfig{Owner: a.lifetime, Scope: scope})
 	if err != nil {
 		return task, err
 	}
@@ -344,7 +345,7 @@ func (a *App) startTask(ctx context.Context, task Task) error {
 	})
 }
 
-func (a *App) convert(ctx context.Context, task Task, use *frame.Use) (TaskResult, error) {
+func (a *App) convert(ctx context.Context, task Task, use *framehost.Use) (TaskResult, error) {
 	result := TaskResult{Diagnostics: []Diagnostic{}}
 	var runErr error
 	converted := false
@@ -352,11 +353,11 @@ func (a *App) convert(ctx context.Context, task Task, use *frame.Use) (TaskResul
 		switch source.Contract {
 		case a.Contracts.Converters.Ref():
 			if converted {
-				runErr = frame.ErrAmbiguous
+				runErr = framehost.ErrAmbiguous
 				break
 			}
 			converted = true
-			runErr = frame.BorrowExport(ctx, use, source, func(ctx context.Context, converter Converter) error {
+			runErr = framehost.BorrowExport(ctx, use, source, func(ctx context.Context, converter Converter) error {
 				var err error
 				result.Converted, err = converter(ctx, task.Definition.Source)
 				return err
@@ -366,7 +367,7 @@ func (a *App) convert(ctx context.Context, task Task, use *frame.Use) (TaskResul
 				runErr = frame.ErrInvalid
 				break
 			}
-			runErr = frame.BorrowExport(ctx, use, source, func(ctx context.Context, validator Validator) error {
+			runErr = framehost.BorrowExport(ctx, use, source, func(ctx context.Context, validator Validator) error {
 				diagnostics, err := validator(ctx, result.Converted)
 				result.Diagnostics = append(result.Diagnostics, diagnostics...)
 				return err
@@ -379,7 +380,7 @@ func (a *App) convert(ctx context.Context, task Task, use *frame.Use) (TaskResul
 		}
 	}
 	if !converted && runErr == nil {
-		runErr = frame.ErrUnavailable
+		runErr = framehost.ErrUnavailable
 	}
 	if len(result.Converted.HTML) > maximumConvertedHTMLBytes {
 		runErr = frame.ErrCapacity
@@ -395,7 +396,7 @@ func (a *App) Cancel(ctx context.Context, id string) error {
 	}
 	return a.owner.Update(ctx, func(ctx context.Context, tx sqlite.Executor) error {
 		if a.taskRun(id) != nil {
-			return frame.ErrInUse
+			return framehost.ErrInUse
 		}
 		var state TaskState
 		if err := tx.QueryRowContext(ctx, `SELECT state FROM document_tasks WHERE id=?`, id).Scan(&state); err != nil {

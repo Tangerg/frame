@@ -9,7 +9,7 @@ import (
 	"fmt"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/internal/cancellation"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 	framevalue "github.com/Tangerg/frame/value"
 )
@@ -20,8 +20,6 @@ const (
 	minResumeTokenBytes = 32
 	maxResumeTokenBytes = 512
 )
-
-func RealmID(realm Realm) frame.RealmID { return frame.RealmID(realm.ID + ":" + realm.Epoch) }
 
 // realmOpening joins concurrent attempts of one OpenRealm operation.
 type realmOpening struct {
@@ -35,7 +33,7 @@ type realmOpening struct {
 // and only drains the executions it already admitted.
 type realmSession struct {
 	realm       Realm
-	application *frame.Lifetime
+	application frame.Lifetime
 
 	cleanupOnly     bool
 	projectionBytes int64
@@ -49,7 +47,7 @@ func (b *Bridge) Credentials(realm Realm) (Credentials, error) {
 	defer b.mu.Unlock()
 	session := b.sessions.get(RealmID(realm))
 	if session == nil || session.realm != realm {
-		return Credentials{}, frame.ErrUnavailable
+		return Credentials{}, framehost.ErrUnavailable
 	}
 	return b.credentials(realm, ""), nil
 }
@@ -62,7 +60,7 @@ func (b *Bridge) credentials(realm Realm, resumeToken string) Credentials {
 // the exact operation after a lost response recovers its original Realm, even
 // after Host reconstruction; no raw resume credential is persisted.
 func (b *Bridge) OpenRealm(ctx context.Context, operationID, resumeToken string) (Credentials, error) {
-	if !frame.ValidName(operationID) || len(resumeToken) < minResumeTokenBytes || len(resumeToken) > maxResumeTokenBytes {
+	if framevalue.IsNil(ctx) || !frame.ValidName(operationID) || len(resumeToken) < minResumeTokenBytes || len(resumeToken) > maxResumeTokenBytes {
 		return Credentials{}, frame.ErrInvalid
 	}
 	verifier := framevalue.Hash([]byte(resumeToken))
@@ -70,11 +68,11 @@ func (b *Bridge) OpenRealm(ctx context.Context, operationID, resumeToken string)
 	if previous := b.openings[operationID]; previous != nil {
 		b.mu.Unlock()
 		if !sameDigest(previous.verifier, verifier) {
-			return Credentials{}, frame.ErrFenced
+			return Credentials{}, framehost.ErrFenced
 		}
 		select {
 		case <-ctx.Done():
-			return Credentials{}, cancellation.Err(ctx)
+			return Credentials{}, frame.ContextError(ctx)
 		case <-previous.done:
 			return previous.credentials, previous.failure
 		}
@@ -124,13 +122,13 @@ func (b *Bridge) openRealm(ctx context.Context, operationID, resumeToken string)
 func (b *Bridge) ResumeRealm(ctx context.Context, realm Realm, resumeToken string) (Credentials, error) {
 	credential, err := b.config.Store.RealmCredential(ctx, realm.ID, realm.Epoch)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Credentials{}, errors.Join(frame.ErrFenced, err)
+		return Credentials{}, errors.Join(framehost.ErrFenced, err)
 	}
 	if err != nil {
 		return Credentials{}, fmt.Errorf("browser realm credential: %w", err)
 	}
 	if !sameDigest(framevalue.Hash([]byte(resumeToken)), credential.ResumeVerifier) {
-		return Credentials{}, frame.ErrFenced
+		return Credentials{}, framehost.ErrFenced
 	}
 	return b.credentials(realm, resumeToken), nil
 }
@@ -160,7 +158,7 @@ func (b *Bridge) liveSession(token string) (*realmSession, error) {
 func (b *Bridge) anySession(token string) (*realmSession, error) {
 	realm, ok := b.signer.authenticate(token)
 	if !ok {
-		return nil, frame.ErrFenced
+		return nil, framehost.ErrFenced
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -174,6 +172,9 @@ func (b *Bridge) anySession(token string) (*realmSession, error) {
 // Already admitted plans remain protected until their original exit is proven.
 // Other windows using the same installation retain their independent scopes.
 func (b *Bridge) SealRealm(ctx context.Context, token string) error {
+	if framevalue.IsNil(ctx) {
+		return frame.ErrInvalid
+	}
 	session, err := b.anySession(token)
 	if err != nil {
 		return err
@@ -188,13 +189,13 @@ func (b *Bridge) SealRealm(ctx context.Context, token string) error {
 	}
 	b.reapRealmLocked(session.realm)
 	b.mu.Unlock()
-	if session.application != nil {
-		session.application.BeginClose(frame.ErrFenced)
+	if session.application.Valid() {
+		session.application.BeginClose(framehost.ErrFenced)
 	}
 	var failures []error
 	for _, entry := range entries {
 		b.fence(entry)
-		if err := b.config.Host.RetireInstance(ctx, entry.attempt.ID); err != nil && !errors.Is(err, frame.ErrUnavailable) {
+		if err := b.config.Host.RetireInstance(ctx, entry.attempt.ID); err != nil && !errors.Is(err, framehost.ErrUnavailable) {
 			failures = append(failures, err)
 			continue
 		}

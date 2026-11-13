@@ -12,6 +12,7 @@ import (
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
 	"github.com/Tangerg/frame/distribution"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 	"github.com/Tangerg/frame/value"
 )
@@ -24,21 +25,21 @@ type Config struct {
 }
 
 const (
-	fileInstallationID      frame.InstallationID = "files"
-	converterInstallationID frame.InstallationID = "converter"
-	validatorInstallationID frame.InstallationID = "validators"
-	previewInstallationID   frame.InstallationID = "preview"
+	fileInstallationID      framehost.InstallationID = "files"
+	converterInstallationID framehost.InstallationID = "converter"
+	validatorInstallationID framehost.InstallationID = "validators"
+	previewInstallationID   framehost.InstallationID = "preview"
 )
 
 type App struct {
-	Host       *frame.Host
-	Store      *sqlite.Store
-	Content    *distribution.Store
+	Host       framehost.Host
+	Store      sqlite.Store
+	Content    distribution.Store
 	Bridge     *browser.Bridge
 	Contracts  Contracts
 	owner      sqlite.Owner
-	lifetime   *frame.Lifetime
-	scope      frame.ScopeGrant
+	lifetime   frame.Lifetime
+	scope      framehost.ScopeGrant
 	preview    distribution.Release
 	recoveryMu sync.Mutex
 	mu         sync.Mutex
@@ -53,7 +54,7 @@ func Open(ctx context.Context, config Config) (_ *App, err error) {
 	if err != nil {
 		return nil, err
 	}
-	admission := frame.NewAdmission()
+	admission := framehost.NewAdmission()
 	store, err := sqlite.Open(ctx, sqlite.Config{Path: config.Database, Admission: admission, Owners: []sqlite.OwnerSchema{taskSchema()}, MaxRequestBytes: maximumTaskBytes, MaxSubmissionsPerOwner: config.MaxSubmissionsPerOwner})
 	if err != nil {
 		return nil, errors.Join(err, store.Close())
@@ -69,7 +70,7 @@ func Open(ctx context.Context, config Config) (_ *App, err error) {
 	}
 	lifetime := frame.NewLifetime(context.Background())
 	a := &App{Store: store, Contracts: contracts, owner: owner, lifetime: lifetime, runs: make(map[string]*taskRun)}
-	host, err := frame.NewHost(context.Background(), frame.HostConfig{ReadAcceptedBinding: a.readQueuedBinding, Admission: admission, Lifetime: lifetime, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store, UseOwners: []frame.UseOwner{owner}})
+	host, err := framehost.New(context.Background(), framehost.Config{ReadAcceptedBinding: a.readQueuedBinding, Admission: admission, Lifetime: lifetime, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store, UseOwners: []framehost.UseOwner{owner}})
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +100,7 @@ func Open(ctx context.Context, config Config) (_ *App, err error) {
 	if err := host.RegisterDriver(resources); err != nil {
 		return nil, err
 	}
-	bridge, err := browser.NewBridge(browser.BridgeConfig{Host: host, Store: store, Source: moduleSource{store: content}, Points: []frame.ContractRef{contracts.Previews.Ref()}})
+	bridge, err := browser.NewBridge(browser.BridgeConfig{Host: host, Store: store, Source: moduleSource{store: content}, Points: []framehost.ContractRef{contracts.Previews.Ref()}})
 	if err != nil {
 		return nil, err
 	}
@@ -131,18 +132,18 @@ func (a *App) retainsRelease(ctx context.Context, release value.Digest) (bool, e
 	if err != nil {
 		return false, err
 	}
-	if slices.ContainsFunc(records, func(record frame.InstallationRecord) bool { return record.Release == release }) {
+	if slices.ContainsFunc(records, func(record framehost.InstallationRecord) bool { return record.Release == release }) {
 		return true, nil
 	}
 	dependencies, err := a.Store.ExecutionDependencies(ctx)
 	if err != nil {
 		return false, err
 	}
-	return slices.ContainsFunc(dependencies, func(dependency frame.Dependency) bool { return dependency.Release == release }), nil
+	return slices.ContainsFunc(dependencies, func(dependency framehost.Dependency) bool { return dependency.Release == release }), nil
 }
 
 type catalog struct {
-	files, converter, secondConverter, validators *frame.Plugin
+	files, converter, secondConverter, validators *framehost.Plugin
 }
 
 func newCatalog(contracts Contracts) (catalog, error) {
@@ -162,8 +163,8 @@ func newCatalog(contracts Contracts) (catalog, error) {
 	return catalog{files: files, converter: converter, secondConverter: second, validators: validators}, err
 }
 
-func (c catalog) definitions() []*frame.Plugin {
-	return []*frame.Plugin{c.files, c.converter, c.secondConverter, c.validators}
+func (c catalog) definitions() []*framehost.Plugin {
+	return []*framehost.Plugin{c.files, c.converter, c.secondConverter, c.validators}
 }
 
 func (a *App) restore(ctx context.Context, directory string, trustPreview func(value.Digest)) error {
@@ -197,7 +198,7 @@ func (a *App) restore(ctx context.Context, directory string, trustPreview func(v
 		return err
 	}
 	if err := a.Recover(ctx); err != nil {
-		if initialized && errors.Is(err, frame.ErrRecoveryRequired) {
+		if initialized && errors.Is(err, framehost.ErrRecoveryRequired) {
 			return nil
 		}
 		return err
@@ -216,7 +217,7 @@ func (a *App) initialized(ctx context.Context) (bool, error) {
 	return initialized, err
 }
 
-func (a *App) restorePreview(ctx context.Context, records []frame.InstallationRecord, initialized bool, trustPreview func(value.Digest)) (*frame.Plugin, error) {
+func (a *App) restorePreview(ctx context.Context, records []framehost.InstallationRecord, initialized bool, trustPreview func(value.Digest)) (*framehost.Plugin, error) {
 	var err error
 	for _, record := range records {
 		if record.ID == previewInstallationID {
@@ -238,7 +239,7 @@ func (a *App) restorePreview(ctx context.Context, records []frame.InstallationRe
 
 // bootstrap installs the initial plugins once; the bootstrap row records that
 // a restart must restore rather than install them again.
-func (a *App) bootstrap(ctx context.Context, directory string, plugins catalog, preview *frame.Plugin) error {
+func (a *App) bootstrap(ctx context.Context, directory string, plugins catalog, preview *framehost.Plugin) error {
 	directory, err := filepath.Abs(directory)
 	if err != nil {
 		return err
@@ -247,7 +248,7 @@ func (a *App) bootstrap(ctx context.Context, directory string, plugins catalog, 
 	if err != nil {
 		return err
 	}
-	for _, installation := range []frame.InstallationConfig{
+	for _, installation := range []framehost.InstallationConfig{
 		{ID: fileInstallationID, Plugin: plugins.files, Configuration: configuration, Enabled: true},
 		{ID: converterInstallationID, Plugin: plugins.converter, Enabled: true},
 		{ID: validatorInstallationID, Plugin: plugins.validators, Enabled: true},
@@ -272,7 +273,7 @@ func (a *App) bootstrap(ctx context.Context, directory string, plugins catalog, 
 func (a *App) Recover(ctx context.Context) error {
 	a.recoveryMu.Lock()
 	defer a.recoveryMu.Unlock()
-	if a.currentScope() != (frame.ScopeGrant{}) {
+	if a.currentScope() != (framehost.ScopeGrant{}) {
 		return a.Host.Admission().RecoveryError()
 	}
 	dependencies, err := a.Store.ExecutionDependencies(ctx)
@@ -280,7 +281,7 @@ func (a *App) Recover(ctx context.Context) error {
 		return err
 	}
 	if len(dependencies) != 0 {
-		return frame.ErrRecoveryRequired
+		return framehost.ErrRecoveryRequired
 	}
 	if err := a.Host.Admission().Recover(ctx, func() error { return nil }); err != nil {
 		return err
@@ -295,14 +296,14 @@ func (a *App) Recover(ctx context.Context) error {
 	return nil
 }
 
-func (a *App) currentScope() frame.ScopeGrant { a.mu.Lock(); defer a.mu.Unlock(); return a.scope }
+func (a *App) currentScope() framehost.ScopeGrant { a.mu.Lock(); defer a.mu.Unlock(); return a.scope }
 
 func (a *App) activateDocumentProviders(ctx context.Context) error {
 	records, err := a.Store.Installations(ctx)
 	if err != nil {
 		return err
 	}
-	var roots []frame.ExportRef
+	var roots []framehost.ExportRef
 	for _, record := range records {
 		if !record.Enabled {
 			continue
@@ -310,7 +311,7 @@ func (a *App) activateDocumentProviders(ctx context.Context) error {
 		for _, unit := range record.Units {
 			for _, export := range unit.Exports {
 				if export.Contract == a.Contracts.Converters.Ref() || export.Contract == a.Contracts.Validators.Ref() {
-					roots = append(roots, frame.ExportRef{InstallationID: record.ID, Release: record.Release, UnitID: unit.ID, Export: export.Name, Contract: export.Contract})
+					roots = append(roots, framehost.ExportRef{InstallationID: record.ID, Release: record.Release, UnitID: unit.ID, Export: export.Name, Contract: export.Contract})
 				}
 			}
 		}
@@ -319,42 +320,42 @@ func (a *App) activateDocumentProviders(ctx context.Context) error {
 	return err
 }
 
-func (a *App) plan(ctx context.Context) (*frame.BindingPlan, error) {
+func (a *App) plan(ctx context.Context) (framehost.BindingPlan, error) {
 	if err := a.activateDocumentProviders(ctx); err != nil {
-		return nil, err
+		return framehost.BindingPlan{}, err
 	}
 	snapshot, err := a.Host.Snapshot(ctx, a.Contracts.Converters.Ref(), a.Contracts.Validators.Ref())
 	if err != nil {
-		return nil, err
+		return framehost.BindingPlan{}, err
 	}
-	converter, err := frame.SelectOne(snapshot, a.Contracts.Converters, "documents.markdown-priority/1", selectMarkdownConverter)
+	converter, err := framehost.SelectOne(snapshot, a.Contracts.Converters, "documents.markdown-priority/1", selectMarkdownConverter)
 	if err != nil {
-		return nil, err
+		return framehost.BindingPlan{}, err
 	}
-	validation, err := frame.SelectMany(snapshot, a.Contracts.Validators, "documents.validation-order/1", orderValidators)
+	validation, err := framehost.SelectMany(snapshot, a.Contracts.Validators, "documents.validation-order/1", orderValidators)
 	if err != nil {
-		return nil, err
+		return framehost.BindingPlan{}, err
 	}
-	return frame.Capture(snapshot, converter.Ref(), validation.Ref())
+	return framehost.Capture(snapshot, converter.Ref(), validation.Ref())
 }
 
-func selectMarkdownConverter(values []frame.Candidate[ConverterMetadata, Converter]) (frame.Candidate[ConverterMetadata, Converter], error) {
+func selectMarkdownConverter(values []framehost.Candidate[ConverterMetadata, Converter]) (framehost.Candidate[ConverterMetadata, Converter], error) {
 	type converterCandidate struct {
-		candidate frame.Candidate[ConverterMetadata, Converter]
+		candidate framehost.Candidate[ConverterMetadata, Converter]
 		metadata  ConverterMetadata
 	}
 	converters := make([]converterCandidate, 0, len(values))
 	for _, candidate := range values {
 		metadata, err := candidate.Metadata()
 		if err != nil {
-			return frame.Candidate[ConverterMetadata, Converter]{}, err
+			return framehost.Candidate[ConverterMetadata, Converter]{}, err
 		}
 		if metadata.Format == markdownFormat {
 			converters = append(converters, converterCandidate{candidate, metadata})
 		}
 	}
 	if len(converters) == 0 {
-		return frame.Candidate[ConverterMetadata, Converter]{}, frame.ErrUnavailable
+		return framehost.Candidate[ConverterMetadata, Converter]{}, framehost.ErrUnavailable
 	}
 	selected := slices.MinFunc(converters, func(left, right converterCandidate) int {
 		return cmp.Or(cmp.Compare(right.metadata.Priority, left.metadata.Priority), cmp.Compare(left.candidate.Source().InstallationID, right.candidate.Source().InstallationID))
@@ -362,9 +363,9 @@ func selectMarkdownConverter(values []frame.Candidate[ConverterMetadata, Convert
 	return selected.candidate, nil
 }
 
-func orderValidators(values []frame.Candidate[ValidatorMetadata, Validator]) ([]frame.Candidate[ValidatorMetadata, Validator], error) {
+func orderValidators(values []framehost.Candidate[ValidatorMetadata, Validator]) ([]framehost.Candidate[ValidatorMetadata, Validator], error) {
 	type validatorCandidate struct {
-		candidate frame.Candidate[ValidatorMetadata, Validator]
+		candidate framehost.Candidate[ValidatorMetadata, Validator]
 		metadata  ValidatorMetadata
 	}
 	validators := make([]validatorCandidate, len(values))
@@ -397,19 +398,19 @@ func (a *App) ReplaceConverter(ctx context.Context, version string) error {
 
 func (a *App) Theme(ctx context.Context) (string, error) {
 	if a.preview.Digest.IsZero() {
-		return "", frame.ErrUnavailable
+		return "", framehost.ErrUnavailable
 	}
-	root := frame.ExportRef{InstallationID: previewInstallationID, Release: a.preview.Digest, UnitID: themeUnitID, Export: themeExportName, Contract: a.Contracts.Theme.Ref()}
+	root := framehost.ExportRef{InstallationID: previewInstallationID, Release: a.preview.Digest, UnitID: themeUnitID, Export: themeExportName, Contract: a.Contracts.Theme.Ref()}
 	plan, err := a.Host.Plan(ctx, root)
 	if err != nil {
 		return "", err
 	}
-	use, err := a.Host.Acquire(ctx, plan, frame.UseConfig{Owner: a.lifetime, Scope: a.currentScope()})
+	use, err := a.Host.Acquire(ctx, plan, framehost.UseConfig{Owner: a.lifetime, Scope: a.currentScope()})
 	if err != nil {
 		return "", err
 	}
 	var text string
-	err = frame.BorrowExport(ctx, use, root, func(ctx context.Context, resource *distribution.Resources) error {
+	err = framehost.BorrowExport(ctx, use, root, func(ctx context.Context, resource *distribution.Resources) error {
 		data, err := resource.Read(ctx, themeResourcePath)
 		text = string(data)
 		return err
@@ -420,21 +421,24 @@ func (a *App) Theme(ctx context.Context) (string, error) {
 
 func (a *App) ActivatePreview(ctx context.Context, credentials browser.Credentials) error {
 	if a.preview.Digest.IsZero() {
-		return frame.ErrUnavailable
+		return framehost.ErrUnavailable
 	}
 	poll, err := a.Bridge.Poll(ctx, credentials.Token)
 	if err != nil {
 		return err
 	}
 	if poll.Realm != credentials.Realm {
-		return frame.ErrFenced
+		return framehost.ErrFenced
 	}
-	root := frame.ExportRef{InstallationID: previewInstallationID, Release: a.preview.Digest, UnitID: previewUnitID, Export: previewExportName, Contract: a.Contracts.Previews.Ref()}
+	root := framehost.ExportRef{InstallationID: previewInstallationID, Release: a.preview.Digest, UnitID: previewUnitID, Export: previewExportName, Contract: a.Contracts.Previews.Ref()}
 	_, err = a.Host.ActivateIn(ctx, browser.RealmID(credentials.Realm), root)
 	return err
 }
 
 func (a *App) Close(ctx context.Context) error {
+	if value.IsNil(ctx) {
+		return frame.ErrInvalid
+	}
 	settlementErr := a.settlePendingTasks(ctx)
 	outcome, err := a.Host.Close(ctx)
 	err = errors.Join(settlementErr, err)

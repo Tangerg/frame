@@ -8,23 +8,29 @@ import (
 	"strconv"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
+	"github.com/Tangerg/frame/value"
 )
 
 // The receipt prevents recapture after this lease has been consumed or closed.
 // Only the live lease retains candidate provenance; a receipt cannot recreate it.
 type snapshotLease struct {
-	realm      Realm
-	original   *frame.Snapshot
-	projection Snapshot
-	candidates map[string]frame.CandidateRef
+	realm   Realm
+	capture *snapshotCapture
 }
 
-func newSnapshotLease(id string, authority Authority, realm Realm, original *frame.Snapshot, points []frame.ContractRef) (*snapshotLease, error) {
-	lease := &snapshotLease{
-		realm: realm, original: original,
+type snapshotCapture struct {
+	original   framehost.Snapshot
+	projection Snapshot
+	candidates map[string]framehost.CandidateRef
+}
+
+func newSnapshotLease(id string, authority Authority, realm Realm, original framehost.Snapshot, points []framehost.ContractRef) (*snapshotLease, error) {
+	capture := &snapshotCapture{
+		original:   original,
 		projection: Snapshot{ID: id, Authority: authority, Points: []PointSnapshot{}},
-		candidates: make(map[string]frame.CandidateRef),
+		candidates: make(map[string]framehost.CandidateRef),
 	}
 	for _, point := range points {
 		candidates, err := original.Candidates(point)
@@ -42,36 +48,36 @@ func newSnapshotLease(id string, authority Authority, realm Realm, original *fra
 				return nil, err
 			}
 			token := rand.Text()
-			lease.candidates[token] = candidate
+			capture.candidates[token] = candidate
 			projection.Candidates = append(projection.Candidates, Candidate{PublicationID: candidate.ID(), Source: candidate.Source(), MetadataJSON: string(metadata), Token: token})
 		}
-		lease.projection.Points = append(lease.projection.Points, projection)
+		capture.projection.Points = append(capture.projection.Points, projection)
 	}
-	return lease, nil
+	return &snapshotLease{realm: realm, capture: capture}, nil
 }
 
 func (s *snapshotLease) capturedFor(realm Realm) bool {
-	return s != nil && s.original != nil && s.realm == realm
+	return s != nil && s.capture != nil && s.realm == realm
 }
 
-func (s *snapshotLease) bind(requests []Selection) (*frame.BindingPlan, error) {
-	selections := make([]frame.SelectionRef, 0, len(requests))
+func (s *snapshotLease) bind(requests []Selection) (framehost.BindingPlan, error) {
+	selections := make([]framehost.SelectionRef, 0, len(requests))
 	for _, chosen := range requests {
-		candidates := make([]frame.CandidateRef, 0, len(chosen.Candidates))
+		candidates := make([]framehost.CandidateRef, 0, len(chosen.Candidates))
 		for _, token := range chosen.Candidates {
-			candidate, exists := s.candidates[token]
+			candidate, exists := s.capture.candidates[token]
 			if !exists || candidate.Source().Contract != chosen.Point {
-				return nil, frame.ErrStaleBinding
+				return framehost.BindingPlan{}, framehost.ErrStaleBinding
 			}
 			candidates = append(candidates, candidate)
 		}
-		selected, err := frame.SelectRefs(s.original, chosen.Point, chosen.Rule, candidates...)
+		selected, err := framehost.SelectRefs(s.capture.original, chosen.Point, chosen.Rule, candidates...)
 		if err != nil {
-			return nil, err
+			return framehost.BindingPlan{}, err
 		}
 		selections = append(selections, selected)
 	}
-	return frame.Capture(s.original, selections...)
+	return framehost.Capture(s.capture.original, selections...)
 }
 
 func (b *Bridge) Snapshot(ctx context.Context, token string, request SnapshotRequest) (snapshot Snapshot, returned error) {
@@ -111,7 +117,7 @@ func (b *Bridge) Snapshot(ctx context.Context, token string, request SnapshotReq
 	}
 	// Metadata codecs may panic or exit this goroutine. Only a completed capture
 	// and response copy can replace this failure with a successful receipt.
-	returned = fmt.Errorf("%w: snapshot capture interrupted", frame.ErrUnavailable)
+	returned = fmt.Errorf("%w: snapshot capture interrupted", framehost.ErrUnavailable)
 	defer func() {
 		if returned != nil {
 			b.mu.Lock()
@@ -132,11 +138,11 @@ func (b *Bridge) Snapshot(ctx context.Context, token string, request SnapshotReq
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if session.cleanupOnly || b.snapshots[request.OperationID] != pending {
-		return Snapshot{}, frame.ErrFenced
+		return Snapshot{}, framehost.ErrFenced
 	}
 	b.snapshots[request.OperationID] = lease
 	pending = lease
-	return copyWire(lease.projection), nil
+	return copyWire(lease.capture.projection), nil
 }
 
 func (b *Bridge) captureLease(ctx context.Context, realm Realm, request SnapshotRequest) (*snapshotLease, error) {
@@ -152,7 +158,7 @@ func (b *Bridge) captureLease(ctx context.Context, realm Realm, request Snapshot
 	if err != nil {
 		return nil, err
 	}
-	return lease, b.checkResponse(lease.projection)
+	return lease, b.checkResponse(lease.capture.projection)
 }
 
 // replaySnapshot observes the original capture of id. A close that already
@@ -178,12 +184,12 @@ func (b *Bridge) replaySnapshot(ctx context.Context, id string, request controlR
 	if !lease.capturedFor(request.Realm) {
 		return Snapshot{}, frame.ErrClosed
 	}
-	return copyWire(lease.projection), nil
+	return copyWire(lease.capture.projection), nil
 }
 
 func (o *controlOperation) ownsSnapshot(realm Realm) error {
 	if o.Realm != realm {
-		return frame.ErrFenced
+		return framehost.ErrFenced
 	}
 	if o.Kind != snapshotOperation && o.Kind != closeSnapshotOperation {
 		return sqlite.ErrConflict
@@ -191,13 +197,13 @@ func (o *controlOperation) ownsSnapshot(realm Realm) error {
 	return nil
 }
 
-func (b *Bridge) snapshotPoints(names []string) ([]frame.ContractRef, error) {
+func (b *Bridge) snapshotPoints(names []string) ([]framehost.ContractRef, error) {
 	if len(names) == 0 || hasDuplicate(names) {
 		return nil, frame.ErrInvalid
 	}
-	points := make([]frame.ContractRef, 0, len(names))
+	points := make([]framehost.ContractRef, 0, len(names))
 	for _, name := range names {
-		var selected frame.ContractRef
+		var selected framehost.ContractRef
 		for _, point := range b.config.Points {
 			if point.Name != name {
 				continue
@@ -216,6 +222,9 @@ func (b *Bridge) snapshotPoints(names []string) ([]frame.ContractRef, error) {
 // A close that arrives before capture reserves the original identity as closed.
 // Otherwise a delayed request could create a lease after cleanup was acknowledged.
 func (b *Bridge) CloseSnapshot(ctx context.Context, token, snapshotID string) error {
+	if value.IsNil(ctx) {
+		return frame.ErrInvalid
+	}
 	session, err := b.anySession(token)
 	if err != nil {
 		return err

@@ -12,11 +12,11 @@ access, conversion, and validation. Each unit declares a typed token for every
 import or export and uses that token during preparation:
 
 ```go
-files := frame.Required("files", contracts.Files)
-upper := frame.Offer("uppercase", contracts.Converters)
-unit, err := frame.DefineUnit(frame.UnitSpec{
-    ID: "converter", Imports: frame.Imports(files), Exports: frame.Exports(upper),
-    Prepare: func(setup *frame.Setup) error {
+files := framehost.Required("files", contracts.Files)
+upper := framehost.Offer("uppercase", contracts.Converters)
+unit, err := framehost.DefineUnit(framehost.UnitSpec{
+    ID: "converter", Imports: framehost.Imports(files), Exports: framehost.Exports(upper),
+    Prepare: func(setup *framehost.Setup) error {
         reader, err := files.Get(setup)
         if err != nil {
             return err
@@ -43,6 +43,9 @@ keeps the original providers alive and checks the original scope even before an
 asynchronous fence notification closes the Use. File cleanup is reserved before
 creation; a previously removed temporary path does not invalidate a completed
 file close.
+View handles share a private file owner. Copying or replacing a caller's handle
+cannot change the cleanup retained by its original Use or leave the file behind
+after that Use confirms release.
 
 The non-test Go files can be copied together into an independent author module.
 They import only public Frame packages. The author owns its regular-file and

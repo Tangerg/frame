@@ -236,6 +236,12 @@ export interface Cleanup {
   confirmReleased(evidence: string): void;
 }
 
+export interface Acquired<T> {
+  with<R>(work: (value: T, signal: AbortSignal) => Awaitable<R>): Promise<R>;
+  close(signal?: AbortSignal): Promise<CloseOutcome>;
+  wait(signal?: AbortSignal): Promise<CloseOutcome>;
+}
+
 export class Lifetime {
   readonly label: string;
   readonly #controller = new AbortController();
@@ -339,6 +345,46 @@ export class Lifetime {
     return Object.freeze({
       confirmReleased: (evidence: string) => resource.confirm(evidence),
     });
+  }
+
+  // The creator transfers ownership only on success; it owns rollback on failure.
+  async acquire<T>(
+    label: string,
+    create: (signal: AbortSignal, cleanup: Cleanup) => Awaitable<T>,
+    closeResource: (value: T) => Awaitable<void | Release>,
+  ): Promise<Acquired<T>> {
+    if (typeof create !== "function" || typeof closeResource !== "function")
+      throw new TypeError("resource creation and release must be functions");
+    return AcquiredValue.create(this.branch(label), create, closeResource);
+  }
+
+  async withResource<T, R>(
+    label: string,
+    create: (signal: AbortSignal, cleanup: Cleanup) => Awaitable<T>,
+    closeResource: (value: T) => Awaitable<void | Release>,
+    work: (value: T, signal: AbortSignal) => Awaitable<R>,
+  ): Promise<R> {
+    const acquired = await this.acquire(label, create, closeResource);
+    let result: PromiseSettledResult<R>;
+    try {
+      result = { status: "fulfilled", value: await acquired.with(work) };
+    } catch (reason) {
+      result = { status: "rejected", reason };
+    }
+    const releaseFailure = resourceCloseFailure(
+      await acquired.close(),
+      result.status === "rejected",
+    );
+    if (result.status === "rejected") {
+      if (releaseFailure)
+        throw new AggregateError(
+          [result.reason, releaseFailure],
+          "operation and resource close failed",
+        );
+      throw result.reason;
+    }
+    if (releaseFailure) throw releaseFailure;
+    return result.value;
   }
 
   branch(label: string): Lifetime {
@@ -492,4 +538,97 @@ export class Lifetime {
       releaseParent?.(outcome);
     }
   }
+}
+
+type OwnedValue<T> = {
+  readonly status: "owned";
+  readonly lifetime: Lifetime;
+  readonly release: (value: T) => Awaitable<void | Release>;
+  value?: { readonly value: T };
+};
+
+class AcquiredValue<T> implements Acquired<T> {
+  #state: OwnedValue<T> | { readonly status: "released"; readonly exit: Exit };
+
+  private constructor(owned: OwnedValue<T>) {
+    this.#state = owned;
+    owned.lifetime.observeExit((outcome) => {
+      if (outcome.status === "released")
+        this.#state = { status: "released", exit: owned.lifetime.exit! };
+    });
+  }
+
+  static async create<T>(
+    lifetime: Lifetime,
+    create: (signal: AbortSignal, cleanup: Cleanup) => Awaitable<T>,
+    release: (value: T) => Awaitable<void | Release>,
+  ): Promise<Acquired<T>> {
+    const owned: OwnedValue<T> = { status: "owned", lifetime, release };
+    const acquired = new AcquiredValue(owned);
+    const cleanup = lifetime.cleanup(
+      () => (owned.value ? owned.release(owned.value.value) : undefined),
+      lifetime.label,
+    );
+    try {
+      await lifetime.run(async (signal) => {
+        owned.value = { value: await create(signal, cleanup) };
+      });
+      if (lifetime.closing)
+        throw new FrameError("closed", "resource arrived after its use closed");
+    } catch (error) {
+      const closeFailure = resourceCloseFailure(await lifetime.close(), true);
+      if (closeFailure)
+        throw new AggregateError(
+          [error, closeFailure],
+          "resource acquisition and close failed",
+        );
+      throw error;
+    }
+    return Object.freeze(acquired);
+  }
+
+  readonly with = <R>(
+    work: (value: T, signal: AbortSignal) => Awaitable<R>,
+  ): Promise<R> => {
+    const state = this.#state;
+    if (state.status === "released" || !state.value)
+      throw new FrameError("closed", "acquired value is closed");
+    const value = state.value.value;
+    return state.lifetime.run((signal) => work(value, signal));
+  };
+
+  readonly close = (signal?: AbortSignal): Promise<CloseOutcome> =>
+    this.#exit().settled(signal);
+
+  readonly wait = (signal?: AbortSignal): Promise<CloseOutcome> =>
+    this.#exit().wait(signal);
+
+  #exit(): Exit {
+    return this.#state.status === "released"
+      ? this.#state.exit
+      : this.#state.lifetime.beginClose();
+  }
+}
+
+function resourceCloseFailure(
+  outcome: CloseOutcome,
+  taskFailureReported: boolean,
+): FrameError | undefined {
+  // A rejected borrow already reports its task error directly to the caller.
+  const additionalFailure = outcome.failures.some(
+    (failure) => !taskFailureReported || failure.phase !== "task",
+  );
+  if (
+    outcome.status === "released" &&
+    !additionalFailure &&
+    outcome.omittedFailures === 0
+  )
+    return undefined;
+  return new FrameError(
+    outcome.status === "unconfirmed" ? "close_unconfirmed" : "close_failed",
+    outcome.status === "unconfirmed"
+      ? "borrowed resource release is unconfirmed"
+      : "borrowed resource cleanup failed",
+    { cause: outcome },
+  );
 }

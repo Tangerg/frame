@@ -6,14 +6,15 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
 func TestLocalExitPreservesMaximumLengthAttemptIdentity(t *testing.T) {
 	store, _, _ := testStore(t)
-	ref := frame.UnitRef{InstallationID: "provider", Release: value.Hash(nil), UnitID: "main"}
-	binding := frame.BindingSnapshot{FormatVersion: 1, Roots: []frame.ExportRef{}, UnitRoots: []frame.UnitRef{ref}, Units: []frame.UnitBinding{{Source: ref, Configuration: value.Hash(nil)}}}
-	attempt := Attempt{ID: strings.Repeat("<", frame.MaxNameBytes), Epoch: store.Epoch(), Source: ref, Binding: binding, Realm: "runner", Profile: frame.LocalProcess}
+	ref := framehost.UnitRef{InstallationID: "provider", Release: value.Hash(nil), UnitID: "main"}
+	binding := framehost.BindingSnapshot{FormatVersion: 1, Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{ref}, Units: []framehost.UnitBinding{{Source: ref, Configuration: value.Hash(nil)}}}
+	attempt := Attempt{ID: strings.Repeat("<", frame.MaxNameBytes), Epoch: store.Epoch(), Source: ref, Binding: binding, Realm: "runner", Profile: framehost.LocalProcess}
 	proof := attempt.LocalExit("not-started", `{"started":false}`)
 	if err := store.CheckExitCapacity(proof); err != nil {
 		t.Fatalf("legal attempt identity cannot carry its original local exit: %v", err)

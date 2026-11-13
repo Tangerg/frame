@@ -15,6 +15,7 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 )
 
@@ -25,7 +26,7 @@ func snapshotRequest(points ...string) browser.SnapshotRequest {
 func snapshotBridge(t *testing.T) (*bridgeEnvironment, *browser.Bridge) {
 	t.Helper()
 	e := openBridge(t, filepath.Join(t.TempDir(), "store.db"), true)
-	bridge, err := browser.NewBridge(browser.BridgeConfig{Host: e.host, Store: e.store, Source: testModules{}, Points: []frame.ContractRef{e.first.Ref()}, MaxPending: 2})
+	bridge, err := browser.NewBridge(browser.BridgeConfig{Host: e.host, Store: e.store, Source: testModules{}, Points: []framehost.ContractRef{e.first.Ref()}, MaxPending: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,10 +145,10 @@ func TestSnapshotOperationPreservesProvenanceAndRejectsChangedRequests(t *testin
 				t.Fatal(err)
 			}
 		}
-		if _, err := e.bridge.Snapshot(e.ctx, other.Token, input); !errors.Is(err, frame.ErrFenced) {
+		if _, err := e.bridge.Snapshot(e.ctx, other.Token, input); !errors.Is(err, framehost.ErrFenced) {
 			t.Fatalf("another Realm observed original capture: %v", err)
 		}
-		if err := e.bridge.CloseSnapshot(e.ctx, other.Token, input.OperationID); !errors.Is(err, frame.ErrFenced) {
+		if err := e.bridge.CloseSnapshot(e.ctx, other.Token, input.OperationID); !errors.Is(err, framehost.ErrFenced) {
 			t.Fatalf("another Realm closed original capture: %v", err)
 		}
 	}
@@ -246,7 +247,7 @@ func TestBridgeConcurrentSnapshotCannotRetainASealedRealmLease(t *testing.T) {
 		calls.Wait()
 		close(results)
 		for err := range results {
-			if err != nil && !errors.Is(err, frame.ErrFenced) && !errors.Is(err, frame.ErrCapacity) {
+			if err != nil && !errors.Is(err, framehost.ErrFenced) && !errors.Is(err, frame.ErrCapacity) {
 				t.Fatalf("concurrent snapshot failed outside its admission contract: %v", err)
 			}
 		}
@@ -274,7 +275,7 @@ func TestBridgeSnapshotCloseIsIdempotentAndRealmBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := bridge.CloseSnapshot(e.ctx, other.Token, snapshot.ID); !errors.Is(err, frame.ErrFenced) {
+	if err := bridge.CloseSnapshot(e.ctx, other.Token, snapshot.ID); !errors.Is(err, framehost.ErrFenced) {
 		t.Fatalf("another Realm closed snapshot: %v", err)
 	}
 	for range 8 {
@@ -339,7 +340,7 @@ func TestBridgeSnapshotCloseWinsBeforeAcquisition(t *testing.T) {
 	if err := e.bridge.CloseSnapshot(e.ctx, e.credentials.Token, request.SnapshotID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.bridge.Acquire(e.ctx, e.credentials.Token, request); !errors.Is(err, frame.ErrStaleBinding) {
+	if _, err := e.bridge.Acquire(e.ctx, e.credentials.Token, request); !errors.Is(err, framehost.ErrStaleBinding) {
 		t.Fatalf("closed selection created a Use: %v", err)
 	}
 	uses, err := e.store.Uses(e.ctx)
@@ -354,13 +355,13 @@ func TestBridgeFailedAcquisitionConsumesSnapshotAndReplaysOriginalRefusal(t *tes
 	request := e.selectionRequest(plan, "refused-acquire")
 	request.Selections[0].Candidates = []string{"not-captured"}
 	for range 2 {
-		if _, err := e.bridge.Acquire(e.ctx, e.credentials.Token, request); !errors.Is(err, frame.ErrStaleBinding) {
+		if _, err := e.bridge.Acquire(e.ctx, e.credentials.Token, request); !errors.Is(err, framehost.ErrStaleBinding) {
 			t.Fatalf("original refusal was not preserved: %v", err)
 		}
 	}
 	request.OperationID = "different-acquire"
 	request.Selections[0].Candidates = nil
-	if _, err := e.bridge.Acquire(e.ctx, e.credentials.Token, request); !errors.Is(err, frame.ErrStaleBinding) {
+	if _, err := e.bridge.Acquire(e.ctx, e.credentials.Token, request); !errors.Is(err, framehost.ErrStaleBinding) {
 		t.Fatalf("consumed snapshot admitted another operation: %v", err)
 	}
 	if err := e.bridge.CloseSnapshot(e.ctx, e.credentials.Token, request.SnapshotID); err != nil {
@@ -384,7 +385,7 @@ func TestBridgeSnapshotCloseAndAcquireHaveOneAdmissionWinner(t *testing.T) {
 		if closeErr := <-closed; closeErr != nil {
 			t.Fatal(closeErr)
 		}
-		if errors.Is(err, frame.ErrStaleBinding) {
+		if errors.Is(err, framehost.ErrStaleBinding) {
 			continue
 		}
 		if err != nil {

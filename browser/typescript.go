@@ -11,7 +11,7 @@ import (
 	"unicode"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable/contractgen"
+	"github.com/Tangerg/frame/contractgen"
 	framevalue "github.com/Tangerg/frame/value"
 )
 
@@ -70,8 +70,9 @@ type typeScriptEmitter struct {
 }
 
 type typeScriptDeclaration struct {
-	source reflect.Type
-	model  reflect.Type
+	source      reflect.Type
+	model       reflect.Type
+	enumeration *framevalue.StringEnum
 }
 
 func newTypeScriptEmitter(roots []reflect.Type) (*typeScriptEmitter, error) {
@@ -86,7 +87,7 @@ func newTypeScriptEmitter(roots []reflect.Type) (*typeScriptEmitter, error) {
 	}
 	for _, name := range slices.Sorted(maps.Keys(emitter.types)) {
 		declaration := emitter.types[name]
-		if _, enum := reflect.Zero(declaration.source).Interface().(interface{ Values() []string }); enum {
+		if declaration.enumeration != nil {
 			if err := emitter.reserveValues("enum "+name, name+enumValuesSuffix); err != nil {
 				return nil, err
 			}
@@ -127,7 +128,11 @@ func (e *typeScriptEmitter) collect(t reflect.Type) error {
 		return fmt.Errorf("control: unsupported named collection %s", t)
 	}
 	if t.PkgPath() != "" {
-		e.types[name] = typeScriptDeclaration{source: t, model: model}
+		enumeration, err := framevalue.EncodingEnum(t)
+		if err != nil {
+			return err
+		}
+		e.types[name] = typeScriptDeclaration{source: t, model: model, enumeration: enumeration}
 	}
 	switch model.Kind() {
 	case reflect.Slice, reflect.Array:
@@ -285,11 +290,8 @@ func (e *typeScriptEmitter) writeEnum(name string, values []string) {
 }
 
 func (e *typeScriptEmitter) writeDeclaration(name string, declaration typeScriptDeclaration) error {
-	if values, ok := reflect.Zero(declaration.source).Interface().(interface{ Values() []string }); ok {
-		if declaration.model.Kind() != reflect.String || declaration.model == reflect.TypeFor[jsonv1.Number]() {
-			return fmt.Errorf("control: string enum %s requires a string encoding model", declaration.source)
-		}
-		e.writeEnum(name, values.Values())
+	if declaration.enumeration != nil {
+		e.writeEnum(name, declaration.enumeration.Members())
 		return nil
 	}
 	t := declaration.model

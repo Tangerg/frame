@@ -16,6 +16,7 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 	"github.com/Tangerg/frame/value"
 )
@@ -25,21 +26,44 @@ type testMetadata struct {
 }
 type testModules struct{}
 
-func (testModules) Module(context.Context, frame.UnitBinding) (browser.Artifact, error) {
+type missingRealmContext struct{ context.Context }
+
+func TestRealmRejectsMissingSealContextBeforeFencing(t *testing.T) {
+	e := openBridge(t, filepath.Join(t.TempDir(), "frame.db"), true)
+	credentials, err := e.bridge.OpenRealm(e.ctx, "original", "0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.bridge.SealRealm((*missingRealmContext)(nil), credentials.Token); !errors.Is(err, frame.ErrInvalid) {
+		t.Fatalf("missing wait context admitted: %v", err)
+	}
+	request := snapshotRequest(e.first.Ref().Name)
+	if _, err := e.bridge.Snapshot((*missingRealmContext)(nil), credentials.Token, request); !errors.Is(err, frame.ErrInvalid) {
+		t.Fatalf("missing snapshot context admitted: %v", err)
+	}
+	if _, err := e.bridge.Snapshot(e.ctx, credentials.Token, request); err != nil {
+		t.Fatalf("invalid context fenced the original realm: %v", err)
+	}
+	if err := e.bridge.CloseSnapshot(e.ctx, credentials.Token, request.OperationID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (testModules) Module(context.Context, framehost.UnitBinding) (browser.Artifact, error) {
 	return browser.Artifact{Path: "/plugins/test.js", Digest: value.Hash([]byte("test-module"))}, nil
 }
 
 type bridgeEnvironment struct {
 	t           *testing.T
 	ctx         context.Context
-	store       *sqlite.Store
-	host        *frame.Host
+	store       sqlite.Store
+	host        framehost.Host
 	bridge      *browser.Bridge
 	credentials browser.Credentials
-	first       frame.Point[testMetadata, browser.Object]
-	second      frame.Point[testMetadata, browser.Object]
+	first       framehost.Point[testMetadata, browser.Object]
+	second      framehost.Point[testMetadata, browser.Object]
 	plans       []browser.LocalPlan
-	plugin      *frame.Plugin
+	plugin      *framehost.Plugin
 }
 
 func openBridge(t *testing.T, path string, cleanup bool) *bridgeEnvironment {
@@ -55,28 +79,28 @@ func openBridgeEnvironment(t *testing.T, storeConfig sqlite.Config, cleanup bool
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
-	admission := frame.NewAdmission()
+	admission := framehost.NewAdmission()
 	storeConfig.Admission = admission
 	store, err := sqlite.Open(ctx, storeConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := frame.NewHost(context.Background(), frame.HostConfig{Admission: admission, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store})
+	host, err := framehost.New(context.Background(), framehost.Config{Admission: admission, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store})
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := frame.NewPoint[testMetadata, browser.Object]("test.preview", "1")
+	first, err := framehost.NewPoint[testMetadata, browser.Object]("test.preview", "1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := frame.NewPoint[testMetadata, browser.Object]("test.theme", "1")
+	second, err := framehost.NewPoint[testMetadata, browser.Object]("test.theme", "1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := host.Register(first, second); err != nil {
 		t.Fatal(err)
 	}
-	config := browser.BridgeConfig{Host: host, Store: store, Source: testModules{}, Points: []frame.ContractRef{first.Ref(), second.Ref()}}
+	config := browser.BridgeConfig{Host: host, Store: store, Source: testModules{}, Points: []framehost.ContractRef{first.Ref(), second.Ref()}}
 	if configure != nil {
 		configure(&config)
 	}
@@ -87,7 +111,7 @@ func openBridgeEnvironment(t *testing.T, storeConfig sqlite.Config, cleanup bool
 	if err := host.RegisterDriver(bridge); err != nil {
 		t.Fatal(err)
 	}
-	plugin, err := frame.Define(frame.Definition{Revision: value.Hash([]byte("test-browser-plugin")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "view", Profile: frame.BrowserJS, Exports: []frame.ExportDeclaration{{Name: "preview", Contract: first.Ref()}, {Name: "theme", Contract: second.Ref()}}}}}})
+	plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("test-browser-plugin")), Units: []framehost.Unit{{Declaration: framehost.UnitDeclaration{ID: "view", Profile: framehost.BrowserJS, Exports: []framehost.ExportDeclaration{{Name: "preview", Contract: first.Ref()}, {Name: "theme", Contract: second.Ref()}}}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,10 +151,10 @@ func (e *bridgeEnvironment) beginActivation(id string) (browser.LocalPlan, <-cha
 		}
 		e.credentials = credentials
 	}
-	if _, err := e.host.Install(e.ctx, frame.InstallationConfig{ID: frame.InstallationID(id), Plugin: e.plugin, Configuration: []byte(`{"privateCredential":"must-not-reach-js"}`), Enabled: true}); err != nil {
+	if _, err := e.host.Install(e.ctx, framehost.InstallationConfig{ID: framehost.InstallationID(id), Plugin: e.plugin, Configuration: []byte(`{"privateCredential":"must-not-reach-js"}`), Enabled: true}); err != nil {
 		e.t.Fatal(err)
 	}
-	root := frame.ExportRef{InstallationID: frame.InstallationID(id), Release: e.plugin.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
+	root := framehost.ExportRef{InstallationID: framehost.InstallationID(id), Release: e.plugin.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
 	done := make(chan error, 1)
 	go func() {
 		_, err := e.host.ActivateIn(e.ctx, browser.RealmID(e.credentials.Realm), root)
@@ -143,7 +167,7 @@ func (e *bridgeEnvironment) beginActivation(id string) (browser.LocalPlan, <-cha
 			e.t.Fatal(err)
 		}
 		for _, pending := range projection.Plans {
-			if pending.Units[0].Instance.Source.InstallationID == frame.InstallationID(id) {
+			if pending.Units[0].Instance.Source.InstallationID == framehost.InstallationID(id) {
 				plan = pending
 				break
 			}
@@ -259,7 +283,7 @@ func TestBridgeExactPlanCaptureUseAndProof(t *testing.T) {
 	}
 	forged := plan
 	forged.ApprovalToken = "not-the-original"
-	if _, err := e.bridge.AdmitPlan(e.ctx, e.credentials.Token, forged); !errors.Is(err, frame.ErrStaleBinding) {
+	if _, err := e.bridge.AdmitPlan(e.ctx, e.credentials.Token, forged); !errors.Is(err, framehost.ErrStaleBinding) {
 		t.Fatalf("forged plan accepted: %v", err)
 	}
 	request, grant := e.acquire(plan, "first-use")
@@ -284,7 +308,7 @@ func TestBridgeExactPlanCaptureUseAndProof(t *testing.T) {
 	proof := useProof(plan, grant)
 	wrong := proof
 	wrong.ScopeGeneration = "999"
-	if _, err := e.bridge.Prove(e.ctx, e.credentials.Token, wrong); !errors.Is(err, frame.ErrStaleBinding) {
+	if _, err := e.bridge.Prove(e.ctx, e.credentials.Token, wrong); !errors.Is(err, framehost.ErrStaleBinding) {
 		t.Fatalf("wrong generation released Use: %v", err)
 	}
 	ack, err := e.bridge.Prove(e.ctx, e.credentials.Token, proof)
@@ -344,7 +368,7 @@ func TestExactBindingChildKeepsOriginalParentExecutionOwner(t *testing.T) {
 	parentPlan := e.start("parent")
 	providerPlan := e.start("provider")
 	_, parent := e.acquire(parentPlan, "parent-use")
-	root := frame.ExportRef{InstallationID: "provider", Release: e.plugin.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
+	root := framehost.ExportRef{InstallationID: "provider", Release: e.plugin.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
 	binding, err := e.host.PlanWith(e.ctx, browser.RealmID(e.credentials.Realm), nil, root)
 	if err != nil {
 		t.Fatal(err)
@@ -381,7 +405,7 @@ func TestParentUseProofClosesUnknownChildGrantWithoutClosingExecution(t *testing
 	parentPlan := e.start("parent")
 	providerPlan := e.start("provider")
 	_, parent := e.acquire(parentPlan, "parent-use")
-	root := frame.ExportRef{InstallationID: "provider", Release: e.plugin.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
+	root := framehost.ExportRef{InstallationID: "provider", Release: e.plugin.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
 	binding, err := e.host.PlanWith(e.ctx, browser.RealmID(e.credentials.Realm), nil, root)
 	if err != nil {
 		t.Fatal(err)
@@ -476,7 +500,7 @@ func TestExecutionExitCoversAcceptedPublicationWithoutSeparateWithdrawal(t *test
 	leaf.PublicationID = publication.Publication.ID
 	leaf.CloseID = "publication-close"
 	leaf.ProofID = "publication-proof"
-	if _, err := e.bridge.Prove(e.ctx, e.credentials.Token, leaf); !errors.Is(err, frame.ErrStaleBinding) {
+	if _, err := e.bridge.Prove(e.ctx, e.credentials.Token, leaf); !errors.Is(err, framehost.ErrStaleBinding) {
 		t.Fatalf("an independent publication exit bypassed Host withdrawal: %v", err)
 	}
 	proof := executionProof(plan)
@@ -589,7 +613,7 @@ func TestHostReconstructionAcceptsOriginalProofWithoutRecreation(t *testing.T) {
 	if err != nil || len(dependencies) != 0 {
 		t.Fatalf("original delegated protection survived confirmed exit: %+v %v", dependencies, err)
 	}
-	if _, err := e.bridge.Acquire(e.ctx, credentials.Token, browser.AcquireRequest{OperationID: "new"}); !errors.Is(err, frame.ErrFenced) {
+	if _, err := e.bridge.Acquire(e.ctx, credentials.Token, browser.AcquireRequest{OperationID: "new"}); !errors.Is(err, framehost.ErrFenced) {
 		t.Fatalf("old Realm admitted work: %v", err)
 	}
 	ack, err := e.bridge.Prove(e.ctx, credentials.Token, proof)

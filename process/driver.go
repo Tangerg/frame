@@ -13,8 +13,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/internal/cancellation"
-	"github.com/Tangerg/frame/internal/nilness"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/process/runner"
 	"github.com/Tangerg/frame/sqlite"
 	framevalue "github.com/Tangerg/frame/value"
@@ -35,7 +34,7 @@ type Program struct {
 }
 
 type Source interface {
-	Program(context.Context, frame.UnitBinding) (Program, error)
+	Program(context.Context, framehost.UnitBinding) (Program, error)
 }
 
 // Runner is the original process authority; a consumer may start and connect its
@@ -53,7 +52,7 @@ type Runner interface {
 
 type Config struct {
 	Runner        Runner
-	Store         *sqlite.Store
+	Store         sqlite.Store
 	Source        Source
 	CloseTimeout  time.Duration
 	MaxFrameBytes int
@@ -62,7 +61,7 @@ type Config struct {
 
 type Driver struct {
 	config  Config
-	profile frame.Profile
+	profile framehost.Profile
 	mu      sync.Mutex
 	live    map[string]*execution
 }
@@ -90,38 +89,38 @@ const (
 )
 
 func New(config Config) (*Driver, error) {
-	if nilness.Is(config.Runner) || config.Store == nil || nilness.Is(config.Source) || config.CloseTimeout <= 0 || config.MaxFrameBytes <= 0 {
+	if framevalue.IsNil(config.Runner) || config.Store.Epoch() == 0 || framevalue.IsNil(config.Source) || config.CloseTimeout <= 0 || config.MaxFrameBytes <= 0 {
 		return nil, fmt.Errorf("%w: process driver requires runner, store, source and explicit limits", frame.ErrInvalid)
 	}
 	if config.Protocol == nil {
 		config.Protocol = localProtocol{}
 	}
-	if nilness.Is(config.Protocol) {
+	if framevalue.IsNil(config.Protocol) {
 		return nil, fmt.Errorf("%w: missing process protocol", frame.ErrInvalid)
 	}
 	name := config.Protocol.Profile()
 	if err := name.Validate(); err != nil {
 		return nil, err
 	}
-	if name == frame.LocalProcess && config.MaxFrameBytes > wire.MaxFrameBytes {
+	if name == framehost.LocalProcess && config.MaxFrameBytes > wire.MaxFrameBytes {
 		return nil, fmt.Errorf("%w: neutral process frame exceeds %d bytes", frame.ErrInvalid, wire.MaxFrameBytes)
 	}
-	if name == frame.NativeGo {
+	if name == framehost.NativeGo {
 		return nil, fmt.Errorf("%w: reserved native profile", frame.ErrInvalid)
 	}
 	return &Driver{config: config, profile: name, live: make(map[string]*execution)}, nil
 }
 
-func (d *Driver) Profile() frame.Profile { return d.profile }
+func (d *Driver) Profile() framehost.Profile { return d.profile }
 
 const (
 	executionResourcePrefix = "local process "
 	contentResourceName     = "process content"
 )
 
-func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.ExportValue, error) {
+func (d *Driver) Prepare(ctx context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
 	if setup == nil || !setup.UsesAuthority(d.config.Store) {
-		return nil, frame.ErrFenced
+		return nil, framehost.ErrFenced
 	}
 	if err := d.checkUnit(setup.Unit()); err != nil {
 		return nil, err
@@ -134,7 +133,7 @@ func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 	if err != nil {
 		return nil, err
 	}
-	if nilness.Is(connection) {
+	if framevalue.IsNil(connection) {
 		return nil, fmt.Errorf("%w: missing protocol connection", frame.ErrInvalid)
 	}
 	realm, err := d.currentRunner(ctx, setup.Epoch())
@@ -158,7 +157,7 @@ func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 		return nil, err
 	}
 	ownedCtx, cancel := context.WithCancelCause(setup.Lifetime().Context())
-	stopPreparation := context.AfterFunc(ctx, func() { cancel(cancellation.Err(ctx)) })
+	stopPreparation := context.AfterFunc(ctx, func() { cancel(frame.ContextError(ctx)) })
 	defer stopPreparation()
 	e := &execution{driver: d, attempt: attempt, request: request, ready: make(chan struct{}), cancel: cancel}
 	var dependencies []*frame.ResourceHandle
@@ -176,7 +175,7 @@ func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 	d.live[attempt.ID] = e
 	d.mu.Unlock()
 	defer close(e.ready)
-	if err := cancellation.Err(ownedCtx); err != nil {
+	if err := frame.ContextError(ownedCtx); err != nil {
 		return nil, err
 	}
 	return e.start(ownedCtx, connection)
@@ -184,24 +183,24 @@ func (d *Driver) Prepare(ctx context.Context, setup *frame.Setup) ([]frame.Expor
 
 // checkUnit admits only Portable contracts: a child process cannot share a
 // native Go value with the Host.
-func (d *Driver) checkUnit(unit frame.UnitDeclaration) error {
+func (d *Driver) checkUnit(unit framehost.UnitDeclaration) error {
 	if unit.Profile != d.profile {
 		return frame.ErrContractMismatch
 	}
 	for _, requirement := range unit.Imports {
-		if requirement.Contract.Mode != frame.PortableMode {
+		if requirement.Contract.Mode != framehost.PortableMode {
 			return frame.ErrContractMismatch
 		}
 	}
 	for _, export := range unit.Exports {
-		if export.Contract.Mode != frame.PortableMode {
+		if export.Contract.Mode != framehost.PortableMode {
 			return frame.ErrContractMismatch
 		}
 	}
 	return nil
 }
 
-func (d *Driver) program(ctx context.Context, setup *frame.Setup) (Program, *frame.ResourceHandle, error) {
+func (d *Driver) program(ctx context.Context, setup *framehost.Setup) (Program, *frame.ResourceHandle, error) {
 	var program Program
 	// Preparation work keeps cleanup behind the original acquisition, including
 	// a content lease returned together with a resolution error.
@@ -232,12 +231,12 @@ func (d *Driver) currentRunner(ctx context.Context, epoch uint64) (string, error
 		return "", err
 	}
 	if identity.Fenced || identity.Epoch != epoch {
-		return "", frame.ErrFenced
+		return "", framehost.ErrFenced
 	}
 	return identity.ID, nil
 }
 
-func (e *execution) start(ctx context.Context, connection Connection) ([]frame.ExportValue, error) {
+func (e *execution) start(ctx context.Context, connection Connection) ([]framehost.ExportValue, error) {
 	e.mu.Lock()
 	// A zero result is unknown, never permission to release. Keep this original
 	// invocation: an undispatched retry could not negate an earlier acceptance.
@@ -354,7 +353,7 @@ func (d *Driver) Reconcile(ctx context.Context, id string) error {
 	e := d.live[id]
 	d.mu.Unlock()
 	if e == nil {
-		return frame.ErrUnavailable
+		return framehost.ErrUnavailable
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()

@@ -24,7 +24,7 @@ export interface ControlInputs {
 
 export interface ControlOutputs {
   readonly admitPlan: PlanAdmission;
-  readonly ready: PublicationResult;
+  readonly ready: DecisionResult;
   readonly acquire: UseGrant;
   readonly validateUse: void;
   readonly validateRoute: void;
@@ -32,7 +32,7 @@ export interface ControlOutputs {
   readonly closeSnapshot: void;
   readonly publish: PublicationResult;
   readonly publication: PublicationResult;
-  readonly withdraw: PublicationResult;
+  readonly withdraw: DecisionResult;
   readonly prove: ProofAcknowledgement;
   readonly reconnect: ReconnectResult;
   readonly poll: Poll;
@@ -172,6 +172,13 @@ function matchesWireContractRef(value: unknown): value is ContractRef {
 
 function matchesWireDecision(value: unknown): value is Decision {
   return typeof value === "string" && DecisionValues.includes(value as Decision);
+}
+
+function matchesWireDecisionResult(value: unknown): value is DecisionResult {
+  return wireObject(value, ["decision", "problem"]) &&
+    Object.hasOwn(value, "decision") &&
+    (matchesWireDecision(value["decision"])) &&
+    (!Object.hasOwn(value, "problem") || (typeof value["problem"] === "string"));
 }
 
 function matchesWireDigest(value: unknown): value is Digest {
@@ -576,6 +583,7 @@ export interface ProtocolValues {
   readonly ContractMode: ContractMode;
   readonly ContractRef: ContractRef;
   readonly Decision: Decision;
+  readonly DecisionResult: DecisionResult;
   readonly Digest: Digest;
   readonly Execution: Execution;
   readonly ExportDeclaration: ExportDeclaration;
@@ -629,6 +637,7 @@ const protocolValues = {
   ["ContractMode"]: matchesWireContractMode,
   ["ContractRef"]: matchesWireContractRef,
   ["Decision"]: matchesWireDecision,
+  ["DecisionResult"]: matchesWireDecisionResult,
   ["Digest"]: matchesWireDigest,
   ["Execution"]: matchesWireExecution,
   ["ExportDeclaration"]: matchesWireExportDeclaration,
@@ -679,7 +688,7 @@ export function decodeProtocolValue<K extends keyof ProtocolValues>(name: K, val
 
 const controlOutputs = {
   ["admitPlan"]: (value: unknown) => matchesWirePlanAdmission(value),
-  ["ready"]: (value: unknown) => matchesWirePublicationResult(value),
+  ["ready"]: (value: unknown) => matchesWireDecisionResult(value),
   ["acquire"]: (value: unknown) => matchesWireUseGrant(value),
   ["validateUse"]: (value: unknown) => value === null,
   ["validateRoute"]: (value: unknown) => value === null,
@@ -687,7 +696,7 @@ const controlOutputs = {
   ["closeSnapshot"]: (value: unknown) => value === null,
   ["publish"]: (value: unknown) => matchesWirePublicationResult(value),
   ["publication"]: (value: unknown) => matchesWirePublicationResult(value),
-  ["withdraw"]: (value: unknown) => matchesWirePublicationResult(value),
+  ["withdraw"]: (value: unknown) => matchesWireDecisionResult(value),
   ["prove"]: (value: unknown) => matchesWireProofAcknowledgement(value),
   ["reconnect"]: (value: unknown) => matchesWireReconnectResult(value),
   ["poll"]: (value: unknown) => matchesWirePoll(value),
@@ -767,6 +776,11 @@ export interface ContractRef {
 
 export const DecisionValues = ["accepted", "rejected", "unknown"] as const;
 export type Decision = (typeof DecisionValues)[number];
+
+export interface DecisionResult {
+  readonly decision: Decision;
+  readonly problem?: string;
+}
 
 export type Digest = string;
 

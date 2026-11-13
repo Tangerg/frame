@@ -3,31 +3,31 @@ package sqlite
 import (
 	"errors"
 
-	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 type submissionState string
 
 const (
 	submissionPrepared              submissionState = "prepared"
-	submissionCommitted             submissionState = submissionState(frame.CommitSucceeded)
-	submissionRejected              submissionState = submissionState(frame.CommitRejected)
+	submissionCommitted             submissionState = submissionState(framehost.CommitSucceeded)
+	submissionRejected              submissionState = submissionState(framehost.CommitRejected)
 	submissionCommittedSynchronized submissionState = "committed_synchronized"
 	submissionRejectedSynchronized  submissionState = "not_committed_synchronized"
 )
 
 // Prepared is durable intent, not a terminal business conclusion. Unknown
 // stored states are corruption rather than another spelling of that intent.
-func (s submissionState) settlement() (frame.CommitState, error) {
+func (s submissionState) settlement() (framehost.CommitState, error) {
 	switch s {
 	case submissionPrepared:
-		return frame.CommitIndeterminate, nil
+		return framehost.CommitIndeterminate, nil
 	case submissionCommitted, submissionCommittedSynchronized:
-		return frame.CommitSucceeded, nil
+		return framehost.CommitSucceeded, nil
 	case submissionRejected, submissionRejectedSynchronized:
-		return frame.CommitRejected, nil
+		return framehost.CommitRejected, nil
 	default:
-		return frame.CommitIndeterminate, errors.Join(ErrIndeterminate, errors.New("sqlite: invalid stored submission state"))
+		return framehost.CommitIndeterminate, errors.Join(ErrIndeterminate, errors.New("sqlite: invalid stored submission state"))
 	}
 }
 

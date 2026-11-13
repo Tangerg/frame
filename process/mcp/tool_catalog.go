@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/value"
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
@@ -30,15 +29,15 @@ func (r toolRequirements) admit(export string, member *toolMember) error {
 	if len(descriptor.Stream) != 0 {
 		return fmt.Errorf("%w: MCP tool %q must be unary", frame.ErrContractMismatch, descriptor.Name)
 	}
-	var schema struct{ Type portable.SchemaType }
-	if err := json.Unmarshal(descriptor.Input, &schema); err != nil || schema.Type != portable.TypeObject {
+	var schema struct{ Type value.SchemaType }
+	if err := json.Unmarshal(descriptor.Input, &schema); err != nil || schema.Type != value.TypeObject {
 		return fmt.Errorf("%w: MCP tool %q needs an object input schema", frame.ErrContractMismatch, descriptor.Name)
 	}
 	input, err := value.ParseJSON(descriptor.Input)
 	if err != nil {
 		return err
 	}
-	required := toolRequirement{input: toolSchema{value: input, export: export}, readOnly: descriptor.Kind == portable.Query}
+	required := toolRequirement{input: toolSchema{value: input, export: export}, readOnly: descriptor.Kind == frame.Query}
 	if !member.fullResult {
 		output, err := value.ParseJSON(descriptor.Output)
 		if err != nil {

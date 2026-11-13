@@ -8,7 +8,7 @@ import (
 	"math"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/internal/cancellation"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 	"github.com/Tangerg/frame/value"
 )
@@ -44,7 +44,7 @@ type controlOperation struct {
 	receiptReservation *sqlite.ReceiptReservation
 }
 
-var errRealmSealed = fmt.Errorf("%w: realm sealed", frame.ErrFenced)
+var errRealmSealed = fmt.Errorf("%w: realm sealed", framehost.ErrFenced)
 
 // begin returns the operation that owns id. A repeated request observes its
 // original operation without admission; a new one is admitted by admitLocked,
@@ -104,7 +104,7 @@ type controlReceipt struct {
 func (o *controlOperation) wait(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
-		return cancellation.Err(ctx)
+		return frame.ContextError(ctx)
 	case <-o.done:
 		return nil
 	}
@@ -138,7 +138,7 @@ type receiptRead struct {
 // Reserve receipt lookups alongside live operations before entering the single
 // SQLite connection. Concurrent observations of the same identity share a read.
 func (b *Bridge) operationLocked(ctx context.Context, id string) (*controlOperation, error) {
-	if !frame.ValidName(id) {
+	if value.IsNil(ctx) || !frame.ValidName(id) {
 		return nil, frame.ErrInvalid
 	}
 	for {
@@ -147,7 +147,7 @@ func (b *Bridge) operationLocked(ctx context.Context, id string) (*controlOperat
 			select {
 			case <-ctx.Done():
 				b.mu.Lock()
-				return nil, cancellation.Err(ctx)
+				return nil, frame.ContextError(ctx)
 			case <-pending.done:
 			}
 			b.mu.Lock()

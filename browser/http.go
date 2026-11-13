@@ -24,7 +24,7 @@ func (b *Bridge) Handler() http.Handler {
 			return
 		}
 		token, bearer := strings.CutPrefix(request.Header.Get(authorizationHeader), bearerScheme)
-		if !bearer || len(token) > maxTokenBytes {
+		if !bearer {
 			writeProblem(writer, http.StatusUnauthorized, deniedProblem.code, "Realm authentication is required")
 			return
 		}
@@ -61,12 +61,9 @@ func (b *Bridge) Handler() http.Handler {
 	})
 }
 
-// A Realm token is short, so a longer Authorization header is refused before
-// any signature work.
 const (
 	authorizationHeader = "Authorization"
 	bearerScheme        = "Bearer "
-	maxTokenBytes       = 1024
 )
 
 func decodeInput[T any](input json.RawMessage) (T, error) {

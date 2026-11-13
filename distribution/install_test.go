@@ -8,14 +8,14 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
 type analyzerDriver struct{ prepared int }
 
-func (*analyzerDriver) Profile() frame.Profile { return "example-analyzer" }
-func (d *analyzerDriver) Prepare(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
+func (*analyzerDriver) Profile() framehost.Profile { return "example-analyzer" }
+func (d *analyzerDriver) Prepare(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
 	d.prepared++
 	return nil, nil
 }
@@ -46,7 +46,7 @@ func TestExternalProfileArchiveNeedsItsHostDriver(t *testing.T) {
 	if _, err := VerifyArchive(ctx, name, digest, DefaultLimits()); err != nil {
 		t.Fatal(err)
 	}
-	gate := frame.NewAdmission()
+	gate := framehost.NewAdmission()
 	cache := t.TempDir()
 	t.Cleanup(func() {
 		if err := removeSealed(cache); err != nil {
@@ -63,13 +63,13 @@ func TestExternalProfileArchiveNeedsItsHostDriver(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lease.Close()
-	host, err := frame.NewHost(ctx, frame.HostConfig{Admission: gate})
+	host, err := framehost.New(ctx, framehost.Config{Admission: gate})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer host.Close(ctx)
 	config := Installation{ID: "analysis", Enabled: true}
-	if _, err = lease.Install(ctx, host, config); !errors.Is(err, frame.ErrUnavailable) {
+	if _, err = lease.Install(ctx, host, config); !errors.Is(err, framehost.ErrUnavailable) {
 		t.Fatalf("unknown execution profile: %v", err)
 	}
 	if err = host.RegisterDriver(driver); err != nil {
@@ -82,7 +82,7 @@ func TestExternalProfileArchiveNeedsItsHostDriver(t *testing.T) {
 	if driver.prepared != 0 {
 		t.Fatal("inspection or installation executed code")
 	}
-	plan, err := host.PlanUnit(ctx, "", frame.UnitRef{InstallationID: record.ID, Release: record.Release, UnitID: "check"}, nil)
+	plan, err := host.PlanUnit(ctx, "", framehost.UnitRef{InstallationID: record.ID, Release: record.Release, UnitID: "check"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

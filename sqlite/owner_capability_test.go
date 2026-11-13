@@ -7,20 +7,21 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 	"github.com/Tangerg/frame/value"
 )
 
 func TestRebindingAnOwnerHandlePreservesTheRegisteredAuthority(t *testing.T) {
-	admission := frame.NewAdmission()
-	dependency := frame.Dependency{InstallationID: "provider", Release: value.Hash([]byte("original provider"))}
+	admission := framehost.NewAdmission()
+	dependency := framehost.Dependency{InstallationID: "provider", Release: value.Hash([]byte("original provider"))}
 	store, err := sqlite.Open(t.Context(), sqlite.Config{
 		Path: filepath.Join(t.TempDir(), "owner-capability.db"), Admission: admission,
 		Owners: []sqlite.OwnerSchema{
-			{ID: "retained", References: func(context.Context, sqlite.Reader, frame.InstallationID) ([]frame.Dependency, error) {
-				return []frame.Dependency{dependency}, nil
+			{ID: "retained", References: func(context.Context, sqlite.Reader, framehost.InstallationID) ([]framehost.Dependency, error) {
+				return []framehost.Dependency{dependency}, nil
 			}},
-			{ID: "unretained", References: func(context.Context, sqlite.Reader, frame.InstallationID) ([]frame.Dependency, error) {
+			{ID: "unretained", References: func(context.Context, sqlite.Reader, framehost.InstallationID) ([]framehost.Dependency, error) {
 				return nil, nil
 			}},
 		},
@@ -40,7 +41,7 @@ func TestRebindingAnOwnerHandlePreservesTheRegisteredAuthority(t *testing.T) {
 	if err := admission.RegisterUseOwner(owner); err != nil {
 		t.Fatal(err)
 	}
-	if err := admission.CheckUnused(t.Context(), dependency.InstallationID); !errors.Is(err, frame.ErrInUse) {
+	if err := admission.CheckUnused(t.Context(), dependency.InstallationID); !errors.Is(err, framehost.ErrInUse) {
 		t.Fatalf("fixture did not retain the original provider: %v", err)
 	}
 	owner = other
@@ -54,7 +55,7 @@ func TestRebindingAnOwnerHandlePreservesTheRegisteredAuthority(t *testing.T) {
 	if original.ID() != "retained" {
 		t.Errorf("rebound handle rewrote the Store's original owner: %q", original.ID())
 	}
-	if err := admission.CheckUnused(t.Context(), dependency.InstallationID); !errors.Is(err, frame.ErrInUse) {
+	if err := admission.CheckUnused(t.Context(), dependency.InstallationID); !errors.Is(err, framehost.ErrInUse) {
 		t.Errorf("rebound handle discarded the registered owner's retained dependency: %v", err)
 	}
 	issued, err := original.Prepare(t.Context(), []byte("original owner request"))
@@ -68,7 +69,7 @@ func TestZeroOwnerRefusesEveryOperation(t *testing.T) {
 	if owner.ID() != "" {
 		t.Fatal("zero owner invented a registered identity")
 	}
-	if err := frame.NewAdmission().RegisterUseOwner(owner); !errors.Is(err, frame.ErrInvalid) {
+	if err := framehost.NewAdmission().RegisterUseOwner(owner); !errors.Is(err, frame.ErrInvalid) {
 		t.Fatalf("zero owner entered the retained-use registry: %v", err)
 	}
 	id := sqlite.SubmissionID{Store: "store", Owner: "owner", Sequence: 1}

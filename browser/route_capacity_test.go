@@ -10,6 +10,7 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 	"github.com/Tangerg/frame/value"
 )
@@ -17,12 +18,12 @@ import (
 func TestRefusedRouteDoesNotConsumeHostCapacity(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
-	admission := frame.NewAdmission()
+	admission := framehost.NewAdmission()
 	store, err := sqlite.Open(ctx, sqlite.Config{Path: filepath.Join(t.TempDir(), "routes.db"), Admission: admission})
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := frame.NewHost(ctx, frame.HostConfig{Admission: admission, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store, Limits: frame.HostLimits{MaxEventRoutes: 1}})
+	host, err := framehost.New(ctx, framehost.Config{Admission: admission, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store, Limits: framehost.Limits{MaxEventRoutes: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,21 +59,21 @@ func TestRefusedRouteDoesNotConsumeHostCapacity(t *testing.T) {
 	})
 	acquire := func(id, name, version string) (browser.UseGrant, browser.LocalExport) {
 		t.Helper()
-		event, err := frame.NewEvent[string](name, version)
+		event, err := framehost.NewEvent[string](name, version)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := host.Register(event); err != nil {
 			t.Fatal(err)
 		}
-		plugin, err := frame.Define(frame.Definition{Revision: value.Hash([]byte(id)), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "emitter", Profile: frame.BrowserJS, Exports: []frame.ExportDeclaration{{Name: "ping", Contract: event.Ref()}}}}}})
+		plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte(id)), Units: []framehost.Unit{{Declaration: framehost.UnitDeclaration{ID: "emitter", Profile: framehost.BrowserJS, Exports: []framehost.ExportDeclaration{{Name: "ping", Contract: event.Ref()}}}}}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := host.Install(ctx, frame.InstallationConfig{ID: frame.InstallationID(id), Plugin: plugin, Enabled: true}); err != nil {
+		if _, err := host.Install(ctx, framehost.InstallationConfig{ID: framehost.InstallationID(id), Plugin: plugin, Enabled: true}); err != nil {
 			t.Fatal(err)
 		}
-		root := frame.ExportRef{InstallationID: frame.InstallationID(id), Release: plugin.Revision(), UnitID: "emitter", Export: "ping", Contract: event.Ref()}
+		root := framehost.ExportRef{InstallationID: framehost.InstallationID(id), Release: plugin.Revision(), UnitID: "emitter", Export: "ping", Contract: event.Ref()}
 		plan, err := host.PlanWith(ctx, browser.RealmID(credentials.Realm), nil, root)
 		if err != nil {
 			t.Fatal(err)
@@ -86,7 +87,7 @@ func TestRefusedRouteDoesNotConsumeHostCapacity(t *testing.T) {
 			grant, err := bridge.AcquirePlan(ctx, credentials.Token, "acquire-"+id, plan, "")
 			acquired <- result{grant, err}
 		}()
-		local := e.pendingPlan(frame.InstallationID(id))
+		local := e.pendingPlan(framehost.InstallationID(id))
 		e.admit(local)
 		export := browser.LocalExport{InstanceID: local.Units[0].Instance.ID, Name: "ping", Contract: event.Ref()}
 		report := browser.ReadyReport{OperationID: "ready-" + id, Authority: local.Authority, Realm: local.Realm, Execution: local.Execution, Objects: []browser.ObjectRef{{Export: export, ObjectID: id + "-object"}}, Contributions: []browser.PreparedContribution{}}

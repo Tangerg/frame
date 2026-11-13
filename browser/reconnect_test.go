@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 func TestReconnectTransientFailurePreservesRealm(t *testing.T) {
@@ -28,8 +28,8 @@ func TestReconnectTransientFailurePreservesRealm(t *testing.T) {
 				cancel()
 				expected = context.Canceled
 			case "recovery":
-				expected = frame.ErrRecoveryRequired
-				e.host.Admission().RequireRecovery(frame.ErrFenced)
+				expected = framehost.ErrRecoveryRequired
+				e.host.Admission().RequireRecovery(framehost.ErrFenced)
 			}
 			result, err := e.bridge.Reconnect(ctx, e.credentials.Token, request)
 			if !errors.Is(err, expected) || result.Mode == browser.CleanupOnly {
@@ -62,7 +62,7 @@ func TestReconnectStaleAuthoritySealsRealm(t *testing.T) {
 		t.Fatalf("stale authority was not fenced: result=%+v err=%v", result, err)
 	}
 	_, err = e.bridge.Snapshot(e.ctx, e.credentials.Token, browser.SnapshotRequest{OperationID: "after-stale", Points: []string{e.first.Ref().Name}})
-	if !errors.Is(err, frame.ErrFenced) {
+	if !errors.Is(err, framehost.ErrFenced) {
 		t.Fatalf("stale authority kept the realm live: %v", err)
 	}
 }

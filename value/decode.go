@@ -2,6 +2,7 @@ package value
 
 import (
 	"bytes"
+	jsonv1 "encoding/json"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
@@ -20,12 +21,12 @@ func DecodeValue(raw jsontext.Value, dst any, path string) error {
 	if err := ValidateType(target); err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
+	if err := validateValueShape(raw, target, ""); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
 	value := reflect.New(target)
 	if err := json.Unmarshal(raw, value.Interface(), json.RejectUnknownMembers(true), Numbers()); err != nil {
 		return fmt.Errorf("decode %s: %w", path, err)
-	}
-	if err := validateValueShape(raw, target, ""); err != nil {
-		return fmt.Errorf("%s: %w", path, err)
 	}
 	destination.Elem().Set(value.Elem())
 	return nil
@@ -41,36 +42,59 @@ func (e *ShapeError) Error() string {
 	return e.Field + " " + e.Detail
 }
 
-// Standard decoding alone collapses typed null and missing members to zero
-// values. Shape checks retain the encoding model's null and presence boundary.
+// Admit the complete declared wire model before any codec can run. A codec's
+// private representation cannot waive a sibling's presence or its own model.
 func validateValueShape(raw jsontext.Value, target reflect.Type, path string) error {
-	model, err := encodingType(target)
+	encoding, err := encodingOf(target)
 	if err != nil {
 		return err
+	}
+	model := encoding.model
+	for target.Kind() == reflect.Pointer {
+		target = target.Elem()
+	}
+	if encoding.enumeration != nil {
+		var member string
+		if err := json.Unmarshal(raw, &member); err != nil {
+			return fmt.Errorf("decode %s: %w", path, err)
+		}
+		if !encoding.enumeration.contains(member) {
+			return &ShapeError{Field: path, Detail: "is not a declared enum value"}
+		}
 	}
 	if model.Kind() == reflect.Interface {
 		return nil
 	}
-	for target.Kind() == reflect.Pointer {
-		target = target.Elem()
-	}
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return &ShapeError{Field: path, Detail: "must not be null"}
 	}
-	if customDecoder(target) {
+	if model == reflect.TypeFor[jsonv1.Number]() {
+		if raw.Kind() != '0' {
+			return &ShapeError{Field: path, Detail: "must be a number"}
+		}
+		if err := json.Unmarshal(raw, new(jsonv1.Number), Numbers()); err != nil {
+			return fmt.Errorf("decode %s: %w", path, err)
+		}
 		return nil
+	}
+	if customDecoder(target) {
+		declared, err := encodingModel(target)
+		if err != nil {
+			return err
+		}
+		return validateValueShape(raw, declared, path)
 	}
 
 	switch target.Kind() {
 	case reflect.Struct:
 		return validateStructShape(raw, target, path)
 	case reflect.Slice, reflect.Array:
-		if target.Elem().Kind() == reflect.Uint8 {
-			return nil
-		}
-		return validateSequenceShape(raw, target.Elem(), path)
+		return validateSequenceShape(raw, target, path)
 	case reflect.Map:
 		return validateMapShape(raw, target.Elem(), path)
+	}
+	if err := json.Unmarshal(raw, reflect.New(target).Interface(), Numbers()); err != nil {
+		return fmt.Errorf("decode %s: %w", path, err)
 	}
 	return nil
 }
@@ -83,6 +107,11 @@ func validateStructShape(raw jsontext.Value, target reflect.Type, path string) e
 	fields, err := declaredFields(target, make(map[reflect.Type]bool))
 	if err != nil {
 		return err
+	}
+	for _, name := range slices.Sorted(maps.Keys(object)) {
+		if !slices.ContainsFunc(fields, func(field Field) bool { return field.Name == name }) {
+			return &ShapeError{Field: fieldPath(path, name), Detail: "is not a declared field"}
+		}
 	}
 	for _, field := range fields {
 		value, present := object[field.Name]
@@ -99,13 +128,16 @@ func validateStructShape(raw jsontext.Value, target reflect.Type, path string) e
 	return nil
 }
 
-func validateSequenceShape(raw jsontext.Value, element reflect.Type, path string) error {
+func validateSequenceShape(raw jsontext.Value, target reflect.Type, path string) error {
 	var values []jsontext.Value
 	if err := json.Unmarshal(raw, &values); err != nil {
 		return fmt.Errorf("decode %s: %w", path, err)
 	}
+	if target.Kind() == reflect.Array && len(values) != target.Len() {
+		return &ShapeError{Field: path, Detail: fmt.Sprintf("must contain exactly %d values", target.Len())}
+	}
 	for index, value := range values {
-		if err := validateValueShape(value, element, fmt.Sprintf("%s[%d]", path, index)); err != nil {
+		if err := validateValueShape(value, target.Elem(), fmt.Sprintf("%s[%d]", path, index)); err != nil {
 			return err
 		}
 	}

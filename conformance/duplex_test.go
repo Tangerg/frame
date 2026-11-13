@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/process"
 	"github.com/Tangerg/frame/process/runner"
 	"github.com/Tangerg/frame/sqlite"
@@ -32,12 +32,12 @@ type upstream struct {
 	commandCalls atomic.Int32
 }
 
-func (u *upstream) Invoke(ctx context.Context, invocation portable.Invocation) (framevalue.JSON, error) {
+func (u *upstream) Invoke(ctx context.Context, invocation frame.Invocation) (framevalue.JSON, error) {
 	switch invocation.Member() {
 	case "probe":
 		return invocation.Input(), nil
 	case "replace":
-		if invocation.CommandID() != "original-command" || invocation.Kind() != portable.Command {
+		if invocation.CommandID() != "original-command" || invocation.Kind() != frame.Command {
 			return framevalue.JSON{}, errors.New("relay lost original command identity")
 		}
 		u.commandCalls.Add(1)
@@ -54,7 +54,7 @@ func (u *upstream) Invoke(ctx context.Context, invocation portable.Invocation) (
 		return framevalue.JSON{}, frame.ErrContractMismatch
 	}
 }
-func (u *upstream) Stream(ctx context.Context, invocation portable.Invocation, emit process.Emit) (framevalue.JSON, error) {
+func (u *upstream) Stream(ctx context.Context, invocation frame.Invocation, emit frame.Emit) (framevalue.JSON, error) {
 	if invocation.Member() != "read" {
 		return framevalue.JSON{}, frame.ErrContractMismatch
 	}
@@ -72,20 +72,20 @@ func (u *upstream) Stream(ctx context.Context, invocation portable.Invocation, e
 
 type program struct{ p process.Program }
 
-func (p program) Program(context.Context, frame.UnitBinding) (process.Program, error) {
+func (p program) Program(context.Context, framehost.UnitBinding) (process.Program, error) {
 	return p.p, nil
 }
 
-func install(ctx context.Context, t *testing.T, h *frame.Host, id frame.InstallationID, unit frame.Unit) frame.UnitRef {
+func install(ctx context.Context, t *testing.T, h framehost.Host, id framehost.InstallationID, unit framehost.Unit) framehost.UnitRef {
 	t.Helper()
-	release, err := frame.Define(frame.Definition{Revision: framevalue.Hash([]byte(id)), Units: []frame.Unit{unit}})
+	release, err := framehost.Define(framehost.Definition{Revision: framevalue.Hash([]byte(id)), Units: []framehost.Unit{unit}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = h.Install(ctx, frame.InstallationConfig{ID: id, Plugin: release, Enabled: true}); err != nil {
+	if _, err = h.Install(ctx, framehost.InstallationConfig{ID: id, Plugin: release, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	return frame.UnitRef{InstallationID: id, Release: release.Revision(), UnitID: unit.Declaration.ID}
+	return framehost.UnitRef{InstallationID: id, Release: release.Revision(), UnitID: unit.Declaration.ID}
 }
 
 func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
@@ -114,7 +114,7 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); _ = server.Serve(control, listener) }()
 	defer func() { stop(); _ = listener.Close(); <-done }()
-	gate := frame.NewAdmission()
+	gate := framehost.NewAdmission()
 	store, err := sqlite.Open(ctx, sqlite.Config{Path: filepath.Join(directory, "db"), Admission: gate})
 	if err != nil {
 		t.Fatal(err)
@@ -148,7 +148,7 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := frame.NewHost(ctx, frame.HostConfig{Admission: gate, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store, Drivers: []frame.Driver{driver}})
+	h, err := framehost.New(ctx, framehost.Config{Admission: gate, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store, Drivers: []framehost.Driver{driver}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,11 +160,11 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	c, err := portable.ParseCapability(descriptor)
+	c, err := frame.ParseCapability(descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
-	contract, err := frame.NewPortableContract[process.Service]("1", c)
+	contract, err := framehost.NewPortableContract[frame.Service]("1", c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,12 +173,12 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	original := &upstream{started: make(chan struct{}), stopped: make(chan struct{})}
-	source := install(ctx, t, h, "source", frame.Unit{Declaration: frame.UnitDeclaration{ID: "provider", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "upstream", Contract: ref}}}, Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
-		return []frame.ExportValue{frame.Provide("upstream", contract, process.Service(original))}, nil
+	source := install(ctx, t, h, "source", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "provider", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "upstream", Contract: ref}}}, Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		return []framehost.ExportValue{framehost.Provide("upstream", contract, frame.Service(original))}, nil
 	}})
-	provider := frame.ExportRef{InstallationID: source.InstallationID, UnitID: source.UnitID, Release: source.Release, Export: "upstream", Contract: ref}
-	worker := install(ctx, t, h, "node", frame.Unit{Declaration: frame.UnitDeclaration{ID: "worker", Profile: frame.LocalProcess, Imports: []frame.ImportDeclaration{{Slot: "upstream", Contract: ref, Providers: []frame.ExportRef{provider}}}, Exports: []frame.ExportDeclaration{{Name: "relay", Contract: ref}}}})
-	export := frame.ExportRef{InstallationID: worker.InstallationID, UnitID: worker.UnitID, Release: worker.Release, Export: "relay", Contract: ref}
+	provider := framehost.ExportRef{InstallationID: source.InstallationID, UnitID: source.UnitID, Release: source.Release, Export: "upstream", Contract: ref}
+	worker := install(ctx, t, h, "node", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "worker", Profile: framehost.LocalProcess, Imports: []framehost.ImportDeclaration{{Slot: "upstream", Contract: ref, Providers: []framehost.ExportRef{provider}}}, Exports: []framehost.ExportDeclaration{{Name: "relay", Contract: ref}}}})
+	export := framehost.ExportRef{InstallationID: worker.InstallationID, UnitID: worker.UnitID, Release: worker.Release, Export: "relay", Contract: ref}
 	plan, err := h.Plan(ctx, export)
 	if err != nil {
 		t.Fatal(err)
@@ -187,11 +187,11 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = frame.WithPlan(ctx, h, plan, grant, func(use *frame.Use) error {
-		return frame.BorrowExport[process.Service](ctx, use, export, func(ctx context.Context, relay process.Service) error {
+	err = framehost.WithPlan(ctx, h, plan, grant, func(use *framehost.Use) error {
+		return framehost.BorrowExport[frame.Service](ctx, use, export, func(ctx context.Context, relay frame.Service) error {
 			input, _ := framevalue.EncodeJSON("done")
 			var seen []string
-			final, err := relay.(process.StreamingService).Stream(ctx, queryInvocation(t, "read", input), func(_ context.Context, chunk framevalue.JSON) error {
+			final, err := relay.(frame.StreamingService).Stream(ctx, queryInvocation(t, "read", input), func(_ context.Context, chunk framevalue.JSON) error {
 				seen = append(seen, chunk.String())
 				return nil
 			})
@@ -201,7 +201,7 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 			if final != input || !slices.Equal(seen, []string{`"first"`, `"second"`}) {
 				return errors.New("nested stream altered chunk order or final value")
 			}
-			command, err := portable.NewCommandInvocation("original-command", "replace", input)
+			command, err := frame.NewCommandInvocation("original-command", "replace", input)
 			if err != nil {
 				return err
 			}
@@ -221,7 +221,7 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 			cancel()
 			select {
 			case err := <-response:
-				if !errors.Is(err, process.ErrOutcomeUnknown) || !errors.Is(err, context.Canceled) {
+				if !errors.Is(err, frame.ErrOutcomeUnknown) || !errors.Is(err, context.Canceled) {
 					return errors.New("cancelled invocation lost original uncertain outcome")
 				}
 			case <-ctx.Done():
@@ -257,9 +257,9 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 	}
 }
 
-func queryInvocation(t *testing.T, member string, input framevalue.JSON) portable.Invocation {
+func queryInvocation(t *testing.T, member string, input framevalue.JSON) frame.Invocation {
 	t.Helper()
-	invocation, err := portable.NewQueryInvocation(member, input)
+	invocation, err := frame.NewQueryInvocation(member, input)
 	if err != nil {
 		t.Fatal(err)
 	}

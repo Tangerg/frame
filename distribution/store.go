@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -43,18 +43,21 @@ type Trust func(context.Context, Source, Manifest, Lock) error
 
 type Config struct {
 	Directory string
-	Admission *frame.Admission
+	Admission framehost.Admission
 	Limits    Limits
 	Trust     Trust
 	Retained  func(context.Context, value.Digest) (bool, error)
 }
 
-type Store struct {
+// Store is a value handle; copies and issued leases retain one directory owner.
+type Store struct{ *storeAuthority }
+
+type storeAuthority struct {
 	directory  string
 	root       *os.Root
 	identity   fs.FileInfo
 	lock       *os.File
-	admission  *frame.Admission
+	admission  framehost.Admission
 	limits     Limits
 	trust      Trust
 	retained   func(context.Context, value.Digest) (bool, error)
@@ -73,37 +76,37 @@ type Release struct {
 	Lock     Lock
 }
 
-func Open(config Config) (*Store, error) {
-	if config.Directory == "" || config.Admission == nil || config.Trust == nil || config.Retained == nil {
-		return nil, errors.New("distribution: directory, admission, trust and retention reader are required")
+func Open(config Config) (Store, error) {
+	if config.Directory == "" || !config.Admission.Valid() || config.Trust == nil || config.Retained == nil {
+		return Store{}, errors.New("distribution: directory, admission, trust and retention reader are required")
 	}
 	if config.Limits == (Limits{}) {
 		config.Limits = DefaultLimits()
 	}
 	if config.Limits.Entries < 1 || config.Limits.ExpandedBytes < 1 || config.Limits.ArchiveBytes < 1 || config.Limits.ManifestBytes < 1 || config.Limits.CompressionRatio < 1 {
-		return nil, ErrCapacity
+		return Store{}, ErrCapacity
 	}
 	directory, err := filepath.Abs(config.Directory)
 	if err != nil {
-		return nil, err
+		return Store{}, err
 	}
 	if err := os.MkdirAll(directory, privateDirectoryMode); err != nil {
-		return nil, err
+		return Store{}, err
 	}
 	directory, err = filepath.EvalSymlinks(directory)
 	if err != nil {
-		return nil, err
+		return Store{}, err
 	}
-	store := &Store{directory: directory, admission: config.Admission, limits: config.Limits, trust: config.Trust, retained: config.Retained, leases: map[value.Digest]int{}, changed: make(chan struct{}), closeDone: make(chan struct{})}
+	store := &storeAuthority{directory: directory, admission: config.Admission, limits: config.Limits, trust: config.Trust, retained: config.Retained, leases: map[value.Digest]int{}, changed: make(chan struct{}), closeDone: make(chan struct{})}
 	if err := store.openOwner(); err != nil {
-		return nil, err
+		return Store{}, err
 	}
-	return store, nil
+	return Store{store}, nil
 }
 
 // Path projects an immutable release location for diagnostics and declarations.
 // It performs no admission: actual reads and execution require an acquired Lease.
-func (s *Store) Path(digest value.Digest) (string, error) {
+func (s *storeAuthority) Path(digest value.Digest) (string, error) {
 	done, err := s.beginOperation(leaseOperation)
 	if err != nil {
 		return "", err

@@ -1,6 +1,8 @@
 package sqlite
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestReadScopeKeepsSQLitePragmaCaseInsensitivity(t *testing.T) {
 	store, _, _ := testStore(t)

@@ -2,11 +2,16 @@
 
 Use `defineProcessUnit` to declare a local unit and `serve` to bind its handlers to standard input/output. The peer owns its two streams for this session and closes them at EOF or shutdown. Standard output is reserved for Frame frames. Program diagnostics belong on standard error.
 
-The application publishes its portable descriptor once. A `Capability` checks the descriptor, derives its exact identity and validates calls in both directions. Each import is a frozen binding to the host-selected export. During preparation the unit can acquire resources and register activation; host calls are available after final activation. The owning lifetime joins started work on closure. Losing a response never authorizes a new business operation.
+The application publishes its portable descriptor once. A `Capability` checks the descriptor, derives its exact identity and validates calls in both directions. Each import is a frozen binding to the host-selected export. During preparation the unit can acquire resources and register activation. Activation may call those exact imports and start owned work; incoming calls to the unit's exports require completed activation. The owning lifetime joins started work on closure. Losing a response never authorizes a new business operation.
+
+Preparation and activation acknowledge only after their callbacks complete with
+uncancelled work and an open original Lifetime. Lifecycle phases track this
+progress; the Lifetime alone owns closure. Closing it during either callback
+cannot produce a successful activation or reopen the unit when the callback returns.
 
 Portable schema size constraints accept mathematical integers within the shared profile's exact nonnegative size range. Equivalent numeric spellings retain their original text in the capability identity.
 
-`portable.ProfileSchema` owns the admitted dialect, keywords, value shapes and
+`value.ProfileSchema` owns the admitted dialect, keywords, value shapes and
 schema traversal edges. The generated profile supplies these facts to both
 runtime adapters; each runtime keeps its existing schema engine. Validation uses
 a private JSON projection with prototype-free records, so only declared own
@@ -29,15 +34,22 @@ definition names cannot redirect evaluation. Reference siblings and composition
 remain active; recursive references must consume instance depth. The private
 projection leaves the published descriptor and its identity unchanged.
 
+An `enum` tests membership. Repeated equivalent entries remain admissible under
+the Go-owned profile and retain their original order and numeric spellings in
+the descriptor identity. They introduce no array uniqueness requirement;
+`uniqueItems` owns that separate constraint. Both runtimes follow these
+[enumeration semantics](https://json-schema.org/draft/2020-12/json-schema-validation#section-6.1.2).
+
 Format admission follows the fixed list generated from the Go portable profile:
 `date`, `time`, `date-time`, `uuid`, `json-pointer`, and `relative-json-pointer`.
 Unknown formats are rejected. Go and Node use the portable predicates and their
 shared conformance corpus; schema engine defaults do not define these formats.
 Date and time fields follow RFC 3339: clock and offset components require two
 unsigned decimal digits, and leap seconds are checked at the end of the UTC day.
-Pattern validation uses the character classes and
-end-of-input semantics exported by Go, including its definitions of `\s`, `.`,
-and `$`, instead of JavaScript's different defaults.
+Pattern validation follows the Go profile's character classes and rune boundaries,
+including `\s`, `.`, `\b`, and `\B`. Assertions never match between UTF-16
+surrogate halves, including when matching property names. `^` and `$` require
+the exact start and end of the input.
 
 `Capability.implement` captures a private handler table, verifies its exact method
 set and callable values, and freezes the captured table. Unit preparation uses
@@ -53,7 +65,7 @@ generic input type: JSON capture can transform its values. Numeric literals use
 `JSONNumber` so equivalent exact spellings remain representable. TypeScript cannot
 express numeric equality or every JSON Schema predicate; `Method` still validates
 each captured value. Complex reference and composition schemas can use the
-published `portable/contractgen` projections.
+published `contractgen` projections.
 
 ## Cancellation and result evidence
 
@@ -103,7 +115,7 @@ methods refuse it. These types project the same kind and streaming declarations
 that invocation admission checks at runtime.
 
 Command identities must be nonempty valid Unicode strings within the character
-limit exported by `portable.ProfileLimits`. The SDK counts Unicode code points,
+limit exported by `frame.MaxCommandIDCharacters`. The SDK counts Unicode code points,
 not UTF-16 code units or UTF-8 bytes. The business owner retains the command ID
 and decides whether a repeated request observes an existing operation; the SDK
 does not deduplicate business effects.

@@ -5,7 +5,6 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -30,9 +29,9 @@ func TestMapKeysCannotAcquireAnUnprojectedCodec(t *testing.T) {
 		typeOf reflect.Type
 		schema func() ([]byte, error)
 	}{
-		{reflect.TypeFor[map[restrictedMapKey]string](), portable.SchemaFor[map[restrictedMapKey]string]},
-		{reflect.TypeFor[map[encoderOnly]string](), portable.SchemaFor[map[encoderOnly]string]},
-		{reflect.TypeFor[map[decoderOnly]string](), portable.SchemaFor[map[decoderOnly]string]},
+		{reflect.TypeFor[map[restrictedMapKey]string](), value.SchemaFor[map[restrictedMapKey]string]},
+		{reflect.TypeFor[map[encoderOnly]string](), value.SchemaFor[map[encoderOnly]string]},
+		{reflect.TypeFor[map[decoderOnly]string](), value.SchemaFor[map[decoderOnly]string]},
 	} {
 		t.Run(sample.typeOf.String(), func(t *testing.T) {
 			if err := value.ValidateType(sample.typeOf); err == nil {
@@ -45,6 +44,10 @@ func TestMapKeysCannotAcquireAnUnprojectedCodec(t *testing.T) {
 	}
 }
 
+func TestMapKeysCannotAcquireAnUnprojectedEnum(t *testing.T) {
+	rejectLossyType[map[mapKeyModel]string](t)
+}
+
 type plainMapKey string
 
 func TestStringMapKeysRetainTheirNames(t *testing.T) {
@@ -54,11 +57,11 @@ func TestStringMapKeysRetainTheirNames(t *testing.T) {
 
 func checkMapKeyNames[K ~string](t *testing.T) {
 	t.Helper()
-	rawSchema, err := portable.SchemaFor[map[K]string]()
+	rawSchema, err := value.SchemaFor[map[K]string]()
 	if err != nil {
 		t.Fatal(err)
 	}
-	schema, err := portable.AdmitSchema(rawSchema)
+	schema, err := value.AdmitSchema(rawSchema)
 	if err != nil {
 		t.Fatal(err)
 	}

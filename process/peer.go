@@ -11,14 +11,9 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/Tangerg/frame/internal/cancellation"
+	"github.com/Tangerg/frame"
 	framevalue "github.com/Tangerg/frame/value"
 )
-
-// A dispatched request without a validated result remains unknown, even when
-// its handler confirms cancellation. Cancellation cannot settle an effect; only
-// the business owner can establish its original outcome or authorize a retry.
-var ErrOutcomeUnknown = errors.New("process: outcome unknown")
 
 type Problem struct {
 	Code    string `json:"code"`
@@ -28,9 +23,9 @@ type Problem struct {
 func (p *Problem) Error() string { return p.Code + ": " + p.Message }
 func (p *Problem) Is(target error) bool {
 	if p.Code == wire.Errors.Cancelled {
-		return target == context.Canceled || target == ErrOutcomeUnknown
+		return target == context.Canceled || target == frame.ErrOutcomeUnknown
 	}
-	return p.Code == wire.Errors.Unknown && target == ErrOutcomeUnknown
+	return p.Code == wire.Errors.Unknown && target == frame.ErrOutcomeUnknown
 }
 
 func (p *Problem) valid() bool {
@@ -279,7 +274,7 @@ func (p *peer) receive(msg envelope) error {
 
 func (p *peer) receiveCancellation(msg envelope) error {
 	var c cancelParams
-	if msg.Result != nil || msg.Error != nil || decode(msg.Params, &c) != nil {
+	if msg.Result != nil || msg.Error != nil || decodeRequest(msg.Params, &c) != nil {
 		return errors.New("process: invalid cancellation")
 	}
 	if _, ok := requestNumber(c.ID); !ok {
@@ -355,7 +350,7 @@ func responseProblem(err error) *Problem {
 	if errors.Is(err, context.Canceled) && !errors.Is(err, errConsumerPanic) {
 		return &Problem{wire.Errors.Cancelled, "request cancelled"}
 	}
-	if errors.Is(err, ErrOutcomeUnknown) {
+	if errors.Is(err, frame.ErrOutcomeUnknown) {
 		return unknownProblem()
 	}
 	if established, ok := errors.AsType[*Problem](err); ok && established != nil && established.valid() {
@@ -364,7 +359,7 @@ func responseProblem(err error) *Problem {
 	return unknownProblem()
 }
 
-func decode(raw jsontext.Value, out any) error {
+func decodeRequest(raw jsontext.Value, out any) error {
 	if err := framevalue.DecodeValue(raw, out, "wire"); err != nil {
 		return &Problem{wire.Errors.Invalid, "invalid payload"}
 	}
@@ -373,7 +368,7 @@ func decode(raw jsontext.Value, out any) error {
 
 func (p *peer) request(ctx context.Context, method string, params, result any) error {
 	if err := ctx.Err(); err != nil {
-		return cancellation.Err(ctx)
+		return frame.ContextError(ctx)
 	}
 	data, err := json.Marshal(params)
 	if err != nil {
@@ -383,7 +378,7 @@ func (p *peer) request(ctx context.Context, method string, params, result any) e
 	p.mu.Lock()
 	if err := ctx.Err(); err != nil {
 		p.mu.Unlock()
-		return cancellation.Err(ctx)
+		return frame.ContextError(ctx)
 	}
 	if len(p.pending) >= wire.MaxInFlight || p.next == ^uint64(0) {
 		p.mu.Unlock()
@@ -413,7 +408,7 @@ func (p *peer) request(ctx context.Context, method string, params, result any) e
 		p.mu.Lock()
 		delete(p.pending, id)
 		p.mu.Unlock()
-		return errors.Join(ErrOutcomeUnknown, context.Cause(p.ctx))
+		return errors.Join(frame.ErrOutcomeUnknown, context.Cause(p.ctx))
 	case <-ctx.Done():
 		p.mu.Lock()
 		if _, active := p.pending[id]; !active {
@@ -428,7 +423,7 @@ func (p *peer) request(ctx context.Context, method string, params, result any) e
 		if err != nil {
 			p.end(err)
 		}
-		return errors.Join(ErrOutcomeUnknown, cancellation.Err(ctx))
+		return errors.Join(frame.ErrOutcomeUnknown, frame.ContextError(ctx))
 	}
 }
 
@@ -436,8 +431,8 @@ func readAnswer(reply envelope, result any) error {
 	if reply.Error != nil {
 		return reply.Error
 	}
-	if err := decode(reply.Result, result); err != nil {
-		return fmt.Errorf("%w: invalid reply: %v", ErrOutcomeUnknown, err)
+	if err := framevalue.DecodeValue(reply.Result, result, "process reply"); err != nil {
+		return fmt.Errorf("%w: invalid reply: %w", frame.ErrOutcomeUnknown, err)
 	}
 	return nil
 }

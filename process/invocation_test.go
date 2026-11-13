@@ -5,29 +5,53 @@ import (
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/value"
 )
 
-func queryInvocation(t *testing.T, member string, input value.JSON) portable.Invocation {
+func queryInvocation(t *testing.T, member string, input value.JSON) frame.Invocation {
 	t.Helper()
-	invocation, err := portable.NewQueryInvocation(member, input)
+	invocation, err := frame.NewQueryInvocation(member, input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return invocation
 }
 
-func commandInvocation(t *testing.T, id, member string, input value.JSON) portable.Invocation {
+func commandInvocation(t *testing.T, id, member string, input value.JSON) frame.Invocation {
 	t.Helper()
-	invocation, err := portable.NewCommandInvocation(id, member, input)
+	invocation, err := frame.NewCommandInvocation(id, member, input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return invocation
+}
+
+var errTypedRelayDecode = errors.New("relayed reply cannot be represented")
+
+type relayedReply string
+
+func (*relayedReply) UnmarshalJSON([]byte) error    { return errTypedRelayDecode }
+func (r relayedReply) MarshalJSON() ([]byte, error) { return json.Marshal(string(r)) }
+func (relayedReply) JSONSchemaModel() any           { return "" }
+
+func TestTypedCommandRelayKeepsDecodeFailureUnknown(t *testing.T) {
+	method, err := frame.NewTypedMethod[string, relayedReply](frame.MethodConfig{Name: "mutate", Kind: frame.Command})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var effects atomic.Int32
+	service := connectedService(t, method.Descriptor(), frame.Handler(func(context.Context, frame.Invocation) (value.JSON, error) {
+		effects.Add(1)
+		return value.ParseJSON([]byte(`"completed"`))
+	}))
+	result, err := method.Command(t.Context(), service, "original-command", "input")
+	if effects.Load() != 1 || result != "" || !errors.Is(err, frame.ErrOutcomeUnknown) || !errors.Is(err, errTypedRelayDecode) {
+		t.Fatalf("typed relay lost post-dispatch evidence: effects=%d, result=%q, error=%v", effects.Load(), result, err)
+	}
 }
 
 func TestCommandIdentitySurvivesNeutralRelayAndRejectionsDoNotEnterHandler(t *testing.T) {
@@ -35,19 +59,19 @@ func TestCommandIdentitySurvivesNeutralRelayAndRejectionsDoNotEnterHandler(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, kind := range []portable.MethodKind{portable.Query, portable.Command} {
+	for _, kind := range []frame.MethodKind{frame.Query, frame.Command} {
 		t.Run(string(kind), func(t *testing.T) {
-			method, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "invoke", Kind: kind})
+			method, err := frame.NewMethod[string, string](frame.MethodConfig{Name: "invoke", Kind: kind})
 			if err != nil {
 				t.Fatal(err)
 			}
-			seen := make(chan portable.Invocation, 1)
-			service := connectedService(t, method.Descriptor(), Handler(func(_ context.Context, invocation portable.Invocation) (value.JSON, error) {
+			seen := make(chan frame.Invocation, 1)
+			service := connectedService(t, method.Descriptor(), frame.Handler(func(_ context.Context, invocation frame.Invocation) (value.JSON, error) {
 				seen <- invocation
 				return invocation.Input(), nil
 			}))
 			invocation := queryInvocation(t, method.Name(), input)
-			if kind == portable.Command {
+			if kind == frame.Command {
 				invocation = commandInvocation(t, "original-身份", method.Name(), input)
 			}
 			reply, err := service.Invoke(t.Context(), invocation)
@@ -58,14 +82,14 @@ func TestCommandIdentitySurvivesNeutralRelayAndRejectionsDoNotEnterHandler(t *te
 				t.Fatal("relay changed original invocation")
 			}
 			invalid := []jsontext.Value{nil, jsontext.Value(`""`), jsontext.Value(`null`), jsontext.Value(`1`)}
-			if kind == portable.Query {
+			if kind == frame.Query {
 				invalid = invalid[1:]
 				invalid = append(invalid, jsontext.Value(`"unexpected"`))
 			}
 			for _, commandID := range invalid {
 				var result value.JSON
 				err := service.peer.request(t.Context(), wire.Methods.Call, callParams{Handle: service.handle, Member: method.Name(), Input: input, CommandID: commandID}, &result)
-				if err == nil || errors.Is(err, ErrOutcomeUnknown) {
+				if err == nil || errors.Is(err, frame.ErrOutcomeUnknown) {
 					t.Fatalf("invalid identity reached handler: %s %v", commandID, err)
 				}
 			}
@@ -79,7 +103,7 @@ func TestCommandIdentitySurvivesNeutralRelayAndRejectionsDoNotEnterHandler(t *te
 }
 
 func TestTypedCommandHandlerReceivesOriginalIdentity(t *testing.T) {
-	member, err := NewMember[string, string](portable.MethodConfig{Name: "replace", Kind: portable.Command})
+	member, err := frame.NewTypedMethod[string, string](frame.MethodConfig{Name: "replace", Kind: frame.Command})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,11 +116,11 @@ func TestTypedCommandHandlerReceivesOriginalIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	contract, err := portable.NewCapability("typed.commands", member.Descriptor())
+	contract, err := frame.NewCapability("typed.commands", member.Descriptor())
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := Implement(contract, implementation)
+	service, err := frame.Implement(contract, implementation)
 	if err != nil {
 		t.Fatal(err)
 	}

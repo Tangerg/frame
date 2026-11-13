@@ -6,8 +6,8 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/examples/buildcheck"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 func TestAnalyzerCompletion(t *testing.T) {
@@ -23,7 +23,7 @@ func TestAnalyzerCompletion(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				e, ctx := engine(t, "source input")
 				failure := errors.New("analyzer failed")
-				install(t, ctx, e, "completion-analyzer", frame.Contribute("completion", e.Contracts.Analyzers,
+				install(t, ctx, e, "completion-analyzer", framehost.Contribute("completion", e.Contracts.Analyzers,
 					buildcheck.AnalyzerMetadata{Name: "completion", Required: required},
 					buildcheck.Analyzer(func(context.Context, buildcheck.SourceRevision) ([]buildcheck.Diagnostic, error) {
 						if interrupted {

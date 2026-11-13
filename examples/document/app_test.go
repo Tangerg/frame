@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/examples/document"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 func application(t *testing.T) (*document.App, document.Config, context.Context) {
@@ -65,13 +65,13 @@ func TestQueuedBusinessBindingBlocksReplaceAndOriginalResultIsStable(t *testing.
 		t.Fatal(err)
 	}
 	settlement, err := app.CommitTask(ctx, prepared)
-	if err != nil || settlement.State != frame.CommitSucceeded {
+	if err != nil || settlement.State != framehost.CommitSucceeded {
 		t.Fatalf("admission: %+v %v", settlement, err)
 	}
 	if _, err := app.CommitTask(ctx, prepared); err != nil {
 		t.Fatalf("lost submission ACK executed another insert: %v", err)
 	}
-	if err := app.ReplaceConverter(ctx, "2"); !errors.Is(err, frame.ErrInUse) {
+	if err := app.ReplaceConverter(ctx, "2"); !errors.Is(err, framehost.ErrInUse) {
 		t.Fatalf("waiting task did not retain converter: %v", err)
 	}
 	task, err := app.Run(ctx, "task-one")
@@ -92,7 +92,7 @@ func TestQueuedBusinessBindingBlocksReplaceAndOriginalResultIsStable(t *testing.
 		t.Fatalf("original task was replayed: %+v %v", again, err)
 	}
 	observed, err := app.ObserveSubmission(ctx, prepared)
-	if err != nil || observed.State != frame.CommitSucceeded {
+	if err != nil || observed.State != framehost.CommitSucceeded {
 		t.Fatalf("admission history changed with current references: %+v %v", observed, err)
 	}
 	theme, err := app.Theme(ctx)
@@ -115,7 +115,7 @@ func TestPreparedCaptureIsRejectedAfterConcurrentDisable(t *testing.T) {
 		t.Fatal(err)
 	}
 	settlement, err := app.CommitTask(ctx, prepared)
-	if !errors.Is(err, frame.ErrStaleBinding) || settlement.State != frame.CommitRejected {
+	if !errors.Is(err, framehost.ErrStaleBinding) || settlement.State != framehost.CommitRejected {
 		t.Fatalf("stale capture committed: %+v %v", settlement, err)
 	}
 	if _, err := app.Task(ctx, "stale"); !errors.Is(err, sql.ErrNoRows) {
@@ -150,7 +150,7 @@ func TestQueuedTaskRestoresExactGraphAndRejectsChangedSource(t *testing.T) {
 	if before != after {
 		t.Fatal("restoration selected a new graph")
 	}
-	if err := restored.ReplaceConverter(ctx, "2"); !errors.Is(err, frame.ErrInUse) {
+	if err := restored.ReplaceConverter(ctx, "2"); !errors.Is(err, framehost.ErrInUse) {
 		t.Fatalf("restored task did not retain exact dependency: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(config.DocumentsDirectory, "hello.md"), []byte("# New revision"), 0600); err != nil {

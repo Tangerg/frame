@@ -15,6 +15,7 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/examples/document"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -56,7 +57,7 @@ func authorWorkbench(t *testing.T) (*Workbench, Configuration, string, document.
 	return workbench, config, output, reference, ctx
 }
 
-func authorOwner(t *testing.T) *frame.Lifetime {
+func authorOwner(t *testing.T) frame.Lifetime {
 	t.Helper()
 	owner := frame.NewLifetime(context.Background())
 	t.Cleanup(func() {
@@ -93,7 +94,7 @@ func TestAuthoredConverterImportsFilesAndReturnsAnOwnedResource(t *testing.T) {
 	if len(binding.Roots) != 3 || len(binding.Units) != 3 {
 		t.Fatalf("one capture did not retain the converter, two validators and file import: %+v", binding)
 	}
-	if err := workbench.Host.Uninstall(ctx, Installation); !errors.Is(err, frame.ErrInUse) {
+	if err := workbench.Host.Uninstall(ctx, Installation); !errors.Is(err, framehost.ErrInUse) {
 		t.Fatalf("live resource did not retain its providers: %v", err)
 	}
 	if err := view.WithReader(ctx, func(_ context.Context, reader io.Reader) error {
@@ -120,6 +121,40 @@ func TestAuthoredConverterImportsFilesAndReturnsAnOwnedResource(t *testing.T) {
 	}
 	assertDirectoryEmpty(t, config.WorkDirectory)
 	t.Log("authored FileReader -> Converter import, two validators, one multi-Point capture, later resource read and original release passed")
+}
+
+func TestAuthoredViewCopiesKeepTheOriginalFileOwner(t *testing.T) {
+	workbench, _, output, reference, ctx := authorWorkbench(t)
+	prepared, err := workbench.Prepare(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := authorOwner(t)
+	view, err := prepared.Acquire(ctx, owner, reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copied := *view
+	*view = View{}
+	if err := copied.WithReader(ctx, func(_ context.Context, reader io.Reader) error {
+		content, err := io.ReadAll(reader)
+		if err == nil && string(content) != copied.Report().Converted.HTML {
+			return errors.New("copied view lost its original content")
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := owner.Close(ctx); err != nil || !outcome.Released {
+		t.Fatalf("original owner close: %+v, %v", outcome, err)
+	}
+	assertDirectoryEmpty(t, output)
+	if err := copied.WithReader(ctx, func(context.Context, io.Reader) error {
+		t.Fatal("copy read a released resource")
+		return nil
+	}); !errors.Is(err, frame.ErrClosed) {
+		t.Fatalf("copied view outlived its original Use: %v", err)
+	}
 }
 
 func TestAuthoredResourceCancellationJoinsTheOriginalReader(t *testing.T) {
@@ -188,22 +223,22 @@ func TestAuthoredMultiPointCaptureRefusesAChangedValidatorSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	point := workbench.Contracts.Validators
-	addition, err := frame.Define(frame.Definition{Revision: value.Hash([]byte("authoring/extra-validator/1")), Units: []frame.Unit{{
-		Declaration: frame.UnitDeclaration{ID: "validation", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "extra", Contract: point.Ref()}}},
-		Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
-			return []frame.ExportValue{frame.Contribute("extra", point, document.ValidatorMetadata{Name: "extra", Order: 30}, document.Validator(func(context.Context, document.Converted) ([]document.Diagnostic, error) { return nil, nil }))}, nil
+	addition, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("authoring/extra-validator/1")), Units: []framehost.Unit{{
+		Declaration: framehost.UnitDeclaration{ID: "validation", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "extra", Contract: point.Ref()}}},
+		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+			return []framehost.ExportValue{framehost.Contribute("extra", point, document.ValidatorMetadata{Name: "extra", Order: 30}, document.Validator(func(context.Context, document.Converted) ([]document.Diagnostic, error) { return nil, nil }))}, nil
 		},
 	}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := workbench.Host.Install(ctx, frame.InstallationConfig{ID: "additional-validator", Plugin: addition, Enabled: true}); err != nil {
+	if _, err := workbench.Host.Install(ctx, framehost.InstallationConfig{ID: "additional-validator", Plugin: addition, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := workbench.Host.Activate(ctx, frame.ExportRef{InstallationID: "additional-validator", Release: addition.Revision(), UnitID: "validation", Export: "extra", Contract: point.Ref()}); err != nil {
+	if _, err := workbench.Host.Activate(ctx, framehost.ExportRef{InstallationID: "additional-validator", Release: addition.Revision(), UnitID: "validation", Export: "extra", Contract: point.Ref()}); err != nil {
 		t.Fatal(err)
 	}
-	if view, err := prepared.Acquire(ctx, authorOwner(t), reference); !errors.Is(err, frame.ErrStaleBinding) || view != nil {
+	if view, err := prepared.Acquire(ctx, authorOwner(t), reference); !errors.Is(err, framehost.ErrStaleBinding) || view != nil {
 		t.Fatalf("stale multi-Point decision reached conversion: view=%v, %v", view, err)
 	}
 	assertDirectoryEmpty(t, output)
@@ -216,7 +251,7 @@ func TestAuthoredPartialSetupFailureCleansAndCanBeRepaired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := frame.NewHost(ctx, frame.HostConfig{})
+	host, err := framehost.New(ctx, framehost.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,10 +273,10 @@ func TestAuthoredPartialSetupFailureCleansAndCanBeRepaired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.Install(ctx, frame.InstallationConfig{ID: Installation, Plugin: plugin, Configuration: encoded, Enabled: true}); err != nil {
+	if _, err := host.Install(ctx, framehost.InstallationConfig{ID: Installation, Plugin: plugin, Configuration: encoded, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	root := frame.ExportRef{InstallationID: Installation, Release: plugin.Revision(), UnitID: "converter", Export: "uppercase", Contract: contracts.Converters.Ref()}
+	root := framehost.ExportRef{InstallationID: Installation, Release: plugin.Revision(), UnitID: "converter", Export: "uppercase", Contract: contracts.Converters.Ref()}
 	if _, err := host.Activate(ctx, root); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("missing template did not fail partial setup: %v", err)
 	}
@@ -257,7 +292,7 @@ func TestAuthoredPartialSetupFailureCleansAndCanBeRepaired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidates, err := frame.Candidates(snapshot, contracts.Converters)
+	candidates, err := framehost.Candidates(snapshot, contracts.Converters)
 	if err != nil || len(candidates) != 0 {
 		t.Fatalf("partially prepared converter became public: %d candidates, %v", len(candidates), err)
 	}

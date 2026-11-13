@@ -22,7 +22,7 @@ The error category reports protocol evidence, not a business settlement:
 | Validated success reply | result | The service returned that result; durable business settlement remains with its business owner. |
 
 Go's received `cancelled` problem matches both `context.Canceled` and
-`process.ErrOutcomeUnknown`. A locally cancelled context before dispatch matches
+`frame.ErrOutcomeUnknown`. A locally cancelled context before dispatch matches
 only its cancellation cause. A handler cannot turn its post-dispatch failure into
 a framework rejection by returning one of the framework error codes. Neither
 cancellation nor unknown outcome authorizes replay; reconciliation uses the
@@ -53,8 +53,11 @@ cancellation racing after admission retains the original unknown-outcome rules.
 
 A source is the exact Frame ExportRef. Grants for a Point export also carry its registered service reference in `valueContract`; all other grants omit this field. Only the host projects bindings. A missing optional
 provider is an empty slot array. No-export units use an empty export object. A handle is
-scoped to this execution and its contract. The host rejects service calls before activation
-or after retirement begins. Each sender waits for a chunk acknowledgement before sending
+scoped to this execution and its contract. Activation may use the frozen imports;
+the child accepts calls to its exports only after activation completes. Preparation
+and activation cannot acknowledge success after their work is cancelled or their
+original Lifetime starts closing. The Lifetime owns closure independently of the
+protocol's preparation progress. Each sender waits for a chunk acknowledgement before sending
 the next one. Reader loops must continue processing messages during nested calls. Peers
 refuse excess frames and work rather than buffering without bounds.
 

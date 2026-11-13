@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -52,24 +51,24 @@ func (c *managedCatalog) admit(export, physical string, contract *ManagedContrac
 }
 
 type managedDescription struct {
-	Protocol     string                      `json:"protocol"`
-	Methods      []portable.MethodDescriptor `json:"methods"`
+	Protocol     string                   `json:"protocol"`
+	Methods      []frame.MethodDescriptor `json:"methods"`
 	Capabilities []struct {
 		Name     string         `json:"name"`
 		Contract jsontext.Value `json:"contract"`
 	} `json:"capabilities"`
 }
 
-func (c *managedCatalog) verify(description managedDescription) (*portable.Method, error) {
+func (c *managedCatalog) verify(description managedDescription) (*frame.Method, error) {
 	if description.Protocol != managedVersion || len(description.Capabilities) != len(c.exports) {
 		return nil, fmt.Errorf("%w: managed description differs from admission", frame.ErrContractMismatch)
 	}
-	methods := make(map[string]*portable.Method, len(description.Methods))
+	methods := make(map[string]*frame.Method, len(description.Methods))
 	for _, descriptor := range description.Methods {
 		if methods[descriptor.Name] != nil || descriptor.Target == "" {
 			return nil, frame.ErrContractMismatch
 		}
-		method, err := portable.AdmitMethod(descriptor)
+		method, err := frame.AdmitMethod(descriptor)
 		if err != nil {
 			return nil, err
 		}

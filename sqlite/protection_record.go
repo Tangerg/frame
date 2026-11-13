@@ -30,7 +30,7 @@ func readProtectionRow(ctx context.Context, tx Reader, query, id string) (protec
 	return row, err
 }
 
-func readRecord[T any](ctx context.Context, store *Store, query string, decode func(protectedRecord) (T, error), id string) (T, error) {
+func readRecord[T any](ctx context.Context, store *storeAuthority, query string, decode func(protectedRecord) (T, error), id string) (T, error) {
 	var result T
 	err := store.Read(ctx, func(tx Reader) error {
 		row, err := readProtectionRow(ctx, tx, query, id)
@@ -47,7 +47,7 @@ func readRecord[T any](ctx context.Context, store *Store, query string, decode f
 	return result, nil
 }
 
-func readRecords[T any](ctx context.Context, store *Store, query string, decode func(protectedRecord) (T, error), args ...any) ([]T, error) {
+func readRecords[T any](ctx context.Context, store *storeAuthority, query string, decode func(protectedRecord) (T, error), args ...any) ([]T, error) {
 	var records []T
 	err := store.Read(ctx, func(tx Reader) error {
 		var err error

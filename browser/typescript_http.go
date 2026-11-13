@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable/contractgen"
+	"github.com/Tangerg/frame/contractgen"
 	framevalue "github.com/Tangerg/frame/value"
 )
 

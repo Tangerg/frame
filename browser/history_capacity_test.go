@@ -8,6 +8,7 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 	"github.com/Tangerg/frame/value"
 )
@@ -58,7 +59,7 @@ func TestFullRealmHistoryRefusesNewEffectsAndPreservesOriginalCleanup(t *testing
 	if _, err := e.bridge.Publish(e.ctx, e.credentials.Token, publication); !errors.Is(err, frame.ErrCapacity) {
 		t.Fatalf("new publication escaped history capacity: %v", err)
 	}
-	if _, err := e.host.Publication(plan.Units[0].Instance.ID, publication.OperationID); !errors.Is(err, frame.ErrUnavailable) {
+	if _, err := e.host.Publication(plan.Units[0].Instance.ID, publication.OperationID); !errors.Is(err, framehost.ErrUnavailable) {
 		t.Fatalf("capacity rejection followed a publication effect: %v", err)
 	}
 	if _, err := e.bridge.OpenRealm(e.ctx, "another-realm", "abcdef0123456789abcdef0123456789"); !errors.Is(err, frame.ErrCapacity) {

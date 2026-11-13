@@ -6,8 +6,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/Tangerg/frame/internal/cancellation"
-
+	"github.com/Tangerg/frame"
 	modernc "modernc.org/sqlite"
 )
 
@@ -87,7 +86,7 @@ func (s *connectionScope) acquireRead(ctx context.Context) error {
 	if s.unconfirmed != nil {
 		return s.unconfirmed
 	}
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return err
 	}
 	if s.readers != 0 {

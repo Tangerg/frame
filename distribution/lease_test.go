@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -47,7 +48,7 @@ func TestPublishedLeaseCopiesShareOneContentClaim(t *testing.T) {
 	}
 }
 
-func checkCopiedLeaseClaim(t *testing.T, store *Store, original *Lease) {
+func checkCopiedLeaseClaim(t *testing.T, store Store, original *Lease) {
 	t.Helper()
 	t.Cleanup(func() { _ = original.Close() })
 	release := original.Snapshot()
@@ -77,7 +78,7 @@ func checkCopiedLeaseClaim(t *testing.T, store *Store, original *Lease) {
 			t.Error("closing discarded the detached release identity")
 		}
 	}
-	if err := store.Remove(t.Context(), release.Digest); !errors.Is(err, frame.ErrInUse) {
+	if err := store.Remove(t.Context(), release.Digest); !errors.Is(err, framehost.ErrInUse) {
 		t.Fatalf("copied claim released an independent lease: %v", err)
 	}
 	if _, err := independent.Read(t.Context(), "theme.css"); err != nil {

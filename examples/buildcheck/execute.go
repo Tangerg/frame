@@ -10,14 +10,14 @@ import (
 	"sync"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/internal/cancellation"
+	framehost "github.com/Tangerg/frame/host"
 )
 
-func execute(ctx context.Context, source SourceRevision, passes []frame.Member[PassMetadata, CompilerPass], analyzers []frame.Member[AnalyzerMetadata, Analyzer], formatter Formatter, around []frame.Member[AroundMetadata, Around]) (Result, error) {
+func execute(ctx context.Context, source SourceRevision, passes []framehost.Member[PassMetadata, CompilerPass], analyzers []framehost.Member[AnalyzerMetadata, Analyzer], formatter Formatter, around []framehost.Member[AroundMetadata, Around]) (Result, error) {
 	base := Next(func(ctx context.Context, input SourceRevision) (Result, error) {
 		result := Result{Source: input, Output: input.Text, Diagnostics: []Diagnostic{}, Failures: []string{}, Trace: []string{}}
 		for _, pass := range passes {
-			if err := cancellation.Err(ctx); err != nil {
+			if err := frame.ContextError(ctx); err != nil {
 				return result, err
 			}
 			output, err := pass.Value(ctx, result.Output)
@@ -65,13 +65,13 @@ func execute(ctx context.Context, source SourceRevision, passes []frame.Member[P
 				mu.Unlock()
 				defer running.Done()
 				owned, cancel := context.WithCancelCause(nextCtx)
-				stop := context.AfterFunc(inner, func() { cancel(cancellation.Err(inner)) })
+				stop := context.AfterFunc(inner, func() { cancel(frame.ContextError(inner)) })
 				defer stop()
 				defer cancel(nil)
-				if err := cancellation.Err(inner); err != nil {
+				if err := frame.ContextError(inner); err != nil {
 					return Result{}, err
 				}
-				if err := cancellation.Err(owned); err != nil {
+				if err := frame.ContextError(owned); err != nil {
 					return Result{}, err
 				}
 				return next(owned, nextInput)
@@ -104,7 +104,7 @@ func execute(ctx context.Context, source SourceRevision, passes []frame.Member[P
 	return base(ctx, source)
 }
 
-func analyze(ctx context.Context, source SourceRevision, analyzers []frame.Member[AnalyzerMetadata, Analyzer]) ([]Diagnostic, []string, error) {
+func analyze(ctx context.Context, source SourceRevision, analyzers []framehost.Member[AnalyzerMetadata, Analyzer]) ([]Diagnostic, []string, error) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	type outcome struct {
@@ -147,14 +147,14 @@ func analyze(ctx context.Context, source SourceRevision, analyzers []frame.Membe
 		}
 		return strings.Compare(a.Analyzer, b.Analyzer)
 	})
-	return diagnostics, failures, errors.Join(append(required, cancellation.Err(ctx))...)
+	return diagnostics, failures, errors.Join(append(required, frame.ContextError(ctx))...)
 }
 
-func definitionExports(id frame.InstallationID, plugin *frame.Plugin) []frame.ExportRef {
-	var exports []frame.ExportRef
+func definitionExports(id framehost.InstallationID, plugin *framehost.Plugin) []framehost.ExportRef {
+	var exports []framehost.ExportRef
 	for _, unit := range plugin.Units() {
 		for _, export := range unit.Exports {
-			exports = append(exports, frame.ExportRef{InstallationID: id, Release: plugin.Revision(), UnitID: unit.ID, Export: export.Name, Contract: export.Contract})
+			exports = append(exports, framehost.ExportRef{InstallationID: id, Release: plugin.Revision(), UnitID: unit.ID, Export: export.Name, Contract: export.Contract})
 		}
 	}
 	return exports

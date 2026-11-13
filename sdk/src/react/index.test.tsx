@@ -1,10 +1,20 @@
 // @vitest-environment happy-dom
-import { act, useEffect } from "react";
+import { act, useEffect, type ReactNode } from "react";
 import { describe, expect, it } from "vitest";
-import { Lifetime, Service } from "../index.js";
+import { Lifetime, Service, type Awaitable } from "../index.js";
 import type { Use } from "../browser/index.js";
 import type { ObjectRef } from "../protocol.generated.js";
-import { bindComponent, mount, useLifetime } from "./index.ts";
+import {
+  bindComponent,
+  mount,
+  useLifetime,
+  type ComponentBinding,
+  type MountOptions,
+} from "./index.ts";
+
+(
+  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe("React adapter", () => {
   it("captures the original object reference before its caller can change the binding", async () => {
@@ -42,7 +52,8 @@ describe("React adapter", () => {
       id: "use",
       objects: [expected],
       lifetime: owner,
-      with: (received, receivedContract, work) => {
+      with(received, receivedContract, work) {
+        expect(this).toBe(use);
         observed.push(received);
         expect(receivedContract).toBe(contract);
         return owner.run((signal) => work(Preview as never, signal));
@@ -51,6 +62,9 @@ describe("React adapter", () => {
       wait: (signal) => owner.wait(signal),
     };
     const binding = bindComponent(use, reference, contract);
+    use.with = () => {
+      throw new Error("replacement borrow must not be called");
+    };
     source.objectId = "replacement-object";
     source.export.instanceId = "replacement-instance";
     source.export.name = "replacement-export";
@@ -71,10 +85,91 @@ describe("React adapter", () => {
     }
   });
 
-  it("renders a native component while keeping async work owned after unmount", async () => {
+  it("captures the binding and mount callbacks once with their receivers", async () => {
+    const owner = new Lifetime("captured mount");
+    const component = ({ title }: { title: string }) => <span>{title}</span>;
+    let borrows = 0;
+    let wraps = 0;
+    const binding: ComponentBinding<{ title: string }> = {
+      owner,
+      get with() {
+        borrows++;
+        return function <R>(
+          this: ComponentBinding<{ title: string }>,
+          work: (value: typeof component) => Awaitable<R>,
+        ) {
+          expect(this).toBe(binding);
+          return owner.run(() => work(component));
+        };
+      },
+    };
+    const options: MountOptions<{ title: string }> = {
+      container: document.createElement("div"),
+      props: { title: "original" },
+      get wrap() {
+        wraps++;
+        if (wraps !== 1) throw new Error("mount must not reread its wrapper");
+        return function (
+          this: MountOptions<{ title: string }>,
+          children: ReactNode,
+        ) {
+          expect(this).toBe(options);
+          return <section>{children}</section>;
+        };
+      },
+    };
+    try {
+      const view = await act(() => mount(binding, options));
+      expect(options.container.innerHTML).toBe(
+        "<section><span>original</span></section>",
+      );
+      await act(() => view.render({ title: "updated" }));
+      expect(options.container.textContent).toBe("updated");
+      expect({ borrows, wraps }).toEqual({ borrows: 1, wraps: 1 });
+    } finally {
+      await act(() => owner.close());
+    }
+  });
+
+  it("captures the error observer before rendering can fail", async () => {
+    const owner = new Lifetime("failed mount");
+    const cause = new Error("component failed");
+    function Broken(): never {
+      throw cause;
+    }
+    let reads = 0;
+    const reported: unknown[] = [];
+    const observed = Promise.withResolvers<void>();
+    const options: MountOptions<object> = {
+      container: document.createElement("div"),
+      props: {},
+      get onError() {
+        reads++;
+        const read = reads;
+        return function (this: MountOptions<object>, error: unknown) {
+          expect(this).toBe(options);
+          reported.push({ read, error });
+          observed.resolve();
+        };
+      },
+    };
     (
       globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
-    ).IS_REACT_ACT_ENVIRONMENT = true;
+    ).IS_REACT_ACT_ENVIRONMENT = false;
+    try {
+      await mount({ owner, with: async (work) => work(Broken) }, options);
+      await observed.promise;
+      expect(reads).toBe(1);
+      expect(reported).toEqual([{ read: 1, error: cause }]);
+    } finally {
+      await owner.close();
+      (
+        globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+      ).IS_REACT_ACT_ENVIRONMENT = true;
+    }
+  });
+
+  it("renders a native component while keeping async work owned after unmount", async () => {
     let finish!: () => void;
     let unmounted = false;
     function Preview({ title }: { title: string }) {

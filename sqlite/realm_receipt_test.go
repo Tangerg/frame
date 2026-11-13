@@ -9,12 +9,13 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
 // External tests compose the public Bridge with the same real SQLite fault
 // boundary as the Store tests, without adding a production injection port.
-func InstallRealmReceiptFault(t *testing.T, store *Store, before, after func(string) error) {
+func InstallRealmReceiptFault(t *testing.T, store Store, before, after func(string) error) {
 	t.Helper()
 	installTransactionFault(t, store, transactionFault{beforeExec: before, afterExec: after})
 }
@@ -69,7 +70,7 @@ func TestRealmReceiptReservationRetainsItsOriginalCommitOutcome(t *testing.T) {
 }
 
 func TestRealmReceiptReservesItsCompletionBeforeCapacityIsExhausted(t *testing.T) {
-	store, err := Open(t.Context(), Config{Path: filepath.Join(t.TempDir(), "history.db"), Admission: frame.NewAdmission(), MaxRealmHistoryBytes: 258})
+	store, err := Open(t.Context(), Config{Path: filepath.Join(t.TempDir(), "history.db"), Admission: framehost.NewAdmission(), MaxRealmHistoryBytes: 258})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +130,7 @@ func TestRealmReceiptReservesItsCompletionBeforeCapacityIsExhausted(t *testing.T
 func TestRealmCredentialsShareTheHistoryBudgetAndSurviveEpochRotation(t *testing.T) {
 	credential := RealmCredential{ID: "realm", Epoch: "1", OperationID: "open", ResumeVerifier: value.Hash([]byte("resume secret"))}
 	credentialBytes := int64(len(credential.ID) + len(credential.Epoch) + len(credential.OperationID) + len(credential.ResumeVerifier.String()))
-	config := Config{Path: filepath.Join(t.TempDir(), "history.db"), Admission: frame.NewAdmission(), MaxRealmHistoryBytes: credentialBytes + int64(len(value.Hash([]byte("reply")).String())) + 8}
+	config := Config{Path: filepath.Join(t.TempDir(), "history.db"), Admission: framehost.NewAdmission(), MaxRealmHistoryBytes: credentialBytes + int64(len(value.Hash([]byte("reply")).String())) + 8}
 	store, err := Open(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
@@ -159,7 +160,7 @@ func TestRealmCredentialsShareTheHistoryBudgetAndSurviveEpochRotation(t *testing
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	config.Admission = frame.NewAdmission()
+	config.Admission = framehost.NewAdmission()
 	store, err = Open(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
@@ -181,10 +182,10 @@ func TestRealmCredentialsShareTheHistoryBudgetAndSurviveEpochRotation(t *testing
 
 func TestRealmHistoryRejectsInvalidLimitsAndUnadmittedIdentities(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "history.db")
-	if _, err := Open(t.Context(), Config{Path: path, Admission: frame.NewAdmission(), MaxRealmHistoryBytes: -1}); err == nil {
+	if _, err := Open(t.Context(), Config{Path: path, Admission: framehost.NewAdmission(), MaxRealmHistoryBytes: -1}); err == nil {
 		t.Fatal("negative history budget was admitted")
 	}
-	store, err := Open(t.Context(), Config{Path: path, Admission: frame.NewAdmission(), MaxRealmHistoryBytes: 258})
+	store, err := Open(t.Context(), Config{Path: path, Admission: framehost.NewAdmission(), MaxRealmHistoryBytes: 258})
 	if err != nil {
 		t.Fatal(err)
 	}

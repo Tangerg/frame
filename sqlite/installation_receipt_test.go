@@ -7,16 +7,16 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
 func TestCanceledInstallationPreparationReleasesItsPrivateReceipt(t *testing.T) {
-	admission := frame.NewAdmission()
+	admission := framehost.NewAdmission()
 	config := testConfig(filepath.Join(t.TempDir(), "private-receipts.db"), admission)
 	config.MaxSubmissionsPerOwner = 1
 	projections := 0
-	config.Owners[0].ProjectInstallation = func(context.Context, Executor, frame.InstallationChange) error {
+	config.Owners[0].ProjectInstallation = func(context.Context, Executor, framehost.InstallationChange) error {
 		projections++
 		return nil
 	}
@@ -25,12 +25,12 @@ func TestCanceledInstallationPreparationReleasesItsPrivateReceipt(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer store.Close()
-	host, err := frame.NewHost(t.Context(), frame.HostConfig{Admission: admission, Installations: store})
+	host, err := framehost.New(t.Context(), framehost.Config{Admission: admission, Installations: store})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer host.Close(context.Background())
-	plugin, err := frame.Define(frame.Definition{Revision: value.Hash(nil)})
+	plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash(nil)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestCanceledInstallationPreparationReleasesItsPrivateReceipt(t *testing.T) 
 		}
 		return nil
 	}})
-	installation := frame.InstallationConfig{ID: "example", Plugin: plugin}
+	installation := framehost.InstallationConfig{ID: "example", Plugin: plugin}
 	if _, err := host.Install(ctx, installation); !errors.Is(err, context.Canceled) {
 		t.Fatalf("original cancellation was lost: %v", err)
 	}

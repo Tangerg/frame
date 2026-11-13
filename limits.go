@@ -1,8 +1,13 @@
 package frame
 
-import "fmt"
+import (
+	"fmt"
+)
 
-func resolveLimit(name string, value *int, fallback int) error {
+func ResolveLimit(name string, value *int, fallback int) error {
+	if value == nil {
+		return ErrInvalid
+	}
 	if *value == 0 {
 		*value = fallback
 	}

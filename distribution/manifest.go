@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	framevalue "github.com/Tangerg/frame/value"
 )
 
@@ -40,9 +41,9 @@ type Artifact struct {
 // An import is still a declaration here. Installation and binding supply its
 // exact provider references; a package cannot name a future InstallationID.
 type Import struct {
-	Slot     string            `json:"slot"`
-	Contract frame.ContractRef `json:"contract"`
-	Optional bool              `json:"optional,omitempty"`
+	Slot     string                `json:"slot"`
+	Contract framehost.ContractRef `json:"contract"`
+	Optional bool                  `json:"optional,omitempty"`
 }
 
 type RuntimeReference struct {
@@ -77,34 +78,34 @@ type Module struct {
 }
 
 type Unit struct {
-	ID                    frame.UnitID              `json:"id"`
-	Profile               frame.Profile             `json:"profile"`
-	Imports               []Import                  `json:"imports,omitempty"`
-	Exports               []frame.ExportDeclaration `json:"exports,omitempty"`
-	Variants              []Variant                 `json:"variants,omitempty"`
-	Module                *Module                   `json:"module,omitempty"`
-	Resources             []string                  `json:"resources,omitempty"`
-	RequestedCapabilities []string                  `json:"requestedCapabilities,omitempty"`
+	ID                    framehost.UnitID              `json:"id"`
+	Profile               framehost.Profile             `json:"profile"`
+	Imports               []Import                      `json:"imports,omitempty"`
+	Exports               []framehost.ExportDeclaration `json:"exports,omitempty"`
+	Variants              []Variant                     `json:"variants,omitempty"`
+	Module                *Module                       `json:"module,omitempty"`
+	Resources             []string                      `json:"resources,omitempty"`
+	RequestedCapabilities []string                      `json:"requestedCapabilities,omitempty"`
 }
 
 type Contribution struct {
-	Unit     frame.UnitID      `json:"unit"`
-	Export   string            `json:"export"`
-	Point    frame.ContractRef `json:"point"`
-	Key      string            `json:"key"`
-	Metadata json.RawMessage   `json:"metadata,omitzero"`
+	Unit     framehost.UnitID      `json:"unit"`
+	Export   string                `json:"export"`
+	Point    framehost.ContractRef `json:"point"`
+	Key      string                `json:"key"`
+	Metadata json.RawMessage       `json:"metadata,omitzero"`
 }
 
 type Manifest struct {
-	SchemaVersion int                 `json:"schemaVersion"`
-	Package       string              `json:"package"`
-	Version       string              `json:"version"`
-	Release       framevalue.Digest   `json:"release,omitempty"`
-	Artifacts     []Artifact          `json:"artifacts"`
-	Contracts     []frame.ContractRef `json:"contracts,omitempty"`
-	Units         []Unit              `json:"units"`
-	Contributions []Contribution      `json:"contributions,omitempty"`
-	Dependencies  []LockedRelease     `json:"dependencies,omitempty"`
+	SchemaVersion int                     `json:"schemaVersion"`
+	Package       string                  `json:"package"`
+	Version       string                  `json:"version"`
+	Release       framevalue.Digest       `json:"release,omitempty"`
+	Artifacts     []Artifact              `json:"artifacts"`
+	Contracts     []framehost.ContractRef `json:"contracts,omitempty"`
+	Units         []Unit                  `json:"units"`
+	Contributions []Contribution          `json:"contributions,omitempty"`
+	Dependencies  []LockedRelease         `json:"dependencies,omitempty"`
 }
 
 type LockedRelease struct {
@@ -113,12 +114,12 @@ type LockedRelease struct {
 }
 
 type Lock struct {
-	SchemaVersion int                 `json:"schemaVersion"`
-	Package       string              `json:"package"`
-	Release       framevalue.Digest   `json:"release"`
-	Artifacts     []Artifact          `json:"artifacts"`
-	Contracts     []frame.ContractRef `json:"contracts,omitempty"`
-	Dependencies  []LockedRelease     `json:"dependencies,omitempty"`
+	SchemaVersion int                     `json:"schemaVersion"`
+	Package       string                  `json:"package"`
+	Release       framevalue.Digest       `json:"release"`
+	Artifacts     []Artifact              `json:"artifacts"`
+	Contracts     []framehost.ContractRef `json:"contracts,omitempty"`
+	Dependencies  []LockedRelease         `json:"dependencies,omitempty"`
 }
 
 func ParseManifest(data []byte) (Manifest, error) {
@@ -187,7 +188,7 @@ func (m Manifest) Validate() error {
 	if err != nil {
 		return err
 	}
-	units := make(map[frame.UnitID]Unit, len(m.Units))
+	units := make(map[framehost.UnitID]Unit, len(m.Units))
 	for _, unit := range m.Units {
 		if _, exists := units[unit.ID]; exists {
 			return fmt.Errorf("%w: duplicate unit %q", ErrInvalid, unit.ID)
@@ -215,9 +216,9 @@ func indexArtifacts(declared []Artifact) (map[string]Artifact, error) {
 	return artifacts, nil
 }
 
-func indexContracts(declared []frame.ContractRef) (map[frame.ContractRef]struct{}, error) {
-	contracts := map[frame.ContractRef]struct{}{}
-	nominal := map[frame.ContractKey]frame.ContractRef{}
+func indexContracts(declared []framehost.ContractRef) (map[framehost.ContractRef]struct{}, error) {
+	contracts := map[framehost.ContractRef]struct{}{}
+	nominal := map[framehost.ContractKey]framehost.ContractRef{}
 	for _, contract := range declared {
 		if err := contract.Validate(); err != nil {
 			return nil, errors.Join(ErrInvalid, err)
@@ -235,7 +236,7 @@ func indexContracts(declared []frame.ContractRef) (map[frame.ContractRef]struct{
 	return contracts, nil
 }
 
-func (u Unit) validate(contracts map[frame.ContractRef]struct{}, artifacts map[string]Artifact) error {
+func (u Unit) validate(contracts map[framehost.ContractRef]struct{}, artifacts map[string]Artifact) error {
 	if u.ID.Validate() != nil || u.Profile.Validate() != nil {
 		return fmt.Errorf("%w: unit identity", ErrInvalid)
 	}
@@ -264,7 +265,7 @@ func (u Unit) validate(contracts map[frame.ContractRef]struct{}, artifacts map[s
 	return err
 }
 
-func (u Unit) validateBindings(contracts map[frame.ContractRef]struct{}) error {
+func (u Unit) validateBindings(contracts map[framehost.ContractRef]struct{}) error {
 	slots := map[string]struct{}{}
 	for _, imported := range u.Imports {
 		if !frame.ValidName(imported.Slot) {
@@ -345,12 +346,12 @@ func (u Unit) ValidateProcessEntry() error {
 		return fmt.Errorf("%w: process unit entry", ErrInvalid)
 	}
 	for _, imported := range u.Imports {
-		if imported.Contract.Mode != frame.PortableMode {
+		if imported.Contract.Mode != framehost.PortableMode {
 			return fmt.Errorf("%w: process import %q is native", ErrInvalid, imported.Slot)
 		}
 	}
 	for _, exported := range u.Exports {
-		if exported.Contract.Mode != frame.PortableMode {
+		if exported.Contract.Mode != framehost.PortableMode {
 			return fmt.Errorf("%w: process export %q is native", ErrInvalid, exported.Name)
 		}
 	}
@@ -359,22 +360,22 @@ func (u Unit) ValidateProcessEntry() error {
 
 func (u Unit) profileShape() (bool, error) {
 	switch u.Profile {
-	case frame.LocalProcess:
+	case framehost.LocalProcess:
 		return true, u.ValidateProcessEntry()
-	case frame.BrowserJS:
+	case framehost.BrowserJS:
 		if u.Module == nil || len(u.Variants) != 0 {
 			return true, fmt.Errorf("%w: browser unit entry", ErrInvalid)
 		}
-	case frame.StaticResource:
+	case framehost.StaticResource:
 		for _, export := range u.Exports {
-			if export.Contract.Mode != frame.NativeMode {
+			if export.Contract.Mode != framehost.NativeMode {
 				return true, fmt.Errorf("%w: static resource export %q must be native", ErrInvalid, export.Name)
 			}
 		}
 		if len(u.Resources) == 0 || u.Module != nil || len(u.Variants) != 0 || len(u.Imports) != 0 {
 			return true, fmt.Errorf("%w: resource unit entry", ErrInvalid)
 		}
-	case frame.NativeGo:
+	case framehost.NativeGo:
 		if u.Module != nil || len(u.Variants) != 0 {
 			return true, fmt.Errorf("%w: native unit is supplied by the host build", ErrInvalid)
 		}
@@ -385,14 +386,14 @@ func (u Unit) profileShape() (bool, error) {
 	return true, nil
 }
 
-func validateContributions(declared []Contribution, units map[frame.UnitID]Unit, contracts map[frame.ContractRef]struct{}) error {
+func validateContributions(declared []Contribution, units map[framehost.UnitID]Unit, contracts map[framehost.ContractRef]struct{}) error {
 	type contributionKey struct {
-		unit       frame.UnitID
+		unit       framehost.UnitID
 		point, key string
 	}
 	keys := map[contributionKey]struct{}{}
 	type resourceSlot struct {
-		unit   frame.UnitID
+		unit   framehost.UnitID
 		export string
 	}
 	resourceExports := map[resourceSlot]bool{}
@@ -401,15 +402,15 @@ func validateContributions(declared []Contribution, units map[frame.UnitID]Unit,
 		if !ok || !frame.ValidName(contribution.Key) || !frame.ValidName(contribution.Export) {
 			return fmt.Errorf("%w: contribution %q of unit %q", ErrInvalid, contribution.Key, contribution.Unit)
 		}
-		if _, ok := contracts[contribution.Point]; !ok || contribution.Point.Kind != frame.PointKind {
+		if _, ok := contracts[contribution.Point]; !ok || contribution.Point.Kind != framehost.PointKind {
 			return fmt.Errorf("%w: contribution %q point", ErrInvalid, contribution.Key)
 		}
-		if !slices.ContainsFunc(unit.Exports, func(export frame.ExportDeclaration) bool {
+		if !slices.ContainsFunc(unit.Exports, func(export framehost.ExportDeclaration) bool {
 			return export.Name == contribution.Export && export.Contract == contribution.Point
 		}) {
 			return fmt.Errorf("%w: contribution %q export %q", ErrInvalid, contribution.Key, contribution.Export)
 		}
-		if unit.Profile == frame.StaticResource {
+		if unit.Profile == framehost.StaticResource {
 			slot := resourceSlot{unit.ID, contribution.Export}
 			if len(contribution.Metadata) == 0 || resourceExports[slot] {
 				return fmt.Errorf("%w: static resource contribution %q requires one metadata value", ErrInvalid, contribution.Export)

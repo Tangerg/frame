@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -19,31 +20,31 @@ func TestUseApprovalSettlementMatchesOriginalCommit(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			store, _, admission := testStore(t)
-			host, err := frame.NewHost(t.Context(), frame.HostConfig{Admission: admission, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store})
+			host, err := framehost.New(t.Context(), framehost.Config{Admission: admission, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store})
 			if err != nil {
 				t.Fatal(err)
 			}
-			contract, err := frame.NewContract[string]("original.value", "1")
+			contract, err := framehost.NewContract[string]("original.value", "1")
 			if err != nil {
 				t.Fatal(err)
 			}
 			if err := host.Register(contract); err != nil {
 				t.Fatal(err)
 			}
-			plugin, err := frame.Define(frame.Definition{Revision: value.Hash([]byte("original")), Units: []frame.Unit{{
-				Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.NativeGo, Exports: []frame.ExportDeclaration{{Name: "value", Contract: contract.Ref()}}},
-				Setup: func(context.Context, *frame.Setup) ([]frame.ExportValue, error) {
-					return []frame.ExportValue{frame.Provide("value", contract, "original")}, nil
+			plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("original")), Units: []framehost.Unit{{
+				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: contract.Ref()}}},
+				Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+					return []framehost.ExportValue{framehost.Provide("value", contract, "original")}, nil
 				},
 			}}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := host.Install(t.Context(), frame.InstallationConfig{ID: "original-provider", Plugin: plugin, Enabled: true}); err != nil {
+			if _, err := host.Install(t.Context(), framehost.InstallationConfig{ID: "original-provider", Plugin: plugin, Enabled: true}); err != nil {
 				t.Fatal(err)
 			}
-			const realm frame.RealmID = "original-realm"
-			root := frame.ExportRef{InstallationID: "original-provider", Release: plugin.Revision(), UnitID: "main", Export: "value", Contract: contract.Ref()}
+			const realm framehost.RealmID = "original-realm"
+			root := framehost.ExportRef{InstallationID: "original-provider", Release: plugin.Revision(), UnitID: "main", Export: "value", Contract: contract.Ref()}
 			if _, err := host.ActivateIn(t.Context(), realm, root); err != nil {
 				t.Fatal(err)
 			}
@@ -71,7 +72,7 @@ func TestUseApprovalSettlementMatchesOriginalCommit(t *testing.T) {
 				fault.beforeExec = inject
 			}
 			installTransactionFault(t, store, fault)
-			use, acquireErr := host.Acquire(t.Context(), plan, frame.UseConfig{Owner: owner, Scope: scope, Realm: realm, ExecutionID: "original-execution"})
+			use, acquireErr := host.Acquire(t.Context(), plan, framehost.UseConfig{Owner: owner, Scope: scope, Realm: realm, ExecutionID: "original-execution"})
 			if use != nil || !errors.Is(acquireErr, ackLost) {
 				t.Fatalf("fault did not affect the intended approval: use=%v err=%v", use, acquireErr)
 			}

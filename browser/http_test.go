@@ -27,6 +27,7 @@ func TestControlHTTPRejectsInvalidShapeBeforeDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	reconnect := `{"authority":` + string(authority) + `,"realm":` + string(realm)
+	proof := `{"closeId":"close","proofId":"proof","authority":` + string(authority) + `,"realm":` + string(realm) + `,"execution":{"id":"unavailable","generation":"1"},"scopeId":"scope","scopeGeneration":"1","scopeKind":"invented","instances":[],"status":"released"}`
 	cases := []struct {
 		name string
 		body string
@@ -45,6 +46,7 @@ func TestControlHTTPRejectsInvalidShapeBeforeDispatch(t *testing.T) {
 		{"wrong executions type", `{"method":"reconnect","input":` + reconnect + `,"executions":{}}}`},
 		{"null execution", `{"method":"reconnect","input":` + reconnect + `,"executions":[null]}}`},
 		{"missing authority epoch", `{"method":"reconnect","input":{"authority":{"id":"` + credentials.Authority.ID + `"},"realm":` + string(realm) + `,"executions":[]}}`},
+		{"unknown proof scope", `{"method":"prove","input":` + proof + `}`},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {

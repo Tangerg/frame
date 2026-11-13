@@ -16,7 +16,7 @@ Neither calls the document workbench's built-in plugin factories.
 
 The Go [native exercise](native/README.md) builds without a database or transport.
 The [TypeScript exercise](browser/README.md) uses the real Go Host, SQLite and
-authenticated control Bridge through `cmd/authorhost`. Native function values
+authenticated control Bridge through `../../cmd/authorhost`. Native function values
 stay in their original language and execution Realm; contract identity does not
 make a native function cross-language callable. The document workbench separately
 provides the actual browser-engine/iframe exercise.

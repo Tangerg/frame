@@ -22,8 +22,8 @@ func (d *Database) Close() error {
 	return d.databaseOwner.close()
 }
 
-func (s *Store) Close() error {
-	if s == nil {
+func (s Store) Close() error {
+	if s.storeAuthority == nil {
 		return nil
 	}
 	return s.databaseOwner.close()
@@ -78,10 +78,11 @@ func (d *databaseOwner) transactionFailure() error {
 }
 
 func (d *Database) Read(ctx context.Context, query func(Reader) error) error {
-	if query == nil {
+	if d == nil || d.databaseOwner == nil || query == nil {
 		return frame.ErrInvalid
 	}
-	return RunReadSnapshot(ctx, d, func(ctx context.Context) error {
-		return query(readAccess{access: Connection(ctx, d)})
+	original := *d
+	return RunReadSnapshot(ctx, &original, func(ctx context.Context) error {
+		return query(readAccess{access: Connection(ctx, &original)})
 	})
 }

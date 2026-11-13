@@ -9,18 +9,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tangerg/frame/portable"
-	"github.com/Tangerg/frame/process"
+	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/value"
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
 
 func TestInputRequiredCannotReplayAnInvocation(t *testing.T) {
-	for _, kind := range []portable.MethodKind{portable.Query, portable.Command} {
+	for _, kind := range []frame.MethodKind{frame.Query, frame.Command} {
 		t.Run(string(kind), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
-			method, err := portable.AdmitMethod(portable.MethodDescriptor{
+			method, err := frame.AdmitMethod(frame.MethodDescriptor{
 				Name: "invoke", Kind: kind,
 				Input: []byte(`{"type":"object","additionalProperties":false}`), Output: []byte(`{"type":"boolean"}`),
 			})
@@ -55,11 +54,11 @@ func TestInputRequiredCannotReplayAnInvocation(t *testing.T) {
 				t.Fatal(err)
 			}
 			invocation := queryInvocation(t, method.Name(), input)
-			if kind == portable.Command {
+			if kind == frame.Command {
 				invocation = commandInvocation(t, "original-command", method.Name(), input)
 			}
 			result, err := service.Invoke(ctx, invocation)
-			if calls.Load() != 1 || result.Validate() == nil || !errors.Is(err, process.ErrOutcomeUnknown) {
+			if calls.Load() != 1 || result.Validate() == nil || !errors.Is(err, frame.ErrOutcomeUnknown) {
 				t.Fatalf("input round changed dispatch policy: calls=%d, result=%s, error=%v", calls.Load(), result.String(), err)
 			}
 		})

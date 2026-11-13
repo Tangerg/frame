@@ -15,7 +15,7 @@ import (
 )
 
 type staging struct {
-	store    *Store
+	store    *storeAuthority
 	name     string
 	identity fs.FileInfo
 	root     *os.Root
@@ -24,7 +24,7 @@ type staging struct {
 	bytes    int64
 }
 
-func (s *Store) stage() (*staging, error) {
+func (s *storeAuthority) stage() (*staging, error) {
 	name, root, identity, err := s.privateDirectory(stagingDirectoryPrefix)
 	if err != nil {
 		return nil, err

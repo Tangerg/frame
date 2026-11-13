@@ -1,6 +1,8 @@
 package localfile
 
-import "io/fs"
+import (
+	"io/fs"
+)
 
 // State that authorizes or proves work is readable only by the OS user that
 // owns it; Frame's trust boundary is that same local user.

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/internal/cancellation"
 )
 
 type txKey struct{ database *databaseOwner }
@@ -36,19 +35,20 @@ func RunInTx(ctx context.Context, db *Database, fn func(context.Context) error) 
 	if db == nil || db.databaseOwner == nil || fn == nil {
 		return frame.ErrInvalid
 	}
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return err
 	}
-	if owned, ok := ctx.Value(txKey{database: db.databaseOwner}).(transaction); ok {
+	database := db.databaseOwner
+	if owned, ok := ctx.Value(txKey{database: database}).(transaction); ok {
 		if err := owned.tx.validate(); err != nil {
 			return err
 		}
 		if owned.readOnly {
 			return errors.New("sqlite: write transaction cannot enter a read snapshot")
 		}
-		return errors.Join(fn(ctx), cancellation.Err(ctx))
+		return errors.Join(fn(ctx), frame.ContextError(ctx))
 	}
-	return RunIndependentTx(ctx, db, fn)
+	return database.runIndependentTx(ctx, writeTransaction, fn)
 }
 
 // RunReadSnapshot reads one consistent snapshot without reserving the WAL writer.
@@ -58,47 +58,51 @@ func RunReadSnapshot(ctx context.Context, db *Database, read func(context.Contex
 	if db == nil || db.databaseOwner == nil || read == nil {
 		return frame.ErrInvalid
 	}
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return err
 	}
-	if owned, ok := ctx.Value(txKey{database: db.databaseOwner}).(transaction); ok {
+	database := db.databaseOwner
+	if owned, ok := ctx.Value(txKey{database: database}).(transaction); ok {
 		owned.readOnly = true
 		return owned.tx.read(ctx, func(scope *connectionScope) error {
 			access := newTransactionAccess(scope)
 			owned.tx = access
 			return access.run(func() error {
-				return errors.Join(read(context.WithValue(ctx, txKey{database: db.databaseOwner}, owned)), cancellation.Err(ctx))
+				return errors.Join(read(context.WithValue(ctx, txKey{database: database}, owned)), frame.ContextError(ctx))
 			})
 		})
 	}
-	return runIndependentTx(ctx, db, readTransaction, read)
+	return database.runIndependentTx(ctx, readTransaction, read)
 }
 
 // Independent transactions refuse an ambient write-set on the same database.
 // Once BEGIN succeeds, this owner joins the original rollback or commit.
 func RunIndependentTx(ctx context.Context, db *Database, fn func(context.Context) error) (err error) {
-	return runIndependentTx(ctx, db, writeTransaction, fn)
-}
-
-func runIndependentTx(ctx context.Context, db *Database, mode transactionMode, fn func(context.Context) error) error {
-	if db == nil || db.databaseOwner == nil || fn == nil {
+	if db == nil || db.databaseOwner == nil {
 		return frame.ErrInvalid
 	}
-	if err := cancellation.Err(ctx); err != nil {
+	return db.databaseOwner.runIndependentTx(ctx, writeTransaction, fn)
+}
+
+func (d *databaseOwner) runIndependentTx(ctx context.Context, mode transactionMode, fn func(context.Context) error) error {
+	if fn == nil {
+		return frame.ErrInvalid
+	}
+	if err := frame.ContextError(ctx); err != nil {
 		return err
 	}
-	if _, active := ctx.Value(txKey{database: db.databaseOwner}).(transaction); active {
-		return errors.Join(errors.New("sqlite: independent transaction cannot enter an active database transaction"), cancellation.Err(ctx))
+	if _, active := ctx.Value(txKey{database: d}).(transaction); active {
+		return errors.Join(errors.New("sqlite: independent transaction cannot enter an active database transaction"), frame.ContextError(ctx))
 	}
 	// Unlike Store submissions, standalone transactions have no owned journal
 	// to reconcile. Fence before releasing a connection with an unknown commit.
-	err := db.transact(ctx, mode, func(executor Executor) error {
+	err := d.transact(ctx, mode, func(executor Executor) error {
 		access := executor.(*transactionAccess)
-		scoped := context.WithValue(ctx, txKey{database: db.databaseOwner}, transaction{tx: access, readOnly: mode == readTransaction})
+		scoped := context.WithValue(ctx, txKey{database: d}, transaction{tx: access, readOnly: mode == readTransaction})
 		return fn(scoped)
-	}, db.requireRecovery)
+	}, d.requireRecovery)
 	if errors.Is(err, errCommitUnresolved) {
-		db.startClose()
+		d.startClose()
 		return errors.Join(ErrIndeterminate, err)
 	}
 	return err

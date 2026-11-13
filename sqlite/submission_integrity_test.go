@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 func TestSubmissionSchemaRejectsImpossibleStates(t *testing.T) {
@@ -82,7 +82,7 @@ func TestMissingIssuedEvidenceFencesTheWholeRetainedInterval(t *testing.T) {
 	for _, sequence := range []uint64{1, 2, 3} {
 		for _, operation := range []string{"prepare", "pending", "recover", "compact-settled", "reopen"} {
 			t.Run(operation+"/"+strconv.FormatUint(sequence, 10), func(t *testing.T) {
-				admission := frame.NewAdmission()
+				admission := framehost.NewAdmission()
 				config := testConfig(filepath.Join(t.TempDir(), "evidence.db"), admission)
 				store, err := Open(t.Context(), config)
 				if err != nil {
@@ -114,13 +114,11 @@ func TestMissingIssuedEvidenceFencesTheWholeRetainedInterval(t *testing.T) {
 					if err := store.Close(); err != nil {
 						t.Fatal(err)
 					}
-					admission = frame.NewAdmission()
+					admission = framehost.NewAdmission()
 					config.Admission = admission
-					var reopened *Store
+					var reopened Store
 					reopened, err = Open(t.Context(), config)
-					if reopened != nil {
-						defer reopened.Close()
-					}
+					defer reopened.Close()
 				}
 				if !errors.Is(err, ErrIndeterminate) || admission.RecoveryError() == nil {
 					t.Fatalf("lost issued evidence admitted at %s: error=%v recovery=%v", operation, err, admission.RecoveryError())

@@ -10,7 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/Tangerg/frame/internal/cancellation"
+	"github.com/Tangerg/frame"
 )
 
 func (paths pathInventory) walk(ctx context.Context, root *os.Root, limit int, visit func(string, fs.DirEntry) error) error {
@@ -27,7 +27,7 @@ func (paths pathInventory) walkDirectory(ctx context.Context, root *os.Root, nam
 		return err
 	}
 	for _, entry := range entries {
-		if err := cancellation.Err(ctx); err != nil {
+		if err := frame.ContextError(ctx); err != nil {
 			return err
 		}
 		child := path.Join(name, entry.Name())
@@ -48,7 +48,7 @@ func (paths pathInventory) walkDirectory(ctx context.Context, root *os.Root, nam
 }
 
 func (paths pathInventory) readDirectory(ctx context.Context, root *os.Root, name string, identity fs.FileInfo, limit int) (_ []fs.DirEntry, err error) {
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return nil, err
 	}
 	directory, err := root.OpenRoot(name)
@@ -73,7 +73,7 @@ func (paths pathInventory) readDirectory(ctx context.Context, root *os.Root, nam
 func (paths pathInventory) readEntries(ctx context.Context, directory fs.ReadDirFile, parent string, limit int) ([]fs.DirEntry, error) {
 	var admitted []fs.DirEntry
 	for {
-		if err := cancellation.Err(ctx); err != nil {
+		if err := frame.ContextError(ctx); err != nil {
 			return nil, err
 		}
 		batchSize := max(1, min(directoryReadBatch, limit-len(paths)))

@@ -8,20 +8,21 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
 // routedUse acquires a Use whose single root is a native event export.
 func routedUse(t *testing.T, e *bridgeEnvironment) (browser.UseGrant, browser.LocalExport) {
 	t.Helper()
-	event, err := frame.NewEvent[string]("test.ping", "1")
+	event, err := framehost.NewEvent[string]("test.ping", "1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := e.host.Register(event); err != nil {
 		t.Fatal(err)
 	}
-	plugin, err := frame.Define(frame.Definition{Revision: value.Hash([]byte("test-browser-emitter")), Units: []frame.Unit{{Declaration: frame.UnitDeclaration{ID: "emitter", Profile: frame.BrowserJS, Exports: []frame.ExportDeclaration{{Name: "ping", Contract: event.Ref()}}}}}})
+	plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("test-browser-emitter")), Units: []framehost.Unit{{Declaration: framehost.UnitDeclaration{ID: "emitter", Profile: framehost.BrowserJS, Exports: []framehost.ExportDeclaration{{Name: "ping", Contract: event.Ref()}}}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,10 +31,10 @@ func routedUse(t *testing.T, e *bridgeEnvironment) (browser.UseGrant, browser.Lo
 		t.Fatal(err)
 	}
 	e.credentials = credentials
-	if _, err := e.host.Install(e.ctx, frame.InstallationConfig{ID: "emitter", Plugin: plugin, Enabled: true}); err != nil {
+	if _, err := e.host.Install(e.ctx, framehost.InstallationConfig{ID: "emitter", Plugin: plugin, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	root := frame.ExportRef{InstallationID: "emitter", Release: plugin.Revision(), UnitID: "emitter", Export: "ping", Contract: event.Ref()}
+	root := framehost.ExportRef{InstallationID: "emitter", Release: plugin.Revision(), UnitID: "emitter", Export: "ping", Contract: event.Ref()}
 	plan, err := e.host.PlanWith(e.ctx, browser.RealmID(credentials.Realm), nil, root)
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +63,7 @@ func routedUse(t *testing.T, e *bridgeEnvironment) (browser.UseGrant, browser.Lo
 	return result.grant, export
 }
 
-func (e *bridgeEnvironment) pendingPlan(installation frame.InstallationID) browser.LocalPlan {
+func (e *bridgeEnvironment) pendingPlan(installation framehost.InstallationID) browser.LocalPlan {
 	e.t.Helper()
 	for {
 		projection, err := e.bridge.Poll(e.ctx, e.credentials.Token)
@@ -97,7 +98,7 @@ func TestRouteGrantsEventDeliveryWithinItsOriginalUse(t *testing.T) {
 	}
 	forged := route
 	forged.Receiver.Name = "forged"
-	if err := e.bridge.ValidateRoute(e.ctx, e.credentials.Token, forged); !errors.Is(err, frame.ErrStaleBinding) {
+	if err := e.bridge.ValidateRoute(e.ctx, e.credentials.Token, forged); !errors.Is(err, framehost.ErrStaleBinding) {
 		t.Fatalf("relabelled route was accepted: %v", err)
 	}
 }
@@ -108,7 +109,7 @@ func TestIssuedRoutesCountAgainstPendingCapacity(t *testing.T) {
 	grant, export := routedUse(t, e)
 	undeclared := export
 	undeclared.Name = "undeclared"
-	if _, err := e.bridge.Route(e.ctx, e.credentials.Token, grant, export, undeclared); !errors.Is(err, frame.ErrStaleBinding) {
+	if _, err := e.bridge.Route(e.ctx, e.credentials.Token, grant, export, undeclared); !errors.Is(err, framehost.ErrStaleBinding) {
 		t.Fatalf("route outside its grant: %v", err)
 	}
 	for range capacity {

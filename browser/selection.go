@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 func (b *Bridge) Acquire(ctx context.Context, token string, request AcquireRequest) (grant UseGrant, returned error) {
@@ -28,7 +29,7 @@ func (b *Bridge) Acquire(ctx context.Context, token string, request AcquireReque
 			return errRealmSealed
 		}
 		if !entry.serves(session.realm, request.Execution) || !lease.capturedFor(session.realm) {
-			return frame.ErrStaleBinding
+			return framehost.ErrStaleBinding
 		}
 		operation.execution = entry.plan.Execution.ID
 		operation.parentID = request.ParentUseID
@@ -71,26 +72,26 @@ func (b *Bridge) takeLease(session *realmSession, entry *browserExecution, id st
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if session.cleanupOnly || entry.isFenced() || b.executions.get(entry.plan.Execution.ID) != entry || b.snapshots[id] != lease {
-		return frame.ErrStaleBinding
+		return framehost.ErrStaleBinding
 	}
 	delete(b.snapshots, id)
 	return nil
 }
 
-func (b *Bridge) useConfig(session *realmSession, entry *browserExecution, parentID string) (frame.UseConfig, error) {
-	if session.application == nil {
-		return frame.UseConfig{}, frame.ErrFenced
+func (b *Bridge) useConfig(session *realmSession, entry *browserExecution, parentID string) (framehost.UseConfig, error) {
+	if !session.application.Valid() {
+		return framehost.UseConfig{}, framehost.ErrFenced
 	}
 	// The Realm application consumes these exports. Making the provider execution
 	// own that borrow would make its exit wait on its own resource protection.
-	config := frame.UseConfig{Owner: session.application, Scope: entry.setup.ScopeGrant(), Realm: RealmID(session.realm), ExecutionID: entry.plan.Execution.ID}
+	config := framehost.UseConfig{Owner: session.application, Scope: entry.setup.ScopeGrant(), Realm: RealmID(session.realm), ExecutionID: entry.plan.Execution.ID}
 	if parentID != "" {
 		b.mu.Lock()
 		parent := b.uses[parentID]
 		valid := parent != nil && parent.grant.Realm == session.realm && parent.grant.Execution == entry.plan.Execution && parent.grant.ScopeID == entry.plan.ScopeID && parent.grant.ScopeGeneration == entry.plan.ScopeGeneration && !parent.released()
 		b.mu.Unlock()
 		if !valid {
-			return frame.UseConfig{}, frame.ErrStaleBinding
+			return framehost.UseConfig{}, framehost.ErrStaleBinding
 		}
 		config.Parent = parent.use
 		config.Owner = parent.use.Lifetime()
@@ -98,10 +99,10 @@ func (b *Bridge) useConfig(session *realmSession, entry *browserExecution, paren
 	return config, nil
 }
 
-func (b *Bridge) deliverUse(ctx context.Context, session *realmSession, entry *browserExecution, use *frame.Use, operationID string, operation *controlOperation) (UseGrant, error) {
+func (b *Bridge) deliverUse(ctx context.Context, session *realmSession, entry *browserExecution, use *framehost.Use, operationID string, operation *controlOperation) (UseGrant, error) {
 	grant := UseGrant{OperationID: operationID, ParentUseID: operation.parentID, ID: use.ID(), ApprovalToken: b.signer.approval(use.ID()), Authority: b.authority, Realm: session.realm, Execution: entry.plan.Execution, ScopeID: entry.plan.ScopeID, ScopeGeneration: entry.plan.ScopeGeneration, Objects: []ObjectRef{}}
 	for _, source := range use.Sources() {
-		err := frame.BorrowExport(ctx, use, source, func(_ context.Context, object Object) error {
+		err := framehost.BorrowExport(ctx, use, source, func(_ context.Context, object Object) error {
 			grant.Objects = append(grant.Objects, object.Reference)
 			return nil
 		})
@@ -144,8 +145,8 @@ func (b *Bridge) deliverUse(ctx context.Context, session *realmSession, entry *b
 	if entry.isFenced() || session.cleanupOnly {
 		b.mu.Unlock()
 		_ = resource.ConfirmReleased(nil)
-		use.BeginClose(frame.ErrFenced)
-		return UseGrant{}, frame.ErrFenced
+		use.BeginClose(framehost.ErrFenced)
+		return UseGrant{}, framehost.ErrFenced
 	}
 	b.uses[use.ID()] = retained
 	operation.acceptGrant(grant)
@@ -163,7 +164,7 @@ func (b *Bridge) ValidateUse(ctx context.Context, token string, grant UseGrant) 
 	valid := retained != nil && retained.grant.Realm == session.realm && sameWire(retained.grant, grant) && !retained.released()
 	b.mu.Unlock()
 	if !valid {
-		return frame.ErrStaleBinding
+		return framehost.ErrStaleBinding
 	}
 	if err := retained.use.Context().Err(); err != nil {
 		return frame.ErrClosed
@@ -175,11 +176,11 @@ func (b *Bridge) Route(ctx context.Context, token string, grant UseGrant, source
 	if err := b.ValidateUse(ctx, token, grant); err != nil {
 		return RouteGrant{}, err
 	}
-	if source.Contract != receiver.Contract || source.Contract.Kind != frame.EventKind || source.Contract.Mode != frame.NativeMode {
+	if source.Contract != receiver.Contract || source.Contract.Kind != framehost.EventKind || source.Contract.Mode != framehost.NativeMode {
 		return RouteGrant{}, frame.ErrContractMismatch
 	}
 	if !grant.grants(source) || !grant.grants(receiver) {
-		return RouteGrant{}, frame.ErrStaleBinding
+		return RouteGrant{}, framehost.ErrStaleBinding
 	}
 	if err := b.checkRouteCapacity(grant, source, receiver); err != nil {
 		return RouteGrant{}, err
@@ -225,7 +226,7 @@ func (b *Bridge) reserveRoute(useID string) (*browserUse, error) {
 	return retained, b.routes.reserve()
 }
 
-func (b *Bridge) newEventRoute(ctx context.Context, use *frame.Use, source, receiver LocalExport) (*frame.EventRoute, error) {
+func (b *Bridge) newEventRoute(ctx context.Context, use *framehost.Use, source, receiver LocalExport) (*framehost.EventRoute, error) {
 	sourceRef, err := localSource(ctx, use, source)
 	if err != nil {
 		return nil, err
@@ -242,7 +243,7 @@ func (b *Bridge) ValidateRoute(ctx context.Context, token string, route RouteGra
 	original, exists := b.routes.lookup(route.ID)
 	b.mu.Unlock()
 	if !exists || !sameWire(original.grant, route) {
-		return frame.ErrStaleBinding
+		return framehost.ErrStaleBinding
 	}
 	if err := b.ValidateUse(ctx, token, route.Use); err != nil {
 		return err
@@ -250,16 +251,16 @@ func (b *Bridge) ValidateRoute(ctx context.Context, token string, route RouteGra
 	return b.config.Host.ValidateEventRoute(ctx, original.original)
 }
 
-func localSource(ctx context.Context, use *frame.Use, local LocalExport) (frame.ExportRef, error) {
+func localSource(ctx context.Context, use *framehost.Use, local LocalExport) (framehost.ExportRef, error) {
 	for _, source := range use.Sources() {
 		var matches bool
-		err := frame.BorrowExport(ctx, use, source, func(_ context.Context, object Object) error { matches = object.Reference.Export == local; return nil })
+		err := framehost.BorrowExport(ctx, use, source, func(_ context.Context, object Object) error { matches = object.Reference.Export == local; return nil })
 		if err != nil {
-			return frame.ExportRef{}, err
+			return framehost.ExportRef{}, err
 		}
 		if matches {
 			return source, nil
 		}
 	}
-	return frame.ExportRef{}, frame.ErrContractMismatch
+	return framehost.ExportRef{}, frame.ErrContractMismatch
 }

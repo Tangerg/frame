@@ -7,7 +7,7 @@ import (
 	"strconv"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/internal/cancellation"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 )
 
@@ -37,9 +37,9 @@ func (b *Bridge) AdmitPlan(ctx context.Context, token string, plan LocalPlan) (P
 		return PlanAdmission{}, err
 	}
 	if plan.Protocol != Protocol || plan.Authority.ID != b.authority.ID || plan.Realm != session.realm {
-		return PlanAdmission{}, frame.ErrStaleBinding
+		return PlanAdmission{}, framehost.ErrStaleBinding
 	}
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return PlanAdmission{}, err
 	}
 	result := PlanAdmission{Authority: b.authority, Realm: plan.Realm, Execution: plan.Execution, Decision: PlanCleanupRequired}
@@ -54,7 +54,7 @@ func (b *Bridge) AdmitPlan(ctx context.Context, token string, plan LocalPlan) (P
 	}
 	if !sameWire(entry.plan, plan) {
 		b.mu.Unlock()
-		return PlanAdmission{}, frame.ErrStaleBinding
+		return PlanAdmission{}, framehost.ErrStaleBinding
 	}
 	admitted := entry.runtimeOwnsExit()
 	// The pending Runtime owner already exists. A failed currentness check
@@ -86,7 +86,7 @@ func (b *Bridge) admitForCleanup(ctx context.Context, entry *browserExecution, a
 func (b *Bridge) admitCurrent(ctx context.Context, session *realmSession, entry *browserExecution, plan LocalPlan, result PlanAdmission) (PlanAdmission, error) {
 	if err := entry.setup.ValidateCurrent(ctx); err != nil {
 		b.fence(entry)
-		if !errors.Is(err, frame.ErrStaleBinding) && !errors.Is(err, frame.ErrFenced) && !errors.Is(err, frame.ErrClosed) {
+		if !errors.Is(err, framehost.ErrStaleBinding) && !errors.Is(err, framehost.ErrFenced) && !errors.Is(err, frame.ErrClosed) {
 			return PlanAdmission{}, err
 		}
 		return b.recordedPlanAdmission(ctx, plan, result)
@@ -104,13 +104,13 @@ func (b *Bridge) admitCurrent(ctx context.Context, session *realmSession, entry 
 func (b *Bridge) recordedPlanAdmission(ctx context.Context, plan LocalPlan, result PlanAdmission) (PlanAdmission, error) {
 	record, err := b.config.Store.Attempt(ctx, plan.Execution.ID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return PlanAdmission{}, frame.ErrUnavailable
+		return PlanAdmission{}, framehost.ErrUnavailable
 	}
 	if err != nil {
 		return PlanAdmission{}, err
 	}
 	if !matchesAttempt(record.Attempt, plan.Authority, plan.Realm, plan.Execution, plan.ScopeID, plan.ScopeGeneration) {
-		return PlanAdmission{}, frame.ErrStaleBinding
+		return PlanAdmission{}, framehost.ErrStaleBinding
 	}
 	switch {
 	case isUnadmittedRecord(record):
@@ -124,7 +124,7 @@ func (b *Bridge) recordedPlanAdmission(ctx context.Context, plan LocalPlan, resu
 }
 
 func matchesAttempt(attempt sqlite.Attempt, authority Authority, realm Realm, execution Execution, scopeID, scopeGeneration string) bool {
-	return attempt.Profile == frame.BrowserJS && attempt.ID == execution.ID &&
+	return attempt.Profile == framehost.BrowserJS && attempt.ID == execution.ID &&
 		attempt.Realm == string(RealmID(realm)) && authority.Epoch == strconv.FormatUint(attempt.Epoch, 10) &&
 		execution.Generation == strconv.FormatUint(attempt.Generation, 10) && scopeID == string(attempt.Scope) &&
 		scopeGeneration == strconv.FormatUint(attempt.ScopeGeneration, 10)

@@ -38,7 +38,7 @@
     "src/*/README.md"
   ],
   "scripts": {
-    "build": "node ../scripts/build-node.mjs && tsc -p tsconfig.build.json",
+    "build": "node ../scripts/prepare-sdk.mjs && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "prepack": "npm run build"
   },

@@ -1,6 +1,8 @@
 package value
 
-import "testing"
+import (
+	"testing"
+)
 
 func FuzzParseJSONIdentityIsStable(f *testing.F) {
 	for _, seed := range []string{

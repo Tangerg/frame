@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 )
 
@@ -55,20 +56,20 @@ type failureCategory struct {
 // Unknown outcome must dominate a secondary refusal after dispatch.
 var receiptFailures = []failureCategory{
 	{unknownReceiptFailure, sqlite.ErrIndeterminate, uncertainProblem},
-	{fencedFailure, frame.ErrFenced, deniedProblem},
+	{fencedFailure, framehost.ErrFenced, deniedProblem},
 	{invalidFailure, frame.ErrInvalid, invalidProblem},
 	{conflictFailure, sqlite.ErrConflict, invalidProblem},
 	{capacityFailure, frame.ErrCapacity, capacityProblem},
 	{contractMismatchFailure, frame.ErrContractMismatch, httpProblemKind{contractMismatchFailure, "the exact contract does not match", http.StatusConflict}},
-	{staleBindingFailure, frame.ErrStaleBinding, httpProblemKind{staleBindingFailure, "the original binding is no longer current", http.StatusConflict}},
+	{staleBindingFailure, framehost.ErrStaleBinding, httpProblemKind{staleBindingFailure, "the original binding is no longer current", http.StatusConflict}},
 	{closedFailure, frame.ErrClosed, httpProblemKind{closedFailure, "the original owner is closed", http.StatusConflict}},
 	{closeUnconfirmedFailure, frame.ErrUnconfirmedRelease, httpProblemKind{closeUnconfirmedFailure, "the original exit has not yet been confirmed", http.StatusConflict}},
-	{unavailableFailure, frame.ErrUnavailable, unavailableProblem},
-	{inUseFailure, frame.ErrInUse, unavailableProblem},
-	{ambiguousFailure, frame.ErrAmbiguous, unavailableProblem},
-	{dependencyCycleFailure, frame.ErrDependencyCycle, unavailableProblem},
-	{recoveryRequiredFailure, frame.ErrRecoveryRequired, unavailableProblem},
-	{resyncRequiredFailure, frame.ErrResyncRequired, unavailableProblem},
+	{unavailableFailure, framehost.ErrUnavailable, unavailableProblem},
+	{inUseFailure, framehost.ErrInUse, unavailableProblem},
+	{ambiguousFailure, framehost.ErrAmbiguous, unavailableProblem},
+	{dependencyCycleFailure, framehost.ErrDependencyCycle, unavailableProblem},
+	{recoveryRequiredFailure, framehost.ErrRecoveryRequired, unavailableProblem},
+	{resyncRequiredFailure, framehost.ErrResyncRequired, unavailableProblem},
 	{cancelledFailure, context.Canceled, unavailableProblem},
 	{deadlineFailure, context.DeadlineExceeded, unavailableProblem},
 }

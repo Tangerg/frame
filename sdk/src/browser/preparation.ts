@@ -1,8 +1,9 @@
 import { FrameError, type Cleanup, type Lifetime } from "../index.js";
 import type {
   LocalPlan,
+  PlanAdmission,
   PlanAdmissionDecision,
-  PublicationResult,
+  DecisionResult,
   ReadyReport,
 } from "../protocol.generated.js";
 import {
@@ -13,6 +14,7 @@ import {
 
 import { sameAuthority } from "./identity.js";
 import { observePromise } from "../promise-observation.js";
+import { captureProtocol } from "../protocol-capture.js";
 
 export class ReadySubmission {
   readonly #report: ReadyReport;
@@ -26,7 +28,7 @@ export class ReadySubmission {
 
   async submit(channel: ControlChannel): Promise<void> {
     const previouslyDispatched = this.#dispatched;
-    let result: PublicationResult;
+    let result: DecisionResult;
     try {
       result = await this.#lifetime.run(() => {
         this.#dispatched = true;
@@ -44,6 +46,15 @@ export class ReadySubmission {
       throw new FrameError(
         "outcome_unknown",
         "ready acknowledgement is unknown; prepared execution is retained",
+        { cause },
+      );
+    }
+    try {
+      result = captureProtocol("DecisionResult", result);
+    } catch (cause) {
+      throw new FrameError(
+        "outcome_unknown",
+        "ready acknowledgement is invalid; prepared execution is retained",
         { cause },
       );
     }
@@ -102,14 +113,20 @@ export class PreparationAdmission {
   }
 
   async #resolve(channel: ControlChannel): Promise<PlanAdmissionDecision> {
-    const result = await channel.observe((control, signal) =>
+    const received = await channel.observe((control, signal) =>
       control.admitPlan(this.#plan, signal),
     );
+    let result: PlanAdmission;
+    try {
+      result = captureProtocol("PlanAdmission", received);
+    } catch (cause) {
+      throw new FrameError(
+        "outcome_unknown",
+        "host admission acknowledgement is invalid",
+        { cause },
+      );
+    }
     if (
-      !result ||
-      !result.authority ||
-      !result.realm ||
-      !result.execution ||
       !sameAuthority(result.authority, channel.authority) ||
       result.realm.id !== this.#plan.realm.id ||
       result.realm.epoch !== this.#plan.realm.epoch ||

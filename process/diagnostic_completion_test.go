@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tangerg/frame/portable"
+	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -96,12 +96,12 @@ func TestDiagnosticInterruptionCompletesOriginalRequests(t *testing.T) {
 }
 
 func TestCommandDiagnosticFailureDoesNotReplayItsEffect(t *testing.T) {
-	method, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "mutate", Kind: portable.Command})
+	method, err := frame.NewMethod[string, string](frame.MethodConfig{Name: "mutate", Kind: frame.Command})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var effects atomic.Int32
-	service := connectedService(t, method.Descriptor(), Handler(func(context.Context, portable.Invocation) (value.JSON, error) {
+	service := connectedService(t, method.Descriptor(), frame.Handler(func(context.Context, frame.Invocation) (value.JSON, error) {
 		effects.Add(1)
 		return value.JSON{}, interruptedDiagnostic{method: "Is", interrupt: runtime.Goexit}
 	}))
@@ -112,18 +112,18 @@ func TestCommandDiagnosticFailureDoesNotReplayItsEffect(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	result, err := service.Invoke(ctx, commandInvocation(t, "original-command", method.Name(), input))
-	if effects.Load() != 1 || result.Validate() == nil || !errors.Is(err, ErrOutcomeUnknown) || errors.Is(err, context.DeadlineExceeded) {
+	if effects.Load() != 1 || result.Validate() == nil || !errors.Is(err, frame.ErrOutcomeUnknown) || errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("command completion lost its original effect: effects=%d result=%s error=%v", effects.Load(), result.String(), err)
 	}
 }
 
 func TestStreamDiagnosticFailureRetainsItsCauseAndRejectsProducerSuccess(t *testing.T) {
-	method, err := portable.NewStreamingMethod[string, string, string](portable.MethodConfig{Name: "read", Kind: portable.Query})
+	method, err := frame.NewStreamingMethod[string, string, string](frame.MethodConfig{Name: "read", Kind: frame.Query})
 	if err != nil {
 		t.Fatal(err)
 	}
 	failure := &interruptedDiagnostic{method: "Is", interrupt: runtime.Goexit}
-	service := connectedService(t, method.Descriptor(), testStream{func(ctx context.Context, in value.JSON, emit Emit) (value.JSON, error) {
+	service := connectedService(t, method.Descriptor(), testStream{func(ctx context.Context, in value.JSON, emit frame.Emit) (value.JSON, error) {
 		_ = emit(ctx, in)
 		return in, nil
 	}})
@@ -137,7 +137,7 @@ func TestStreamDiagnosticFailureRetainsItsCauseAndRejectsProducerSuccess(t *test
 		return failure
 	})
 	retained, ok := errors.AsType[*interruptedDiagnostic](err)
-	if !ok || retained != failure || result.Validate() == nil || !errors.Is(err, ErrOutcomeUnknown) || ctx.Err() != nil {
+	if !ok || retained != failure || result.Validate() == nil || !errors.Is(err, frame.ErrOutcomeUnknown) || ctx.Err() != nil {
 		t.Fatal("interrupted diagnostic lost the original stream failure or admitted a result")
 	}
 }
@@ -180,7 +180,7 @@ func TestInterruptedReplyAfterDisconnectionReleasesOriginalSlot(t *testing.T) {
 			}
 			server.end(context.Canceled)
 			release()
-			if err := <-result; !errors.Is(err, ErrOutcomeUnknown) {
+			if err := <-result; !errors.Is(err, frame.ErrOutcomeUnknown) {
 				t.Fatalf("disconnected invocation lost its unknown outcome: %v", err)
 			}
 			client.end(context.Canceled)

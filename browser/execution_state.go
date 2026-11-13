@@ -2,6 +2,7 @@ package browser
 
 import (
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 	"github.com/Tangerg/frame/value"
 )
@@ -11,8 +12,8 @@ import (
 type browserExecution struct {
 	plan            LocalPlan
 	attempt         sqlite.Attempt
-	setup           *frame.Setup
-	prepared        chan []frame.ExportValue
+	setup           *framehost.Setup
+	prepared        chan []framehost.ExportValue
 	registration    *attemptRegistration
 	runtime         *runtimePreparation
 	sealed          bool
@@ -80,24 +81,24 @@ func (e *browserExecution) scopeFence() Fence {
 	return Fence{ScopeID: e.plan.ScopeID, ScopeGeneration: e.plan.ScopeGeneration}
 }
 
-func (e *browserExecution) replayReady(operationID string, digest value.Digest) (PublicationResult, bool, error) {
+func (e *browserExecution) replayReady(operationID string, digest value.Digest) (DecisionResult, bool, error) {
 	if !e.hasReady() {
-		return PublicationResult{}, false, nil
+		return DecisionResult{}, false, nil
 	}
 	report := e.runtime.ready
 	if report.operationID != operationID || report.digest != digest {
-		return PublicationResult{}, true, sqlite.ErrConflict
+		return DecisionResult{}, true, sqlite.ErrConflict
 	}
-	return PublicationResult{Decision: Accepted}, true, nil
+	return DecisionResult{Decision: Accepted}, true, nil
 }
 
-func (e *browserExecution) acceptReady(operationID string, digest value.Digest) (PublicationResult, bool, error) {
-	if e.sealed || !e.runtimeOwnsExit() {
-		return rejected(problemExecutionReleased), false, nil
-	}
+func (e *browserExecution) acceptReady(operationID string, digest value.Digest) (DecisionResult, bool, error) {
 	if result, replay, err := e.replayReady(operationID, digest); replay {
 		return result, false, err
 	}
+	if e.sealed || !e.runtimeOwnsExit() {
+		return rejectedDecision(problemExecutionReleased), false, nil
+	}
 	e.runtime.ready = &readyReport{operationID: operationID, digest: digest}
-	return PublicationResult{Decision: Accepted}, true, nil
+	return DecisionResult{Decision: Accepted}, true, nil
 }

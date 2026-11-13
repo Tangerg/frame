@@ -3,7 +3,7 @@ package mcp
 import (
 	"errors"
 
-	"github.com/Tangerg/frame/portable"
+	"github.com/Tangerg/frame"
 )
 
 // Origin is consumer-defined evidence and grants no framework permission.
@@ -12,17 +12,17 @@ type Origin string
 // Invocation is immutable calling-owner evidence. It contains no credentials,
 // callback permissions, mutable execution state or business result.
 type Invocation struct {
-	ID     string          `json:"id"`
-	Origin Origin          `json:"origin"`
-	Parent string          `json:"parent,omitzero"`
-	Target portable.Target `json:"target"`
+	ID     string       `json:"id"`
+	Origin Origin       `json:"origin"`
+	Parent string       `json:"parent,omitzero"`
+	Target frame.Target `json:"target"`
 }
 
 func (i Invocation) Validate() error {
-	if !portable.ValidToken(i.ID) || i.Parent != "" && (!portable.ValidToken(i.Parent) || i.Parent == i.ID) {
+	if !frame.ValidName(i.ID) || i.Parent != "" && (!frame.ValidName(i.Parent) || i.Parent == i.ID) {
 		return errors.New("mcp: invocation and distinct parent identities are required")
 	}
-	if !portable.ValidToken(string(i.Origin)) {
+	if !frame.ValidName(string(i.Origin)) {
 		return errors.New("mcp: invocation origin must be a bounded consumer token")
 	}
 	return i.Target.Validate()

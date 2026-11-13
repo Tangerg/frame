@@ -6,14 +6,15 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
-	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
 	"github.com/Tangerg/frame/distribution"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/internal/localfile"
 	"github.com/Tangerg/frame/value"
 )
@@ -22,18 +23,19 @@ import (
 var assets embed.FS
 
 const (
-	previewPackageName                  = "example.document-preview"
-	previewPackageVersion               = "1"
-	previewModulePath                   = "preview.js"
-	previewUnitID          frame.UnitID = "preview"
-	previewExportName                   = "preview"
-	themeUnitID            frame.UnitID = "theme"
-	themeExportName                     = "theme"
-	themeResourcePath                   = "theme.css"
-	defaultPreviewPriority              = 10
+	artifactPathPrefix                      = "/frame/artifacts/"
+	previewPackageName                      = "example.document-preview"
+	previewPackageVersion                   = "1"
+	previewModulePath                       = "preview.js"
+	previewUnitID          framehost.UnitID = "preview"
+	previewExportName                       = "preview"
+	themeUnitID            framehost.UnitID = "theme"
+	themeExportName                         = "theme"
+	themeResourcePath                       = "theme.css"
+	defaultPreviewPriority                  = 10
 )
 
-func buildPreview(ctx context.Context, store *distribution.Store, contracts Contracts, authorize func(value.Digest)) (distribution.Release, error) {
+func buildPreview(ctx context.Context, store distribution.Store, contracts Contracts, authorize func(value.Digest)) (distribution.Release, error) {
 	directory, err := os.MkdirTemp("", "frame-document-package-")
 	if err != nil {
 		return distribution.Release{}, err
@@ -44,10 +46,10 @@ func buildPreview(ctx context.Context, store *distribution.Store, contracts Cont
 		return distribution.Release{}, err
 	}
 	declaration, err := json.Marshal(struct {
-		UnitID   frame.UnitID      `json:"unitId"`
-		Export   string            `json:"export"`
-		Point    frame.ContractRef `json:"point"`
-		Metadata PreviewMetadata   `json:"metadata"`
+		UnitID   framehost.UnitID      `json:"unitId"`
+		Export   string                `json:"export"`
+		Point    framehost.ContractRef `json:"point"`
+		Metadata PreviewMetadata       `json:"metadata"`
 	}{previewUnitID, previewExportName, contracts.Previews.Ref(), PreviewMetadata{Format: "html", Priority: defaultPreviewPriority}})
 	if err != nil {
 		return distribution.Release{}, err
@@ -68,10 +70,10 @@ func buildPreview(ctx context.Context, store *distribution.Store, contracts Cont
 		Package:       previewPackageName,
 		Version:       previewPackageVersion,
 		Artifacts:     []distribution.Artifact{{Path: previewModulePath}, {Path: themeResourcePath}},
-		Contracts:     []frame.ContractRef{contracts.Previews.Ref(), contracts.Theme.Ref()},
+		Contracts:     []framehost.ContractRef{contracts.Previews.Ref(), contracts.Theme.Ref()},
 		Units: []distribution.Unit{
-			{ID: previewUnitID, Profile: frame.BrowserJS, Exports: []frame.ExportDeclaration{{Name: previewExportName, Contract: contracts.Previews.Ref()}}, Module: &distribution.Module{Entry: previewModulePath}},
-			{ID: themeUnitID, Profile: frame.StaticResource, Exports: []frame.ExportDeclaration{{Name: themeExportName, Contract: contracts.Theme.Ref()}}, Resources: []string{themeResourcePath}},
+			{ID: previewUnitID, Profile: framehost.BrowserJS, Exports: []framehost.ExportDeclaration{{Name: previewExportName, Contract: contracts.Previews.Ref()}}, Module: &distribution.Module{Entry: previewModulePath}},
+			{ID: themeUnitID, Profile: framehost.StaticResource, Exports: []framehost.ExportDeclaration{{Name: themeExportName, Contract: contracts.Theme.Ref()}}, Resources: []string{themeResourcePath}},
 		},
 	}
 	var archive bytes.Buffer
@@ -86,40 +88,41 @@ func buildPreview(ctx context.Context, store *distribution.Store, contracts Cont
 	return store.ImportArchive(ctx, path, value.Hash(archive.Bytes()))
 }
 
-func previewDefinition(release distribution.Release) (*frame.Plugin, error) {
-	units := make([]frame.Unit, 0, len(release.Manifest.Units))
+func previewDefinition(release distribution.Release) (*framehost.Plugin, error) {
+	units := make([]framehost.Unit, 0, len(release.Manifest.Units))
 	for _, unit := range release.Manifest.Units {
 		if len(unit.Imports) != 0 {
 			return nil, errors.New("document: built-in preview has no imports")
 		}
-		units = append(units, frame.Unit{Declaration: frame.UnitDeclaration{ID: unit.ID, Profile: unit.Profile, Exports: unit.Exports}})
+		units = append(units, framehost.Unit{Declaration: framehost.UnitDeclaration{ID: unit.ID, Profile: unit.Profile, Exports: unit.Exports}})
 	}
-	return frame.Define(frame.Definition{Revision: release.Digest, Units: units})
+	return framehost.Define(framehost.Definition{Revision: release.Digest, Units: units})
 }
 
-type moduleSource struct{ store *distribution.Store }
+type moduleSource struct{ store distribution.Store }
 
-func (s moduleSource) Module(ctx context.Context, binding frame.UnitBinding) (browser.Artifact, error) {
+func (s moduleSource) Module(ctx context.Context, binding framehost.UnitBinding) (browser.Artifact, error) {
 	release, err := s.store.Inspect(ctx, binding.Source.Release)
 	if err != nil {
 		return browser.Artifact{}, err
 	}
 	for _, unit := range release.Manifest.Units {
-		if unit.ID == binding.Source.UnitID && unit.Profile == frame.BrowserJS && unit.Module != nil {
+		if unit.ID == binding.Source.UnitID && unit.Profile == framehost.BrowserJS && unit.Module != nil {
 			for _, artifact := range release.Manifest.Artifacts {
 				if artifact.Path == unit.Module.Entry {
-					return browser.Artifact{Path: "/frame/artifacts/" + release.Digest.String() + "/" + artifact.Path, Digest: artifact.Digest}, nil
+					location := url.URL{Path: artifactPathPrefix + release.Digest.String() + "/" + artifact.Path}
+					return browser.Artifact{Path: location.String(), Digest: artifact.Digest}, nil
 				}
 			}
 		}
 	}
-	return browser.Artifact{}, frame.ErrUnavailable
+	return browser.Artifact{}, framehost.ErrUnavailable
 }
 
 func (a *App) artifact(ctx context.Context, path string) ([]byte, string, error) {
 	release, name, found := strings.Cut(path, "/")
 	if !found || release != a.preview.Digest.String() {
-		return nil, "", frame.ErrUnavailable
+		return nil, "", framehost.ErrUnavailable
 	}
 	lease, err := a.Content.Acquire(ctx, a.preview.Digest)
 	if err != nil {

@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 	"github.com/Tangerg/frame/value"
 )
@@ -31,15 +32,15 @@ type SubmissionView struct {
 	Sequence string `json:"sequence"`
 }
 type TaskView struct {
-	ID         string                `json:"id"`
-	Source     DocumentRef           `json:"source"`
-	Binding    frame.BindingSnapshot `json:"binding"`
-	State      TaskState             `json:"state"`
-	RunStatus  TaskRunStatus         `json:"runStatus,omitempty"`
-	RunEpoch   string                `json:"runEpoch"`
-	Submission SubmissionView        `json:"submission"`
-	Result     *TaskResult           `json:"result,omitempty"`
-	Failure    string                `json:"failure,omitempty"`
+	ID         string                    `json:"id"`
+	Source     DocumentRef               `json:"source"`
+	Binding    framehost.BindingSnapshot `json:"binding"`
+	State      TaskState                 `json:"state"`
+	RunStatus  TaskRunStatus             `json:"runStatus,omitempty"`
+	RunEpoch   string                    `json:"runEpoch"`
+	Submission SubmissionView            `json:"submission"`
+	Result     *TaskResult               `json:"result,omitempty"`
+	Failure    string                    `json:"failure,omitempty"`
 }
 
 func view(task Task) TaskView {
@@ -59,8 +60,8 @@ func (a *App) Handler(config HTTPConfig) (http.Handler, error) {
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/frame/control", a.Bridge.Handler())
-	mux.HandleFunc("GET /frame/artifacts/", func(writer http.ResponseWriter, request *http.Request) {
-		data, kind, err := a.artifact(request.Context(), strings.TrimPrefix(request.URL.Path, "/frame/artifacts/"))
+	mux.HandleFunc(http.MethodGet+" "+artifactPathPrefix, func(writer http.ResponseWriter, request *http.Request) {
+		data, kind, err := a.artifact(request.Context(), strings.TrimPrefix(request.URL.Path, artifactPathPrefix))
 		if err != nil {
 			http.NotFound(writer, request)
 			return
@@ -150,11 +151,11 @@ func describeError(err error) (int, apiFailure) {
 		return http.StatusRequestEntityTooLarge, apiFailure{Code: "capacity", Message: "request exceeds the available capacity"}
 	case errors.Is(err, frame.ErrInvalid):
 		return http.StatusBadRequest, apiFailure{Code: "invalid_request", Message: "invalid request"}
-	case errors.Is(err, frame.ErrFenced):
+	case errors.Is(err, framehost.ErrFenced):
 		return http.StatusForbidden, apiFailure{Code: "fenced", Message: "authorization is no longer valid"}
-	case errors.Is(err, frame.ErrRecoveryRequired), errors.Is(err, sqlite.ErrIndeterminate):
+	case errors.Is(err, framehost.ErrRecoveryRequired), errors.Is(err, sqlite.ErrIndeterminate):
 		return http.StatusServiceUnavailable, apiFailure{Code: "recovery_required", Message: "observe the original operation after recovery"}
-	case errors.Is(err, ErrTaskFinished), errors.Is(err, ErrTaskOutcomeUnknown), errors.Is(err, ErrSourceChanged), errors.Is(err, sqlite.ErrConflict), errors.Is(err, frame.ErrInUse), errors.Is(err, frame.ErrStaleBinding), errors.Is(err, frame.ErrUnavailable):
+	case errors.Is(err, ErrTaskFinished), errors.Is(err, ErrTaskOutcomeUnknown), errors.Is(err, ErrSourceChanged), errors.Is(err, sqlite.ErrConflict), errors.Is(err, framehost.ErrInUse), errors.Is(err, framehost.ErrStaleBinding), errors.Is(err, framehost.ErrUnavailable):
 		return http.StatusConflict, apiFailure{Code: "conflict", Message: err.Error()}
 	default:
 		return http.StatusInternalServerError, apiFailure{Code: "internal", Message: "application operation failed"}

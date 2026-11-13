@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Tangerg/frame/internal/cancellation"
+	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/internal/localfile"
 )
 
@@ -74,7 +74,7 @@ func sealReleaseContents(ctx context.Context, root *os.Root, manifest Manifest, 
 	// A parent entry cannot stand in for durable child entries or final modes.
 	// Reverse preorder seals and syncs every directory after all its descendants.
 	for index := len(directories) - 1; index >= 0; index-- {
-		if err := cancellation.Err(ctx); err != nil {
+		if err := frame.ContextError(ctx); err != nil {
 			return err
 		}
 		directory := directories[index]

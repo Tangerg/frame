@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -22,7 +21,7 @@ const (
 	retiringDirectoryPrefix  = ".retiring-"
 )
 
-func (s *Store) openOwner() (err error) {
+func (s *storeAuthority) openOwner() (err error) {
 	s.root, err = os.OpenRoot(s.directory)
 	if err != nil {
 		return err
@@ -56,7 +55,7 @@ func (s *Store) openOwner() (err error) {
 // reclaimPrivate removes staging and retiring directories left by a previous
 // Store. The directory lock proves that no such Store still owns them, and a
 // public release namespace is never touched.
-func (s *Store) reclaimPrivate() (err error) {
+func (s *storeAuthority) reclaimPrivate() (err error) {
 	directory, err := s.root.Open(".")
 	if err != nil {
 		return err
@@ -91,7 +90,7 @@ func (s *Store) reclaimPrivate() (err error) {
 // validateDirectory detects replacement of any canonical parent or the root.
 // All actual I/O is additionally relative to the original held root, so a
 // replacement between this check and an operation cannot redirect it outside.
-func (s *Store) validateDirectory() error {
+func (s *storeAuthority) validateDirectory() error {
 	info, err := os.Lstat(s.directory)
 	if err != nil {
 		return errors.Join(ErrIntegrity, err)
@@ -124,7 +123,10 @@ const (
 	leaseOperation
 )
 
-func (s *Store) beginOperation(origin ioOrigin) (func(), error) {
+func (s *storeAuthority) beginOperation(origin ioOrigin) (func(), error) {
+	if s == nil {
+		return nil, frame.ErrInvalid
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.phase == storeReleasing || s.phase == storeDraining && origin == newOperation {
@@ -142,16 +144,19 @@ func (s *Store) beginOperation(origin ioOrigin) (func(), error) {
 	}, nil
 }
 
-func (s *Store) notifyLocked() {
+func (s *storeAuthority) notifyLocked() {
 	close(s.changed)
 	s.changed = make(chan struct{})
 }
 
 // The Store owns shutdown independently of every caller waiting for it. A
 // cancelled wait must not strand the original directory lock after leases exit.
-func (s *Store) Close(ctx context.Context) error {
-	if ctx == nil {
+func (s *storeAuthority) Close(ctx context.Context) error {
+	if value.IsNil(ctx) {
 		return frame.ErrInvalid
+	}
+	if s == nil {
+		return nil
 	}
 	s.mu.Lock()
 	if s.phase == storeOpen {
@@ -162,13 +167,13 @@ func (s *Store) Close(ctx context.Context) error {
 	s.mu.Unlock()
 	select {
 	case <-ctx.Done():
-		return cancellation.Err(ctx)
+		return frame.ContextError(ctx)
 	case <-done:
 		return s.closeErr
 	}
 }
 
-func (s *Store) closeOriginal() {
+func (s *storeAuthority) closeOriginal() {
 	for {
 		s.mu.Lock()
 		if s.operations != 0 || len(s.leases) != 0 {
@@ -192,7 +197,7 @@ func (s *Store) closeOriginal() {
 	}
 }
 
-func (s *Store) openRelease(digest value.Digest) (*os.Root, error) {
+func (s *storeAuthority) openRelease(digest value.Digest) (*os.Root, error) {
 	name := digest.String()
 	info, err := s.root.Lstat(name)
 	if err != nil {
@@ -212,7 +217,7 @@ func (s *Store) openRelease(digest value.Digest) (*os.Root, error) {
 	return root, nil
 }
 
-func (s *Store) privateDirectory(prefix string) (string, *os.Root, fs.FileInfo, error) {
+func (s *storeAuthority) privateDirectory(prefix string) (string, *os.Root, fs.FileInfo, error) {
 	for range privateDirectoryAttempts {
 		name := prefix + rand.Text()
 		if err := s.root.Mkdir(name, privateDirectoryMode); errors.Is(err, os.ErrExist) {
@@ -237,7 +242,7 @@ func (s *Store) privateDirectory(prefix string) (string, *os.Root, fs.FileInfo, 
 	return "", nil, nil, ErrCapacity
 }
 
-func (s *Store) removePrivate(name string, original fs.FileInfo) error {
+func (s *storeAuthority) removePrivate(name string, original fs.FileInfo) error {
 	info, err := s.root.Lstat(name)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil

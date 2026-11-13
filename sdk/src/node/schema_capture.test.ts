@@ -1,10 +1,46 @@
 import { describe, expect, it } from "vitest";
-import { ExactNumber, stringifyJSON } from "../json.js";
-import { Capability, Method, PROTOCOL } from "./contract.js";
+import { ExactNumber, parseJSON, stringifyJSON } from "../json.js";
+import { Capability, digestJSON, Method, PROTOCOL } from "./contract.js";
 import { captureDescriptor, PORTABLE_LIMITS } from "./limits.js";
 import { compileSchema, SchemaMismatch } from "./schema.js";
 
 describe("portable JSON admission capture", () => {
+  it("retains repeated enum members and their lexemes through capability admission", () => {
+    const schema = parseJSON('{"enum":[1,1.0,1e0]}');
+    const descriptor = {
+      protocol: PROTOCOL,
+      reference: "numbers.repeated-enum",
+      methods: [
+        {
+          name: "read",
+          kind: "query",
+          description: "Read an original numeric enum member.",
+          input: schema,
+          output: schema,
+          stream: schema,
+        },
+      ],
+    } as const;
+    const original = stringifyJSON(descriptor);
+    const capability = new Capability(descriptor);
+    const method = capability.method("read");
+
+    expect(stringifyJSON(capability.descriptor)).toBe(original);
+    expect(stringifyJSON(descriptor)).toBe(original);
+    expect(method.identity).toBe(
+      digestJSON({ ...descriptor.methods[0], description: "" }),
+    );
+    for (const admit of [
+      method.admitInput,
+      method.admitOutput,
+      method.admitChunk!,
+    ]) {
+      expect(stringifyJSON(admit(new ExactNumber("1.00")))).toBe("1.00");
+      expect(() => admit(2)).toThrow(SchemaMismatch);
+      expect(() => admit("1")).toThrow(SchemaMismatch);
+    }
+  });
+
   it("meters the retained numeric lexeme once at the descriptor byte boundary", () => {
     const lexeme = "9999999999999999";
     const overhead = Buffer.byteLength('{"const":0,"description":""}');

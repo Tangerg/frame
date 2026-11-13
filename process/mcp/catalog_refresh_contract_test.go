@@ -11,16 +11,14 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
-	"github.com/Tangerg/frame/process"
 	"github.com/Tangerg/frame/value"
 	"github.com/Tangerg/go-sdk/jsonrpc"
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
 
-func catalogContract(t *testing.T, kind portable.MethodKind) (*portable.Method, *sdk.Tool) {
+func catalogContract(t *testing.T, kind frame.MethodKind) (*frame.Method, *sdk.Tool) {
 	t.Helper()
-	method, err := portable.AdmitMethod(portable.MethodDescriptor{
+	method, err := frame.AdmitMethod(frame.MethodDescriptor{
 		Name: "invoke", Kind: kind,
 		Input:  []byte(`{"type":"object","additionalProperties":false}`),
 		Output: []byte(`{"type":"object","required":["accepted"],"properties":{"accepted":{"type":"boolean"}},"additionalProperties":false}`),
@@ -31,12 +29,12 @@ func catalogContract(t *testing.T, kind portable.MethodKind) (*portable.Method, 
 	tool := &sdk.Tool{
 		Name: method.Name(), InputSchema: json.RawMessage(method.Descriptor().Input),
 		OutputSchema: json.RawMessage(method.Descriptor().Output),
-		Annotations:  &sdk.ToolAnnotations{ReadOnlyHint: kind == portable.Query},
+		Annotations:  &sdk.ToolAnnotations{ReadOnlyHint: kind == frame.Query},
 	}
 	return method, tool
 }
 
-func connectCatalogOverPipe(t *testing.T, ctx context.Context, server *sdk.Server, method *portable.Method, pages int) (*toolService, error) {
+func connectCatalogOverPipe(t *testing.T, ctx context.Context, server *sdk.Server, method *frame.Method, pages int) (*toolService, error) {
 	t.Helper()
 	clientPipe, serverPipe := net.Pipe()
 	t.Cleanup(func() { _ = clientPipe.Close(); _ = serverPipe.Close() })
@@ -56,17 +54,17 @@ func connectCatalogOverPipe(t *testing.T, ctx context.Context, server *sdk.Serve
 	return &toolService{connection: connection, members: map[string]*toolMember{method.Name(): member}}, err
 }
 
-func catalogInvocation(t *testing.T, method *portable.Method) portable.Invocation {
+func catalogInvocation(t *testing.T, method *frame.Method) frame.Invocation {
 	t.Helper()
 	input, err := value.ParseJSON([]byte(`{}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var invocation portable.Invocation
-	if method.Kind() == portable.Command {
-		invocation, err = portable.NewCommandInvocation("original-command", method.Name(), input)
+	var invocation frame.Invocation
+	if method.Kind() == frame.Command {
+		invocation, err = frame.NewCommandInvocation("original-command", method.Name(), input)
 	} else {
-		invocation, err = portable.NewQueryInvocation(method.Name(), input)
+		invocation, err = frame.NewQueryInvocation(method.Name(), input)
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +73,7 @@ func catalogInvocation(t *testing.T, method *portable.Method) portable.Invocatio
 }
 
 func TestToolsRejectImplicitCatalogRefreshAfterBinding(t *testing.T) {
-	for _, kind := range []portable.MethodKind{portable.Query, portable.Command} {
+	for _, kind := range []frame.MethodKind{frame.Query, frame.Command} {
 		t.Run(string(kind), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 			defer cancel()
@@ -106,7 +104,7 @@ func TestToolsRejectImplicitCatalogRefreshAfterBinding(t *testing.T) {
 			}
 			_, err = service.Invoke(ctx, catalogInvocation(t, method))
 			var mismatch *jsonrpc.Error
-			if !errors.Is(err, process.ErrOutcomeUnknown) || !errors.As(err, &mismatch) || mismatch.Code != sdk.CodeHeaderMismatch {
+			if !errors.Is(err, frame.ErrOutcomeUnknown) || !errors.As(err, &mismatch) || mismatch.Code != sdk.CodeHeaderMismatch {
 				t.Fatalf("original uncertain MCP failure was replaced: %v", err)
 			}
 			if pages, invocations := refreshPages.Load(), calls.Load(); pages != 0 || invocations != 1 {
@@ -118,7 +116,7 @@ func TestToolsRejectImplicitCatalogRefreshAfterBinding(t *testing.T) {
 }
 
 func TestToolsDiscoveryStillHonorsCatalogBudget(t *testing.T) {
-	for _, kind := range []portable.MethodKind{portable.Query, portable.Command} {
+	for _, kind := range []frame.MethodKind{frame.Query, frame.Command} {
 		for _, test := range []struct {
 			name        string
 			budget      int

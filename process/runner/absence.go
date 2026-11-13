@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/internal/cancellation"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -46,7 +45,7 @@ func (p AbsenceProof) Validate(request AttemptRef) error {
 // one lock. A replacement authority cannot prove absence for its predecessor,
 // including when it replaces that authority between a client's control calls.
 func (s *Server) ProveAbsent(ctx context.Context, request AttemptRef) (AbsenceProof, error) {
-	if err := cancellation.Err(ctx); err != nil {
+	if err := frame.ContextError(ctx); err != nil {
 		return AbsenceProof{}, err
 	}
 	if !request.valid() {

@@ -6,7 +6,7 @@ import (
 	"io/fs"
 	"os"
 
-	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -19,7 +19,7 @@ func VerifyArchive(ctx context.Context, archive string, digest value.Digest, lim
 	}
 	defer func() { err = errors.Join(err, removeSealed(directory)) }()
 	store, err := Open(Config{
-		Directory: directory, Admission: frame.NewAdmission(), Limits: limits,
+		Directory: directory, Admission: framehost.NewAdmission(), Limits: limits,
 		Trust:    func(context.Context, Source, Manifest, Lock) error { return nil },
 		Retained: func(context.Context, value.Digest) (bool, error) { return true, nil },
 	})
@@ -30,7 +30,7 @@ func VerifyArchive(ctx context.Context, archive string, digest value.Digest, lim
 	return store.ImportArchive(ctx, archive, digest)
 }
 
-func (s *Store) Inspect(ctx context.Context, digest value.Digest) (Release, error) {
+func (s *storeAuthority) Inspect(ctx context.Context, digest value.Digest) (Release, error) {
 	done, err := s.beginOperation(newOperation)
 	if err != nil {
 		return Release{}, err
@@ -39,7 +39,7 @@ func (s *Store) Inspect(ctx context.Context, digest value.Digest) (Release, erro
 	return s.inspect(ctx, digest)
 }
 
-func (s *Store) inspect(ctx context.Context, digest value.Digest) (Release, error) {
+func (s *storeAuthority) inspect(ctx context.Context, digest value.Digest) (Release, error) {
 	if digest.Validate() != nil {
 		return Release{}, ErrInvalid
 	}
@@ -58,7 +58,7 @@ func (s *Store) inspect(ctx context.Context, digest value.Digest) (Release, erro
 	return release, nil
 }
 
-func (s *Store) validate(ctx context.Context, root *os.Root, admission treeAdmission) (Release, error) {
+func (s *storeAuthority) validate(ctx context.Context, root *os.Root, admission treeAdmission) (Release, error) {
 	release, err := s.readReleaseMetadata(ctx, root)
 	if err != nil {
 		return Release{}, err
@@ -77,7 +77,7 @@ func (s *Store) validate(ctx context.Context, root *os.Root, admission treeAdmis
 	return release, nil
 }
 
-func (s *Store) readReleaseMetadata(ctx context.Context, root *os.Root) (Release, error) {
+func (s *storeAuthority) readReleaseMetadata(ctx context.Context, root *os.Root) (Release, error) {
 	manifestFile, err := readRegular(ctx, root, ManifestName, s.limits.ManifestBytes)
 	if err != nil {
 		return Release{}, err

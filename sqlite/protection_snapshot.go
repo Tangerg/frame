@@ -4,7 +4,7 @@ import (
 	"context"
 	"slices"
 
-	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 // Terminal labels cannot release protection before their original proof has
@@ -26,8 +26,8 @@ func readProtectionSnapshot(ctx context.Context, tx Reader) (protectionSnapshot,
 	return protectionSnapshot{attempts: attempts, uses: uses}, nil
 }
 
-func (s protectionSnapshot) dependencies() []frame.Dependency {
-	var dependencies []frame.Dependency
+func (s protectionSnapshot) dependencies() []framehost.Dependency {
+	var dependencies []framehost.Dependency
 	for _, record := range s.attempts {
 		if !record.ExitProven() {
 			dependencies = append(dependencies, record.Attempt.Binding.Dependencies()...)
@@ -38,7 +38,7 @@ func (s protectionSnapshot) dependencies() []frame.Dependency {
 			dependencies = append(dependencies, record.Approval.Binding.Dependencies()...)
 		}
 	}
-	return frame.CompactDependencies(dependencies)
+	return framehost.CompactDependencies(dependencies)
 }
 
 func (s protectionSnapshot) requiresRecovery() bool {

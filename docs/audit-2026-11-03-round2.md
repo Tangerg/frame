@@ -88,7 +88,7 @@ Errors after calling the implementation now join `ErrOutcomeUnknown` with the
 original cause. Input decoding still happens before dispatch and does not gain
 an unknown-outcome category. No retry or fallback dispatch was introduced.
 
-Regression: `process/member_test.go`,
+Regression: `typed_method_test.go`,
 `TestTypedLocalCommandKeepsPostDispatchFailureUnknown` covers cancellation,
 contract mismatch and output encoding, while counting the original effect.
 `TestTypedInputDecodeFailureRemainsBeforeDispatch` checks the other side of the
@@ -129,7 +129,7 @@ path removes the subscription, closes the channel and then confirms release.
 Normal close, context cancellation and overflow return the same resource and
 subscription capacities. There is no separate Watch shutdown registry.
 
-Regression: `host_lifecycle_test.go`,
+Regression: `host/host_lifecycle_test.go`,
 `TestHostAdmissionEndsWithItsOriginalLifetime`,
 `TestHostWatchResourceBudgetTracksActualSubscriptions` and
 `TestNewHostRefusesRetiredLifetime`. An independent review also checked lock
@@ -168,7 +168,7 @@ refusal, unchanged decode destinations and supported round trips.
 
 ### FRAME-R2-009 — P2: generated root aliases broke descendant references
 
-`portable/contractgen/feature.go`, addFeatureSchema, shared an expanded root's
+`contractgen/feature.go`, addFeatureSchema, shared an expanded root's
 shape with a named definition by replacing the root with a $ref. References
 such as `#/properties/value` were still relocated beneath the now-aliased root.
 A JSON Pointer does not follow $ref when traversing the document, so those
@@ -179,14 +179,14 @@ owner. If the expanded root becomes an alias, all original root-descendant
 references in its method document are projected to the actual named shape.
 No duplicate generated type or compatibility alias was introduced.
 
-Regression: `portable/contractgen/root_reference_test.go`,
+Regression: `contractgen/root_reference_test.go`,
 `TestExpandedRootKeepsAddressedSubschemas`. It compares original and generated
 schema predicates, executes the generated Go consumer, and compiles positive
 and negative TypeScript consumers.
 
 ### FRAME-R2-010 — P2: readable definition names broke encoded references
 
-`portable/schema_names.go` recognized only the literal prefix `#/$defs/`.
+`value/schema_names.go` recognized only the literal prefix `#/$defs/`.
 Legal references with URI-fragment encoding, such as `#/%24defs/...`, kept
 their old names while the referenced definitions were renamed.
 
@@ -195,7 +195,7 @@ uses the existing rename map, then encodes the new token and fragment. Only
 schema reference positions are rewritten; annotation and literal data remain
 data. References whose target is not renamed retain their original spelling.
 
-Regression: `portable/schema_names_test.go`,
+Regression: `value/schema_names_test.go`,
 `TestReadableDefinitionsPreserveEncodedPointerFragments`.
 
 ### FRAME-R2-011 — P2: a legal read bound could silently discard all input

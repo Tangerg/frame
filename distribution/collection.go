@@ -9,11 +9,11 @@ import (
 	"slices"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/internal/cancellation"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
-func (s *Store) Remove(ctx context.Context, digest value.Digest) (err error) {
+func (s *storeAuthority) Remove(ctx context.Context, digest value.Digest) (err error) {
 	done, err := s.beginOperation(newOperation)
 	if err != nil {
 		return err
@@ -33,6 +33,12 @@ func (s *Store) Remove(ctx context.Context, digest value.Digest) (err error) {
 		if err := s.ensureUnused(ctx, digest); err != nil {
 			return err
 		}
+		if err := frame.ContextError(ctx); err != nil {
+			return err
+		}
+		if err := s.admission.RecoveryError(); err != nil {
+			return err
+		}
 		withdrawn, err := s.withdraw(digest, retiring, identity)
 		if withdrawn != nil {
 			identity = withdrawn
@@ -41,19 +47,19 @@ func (s *Store) Remove(ctx context.Context, digest value.Digest) (err error) {
 	})
 }
 
-func (s *Store) ensureUnused(ctx context.Context, digest value.Digest) error {
+func (s *storeAuthority) ensureUnused(ctx context.Context, digest value.Digest) error {
 	s.mu.Lock()
 	leased := s.leases[digest] != 0
 	s.mu.Unlock()
 	if leased {
-		return frame.ErrInUse
+		return framehost.ErrInUse
 	}
 	retained, err := s.retained(ctx, digest)
 	if err != nil {
 		return err
 	}
 	if retained {
-		return frame.ErrInUse
+		return framehost.ErrInUse
 	}
 	return nil
 }
@@ -61,7 +67,7 @@ func (s *Store) ensureUnused(ctx context.Context, digest value.Digest) error {
 // withdraw renames a public release over the private retiring placeholder. It
 // returns the identity now held at retiring once the rename has happened, even
 // when the following durability sync fails.
-func (s *Store) withdraw(digest value.Digest, retiring string, placeholder fs.FileInfo) (withdrawn fs.FileInfo, err error) {
+func (s *storeAuthority) withdraw(digest value.Digest, retiring string, placeholder fs.FileInfo) (withdrawn fs.FileInfo, err error) {
 	name := digest.String()
 	info, err := s.root.Lstat(name)
 	if errors.Is(err, os.ErrNotExist) {
@@ -106,7 +112,7 @@ func (s *Store) withdraw(digest value.Digest, retiring string, placeholder fs.Fi
 
 // Digests observes the content namespace. Each later Remove still checks the
 // original retention facts and live claims under the shared admission gate.
-func (s *Store) Digests(ctx context.Context) (_ []value.Digest, err error) {
+func (s *storeAuthority) Digests(ctx context.Context) (_ []value.Digest, err error) {
 	done, err := s.beginOperation(newOperation)
 	if err != nil {
 		return nil, err
@@ -119,7 +125,7 @@ func (s *Store) Digests(ctx context.Context) (_ []value.Digest, err error) {
 	defer func() { err = errors.Join(err, directory.Close()) }()
 	var result []value.Digest
 	for {
-		if err := cancellation.Err(ctx); err != nil {
+		if err := frame.ContextError(ctx); err != nil {
 			return nil, err
 		}
 		entries, readErr := directory.ReadDir(directoryReadBatch)

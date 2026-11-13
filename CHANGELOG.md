@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+- **Breaking:** move plugin Host, declaration, binding, selection, admission and
+  authoring APIs to `github.com/Tangerg/frame/host`. Construct a Host with
+  `host.New(ctx, host.Config{})`; Host budgets use `host.Limits`. The root
+  package owns callable contract semantics and resource lifetimes. No aliases
+  or forwarding facade remain at the module root.
+- **Breaking:** Lifetime, Host and Admission are value handles over private
+  owners. Copying a handle shares the original resources, catalog, generation
+  sequence and scope/recovery authority; replacing a caller's variable cannot
+  replace any of those facts. Invalid constructors return unissued handles.
+- Give each Host an issuing lifecycle domain and inspect resource dependency
+  identities without exposing owning Lifetimes or retaining a parallel ledger.
+- Replace release-settlement report counters and channel-derived policy with
+  explicit states and observed failure identities. An overlapping close cannot
+  authorize a retry of a failure it did not observe.
+- **Breaking:** remove the `portable` package. Root `frame` owns capabilities,
+  methods, invocations and typed calls; `value` owns schema and codec admission.
+  Move `portable/contractgen` to `contractgen`. Move process-neutral service
+  interfaces, implementations and `ErrOutcomeUnknown` to `frame`; replace
+  `process.NewMember` and `process.Member` with `frame.NewTypedMethod` and
+  `frame.TypedMethod`. No compatibility aliases are retained.
+- Share one identifier grammar through `frame.ValidName`. The generated portable
+  profile derives its token bound from `frame.MaxNameBytes`; callable limits
+  belong to Frame and data validation budgets belong to `value`.
+- Refuse a zero, unadmitted capability before assembling a typed service.
+- Admit known Frame capability semantics at contract construction and descriptor
+  registration. Reject mismatched references and invalid methods before setup.
+  Retain the admitted model in the contract registry and expose it through
+  `Host.Capability` and `Setup.Capability`, replacing adapter-side descriptor
+  lookup and reparsing. Point and service lookups use the same value-contract owner.
+- Share cancellation reporting through `frame.ContextError` and typed-nil
+  classification through `value.IsNil`, including native author sources and
+  codec model admission.
+- **Breaking:** move example commands to `cmd/authorhost`,
+  `cmd/buildcheck` and `cmd/document`. The document command
+  replaces the separate Web generator with `-command generate -out <path>`.
+- Reject invalid document commands before opening state. `run` and `status`
+  require the original task identity. Each invocation owns its flags and shares
+  one cancellation context across task execution and server shutdown.
+- Publish repository protocol projections through atomic file replacement,
+  preserving previous hard links and refusing symbolic-link targets.
+
 ## v0.2.0 — 2026-11-10
 
 - Protect native resource work through `Use.Enter` and retain dynamic publication
@@ -161,9 +202,9 @@ execution. It contains breaking changes from v0.0.1.
   `@frame/sdk/browser`, `@frame/sdk/node` and `@frame/sdk/react`. Install the single
   release tarball in place of the four v0.0.1 tarballs.
 - Move Go imports from `control` and `control/host` to `browser`, `runner` to
-  `process/runner`, `contractgen` to `portable/contractgen`, and `integrity` and
+  `process/runner`, `contractgen` to `contractgen`, and `integrity` and
   `jsonvalue` to `value` under `github.com/Tangerg/frame`.
-- Process services accept `portable.Invocation`. Use `NewQueryInvocation` for
+- Process services accept `frame.Invocation`. Use `NewQueryInvocation` for
   queries and `NewCommandInvocation` with the original business command ID for
   commands; typed members provide `Query` and `Command` calls.
 - Prepare a native publication once with `Host.PreparePublication` and retain that

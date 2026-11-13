@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
 func TestRecoveredInstallationEnableAdvancesOriginalAuthority(t *testing.T) {
 	store, _, admission := testStore(t)
-	host, err := frame.NewHost(t.Context(), frame.HostConfig{Admission: admission, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store})
+	host, err := framehost.New(t.Context(), framehost.Config{Admission: admission, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,15 +23,18 @@ func TestRecoveredInstallationEnableAdvancesOriginalAuthority(t *testing.T) {
 		_, _ = host.Close(ctx)
 	})
 	var setups atomic.Int64
-	plugin, err := frame.Define(frame.Definition{Revision: value.Hash([]byte("original-enable")), Units: []frame.Unit{{
-		Declaration: frame.UnitDeclaration{ID: "main", Profile: frame.NativeGo},
-		Setup:       func(context.Context, *frame.Setup) ([]frame.ExportValue, error) { setups.Add(1); return nil, nil },
+	plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("original-enable")), Units: []framehost.Unit{{
+		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
+		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+			setups.Add(1)
+			return nil, nil
+		},
 	}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	const installation frame.InstallationID = "original-enable"
-	if _, err := host.Install(t.Context(), frame.InstallationConfig{ID: installation, Plugin: plugin, Enabled: true}); err != nil {
+	const installation framehost.InstallationID = "original-enable"
+	if _, err := host.Install(t.Context(), framehost.InstallationConfig{ID: installation, Plugin: plugin, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := host.SetEnabled(t.Context(), installation, false); err != nil {
@@ -57,7 +60,7 @@ func TestRecoveredInstallationEnableAdvancesOriginalAuthority(t *testing.T) {
 		},
 	})
 	enableErr := host.SetEnabled(t.Context(), installation, true)
-	if frame.InstallationConclusion(enableErr) != frame.CommitIndeterminate {
+	if framehost.InstallationConclusion(enableErr) != framehost.CommitIndeterminate {
 		t.Fatalf("expected committed enable with unavailable acknowledgement: %v", enableErr)
 	}
 	records, err := store.RecoverInstallations(t.Context())
@@ -67,7 +70,7 @@ func TestRecoveredInstallationEnableAdvancesOriginalAuthority(t *testing.T) {
 	if len(records) != 1 || !records[0].Enabled {
 		t.Fatalf("enable did not actually commit: %+v", records)
 	}
-	if err := host.Restore(t.Context(), records, []*frame.Plugin{plugin}); err != nil {
+	if err := host.Restore(t.Context(), records, []*framehost.Plugin{plugin}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.ConfirmRestoredInstallations(t.Context()); err != nil {

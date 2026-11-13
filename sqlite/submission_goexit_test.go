@@ -8,18 +8,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 )
 
-func submissionExitStore(t *testing.T) (*sqlite.Store, sqlite.Owner, *frame.Admission) {
+func submissionExitStore(t *testing.T) (sqlite.Store, sqlite.Owner, framehost.Admission) {
 	t.Helper()
-	admission := frame.NewAdmission()
+	admission := framehost.NewAdmission()
 	store, err := sqlite.Open(t.Context(), sqlite.Config{
 		Path: filepath.Join(t.TempDir(), "submission-exit.db"), Admission: admission,
 		Owners: []sqlite.OwnerSchema{{
 			ID: "tasks", Statements: []string{`CREATE TABLE task_records(id TEXT PRIMARY KEY)`},
-			References: func(context.Context, sqlite.Reader, frame.InstallationID) ([]frame.Dependency, error) {
+			References: func(context.Context, sqlite.Reader, framehost.InstallationID) ([]framehost.Dependency, error) {
 				return nil, nil
 			},
 		}},
@@ -75,7 +75,7 @@ func TestSubmissionMutationGoexitSettlesTheOriginalRejection(t *testing.T) {
 		}, nil)
 	})
 	settled, err := owner.Settlement(t.Context(), id, request)
-	if err != nil || settled.State != frame.CommitRejected || !settled.Synchronized {
+	if err != nil || settled.State != framehost.CommitRejected || !settled.Synchronized {
 		t.Errorf("abandoned mutation did not settle its original rejection: %+v %v", settled, err)
 	}
 	var records int
@@ -91,7 +91,7 @@ func TestSubmissionMutationGoexitSettlesTheOriginalRejection(t *testing.T) {
 		mutations++
 		return []byte("replacement evidence"), nil
 	}, nil)
-	if err != nil || settled.State != frame.CommitRejected || mutations != 1 {
+	if err != nil || settled.State != framehost.CommitRejected || mutations != 1 {
 		t.Fatalf("original intent authorized another mutation: calls=%d settlement=%+v error=%v", mutations, settled, err)
 	}
 }
@@ -113,13 +113,13 @@ func TestSubmissionSynchronizationGoexitRetainsRecoveryBarrier(t *testing.T) {
 		})
 	})
 	settled, err := owner.Settlement(t.Context(), id, request)
-	if err != nil || settled.State != frame.CommitSucceeded || settled.Synchronized {
+	if err != nil || settled.State != framehost.CommitSucceeded || settled.Synchronized {
 		t.Fatalf("synchronization interruption changed the original commit: %+v %v", settled, err)
 	}
-	if err := admission.RecoveryError(); !errors.Is(err, frame.ErrRecoveryRequired) {
+	if err := admission.RecoveryError(); !errors.Is(err, framehost.ErrRecoveryRequired) {
 		t.Errorf("unsynchronized commit left admission open: %v", err)
 	}
-	if _, err := owner.Prepare(t.Context(), []byte("new task")); !errors.Is(err, frame.ErrRecoveryRequired) {
+	if _, err := owner.Prepare(t.Context(), []byte("new task")); !errors.Is(err, framehost.ErrRecoveryRequired) {
 		t.Fatalf("new work crossed the unsynchronized original commit: %v", err)
 	}
 }

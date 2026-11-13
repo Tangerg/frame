@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/Tangerg/frame/portable/contractgen"
+	"github.com/Tangerg/frame/contractgen"
 	framevalue "github.com/Tangerg/frame/value"
 )
 
@@ -150,11 +150,8 @@ func (e *typeScriptEmitter) validateWireType(t reflect.Type, value string) (stri
 }
 
 func (e *typeScriptEmitter) validateWireModel(source, model reflect.Type, value string) (string, error) {
-	if _, enum := reflect.Zero(source).Interface().(interface{ Values() []string }); enum {
-		if model.Kind() != reflect.String {
-			return "", fmt.Errorf("control: string enum %s requires a string encoding model", source)
-		}
-		name := typeScriptTypeName(source)
+	name := typeScriptTypeName(source)
+	if declaration, exists := e.types[name]; exists && declaration.enumeration != nil {
 		return fmt.Sprintf("typeof %s === \"string\" && %s%s.includes(%s as %s)", value, name, enumValuesSuffix, value, name), nil
 	}
 	if source == reflect.TypeFor[framevalue.Digest]() {

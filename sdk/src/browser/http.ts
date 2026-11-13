@@ -12,6 +12,7 @@ import {
 import type {
   AcquireRequest,
   CloseProof,
+  DecisionResult,
   LocalPlan,
   PlanAdmission,
   Poll,
@@ -90,6 +91,7 @@ export class HTTPControl implements HostControl {
     input: ControlInputs[K],
     signal?: AbortSignal,
   ): Promise<ControlOutputs[K]> {
+    signal?.throwIfAborted();
     const body = stringifyJSON({ method, input });
     if (new TextEncoder().encode(body).byteLength > this.#maximumMessageBytes)
       return Promise.reject(
@@ -112,6 +114,7 @@ export class HTTPControl implements HostControl {
     body: string,
     signal: AbortSignal,
   ): Promise<ControlOutputs[K]> {
+    signal.throwIfAborted();
     const mutating = mutations.has(method);
     let response: Response;
     try {
@@ -173,7 +176,7 @@ export class HTTPControl implements HostControl {
   admitPlan(plan: LocalPlan, signal?: AbortSignal): Promise<PlanAdmission> {
     return this.#request("admitPlan", plan, signal);
   }
-  ready(report: ReadyReport, signal?: AbortSignal): Promise<PublicationResult> {
+  ready(report: ReadyReport, signal?: AbortSignal): Promise<DecisionResult> {
     return this.#request("ready", report, signal);
   }
   acquire(request: AcquireRequest, signal?: AbortSignal): Promise<UseGrant> {
@@ -203,10 +206,7 @@ export class HTTPControl implements HostControl {
   ): Promise<PublicationResult> {
     return this.#request("publication", operationId, signal);
   }
-  withdraw(
-    request: Withdrawal,
-    signal?: AbortSignal,
-  ): Promise<PublicationResult> {
+  withdraw(request: Withdrawal, signal?: AbortSignal): Promise<DecisionResult> {
     return this.#request("withdraw", request, signal);
   }
   prove(

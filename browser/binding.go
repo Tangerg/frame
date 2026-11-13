@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -15,7 +16,7 @@ type acquirePlanRequest struct {
 
 // AcquirePlan admits a fresh declaration selection. Its preparation reads stay
 // attached until the original Host approves the actual execution.
-func (b *Bridge) AcquirePlan(ctx context.Context, token, operationID string, plan *frame.BindingPlan, parentUseID string) (grant UseGrant, returned error) {
+func (b *Bridge) AcquirePlan(ctx context.Context, token, operationID string, plan framehost.BindingPlan, parentUseID string) (grant UseGrant, returned error) {
 	binding, err := plan.Snapshot()
 	if err != nil {
 		return UseGrant{}, err
@@ -81,7 +82,7 @@ func (b *Bridge) AcquirePlan(ctx context.Context, token, operationID string, pla
 // planExecution finds the execution that provides a plan's root: the parent
 // grant's execution for a child, otherwise the Realm's one ready execution of
 // the root unit and configuration.
-func (b *Bridge) planExecution(session *realmSession, binding frame.BindingSnapshot, parentUseID string, operation *controlOperation) (*browserExecution, error) {
+func (b *Bridge) planExecution(session *realmSession, binding framehost.BindingSnapshot, parentUseID string, operation *controlOperation) (*browserExecution, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	var entry *browserExecution
@@ -97,13 +98,13 @@ func (b *Bridge) planExecution(session *realmSession, binding frame.BindingSnaps
 		}
 	}
 	if entry == nil || entry.isFenced() || session.cleanupOnly {
-		return nil, frame.ErrStaleBinding
+		return nil, framehost.ErrStaleBinding
 	}
 	operation.execution = entry.plan.Execution.ID
 	return entry, nil
 }
 
-func (b *Bridge) readyExecutionLocked(realm Realm, binding frame.BindingSnapshot) (*browserExecution, error) {
+func (b *Bridge) readyExecutionLocked(realm Realm, binding framehost.BindingSnapshot) (*browserExecution, error) {
 	root := binding.Roots[0].Unit()
 	var configuration value.Digest
 	for _, unit := range binding.Units {
@@ -118,7 +119,7 @@ func (b *Bridge) readyExecutionLocked(realm Realm, binding frame.BindingSnapshot
 			continue
 		}
 		if found != nil {
-			return nil, frame.ErrAmbiguous
+			return nil, framehost.ErrAmbiguous
 		}
 		found = candidate
 	}

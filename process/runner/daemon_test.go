@@ -13,6 +13,24 @@ import (
 	"github.com/Tangerg/frame"
 )
 
+type missingDaemonContext struct{ context.Context }
+
+func TestDaemonRejectsMissingCloseContextBeforeShutdown(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon, err := NewDaemon(DaemonConfig{Executable: executable, Directory: listenerDirectory(t), StartTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := daemon.Close((*missingDaemonContext)(nil)); !errors.Is(err, frame.ErrInvalid) {
+		t.Fatalf("missing wait context admitted: %v", err)
+	}
+	if err := daemon.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
 func TestDaemonKeepsTheOriginalProcessAuthorityAndJoinsItsExit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()

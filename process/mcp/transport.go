@@ -12,10 +12,8 @@ import (
 	"io"
 	"sync"
 
-	"github.com/Tangerg/frame/internal/cancellation"
-	"github.com/Tangerg/frame/internal/nilness"
-
 	"github.com/Tangerg/frame"
+	framevalue "github.com/Tangerg/frame/value"
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
 
@@ -35,7 +33,7 @@ func connect(ctx context.Context, channel io.ReadWriteCloser, maximum int, confi
 	}
 	session, err := client.Connect(ctx, toolResultTransport{transport}, nil)
 	if err != nil {
-		return nil, errors.Join(err, cancellation.Err(ctx))
+		return nil, errors.Join(err, frame.ContextError(ctx))
 	}
 	return session, nil
 }
@@ -61,7 +59,7 @@ type Transport struct {
 // NewTransport binds the attached channel to the frame budget the driver passed
 // to [process.Protocol.Prepare].
 func NewTransport(channel io.ReadWriteCloser, maxFrameBytes int) (*Transport, error) {
-	if nilness.Is(channel) || maxFrameBytes <= 0 {
+	if framevalue.IsNil(channel) || maxFrameBytes <= 0 {
 		return nil, fmt.Errorf("%w: transport requires an attached channel and a positive frame budget", frame.ErrInvalid)
 	}
 	return &Transport{channel: channel, maximum: maxFrameBytes}, nil

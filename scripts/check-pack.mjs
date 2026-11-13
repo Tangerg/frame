@@ -26,7 +26,19 @@ async function check(source, excluded = []) {
     throw new Error("minimal consumer installed " + name);
   }
   await writeFile(join(directory, "smoke.mjs"), source);
-  await writeFile(join(directory, "smoke.mts"), source);
+  await writeFile(
+    join(directory, "smoke.mts"),
+    source +
+      `type RemoteAdapter = import("@frame/sdk/browser").RuntimeOptions["remote"];
+const scalarProxy: RemoteAdapter = () => 0;
+const booleanProxy: RemoteAdapter = () => false;
+// @ts-expect-error Only the Host may admit an absent provider.
+const missingProxy: RemoteAdapter = () => undefined;
+// @ts-expect-error A selected provider requires an implementation.
+const nullProxy: RemoteAdapter = () => null;
+void [scalarProxy, booleanProxy, missingProxy, nullProxy];
+`,
+  );
   execFileSync(process.execPath, ["smoke.mjs"], { cwd: directory });
   execFileSync(
     join(root, "node_modules/.bin/tsc"),
@@ -123,20 +135,54 @@ try {
 import { Lifetime } from "@frame/sdk/lifetime";
 import { Runtime } from "@frame/sdk/browser";
 import { PROTOCOL } from "@frame/sdk/protocol";
-import { parseJSON } from "@frame/sdk/json";
+import { parseJSON, stringifyJSON } from "@frame/sdk/json";
 if (![defineUnit, Lifetime, Runtime].every(v => typeof v === "function") || !PROTOCOL) throw new Error("broken public entry");
 if (parseJSON("9007199254740993") !== 9007199254740993n) throw new Error("lost exact number");
+const owner = new Lifetime("external resource owner");
+let released = false;
+const resource = await owner.acquire("external resource", () => 42, value => { released = value === 42; });
+if (await resource.with(value => value) !== 42) throw new Error("broken resource borrowing");
+if ((await resource.close()).status !== "released" || !released) throw new Error("broken resource release");
+if (await owner.withResource("scoped resource", () => 7, () => {}, value => value * 2) !== 14) throw new Error("broken scoped borrowing");
+await owner.close();
 `;
   await check(native, [
     ...Object.keys(sdk.optionalDependencies),
     ...Object.keys(sdk.peerDependencies),
   ]);
   npm([...install, "--include=dev", "--include=optional", "--include=peer"]);
+  const portableProfile = await readJSON(
+    join(root, "sdk/dist/node/profile.generated.json"),
+  );
   await check(
     native +
-      `import { mount } from "@frame/sdk/react";
-import { defineProcessUnit, serve } from "@frame/sdk/node";
-if (![mount,defineProcessUnit,serve].every(v => typeof v === "function")) throw new Error("broken optional entry");`,
+      `import assert from "node:assert/strict";
+import { mount } from "@frame/sdk/react";
+import { Capability, defineProcessUnit, serve } from "@frame/sdk/node";
+if (![mount,defineProcessUnit,serve].every(v => typeof v === "function")) throw new Error("broken optional entry");
+const enumSchema = '{"enum":[1,1.0,1e0]}';
+const enumContract = new Capability({
+  protocol: ${JSON.stringify(portableProfile.protocol)},
+  reference: "package.repeated-enum",
+  methods: [{name:"read",kind:"query",description:"",input:parseJSON(enumSchema),output:true}],
+});
+const enumMethod = enumContract.method("read");
+if (stringifyJSON(enumMethod.descriptor.input) !== enumSchema) throw new Error("rewritten enum descriptor");
+if (stringifyJSON(enumMethod.admitInput(parseJSON("1.00"))) !== "1.00") throw new Error("lost admitted numeric lexeme");
+const boundaryContract = new Capability({
+  protocol: enumContract.descriptor.protocol,
+  reference: "package.word-boundary",
+  methods: [{
+    name: "read", kind: "query", description: "",
+    input: {type: "object", patternProperties: {"\\\\B": false}},
+    output: {type: "string", pattern: "\\\\B$"},
+  }],
+});
+const boundaryMethod = boundaryContract.method("read");
+boundaryMethod.admitInput({"a😀a": 1});
+assert.throws(() => boundaryMethod.admitInput({"aa": 1}));
+boundaryMethod.admitOutput("a😀");
+assert.throws(() => boundaryMethod.admitOutput("😀a"));`,
   );
   console.log(
     "Installed SDK tarball passed minimal browser and full Node/React consumer checks.",

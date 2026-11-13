@@ -6,7 +6,7 @@ import {
   type ComponentType,
   type ReactNode,
 } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { createRoot } from "react-dom/client";
 import {
   FrameError,
   type Awaitable,
@@ -45,10 +45,11 @@ export function bindComponent<P>(
       "React components require a same-realm native contract",
     );
   const capturedReference = captureProtocol("ObjectRef", reference);
+  const borrow = use.with.bind(use);
   return Object.freeze({
     owner: use.lifetime,
     with: <R>(work: (component: ComponentType<P>) => Awaitable<R>) =>
-      use.with(capturedReference, contract, work),
+      borrow(capturedReference, contract, work),
   });
 }
 
@@ -67,44 +68,43 @@ export async function mount<P extends object>(
   binding: ComponentBinding<P>,
   options: MountOptions<P>,
 ): Promise<Mounted<P>> {
+  const borrow = binding.with.bind(binding);
+  const { container, props, onError, wrap } = options;
   const owner = binding.owner.branch("mounted component");
-  // A child of the approved Use keeps its objects protected while mounted work
-  // drains. Unmount runs in a separate branch, so it can interrupt effect work.
-  const rendering = owner.branch("react root");
-  let root: Root | undefined;
-  const render = async (props: P) =>
-    owner.run(() =>
-      binding.with((Component) => {
-        owner.assertOpen();
-        const node = createElement(Component, props);
-        root!.render(
-          createElement(
-            Scope.Provider,
-            { value: owner },
-            options.wrap ? options.wrap(node) : node,
-          ),
-        );
-      }),
-    );
   try {
-    rendering.cleanup(() => {
-      root?.unmount();
-      root = undefined;
-    }, "react root");
-    root = createRoot(options.container, {
-      onUncaughtError(error) {
-        owner.beginClose();
-        if (options.onError) options.onError(error);
-        else globalThis.reportError?.(error);
-      },
+    // Root release can unmount effects before their parent-owned work drains.
+    const root = await owner.acquire(
+      "react root",
+      () =>
+        createRoot(container, {
+          onUncaughtError(error) {
+            owner.beginClose();
+            if (onError) onError.call(options, error);
+            else globalThis.reportError?.(error);
+          },
+        }),
+      (root) => root.unmount(),
+    );
+    const render = async (props: P) =>
+      owner.run(() =>
+        borrow((Component) => {
+          owner.assertOpen();
+          const node = createElement(Component, props);
+          const content = wrap ? wrap.call(options, node) : node;
+          return root.with((root) =>
+            root.render(
+              createElement(Scope.Provider, { value: owner }, content),
+            ),
+          );
+        }),
+      );
+    await render(props);
+    return Object.freeze({
+      render,
+      close: (signal?: AbortSignal) => owner.close(signal),
     });
-    await render(options.props);
   } catch (error) {
     await owner.close();
     throw error;
   }
-  return Object.freeze({
-    render,
-    close: (signal?: AbortSignal) => owner.close(signal),
-  });
 }

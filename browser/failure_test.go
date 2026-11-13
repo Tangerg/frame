@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 )
 
@@ -20,7 +21,7 @@ func TestFailureVocabularyPreservesReceiptAndHTTPMeaning(t *testing.T) {
 		cause error
 		code  string
 	}{
-		{frame.ErrStaleBinding, "stale_binding"},
+		{framehost.ErrStaleBinding, "stale_binding"},
 		{frame.ErrContractMismatch, "contract_mismatch"},
 		{frame.ErrUnconfirmedRelease, "close_unconfirmed"},
 	} {
@@ -44,9 +45,9 @@ func TestFailureVocabularyPreservesReceiptAndHTTPMeaning(t *testing.T) {
 
 func TestReceiptPreservesCategoriesHiddenByHTTPProjection(t *testing.T) {
 	causes := []error{
-		frame.ErrInvalid, frame.ErrClosed, frame.ErrStaleBinding, frame.ErrUnavailable,
-		frame.ErrInUse, frame.ErrAmbiguous, frame.ErrDependencyCycle, frame.ErrContractMismatch,
-		frame.ErrRecoveryRequired, frame.ErrFenced, frame.ErrCapacity, frame.ErrResyncRequired,
+		frame.ErrInvalid, frame.ErrClosed, framehost.ErrStaleBinding, framehost.ErrUnavailable,
+		framehost.ErrInUse, framehost.ErrAmbiguous, framehost.ErrDependencyCycle, frame.ErrContractMismatch,
+		framehost.ErrRecoveryRequired, framehost.ErrFenced, frame.ErrCapacity, framehost.ErrResyncRequired,
 		frame.ErrUnconfirmedRelease, sqlite.ErrConflict, context.Canceled, context.DeadlineExceeded,
 		sqlite.ErrIndeterminate,
 	}
@@ -140,7 +141,7 @@ func (e *mutableControlDiagnostic) Is(target error) bool {
 	if e.interrupt != nil {
 		e.interrupt()
 	}
-	return target == frame.ErrStaleBinding
+	return target == framehost.ErrStaleBinding
 }
 
 func TestJoinedFailureReusesCapturedCategories(t *testing.T) {

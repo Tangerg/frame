@@ -13,19 +13,20 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
-func testConfig(path string, admission *frame.Admission) Config {
-	return Config{Path: path, Admission: admission, Owners: []OwnerSchema{{ID: "documents", Statements: []string{`CREATE TABLE documents (id TEXT PRIMARY KEY,installation TEXT NOT NULL,release TEXT NOT NULL,active INTEGER NOT NULL)`}, References: func(ctx context.Context, tx Reader, id frame.InstallationID) ([]frame.Dependency, error) {
+func testConfig(path string, admission framehost.Admission) Config {
+	return Config{Path: path, Admission: admission, Owners: []OwnerSchema{{ID: "documents", Statements: []string{`CREATE TABLE documents (id TEXT PRIMARY KEY,installation TEXT NOT NULL,release TEXT NOT NULL,active INTEGER NOT NULL)`}, References: func(ctx context.Context, tx Reader, id framehost.InstallationID) ([]framehost.Dependency, error) {
 		rows, err := tx.QueryContext(ctx, `SELECT DISTINCT installation,release FROM documents WHERE installation=? AND active=1`, id)
 		if err != nil {
 			return nil, err
 		}
 		defer rows.Close()
-		var result []frame.Dependency
+		var result []framehost.Dependency
 		for rows.Next() {
-			var dependency frame.Dependency
+			var dependency framehost.Dependency
 			if err := rows.Scan(&dependency.InstallationID, &dependency.Release); err != nil {
 				return nil, err
 			}
@@ -35,9 +36,9 @@ func testConfig(path string, admission *frame.Admission) Config {
 	}}}}
 }
 
-func testStore(t *testing.T) (*Store, Owner, *frame.Admission) {
+func testStore(t *testing.T) (Store, Owner, framehost.Admission) {
 	t.Helper()
-	admission := frame.NewAdmission()
+	admission := framehost.NewAdmission()
 	store, err := Open(context.Background(), testConfig(filepath.Join(t.TempDir(), "store.db"), admission))
 	if err != nil {
 		t.Fatal(err)
@@ -71,21 +72,21 @@ func TestSubmissionAtomicBindingAndStableConclusion(t *testing.T) {
 		_, err := tx.ExecContext(ctx, `INSERT INTO documents VALUES('a','converter',?,1)`, value.Hash([]byte("release")))
 		return []byte("document:a"), err
 	}, nil)
-	if err != nil || settlement.State != frame.CommitSucceeded || !settlement.Synchronized {
+	if err != nil || settlement.State != framehost.CommitSucceeded || !settlement.Synchronized {
 		t.Fatalf("commit: %+v %v", settlement, err)
 	}
-	if err := admission.Under(ctx, func() error { return admission.CheckUnused(ctx, "converter") }); !errors.Is(err, frame.ErrInUse) {
+	if err := admission.Under(ctx, func() error { return admission.CheckUnused(ctx, "converter") }); !errors.Is(err, framehost.ErrInUse) {
 		t.Fatalf("binding was not visible: %v", err)
 	}
 	replayed, err := owner.Commit(ctx, id, request, func(context.Context, Executor) ([]byte, error) { mutations++; return nil, nil }, nil)
-	if err != nil || replayed.State != frame.CommitSucceeded || mutations != 1 {
+	if err != nil || replayed.State != framehost.CommitSucceeded || mutations != 1 {
 		t.Fatalf("repeated mutation: %+v %v count=%d", replayed, err, mutations)
 	}
 	if _, err := owner.Commit(ctx, id, []byte("changed"), func(context.Context, Executor) ([]byte, error) { t.Fatal("conflict executed"); return nil, nil }, nil); !errors.Is(err, ErrConflict) {
 		t.Fatalf("conflict: %v", err)
 	}
 	// The business owner can release its reference without erasing its earlier
-	// admission evidence. The conclusion remains frame.CommitSucceeded after completion.
+	// admission evidence. The conclusion remains framehost.CommitSucceeded after completion.
 	finish, err := owner.Prepare(ctx, []byte("finish"))
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +102,7 @@ func TestSubmissionAtomicBindingAndStableConclusion(t *testing.T) {
 		t.Fatal(err)
 	}
 	settlement, err = owner.Settlement(ctx, id, request)
-	if err != nil || settlement.State != frame.CommitSucceeded {
+	if err != nil || settlement.State != framehost.CommitSucceeded {
 		t.Fatalf("history followed current references: %+v %v", settlement, err)
 	}
 	var count int
@@ -123,7 +124,7 @@ func TestCanceledMutationSettlesBeforeAdmissionReopens(t *testing.T) {
 		cancel()
 		return nil, err
 	}, nil)
-	if !errors.Is(err, context.Canceled) || settlement.State != frame.CommitRejected {
+	if !errors.Is(err, context.Canceled) || settlement.State != framehost.CommitRejected {
 		t.Fatalf("canceled settlement: %+v %v", settlement, err)
 	}
 	var count int
@@ -136,7 +137,7 @@ func TestCanceledMutationSettlesBeforeAdmissionReopens(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = owner.Commit(context.Background(), id, request, func(context.Context, Executor) ([]byte, error) {
-		t.Fatal("terminal frame.CommitRejected was replayed")
+		t.Fatal("terminal framehost.CommitRejected was replayed")
 		return nil, nil
 	}, nil)
 	if err != nil {
@@ -205,10 +206,10 @@ func TestSynchronizedFailureKeepsRecoveryBarrier(t *testing.T) {
 	}
 	failed := errors.New("local authority unavailable")
 	settlement, err := owner.Commit(ctx, id, []byte("sync"), func(context.Context, Executor) ([]byte, error) { return []byte("accepted"), nil }, func(Settlement) error { return failed })
-	if !errors.Is(err, failed) || settlement.State != frame.CommitSucceeded {
+	if !errors.Is(err, failed) || settlement.State != framehost.CommitSucceeded {
 		t.Fatalf("known commit lost: %+v %v", settlement, err)
 	}
-	if _, err := owner.Prepare(ctx, []byte("new")); !errors.Is(err, frame.ErrRecoveryRequired) {
+	if _, err := owner.Prepare(ctx, []byte("new")); !errors.Is(err, framehost.ErrRecoveryRequired) {
 		t.Fatalf("barrier opened: %v", err)
 	}
 	if err := owner.Confirm(ctx, id); err != nil {
@@ -225,11 +226,11 @@ func TestSynchronizedFailureKeepsRecoveryBarrier(t *testing.T) {
 func TestSingleAuthorityAndOwnerSchema(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "state.db")
-	first, err := Open(ctx, testConfig(path, frame.NewAdmission()))
+	first, err := Open(ctx, testConfig(path, framehost.NewAdmission()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second, err := Open(ctx, testConfig(path, frame.NewAdmission())); err == nil {
+	if second, err := Open(ctx, testConfig(path, framehost.NewAdmission())); err == nil {
 		_ = second.Close()
 		t.Fatal("second authority opened")
 	}
@@ -237,7 +238,7 @@ func TestSingleAuthorityAndOwnerSchema(t *testing.T) {
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
-	second, err := Open(ctx, testConfig(path, frame.NewAdmission()))
+	second, err := Open(ctx, testConfig(path, framehost.NewAdmission()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +248,7 @@ func TestSingleAuthorityAndOwnerSchema(t *testing.T) {
 	if err := second.Close(); err != nil {
 		t.Fatal(err)
 	}
-	config := testConfig(path, frame.NewAdmission())
+	config := testConfig(path, framehost.NewAdmission())
 	config.Owners[0].Statements = []string{`CREATE TABLE altered (id TEXT PRIMARY KEY)`}
 	if altered, err := Open(ctx, config); err == nil {
 		_ = altered.Close()
@@ -294,7 +295,7 @@ func TestCurrentReferencesDoNotUseOldWALSnapshot(t *testing.T) {
 	if err := old.QueryRow(`SELECT count(*) FROM documents`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("fixture did not retain old WAL view: %d %v", count, err)
 	}
-	if err := admission.Under(ctx, func() error { return admission.CheckUnused(ctx, "converter") }); !errors.Is(err, frame.ErrInUse) {
+	if err := admission.Under(ctx, func() error { return admission.CheckUnused(ctx, "converter") }); !errors.Is(err, framehost.ErrInUse) {
 		t.Fatalf("current admission missed a committed reference: %v", err)
 	}
 }
@@ -323,7 +324,7 @@ func TestCrashSettlementUsesOriginalIntent(t *testing.T) {
 			if err := command.Wait(); err == nil {
 				t.Fatal("helper did not crash")
 			}
-			admission := frame.NewAdmission()
+			admission := framehost.NewAdmission()
 			store, err := Open(context.Background(), testConfig(path, admission))
 			if err != nil {
 				t.Fatal(err)
@@ -342,9 +343,9 @@ func TestCrashSettlementUsesOriginalIntent(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := frame.CommitRejected
+			want := framehost.CommitRejected
 			if phase == "after-commit" {
-				want = frame.CommitSucceeded
+				want = framehost.CommitSucceeded
 			}
 			if settlement.State != want {
 				t.Fatalf("settlement %s, want %s", settlement.State, want)
@@ -355,7 +356,7 @@ func TestCrashSettlementUsesOriginalIntent(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if (count == 1) != (want == frame.CommitSucceeded) {
+			if (count == 1) != (want == framehost.CommitSucceeded) {
 				t.Fatalf("mutation and evidence diverged: %d %s", count, settlement.State)
 			}
 		})
@@ -367,7 +368,7 @@ func TestSQLiteCrashChild(t *testing.T) {
 	if phase == "" {
 		return
 	}
-	store, err := Open(context.Background(), testConfig(os.Getenv("FRAME_SQLITE_PATH"), frame.NewAdmission()))
+	store, err := Open(context.Background(), testConfig(os.Getenv("FRAME_SQLITE_PATH"), framehost.NewAdmission()))
 	if err != nil {
 		panic(err)
 	}
@@ -397,12 +398,12 @@ func TestSQLiteCrashChild(t *testing.T) {
 
 func TestExecutionProtectionOutlivesBusinessAndEpoch(t *testing.T) {
 	store, _, admission := testStore(t)
-	contract, err := frame.NewContract[string]("document.converter", "1")
+	contract, err := framehost.NewContract[string]("document.converter", "1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := frame.UnitRef{InstallationID: "converter", Release: value.Hash([]byte("release")), UnitID: "backend"}
-	binding := frame.BindingSnapshot{FormatVersion: 1, Roots: []frame.ExportRef{{InstallationID: source.InstallationID, Release: source.Release, UnitID: source.UnitID, Export: "convert", Contract: contract.Ref()}}, Units: []frame.UnitBinding{{Source: source, Configuration: value.Hash(nil), Imports: []frame.ImportDeclaration{}}}}
+	source := framehost.UnitRef{InstallationID: "converter", Release: value.Hash([]byte("release")), UnitID: "backend"}
+	binding := framehost.BindingSnapshot{FormatVersion: 1, Roots: []framehost.ExportRef{{InstallationID: source.InstallationID, Release: source.Release, UnitID: source.UnitID, Export: "convert", Contract: contract.Ref()}}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil), Imports: []framehost.ImportDeclaration{}}}}
 	attempt := Attempt{ID: "attempt-1", Epoch: store.Epoch(), Source: source, Binding: binding, Realm: "runner-1", Profile: "local-process"}
 	if err := store.RecordAttempt(context.Background(), attempt); err != nil {
 		t.Fatal(err)
@@ -450,7 +451,7 @@ func TestInitialStoreRefusesAnyForeignSchemaObject(t *testing.T) {
 			t.Fatal(err)
 		}
 		for range 2 {
-			store, err := Open(t.Context(), testConfig(path, frame.NewAdmission()))
+			store, err := Open(t.Context(), testConfig(path, framehost.NewAdmission()))
 			if err == nil {
 				store.Close()
 				t.Fatal("foreign schema accepted", ddl)
@@ -469,13 +470,13 @@ func TestInitialStoreRefusesAnyForeignSchemaObject(t *testing.T) {
 func TestProtectionQueriesExcludeProvenHistory(t *testing.T) {
 	store, _, a := testStore(t)
 	ctx := t.Context()
-	ref := frame.UnitRef{InstallationID: "one", Release: value.Hash([]byte("release")), UnitID: "u"}
-	binding := frame.BindingSnapshot{FormatVersion: 1, Roots: []frame.ExportRef{}, UnitRoots: []frame.UnitRef{ref}, Units: []frame.UnitBinding{{Source: ref, Configuration: value.Hash(nil)}}}
-	active := Attempt{ID: "active", Epoch: store.Epoch(), Source: ref, Binding: binding, Realm: "runner", Profile: frame.LocalProcess}
+	ref := framehost.UnitRef{InstallationID: "one", Release: value.Hash([]byte("release")), UnitID: "u"}
+	binding := framehost.BindingSnapshot{FormatVersion: 1, Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{ref}, Units: []framehost.UnitBinding{{Source: ref, Configuration: value.Hash(nil)}}}
+	active := Attempt{ID: "active", Epoch: store.Epoch(), Source: ref, Binding: binding, Realm: "runner", Profile: framehost.LocalProcess}
 	if err := store.RecordAttempt(ctx, active); err != nil {
 		t.Fatal(err)
 	}
-	approval := frame.UseApproval{ID: "use", ExecutionID: active.ID, Realm: "realm", Scope: "scope", ScopeGeneration: 1, Epoch: store.Epoch(), Binding: binding}
+	approval := framehost.UseApproval{ID: "use", ExecutionID: active.ID, Realm: "realm", Scope: "scope", ScopeGeneration: 1, Epoch: store.Epoch(), Binding: binding}
 	if err := a.Admit(ctx, func(ctx context.Context) error { return store.ApproveUse(ctx, approval) }); err != nil {
 		t.Fatal(err)
 	}

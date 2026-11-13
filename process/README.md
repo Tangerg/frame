@@ -6,7 +6,7 @@ approved Frame `Setup`; it performs no global provider lookup. The optional
 [MCP adapter](mcp/README.md) can replace the wire protocol for a registered driver.
 All profiles use the same durable attempt, runner, and exit-proof path.
 
-Supply the same SQLite store and Admission used by the Host. `Source` resolves
+Supply the same SQLite Store value and Admission used by the Host. `Source` resolves
 the approved executable, arguments and optional contribution metadata; the Host supplies exact published descriptors. Configuration hashes
 exclude secret values; environment credentials are supplied only to the runner.
 The caller explicitly supplies frame and retirement limits.
@@ -48,49 +48,26 @@ profile with evidence for that larger resource set.
 Go plugins call `ServeStdio` with a `process.Unit`. Setup receives exact imported
 services and a structured Lifetime. Preparation, activation and accepted calls
 belong to that Lifetime; retirement joins them before cleaning up their resources.
+Preparation and activation acknowledge only after their callbacks complete with
+uncancelled work and an open original Lifetime. Failed or interrupted callbacks
+begin that Lifetime's retirement. Lifecycle phases track preparation progress;
+the Lifetime alone owns closure, including closure requested by plugin code.
 Serve captures the unit's capabilities before the handshake. Replacing an author
 capability or a method lookup result cannot change the described instance's contract.
-`Service.Invoke` and `StreamingService.Stream`
-accept a `portable.Invocation`. Construct queries with `NewQueryInvocation` and
-commands with `NewCommandInvocation`; the business caller supplies the original
+`frame.Service.Invoke` and `frame.StreamingService.Stream`
+accept a `frame.Invocation`. Construct queries with `frame.NewQueryInvocation` and
+commands with `frame.NewCommandInvocation`; the business caller supplies the original
 command identity. Every relay carries that same value to the final handler.
 The admitted method owns kind and schema validation. Queries cannot carry command
 identity, and commands cannot execute without it. Transport request IDs remain
 separate from business command identity and never authorize replay.
 
-`NewMember` derives a unary method from its Go input/output types. Bind its typed
-handler with `ImplementQuery` or `ImplementCommand`, then assemble the complete
-service with `Implement`. The command handler receives the original command ID.
-Typed callers use `Member.Query` or `Member.Command`. Hosts can provide any
-implementation of `Service` or `StreamingService` matching the published descriptor.
-Typed implementations retain `ErrOutcomeUnknown` when their handler fails or its
-result cannot be encoded, including direct calls within the same process. Input
-decoding failures occur before dispatch and retain only their original cause.
-Typed callers check cancellation before encoding and before handing off to a
-service. Typed implementations check again after decoding, before entering the
-handler. Cancellation at these boundaries retains its cause without claiming an
-unknown effect. After dispatch, a handler failure remains unknown; cancellation
-does not discard a validated success or authorize another execution.
+Typed method construction, local implementations, schema derivation and invocation
+validation belong to [Frame contracts](../docs/architecture.md#contract-and-value-owners).
+A process protocol consumes those admitted contracts through `Setup.Capability`;
+it never reparses descriptors or chooses a different callable identity.
+`frame.Service` and `frame.StreamingService` are shared by native and remote calls.
 
-Typed schema derivation and decoding share `value.ValidateType` admission.
-JSON field declarations own presence and representation; schema tags can narrow
-values, including requiring an otherwise optional field. Tags that replace a
-field's encoding are refused before publication. Pointers represent omission;
-nullable material requires an opaque JSON field. Integer decoding accepts exact
-decimal and exponent spellings such as `1.0` and `1e0` within the Go type's range,
-without rounding through floating-point values. A reply that cannot be decoded
-after dispatch retains `ErrOutcomeUnknown` and the decoding cause.
-
-Ordinary `float32`/`float64`, byte sequences and `time.Time` are outside the
-typed wire model. Machine floats cannot represent every admitted JSON number;
-base64 content annotations do not validate strings; and `time.Time` cannot
-represent the full RFC 3339 date-time vocabulary, including leap seconds.
-Use `value.Number` for exact numbers and strings with semantic schema
-constraints for textual encodings. `value.JSON`, `json.RawMessage`, and
-`any` retain opaque JSON, including null. Other custom encodings require both an
-encoder and decoder plus a value-receiver `JSONSchemaModel`. That domain owner
-must describe exactly the wire values its codec can consume; Frame does not infer
-the contract from private fields or a decoder alone.
-Map keys may be plain or named strings without custom codecs; the schema
-reflector does not project a key codec's constraints onto property names.
-Descriptor-only contracts use `portable.AdmitMethod` with explicit schemas.
+Local reply projection failures retain their original decode or shape cause
+alongside `frame.ErrOutcomeUnknown`. Only incoming request failures become sanitized
+wire refusals; an invalid reply cannot masquerade as a refusal before dispatch.

@@ -16,7 +16,7 @@ type RealmCredential struct {
 	ResumeVerifier value.Digest
 }
 
-func (s *Store) RegisterRealm(ctx context.Context, credential RealmCredential) error {
+func (s *storeAuthority) RegisterRealm(ctx context.Context, credential RealmCredential) error {
 	if !frame.ValidName(credential.ID) || !frame.ValidName(credential.Epoch) || !frame.ValidName(credential.OperationID) || credential.ResumeVerifier.Validate() != nil {
 		return frame.ErrInvalid
 	}
@@ -36,7 +36,7 @@ func (s *Store) RegisterRealm(ctx context.Context, credential RealmCredential) e
 	})
 }
 
-func (s *Store) RealmCredential(ctx context.Context, id, epoch string) (RealmCredential, error) {
+func (s *storeAuthority) RealmCredential(ctx context.Context, id, epoch string) (RealmCredential, error) {
 	if !frame.ValidName(id) || !frame.ValidName(epoch) {
 		return RealmCredential{}, frame.ErrInvalid
 	}
@@ -47,7 +47,7 @@ func (s *Store) RealmCredential(ctx context.Context, id, epoch string) (RealmCre
 	return credential, err
 }
 
-func (s *Store) RealmOperation(ctx context.Context, operationID string) (RealmCredential, error) {
+func (s *storeAuthority) RealmOperation(ctx context.Context, operationID string) (RealmCredential, error) {
 	if !frame.ValidName(operationID) {
 		return RealmCredential{}, frame.ErrInvalid
 	}

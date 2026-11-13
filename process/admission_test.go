@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Tangerg/frame/portable"
+	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -22,11 +22,11 @@ func (c admissionObservedContext) Err() error {
 }
 
 func TestCancellationWhileWaitingForAdmissionDoesNotDispatch(t *testing.T) {
-	method, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "write", Kind: portable.Command})
+	method, err := frame.NewMethod[string, string](frame.MethodConfig{Name: "write", Kind: frame.Command})
 	if err != nil {
 		t.Fatal(err)
 	}
-	contract, err := portable.NewCapability("test.writer", method.Descriptor())
+	contract, err := frame.NewCapability("test.writer", method.Descriptor())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestCancellationWhileWaitingForAdmissionDoesNotDispatch(t *testing.T) {
 	<-observed
 	cancel()
 	p.mu.Unlock()
-	if err := <-finished; !errors.Is(err, context.Canceled) || errors.Is(err, ErrOutcomeUnknown) {
+	if err := <-finished; !errors.Is(err, context.Canceled) || errors.Is(err, frame.ErrOutcomeUnknown) {
 		t.Fatalf("pre-admission cancellation: %v", err)
 	}
 	if len(p.out) != 0 || len(p.pending) != 0 || p.next != 0 {
@@ -85,7 +85,7 @@ func TestCancellationDuringPayloadEncodingDoesNotDispatch(t *testing.T) {
 	cause := errors.New("caller withdrew the request")
 	cancel(cause)
 	close(continued)
-	if err := <-finished; !errors.Is(err, cause) || errors.Is(err, ErrOutcomeUnknown) {
+	if err := <-finished; !errors.Is(err, cause) || errors.Is(err, frame.ErrOutcomeUnknown) {
 		t.Fatalf("encoding cancellation: %v", err)
 	}
 	if len(p.out) != 0 || len(p.pending) != 0 || p.next != 0 {

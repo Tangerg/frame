@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -41,10 +40,10 @@ func TestCustomCodecsRequireBothDirectionsAndAnOwnedModel(t *testing.T) {
 		typeOf reflect.Type
 		schema func() ([]byte, error)
 	}{
-		{reflect.TypeFor[decoderOnly](), portable.SchemaFor[decoderOnly]},
-		{reflect.TypeFor[encoderOnly](), portable.SchemaFor[encoderOnly]},
-		{reflect.TypeFor[unmodeledCodec](), portable.SchemaFor[unmodeledCodec]},
-		{reflect.TypeFor[pointerModel](), portable.SchemaFor[pointerModel]},
+		{reflect.TypeFor[decoderOnly](), value.SchemaFor[decoderOnly]},
+		{reflect.TypeFor[encoderOnly](), value.SchemaFor[encoderOnly]},
+		{reflect.TypeFor[unmodeledCodec](), value.SchemaFor[unmodeledCodec]},
+		{reflect.TypeFor[pointerModel](), value.SchemaFor[pointerModel]},
 	} {
 		t.Run(sample.typeOf.String(), func(t *testing.T) {
 			if err := value.ValidateType(sample.typeOf); err == nil {
@@ -70,11 +69,11 @@ func TestOpaqueDecodersPreserveNull(t *testing.T) {
 }
 
 func TestModeledNumberPreservesValuesBeyondMachineFloats(t *testing.T) {
-	schemaJSON, err := portable.SchemaFor[value.Number]()
+	schemaJSON, err := value.SchemaFor[value.Number]()
 	if err != nil {
 		t.Fatal(err)
 	}
-	schema, err := portable.AdmitSchema(schemaJSON)
+	schema, err := value.AdmitSchema(schemaJSON)
 	if err != nil {
 		t.Fatal(err)
 	}

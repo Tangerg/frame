@@ -6,7 +6,7 @@ import (
 	"github.com/Tangerg/frame"
 )
 
-func (s *Store) encodeProof(proof any) ([]byte, error) {
+func (s *storeAuthority) encodeProof(proof any) ([]byte, error) {
 	encoded, err := json.Marshal(proof)
 	if err != nil {
 		return nil, err
@@ -17,7 +17,7 @@ func (s *Store) encodeProof(proof any) ([]byte, error) {
 	return encoded, nil
 }
 
-func (s *Store) CheckExitEvidenceCapacity(evidence []byte) error {
+func (s *storeAuthority) CheckExitEvidenceCapacity(evidence []byte) error {
 	if len(evidence) == 0 {
 		return frame.ErrInvalid
 	}
@@ -27,7 +27,7 @@ func (s *Store) CheckExitEvidenceCapacity(evidence []byte) error {
 	return nil
 }
 
-func (s *Store) CheckExitCapacity(proof ExitProof) error {
+func (s *storeAuthority) CheckExitCapacity(proof ExitProof) error {
 	if !proof.proves(proof.AttemptID) {
 		return frame.ErrInvalid
 	}
@@ -37,7 +37,7 @@ func (s *Store) CheckExitCapacity(proof ExitProof) error {
 
 // A Realm may outlive its Host, so admission must include the envelope used
 // when that original proof releases reconstructed Uses.
-func (s *Store) CheckRealmUseExitCapacity(proof ExitProof) error {
+func (s *storeAuthority) CheckRealmUseExitCapacity(proof ExitProof) error {
 	if !proof.proves(proof.AttemptID) {
 		return frame.ErrInvalid
 	}

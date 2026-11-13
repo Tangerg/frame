@@ -15,6 +15,7 @@ import (
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 )
 
@@ -27,12 +28,12 @@ func beginBrowserActivation(e *bridgeEnvironment, id string) <-chan error {
 		}
 		e.credentials = credentials
 	}
-	if _, err := e.host.Install(e.ctx, frame.InstallationConfig{ID: frame.InstallationID(id), Plugin: e.plugin, Enabled: true}); err != nil {
+	if _, err := e.host.Install(e.ctx, framehost.InstallationConfig{ID: framehost.InstallationID(id), Plugin: e.plugin, Enabled: true}); err != nil {
 		e.t.Fatal(err)
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := e.host.ActivateUnit(e.ctx, browser.RealmID(e.credentials.Realm), frame.UnitRef{InstallationID: frame.InstallationID(id), Release: e.plugin.Revision(), UnitID: "view"})
+		_, err := e.host.ActivateUnit(e.ctx, browser.RealmID(e.credentials.Realm), framehost.UnitRef{InstallationID: framehost.InstallationID(id), Release: e.plugin.Revision(), UnitID: "view"})
 		done <- err
 	}()
 	return done
@@ -59,7 +60,7 @@ func TestPlanCapacityIsRefusedBeforeExposure(t *testing.T) {
 	const messageBytes = 4096
 	e := openConfiguredBridge(t, filepath.Join(t.TempDir(), "state.sqlite"), true, func(config *browser.BridgeConfig) {
 		config.MaxMessageBytes = messageBytes
-		config.PublicConfiguration = func(context.Context, *frame.Setup) ([]byte, error) {
+		config.PublicConfiguration = func(context.Context, *framehost.Setup) ([]byte, error) {
 			return json.Marshal(strings.Repeat("x", 2*messageBytes))
 		}
 	})
@@ -127,7 +128,7 @@ func TestCompletePendingProjectionReservesEncodedBytesAndReturnsCapacityOnReleas
 	const messageBytes = 16 << 10
 	e := openConfiguredBridge(t, filepath.Join(t.TempDir(), "state.sqlite"), true, func(config *browser.BridgeConfig) {
 		config.MaxMessageBytes = messageBytes
-		config.PublicConfiguration = func(context.Context, *frame.Setup) ([]byte, error) {
+		config.PublicConfiguration = func(context.Context, *framehost.Setup) ([]byte, error) {
 			return json.Marshal(strings.Repeat("<", 600))
 		}
 	})
@@ -149,7 +150,7 @@ func TestCompletePendingProjectionReservesEncodedBytesAndReturnsCapacityOnReleas
 				t.Fatalf("complete poll cannot be transported: %d %v", len(encoded), err)
 			}
 			for _, plan := range last.Plans {
-				if plan.Units[0].Instance.Source.InstallationID != frame.InstallationID(id) {
+				if plan.Units[0].Instance.Source.InstallationID != framehost.InstallationID(id) {
 					continue
 				}
 				observed = true

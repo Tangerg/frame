@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 func TestProtectionQueriesAndReopenRejectUnprovenState(t *testing.T) {
@@ -28,7 +29,7 @@ func TestProtectionQueriesAndReopenRejectUnprovenState(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "store.db")
-			store, err := Open(t.Context(), testConfig(path, frame.NewAdmission()))
+			store, err := Open(t.Context(), testConfig(path, framehost.NewAdmission()))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -80,10 +81,8 @@ func TestProtectionQueriesAndReopenRejectUnprovenState(t *testing.T) {
 			if err := store.Close(); err != nil {
 				t.Fatal(err)
 			}
-			reopened, err := Open(t.Context(), testConfig(path, frame.NewAdmission()))
-			if reopened != nil {
-				_ = reopened.Close()
-			}
+			reopened, err := Open(t.Context(), testConfig(path, framehost.NewAdmission()))
+			_ = reopened.Close()
 			if err == nil {
 				t.Fatal("reopen accepted invalid protection evidence")
 			}
@@ -117,7 +116,7 @@ func TestReopenDerivesProtectionRecoveryFromValidatedRecords(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "store.db")
-			store, err := Open(t.Context(), testConfig(path, frame.NewAdmission()))
+			store, err := Open(t.Context(), testConfig(path, framehost.NewAdmission()))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -144,7 +143,7 @@ func TestReopenDerivesProtectionRecoveryFromValidatedRecords(t *testing.T) {
 			if err := store.Close(); err != nil {
 				t.Fatal(err)
 			}
-			admission := frame.NewAdmission()
+			admission := framehost.NewAdmission()
 			reopened, err := Open(t.Context(), testConfig(path, admission))
 			if err != nil {
 				t.Fatal(err)

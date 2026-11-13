@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tangerg/frame/portable"
+	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/value"
 )
 
-func connectedService(t *testing.T, descriptor portable.MethodDescriptor, implementation Service) *remote {
+func connectedService(t *testing.T, descriptor frame.MethodDescriptor, implementation frame.Service) *remote {
 	t.Helper()
-	contract, err := portable.NewCapability("test.outcome", descriptor)
+	contract, err := frame.NewCapability("test.outcome", descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func connectedService(t *testing.T, descriptor portable.MethodDescriptor, implem
 }
 
 func TestStreamFailureCannotBeErasedByProducerSuccess(t *testing.T) {
-	method, err := portable.NewStreamingMethod[string, string, string](portable.MethodConfig{Name: "stream", Kind: portable.Query})
+	method, err := frame.NewStreamingMethod[string, string, string](frame.MethodConfig{Name: "stream", Kind: frame.Query})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestStreamFailureCannotBeErasedByProducerSuccess(t *testing.T) {
 	invalid, _ := value.EncodeJSON(1)
 	for _, failure := range []string{"consumer-error", "consumer-panic", "consumer-error-panic", "invalid-chunk"} {
 		t.Run(failure, func(t *testing.T) {
-			implementation := testStream{func(ctx context.Context, in value.JSON, emit Emit) (value.JSON, error) {
+			implementation := testStream{func(ctx context.Context, in value.JSON, emit frame.Emit) (value.JSON, error) {
 				chunk := in
 				if failure == "invalid-chunk" {
 					chunk = invalid
@@ -73,7 +73,7 @@ func TestStreamFailureCannotBeErasedByProducerSuccess(t *testing.T) {
 					return nil
 				}
 			})
-			if err == nil || result.Validate() == nil || !errors.Is(err, ErrOutcomeUnknown) {
+			if err == nil || result.Validate() == nil || !errors.Is(err, frame.ErrOutcomeUnknown) {
 				t.Fatalf("failed delivery became a successful final result: %s %v", result.String(), err)
 			}
 			if (failure == "consumer-error" || failure == "consumer-error-panic") && !errors.Is(err, consumerFailure) {
@@ -87,12 +87,12 @@ func TestStreamFailureCannotBeErasedByProducerSuccess(t *testing.T) {
 }
 
 func TestStreamFinalResultJoinsPendingConsumer(t *testing.T) {
-	method, err := portable.NewStreamingMethod[string, string, string](portable.MethodConfig{Name: "stream", Kind: portable.Query})
+	method, err := frame.NewStreamingMethod[string, string, string](frame.MethodConfig{Name: "stream", Kind: frame.Query})
 	if err != nil {
 		t.Fatal(err)
 	}
 	entered, consumed, emitted := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	service := connectedService(t, method.Descriptor(), testStream{func(ctx context.Context, in value.JSON, emit Emit) (value.JSON, error) {
+	service := connectedService(t, method.Descriptor(), testStream{func(ctx context.Context, in value.JSON, emit frame.Emit) (value.JSON, error) {
 		go func() { defer close(emitted); _ = emit(ctx, in) }()
 		<-entered
 		return in, nil
@@ -106,7 +106,7 @@ func TestStreamFinalResultJoinsPendingConsumer(t *testing.T) {
 		close(consumed)
 		return nil
 	})
-	if err == nil || !errors.Is(err, ErrOutcomeUnknown) {
+	if err == nil || !errors.Is(err, frame.ErrOutcomeUnknown) {
 		t.Fatalf("pending delivery accepted a final result: %v", err)
 	}
 	select {
@@ -122,12 +122,12 @@ func TestStreamFinalResultJoinsPendingConsumer(t *testing.T) {
 }
 
 func TestEscapedEmitterCannotPublishAfterFinalResult(t *testing.T) {
-	method, err := portable.NewStreamingMethod[string, string, string](portable.MethodConfig{Name: "stream", Kind: portable.Query})
+	method, err := frame.NewStreamingMethod[string, string, string](frame.MethodConfig{Name: "stream", Kind: frame.Query})
 	if err != nil {
 		t.Fatal(err)
 	}
-	emitter := make(chan Emit, 1)
-	service := connectedService(t, method.Descriptor(), testStream{func(_ context.Context, in value.JSON, emit Emit) (value.JSON, error) {
+	emitter := make(chan frame.Emit, 1)
+	service := connectedService(t, method.Descriptor(), testStream{func(_ context.Context, in value.JSON, emit frame.Emit) (value.JSON, error) {
 		emitter <- emit
 		return in, nil
 	}})
@@ -145,20 +145,20 @@ func TestEscapedEmitterCannotPublishAfterFinalResult(t *testing.T) {
 }
 
 func TestHandlerFailureCannotClaimNonDispatchAfterAnEffect(t *testing.T) {
-	method, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "mutate", Kind: portable.Command})
+	method, err := frame.NewMethod[string, string](frame.MethodConfig{Name: "mutate", Kind: frame.Command})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, failure := range []error{context.Canceled, &Problem{wire.Errors.Contract, "handler failed after its effect"}} {
 		t.Run(failure.Error(), func(t *testing.T) {
 			var effects atomic.Int32
-			service := connectedService(t, method.Descriptor(), Handler(func(context.Context, portable.Invocation) (value.JSON, error) {
+			service := connectedService(t, method.Descriptor(), frame.Handler(func(context.Context, frame.Invocation) (value.JSON, error) {
 				effects.Add(1)
 				return value.JSON{}, failure
 			}))
 			input, _ := value.EncodeJSON("content")
 			_, err := service.Invoke(t.Context(), commandInvocation(t, "original-effect", "mutate", input))
-			if effects.Load() != 1 || !errors.Is(err, ErrOutcomeUnknown) {
+			if effects.Load() != 1 || !errors.Is(err, frame.ErrOutcomeUnknown) {
 				t.Fatalf("effect was classified as a pre-dispatch refusal: effects=%d error=%v", effects.Load(), err)
 			}
 			if errors.Is(failure, context.Canceled) && !errors.Is(err, context.Canceled) {
@@ -169,23 +169,23 @@ func TestHandlerFailureCannotClaimNonDispatchAfterAnEffect(t *testing.T) {
 }
 
 func TestRejectionBeforeHandlerDoesNotClaimAnUnknownEffect(t *testing.T) {
-	method, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "mutate", Kind: portable.Command})
+	method, err := frame.NewMethod[string, string](frame.MethodConfig{Name: "mutate", Kind: frame.Command})
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := connectedService(t, method.Descriptor(), Handler(func(context.Context, portable.Invocation) (value.JSON, error) {
+	service := connectedService(t, method.Descriptor(), frame.Handler(func(context.Context, frame.Invocation) (value.JSON, error) {
 		t.Error("rejected invocation entered the handler")
 		return value.JSON{}, nil
 	}))
 	input, _ := value.EncodeJSON("content")
 	cancelled, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := service.Invoke(cancelled, commandInvocation(t, "original-effect", "mutate", input)); !errors.Is(err, context.Canceled) || errors.Is(err, ErrOutcomeUnknown) {
+	if _, err := service.Invoke(cancelled, commandInvocation(t, "original-effect", "mutate", input)); !errors.Is(err, context.Canceled) || errors.Is(err, frame.ErrOutcomeUnknown) {
 		t.Fatalf("local pre-dispatch cancellation: %v", err)
 	}
 	var result value.JSON
 	err = service.peer.request(t.Context(), wire.Methods.Call, callParams{Handle: service.handle, Member: "undeclared", Input: input}, &result)
-	if err == nil || errors.Is(err, ErrOutcomeUnknown) {
+	if err == nil || errors.Is(err, frame.ErrOutcomeUnknown) {
 		t.Fatalf("framework pre-dispatch rejection: %v", err)
 	}
 }

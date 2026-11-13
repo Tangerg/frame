@@ -7,17 +7,16 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/portable"
 	"github.com/Tangerg/frame/value"
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
 
 func TestManagedContractOwnsItsCapabilityProjection(t *testing.T) {
-	method, err := portable.NewMethod[string, string](portable.MethodConfig{Name: "read", Kind: portable.Query, Target: "document"})
+	method, err := frame.NewMethod[string, string](frame.MethodConfig{Name: "read", Kind: frame.Query, Target: "document"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	descriptor, err := value.EncodeJSON(managedDescriptor{managedVersion, "documents.v1", managedSelection, "installation", []portable.MethodDescriptor{method.Descriptor()}})
+	descriptor, err := value.EncodeJSON(managedDescriptor{managedVersion, "documents.v1", managedSelection, "installation", []frame.MethodDescriptor{method.Descriptor()}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +26,7 @@ func TestManagedContractOwnsItsCapabilityProjection(t *testing.T) {
 	}
 	projection := contract.Capability()
 	identity := projection.Identity()
-	*projection = portable.Capability{}
+	*projection = frame.Capability{}
 	if contract.Capability().Identity() != identity {
 		t.Fatal("capability projection changed the managed contract's admitted identity")
 	}
@@ -51,7 +50,7 @@ func TestCallbackGrantRetainsItsAdmittedMethod(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	replacement, err := portable.NewMethod[int, bool](portable.MethodConfig{Name: method.Name(), Kind: portable.Command})
+	replacement, err := frame.NewMethod[int, bool](frame.MethodConfig{Name: method.Name(), Kind: frame.Command})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +69,7 @@ func TestManagedCallBrokerCannotReplaceTheAdmittedMethod(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := ManagedService{lifetime: frame.NewLifetime(t.Context()), openCall: func(_ context.Context, _ *sdk.ClientSession, call ManagedCall) (*ManagedCallback, error) {
-		*call.Method = portable.Method{}
+		*call.Method = frame.Method{}
 		return nil, nil
 	}}
 	var metadata sdk.ParamsBase

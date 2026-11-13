@@ -1,6 +1,9 @@
 package browser
 
-import "github.com/Tangerg/frame"
+import (
+	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
+)
 
 // Object references a value in its original Runtime. Its Go representation
 // cannot implement the referenced value's native language contract.
@@ -13,7 +16,7 @@ func (o ObjectRef) validIn(instanceID string) bool {
 		frame.ValidName(o.ObjectID) && frame.ValidName(o.Export.Name) && o.Export.Contract.Validate() == nil
 }
 
-func (*Bridge) ValidateExport(instanceID string, export frame.ExportValue) error {
+func (*Bridge) ValidateExport(instanceID string, export framehost.ExportValue) error {
 	object, ok := export.Value.(Object)
 	if !ok || !object.Reference.validIn(instanceID) ||
 		object.Reference.Export.Name != export.Name || object.Reference.Export.Contract != export.Contract {

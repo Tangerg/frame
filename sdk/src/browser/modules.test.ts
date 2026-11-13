@@ -43,6 +43,55 @@ function plan(value: PlannedUnit, epoch = "1"): LocalPlan {
 }
 
 describe("Realm module ownership", () => {
+  it("releases through the original lease method after its provider changes", async () => {
+    class Lease {
+      #closes = 0;
+      bytes = source;
+      get closes() {
+        return this.#closes;
+      }
+      close() {
+        this.#closes++;
+      }
+    }
+    const lease = new Lease();
+    const modules = new RealmModules(async () => lease);
+    const owner = new Lifetime("captured lease");
+    const entry = unit();
+    await modules.load(entry, owner, plan(entry));
+    let replacements = 0;
+    lease.close = () => {
+      replacements++;
+    };
+    expect((await owner.close()).status).toBe("released");
+    expect(lease.closes).toBe(1);
+    expect(replacements).toBe(0);
+  });
+
+  it("observes the original lease closure from one property capture", async () => {
+    const original = Promise.withResolvers<void>();
+    const replacement = Promise.withResolvers<void>();
+    let reads = 0;
+    const modules = new RealmModules(async () => ({
+      bytes: source,
+      get closed() {
+        return ++reads === 1 ? original.promise : replacement.promise;
+      },
+      close() {},
+    }));
+    const owner = new Lifetime("original lease closure");
+    const entry = unit();
+    try {
+      await modules.load(entry, owner, plan(entry));
+      original.resolve();
+      await Promise.resolve();
+      expect(owner.closing).toBe(true);
+      expect(reads).toBe(1);
+    } finally {
+      await owner.close();
+    }
+  });
+
   it("executes newly approved bytes at a reused artifact path", async () => {
     let bytes = new TextEncoder().encode("export default 'original bytes'");
     const modules = new RealmModules(async () => ({ bytes, close() {} }));

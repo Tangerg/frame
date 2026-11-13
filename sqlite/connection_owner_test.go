@@ -191,6 +191,42 @@ func TestDatabaseCopiesJoinTheOriginalTransaction(t *testing.T) {
 	}
 }
 
+func TestUnresolvedCommitClosesItsOriginalDatabaseAfterHandleReplacement(t *testing.T) {
+	cause := errors.New("original commit acknowledgement lost")
+	database := cursorFaultDatabase(t, transactionFault{afterExec: func(query string) error {
+		if query == "COMMIT" {
+			return cause
+		}
+		return nil
+	}})
+	original := *database
+	defer original.Close()
+	replacement, err := OpenSchema(t.Context(), ":memory:", []string{`CREATE TABLE facts (value TEXT)`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replacement.Close()
+	err = RunIndependentTx(t.Context(), database, func(ctx context.Context) error {
+		if _, err := Connection(ctx, database).ExecContext(ctx, `INSERT INTO facts VALUES ('original')`); err != nil {
+			return err
+		}
+		*database = *replacement
+		return nil
+	})
+	if !errors.Is(err, cause) || !errors.Is(err, ErrIndeterminate) {
+		t.Fatalf("original commit lost its evidence: %v", err)
+	}
+	if err := RunInTx(t.Context(), replacement, func(ctx context.Context) error {
+		_, err := Connection(ctx, replacement).ExecContext(ctx, `INSERT INTO facts VALUES ('replacement')`)
+		return err
+	}); err != nil {
+		t.Fatalf("original commit sealed an unrelated database: %v", err)
+	}
+	if !errors.Is(original.transactionFailure(), cause) {
+		t.Fatal("original database escaped its recovery boundary")
+	}
+}
+
 func TestStandaloneUnresolvedCommitFencesQueuedTransactions(t *testing.T) {
 	committing, release := make(chan struct{}), make(chan struct{})
 	unblock := sync.OnceFunc(func() { close(release) })

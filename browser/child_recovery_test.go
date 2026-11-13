@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
 	"github.com/Tangerg/frame/value"
 )
@@ -41,7 +41,7 @@ func TestBridgeChildRecoveryHelper(t *testing.T) {
 	fixture := childRecoveryFixture{Parent: recoveryFixture{Credentials: e.credentials, Plan: parentPlan, Grant: parent}}
 	for _, id := range []string{"provider-a", "provider-b"} {
 		plan := e.start(id)
-		root := frame.ExportRef{InstallationID: frame.InstallationID(id), Release: e.plugin.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
+		root := framehost.ExportRef{InstallationID: framehost.InstallationID(id), Release: e.plugin.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
 		binding, err := e.host.PlanWith(e.ctx, browser.RealmID(e.credentials.Realm), nil, root)
 		if err != nil {
 			t.Fatal(err)
@@ -123,7 +123,7 @@ func TestChildDependencyOutsideStartAttemptSurvivesHostProcessCrash(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e.host.Restore(e.ctx, records, []*frame.Plugin{e.plugin}); err != nil {
+	if err := e.host.Restore(e.ctx, records, []*framehost.Plugin{e.plugin}); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.store.ConfirmRestoredInstallations(e.ctx); err != nil {
@@ -167,13 +167,13 @@ func TestChildDependencyOutsideStartAttemptSurvivesHostProcessCrash(t *testing.T
 			t.Fatalf("child did not retain its additional exact provider: %+v", dependencies)
 		}
 	}
-	assertDependencies := func(expected ...frame.InstallationID) {
+	assertDependencies := func(expected ...framehost.InstallationID) {
 		t.Helper()
 		dependencies, err := e.store.ExecutionDependencies(e.ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		actual := make([]frame.InstallationID, 0, len(dependencies))
+		actual := make([]framehost.InstallationID, 0, len(dependencies))
 		for _, dependency := range dependencies {
 			if dependency.Release != e.plugin.Revision() {
 				t.Fatalf("retained provider release changed: %+v", dependency)
@@ -195,14 +195,14 @@ func TestChildDependencyOutsideStartAttemptSurvivesHostProcessCrash(t *testing.T
 	if err != nil || result.Mode != browser.CleanupOnly || credentials.Authority.Epoch == fixture.Parent.Credentials.Authority.Epoch {
 		t.Fatalf("old Realm did not enter cleanup-only in the new epoch: %+v %v", result, err)
 	}
-	if _, err := e.bridge.Acquire(e.ctx, credentials.Token, browser.AcquireRequest{OperationID: "after-crash", ParentUseID: fixture.Parent.Grant.ID}); !errors.Is(err, frame.ErrFenced) {
+	if _, err := e.bridge.Acquire(e.ctx, credentials.Token, browser.AcquireRequest{OperationID: "after-crash", ParentUseID: fixture.Parent.Grant.ID}); !errors.Is(err, framehost.ErrFenced) {
 		t.Fatalf("old parent admitted new work after reconstruction: %v", err)
 	}
-	replacement, err := frame.Define(frame.Definition{Revision: value.Hash([]byte("replacement-browser-plugin")), Units: []frame.Unit{{Declaration: e.plugin.Units()[0]}}})
+	replacement, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("replacement-browser-plugin")), Units: []framehost.Unit{{Declaration: e.plugin.Units()[0]}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e.host.Replace(e.ctx, "provider-a", replacement, nil); !errors.Is(err, frame.ErrRecoveryRequired) {
+	if err := e.host.Replace(e.ctx, "provider-a", replacement, nil); !errors.Is(err, framehost.ErrRecoveryRequired) {
 		t.Fatalf("replacement crossed unresolved original child protection: %v", err)
 	}
 	prove := func(proof browser.CloseProof) {
@@ -216,7 +216,7 @@ func TestChildDependencyOutsideStartAttemptSurvivesHostProcessCrash(t *testing.T
 	second := fixture.Providers[1]
 	wrong := useProof(fixture.Parent.Plan, first.Grant)
 	wrong.UseID = second.Grant.ID
-	if _, err := e.bridge.Prove(e.ctx, credentials.Token, wrong); !errors.Is(err, frame.ErrStaleBinding) {
+	if _, err := e.bridge.Prove(e.ctx, credentials.Token, wrong); !errors.Is(err, framehost.ErrStaleBinding) {
 		t.Fatalf("another child's object range released the original child: %v", err)
 	}
 	prove(useProof(fixture.Parent.Plan, first.Grant))
@@ -245,7 +245,7 @@ func TestChildDependencyOutsideStartAttemptSurvivesHostProcessCrash(t *testing.T
 	prove(executionProof(second.Plan))
 	prove(executionProof(fixture.Parent.Plan))
 	assertDependencies("unrelated")
-	if err := e.host.Replace(e.ctx, "provider-a", replacement, nil); !errors.Is(err, frame.ErrRecoveryRequired) {
+	if err := e.host.Replace(e.ctx, "provider-a", replacement, nil); !errors.Is(err, framehost.ErrRecoveryRequired) {
 		t.Fatalf("partial cleanup reopened global recovery before all owners settled: %v", err)
 	}
 	prove(executionProof(fixture.Unrelated.Plan))
@@ -256,7 +256,7 @@ func TestChildDependencyOutsideStartAttemptSurvivesHostProcessCrash(t *testing.T
 			return err
 		}
 		if len(dependencies) != 0 {
-			return frame.ErrRecoveryRequired
+			return framehost.ErrRecoveryRequired
 		}
 		return nil
 	}); err != nil {

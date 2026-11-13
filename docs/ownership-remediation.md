@@ -29,13 +29,13 @@ business-result transition. A late acknowledgement advances the original owner.
 | F01 | Delegated browser Uses branch from their retained parent; parent exit waits for child work. | `sdk/src/browser/runtime.test.ts` |
 | F02 | Acquire and accept share one operation admission. Terminal handles remain until proof acknowledgement; historical receipts must pass current Host validation before another materialization. | `sdk/src/browser/runtime.test.ts` |
 | F03 | Cleanup is installed before BEGIN and query-only mutation. The original connection owns overlapping read scopes and restoration; discard obligations survive caught errors or panics. | `sqlite/acquisition_test.go`, `sqlite/read_mode_panic_test.go`, `sqlite/read_scope_test.go` |
-| F04 | Exact roots use the driver's realm rule and the original prepared binding identity. A replacement setup cannot be combined with an older captured binding. | `use_realm_test.go`, `use_identity_test.go` |
-| F05 | Go exports pattern atom meanings and the admitted format inventory. Both runtimes execute the same admission, predicate and identity cases. | `portable/profile_test.go`, `sdk/src/node/profile.test.ts` |
-| F06 | Generated numbers retain exact JSON lexemes, including large integers, exponent notation and negative zero. | `value/number_test.go`, `portable/contractgen/consumers_test.go` |
-| F07 | Open and mixed objects retain every admitted member. Optional explicit null remains distinct from absence. | `portable/contractgen/consumers_test.go` |
-| F08 | TypeScript arrays use `Array<T>` so compound elements retain their grouping. | `portable/contractgen/consumers_test.go` |
-| F09 | Base requiredness, branch constraints, references and object openness are interpreted by one projection graph. | `portable/contractgen/consumers_test.go` |
-| F10 | Shared definitions use canonical JSON identity, including nested literal objects. | `portable/contractgen/consumers_test.go` |
+| F04 | Exact roots use the driver's realm rule and the original prepared binding identity. A replacement setup cannot be combined with an older captured binding. | `host/use_realm_test.go`, `host/use_identity_test.go` |
+| F05 | Go exports pattern atom meanings and the admitted format inventory. Both runtimes execute the same admission, predicate and identity cases. | `value/schema_profile_test.go`, `portable_profile_test.go`, `sdk/src/node/profile.test.ts` |
+| F06 | Generated numbers retain exact JSON lexemes, including large integers, exponent notation and negative zero. | `value/number_test.go`, `contractgen/consumers_test.go` |
+| F07 | Open and mixed objects retain every admitted member. Optional explicit null remains distinct from absence. | `contractgen/consumers_test.go` |
+| F08 | TypeScript arrays use `Array<T>` so compound elements retain their grouping. | `contractgen/consumers_test.go` |
+| F09 | Base requiredness, branch constraints, references and object openness are interpreted by one projection graph. | `contractgen/consumers_test.go` |
+| F10 | Shared definitions use canonical JSON identity, including nested literal objects. | `contractgen/consumers_test.go` |
 | F11 | Bridge admission reserves complete encoded control messages and aggregate pending projections. Exit evidence remains bounded independently of diagnostics. | `browser/capacity_test.go`, `sdk/src/browser/runtime.test.ts` |
 | F12 | Consumer rejection, invalid chunks and pending deliveries veto successful stream completion in Go and Node. Accepted delivery must join before retirement. | `process/service_outcome_test.go`, `sdk/src/node/index.test.ts` |
 | F13 | Realm resume preserves storage and cancellation causes. | `browser/credential_test.go` |
@@ -94,7 +94,7 @@ Supported formats are `date`, `time`, `date-time`, `uuid`, `json-pointer` and
 repetition is fixed and bounded, and applies to consuming atoms; repeated
 anchors or word-boundary assertions are outside the shared profile.
 
-`portable/profile.generated.json` replaces `portable/limits.generated.json`.
+`contract-profile.generated.json` replaces `portable/limits.generated.json`.
 It is generated from Go and includes limits, pattern atoms and formats. The
 unused `ajv-formats` dependency is removed.
 
@@ -107,7 +107,7 @@ public Schema/TypeScript builder DSL and reflection wrappers are removed.
 Static declarations preserve representable structure and values. They do not
 replace canonical runtime validation of numeric bounds, pattern, format,
 conditional predicates or exclusive alternatives. See
-[the generator contract](../portable/contractgen/README.md).
+[the generator contract](../contractgen/README.md).
 
 ## Verification
 

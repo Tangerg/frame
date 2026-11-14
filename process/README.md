@@ -6,7 +6,7 @@ approved Frame `Setup`; it performs no global provider lookup. The optional
 [MCP adapter](mcp/README.md) can replace the wire protocol for a registered driver.
 All profiles use the same durable attempt, runner, and exit-proof path.
 
-Supply the same SQLite Store value and Admission used by the Host. `Source` resolves
+Supply the SQLite Store that is the Host's `Authority`. `Source` resolves
 the approved executable, arguments and optional contribution metadata; the Host supplies exact published descriptors. Configuration hashes
 exclude secret values; environment credentials are supplied only to the runner.
 The caller explicitly supplies frame and retirement limits.
@@ -16,8 +16,8 @@ actual process, handshake, setup and exports belong to the instance Lifetime.
 Failed setup, stale publication and cancellation close that same resource. A
 timeout or lost runner remains unconfirmed and retains its dependency closure.
 Before recording that attempt, the driver validates and freezes the original
-launch request and checks the Store's complete encoded capacity for local
-non-dispatch, confirmed non-creation, confirmed runner exit and sealed absence.
+launch request. Its exit evidence consists of bounded names, so every proof it
+can produce is valid, storable SQLite evidence.
 The persisted runner proof contains its immutable `ExitReceipt`; diagnostic
 reason, PID and exit code remain on the runner's original observation. The same
 receipt identity is acknowledged after durable acceptance, so diagnostic growth

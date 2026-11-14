@@ -48,7 +48,7 @@ func (g ManagedCallback) attach(metadata *sdk.ParamsBase, key string) error {
 
 // OpenManagedCallbacks creates the host's route for one approved setup. The
 // host authenticates every callback against this session and its frozen imports.
-type OpenManagedCallbacks func(context.Context, *framehost.Setup, *sdk.ClientSession) (ManagedCallback, error)
+type OpenManagedCallbacks func(context.Context, framehost.Setup, *sdk.ClientSession) (ManagedCallback, error)
 
 // ManagedCall carries the already-admitted request to the host that decides
 // reverse permissions. The physical backend cannot replace any of this evidence.
@@ -107,7 +107,7 @@ func (routes managedRoutes) bind(source framehost.ExportRef, contract value.JSON
 	return managedBinding{source.InstallationID, source.Release, source.Export, contract}, nil
 }
 
-func projectDependencies(setup *framehost.Setup, imports map[string]framehost.ImportDeclaration, used map[string]bool, routes managedRoutes, declared []ManagedImport) ([]managedDependency, error) {
+func projectDependencies(setup framehost.Setup, imports map[string]framehost.ImportDeclaration, used map[string]bool, routes managedRoutes, declared []ManagedImport) ([]managedDependency, error) {
 	dependencies := make([]managedDependency, 0, len(declared))
 	names := make(map[string]bool, len(declared))
 	for _, item := range declared {
@@ -143,8 +143,8 @@ func projectDependencies(setup *framehost.Setup, imports map[string]framehost.Im
 
 // installationTarget addresses the installation a background contribution
 // runs for, independently of any foreground Use.
-func installationTarget(setup *framehost.Setup) *frame.Target {
-	return &frame.Target{Scope: installationTargetScope, Reference: setup.Binding().Source.InstallationID.String()}
+func installationTarget(setup framehost.Setup) *Target {
+	return &Target{Scope: installationTargetScope, Reference: setup.Binding().Source.InstallationID.String()}
 }
 
 const installationTargetScope = "installation"

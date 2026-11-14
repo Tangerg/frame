@@ -35,10 +35,14 @@ internal lifetimes and checks their affiliation; the Host cannot assign a
 Lifetime's private authority field. Dependency validation reads immutable
 lifetime identities and original resource ownership, never another mutable graph.
 
-`frame.Lifetime`, `host.Host` and `host.Admission` are value handles over private
-state. Copying one cannot copy its lock, resource list, generation counter or
-recovery barrier. Domain grants, work intervals and callbacks retain those
-original owners; replacing an application variable cannot redirect them.
+Every capability Frame issues is a value handle over private state:
+`frame.Lifetime`, `Work`, `Close` and `ResourceHandle`; `host.Host`,
+`Admission`, `Use`, `Setup`, `Access`, `Watch`, `RunningUnit`, `EventRoute`
+and `PublicationRequest`; `sqlite.Store` and `Database`; `distribution.Store`
+and `Lease`. Copying one cannot copy its lock, resource list, generation counter
+or recovery barrier, and the zero handle is the single unissued state that
+`Valid` reports. Domain grants, work intervals and callbacks retain the original
+owners; replacing an application variable cannot redirect them.
 
 Host export membership, original setup slots and dynamic publication receipts
 converge in `host/catalog.go`. Each instance delegates its exports to one owned
@@ -242,7 +246,7 @@ another installation mutation to replace the unresolved transition.
 
 ## Execution boundaries
 
-Pass the same Admission, epoch and SQLite Store value to the durable Host and its adapters, for both installation persistence and execution protection. Each retains the original authority independently of the caller's variable. Host construction rejects a declared durable authority with a different Admission or epoch, and refuses distinct durable owners for installation and execution protection before invoking drivers. The process driver and browser bridge validate their own original authority. An ordinary scope named like an installation cannot fence the Host's internal installation scope. Validate an authorized grant before starting any unit and revalidate after preparation.
+A durable Host has one `Authority`: the SQLite Store. It owns the admission gate, the creation epoch, installation persistence and execution protection, so the Host derives all four from that value instead of receiving copies that could disagree. An `Admission` alone is a volatile authority. The process driver and browser bridge write to their configured Store and refuse a Setup or Host whose `Durable()` is another one. An ordinary scope named like an installation cannot fence the Host's internal installation scope. Validate an authorized grant before starting any unit and revalidate after preparation.
 
 Browser Realm affinity hashes one component-encoded identity tuple. The same
 tuple encoding is authenticated by its opaque credential, so punctuation cannot
@@ -365,9 +369,12 @@ creates a new membership. No comparison hashes arbitrary Go values or closures.
 Import declaration order is not binding identity. `UnitBinding` canonicalizes
 slots for both serialized identity and live admission equality. Provider order
 within a selected slot remains part of the accepted binding.
-Empty `UnitRoots` have one canonical representation, `[]`, including after a
-public JSON round trip. Unresolved import providers retain their distinct nil
-meaning.
+An `ImportDeclaration` names a slot, its contract and whether it is optional;
+it never names providers. A unit fixes exact providers through its `Fixed`
+`SlotProviders`, and a consumer chooses them through a `BindingChoice`. The
+presence of either choice is the decision, so an empty provider set is an
+explicit absence. Every other slot is resolved from live candidates, whose read
+admission rechecks. An `ImportBinding` always holds resolved providers.
 
 Admission captures a business owner's validated ID once at registration. Later
 retention reads, ordering and diagnostics use that registered identity without
@@ -494,7 +501,8 @@ not cancel that cleanup or create release evidence.
 `Close.ReleaseProof` succeeds only after the original Lifetime has released.
 Its compact `ReleaseProof` contains the original Close ID, without diagnostic
 text or a competing release flag. Execution protection persists this terminal
-proof; admitting a Use must reserve enough capacity for its eventual proof.
+proof. Proof fields are bounded names and bounded evidence, so a valid proof is
+always storable and admission never reserves capacity for it.
 
 A first local `Lifetime.Close`, `Use.Close` or `Host.Close` observes cleanup
 causes while it waits and preserves them for `errors.Is` and `errors.As` in the

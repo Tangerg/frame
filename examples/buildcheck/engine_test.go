@@ -37,7 +37,7 @@ func install(t *testing.T, ctx context.Context, e *buildcheck.Engine, id string,
 	for _, export := range exports {
 		declarations = append(declarations, framehost.ExportDeclaration{Name: export.Name, Contract: export.Contract})
 	}
-	plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte(id)), Units: []framehost.Unit{{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: declarations}, Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) { return exports, nil }}}})
+	plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte(id)), Units: []framehost.Unit{{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: declarations}, Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) { return exports, nil }}}})
 	if err != nil {
 		t.Fatal(err)
 	}

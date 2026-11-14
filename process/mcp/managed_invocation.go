@@ -2,9 +2,26 @@ package mcp
 
 import (
 	"errors"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Tangerg/frame"
 )
+
+// Target is a concrete reference interpreted by the operation's resource owner.
+// Scope is the managed method's declared target vocabulary, not a UI selection.
+type Target struct {
+	Scope     string `json:"scope"`
+	Reference string `json:"reference"`
+}
+
+func (t Target) Validate() error {
+	if !frame.ValidName(t.Scope) || t.Reference == "" || !utf8.ValidString(t.Reference) || strings.ContainsFunc(t.Reference, unicode.IsControl) {
+		return errors.New("mcp: concrete target scope and reference are required")
+	}
+	return nil
+}
 
 // Origin is consumer-defined evidence and grants no framework permission.
 type Origin string
@@ -12,10 +29,10 @@ type Origin string
 // Invocation is immutable calling-owner evidence. It contains no credentials,
 // callback permissions, mutable execution state or business result.
 type Invocation struct {
-	ID     string       `json:"id"`
-	Origin Origin       `json:"origin"`
-	Parent string       `json:"parent,omitzero"`
-	Target frame.Target `json:"target"`
+	ID     string `json:"id"`
+	Origin Origin `json:"origin"`
+	Parent string `json:"parent,omitzero"`
+	Target Target `json:"target"`
 }
 
 func (i Invocation) Validate() error {
@@ -28,7 +45,7 @@ func (i Invocation) Validate() error {
 	return i.Target.Validate()
 }
 
-var ErrInvocationConflict = errors.New("invocation identity conflicts with the original request")
+var ErrInvocationConflict = errors.New("mcp: invocation identity conflicts with the original request")
 
 // InvocationConflictCode is the refusal every method reports for
 // ErrInvocationConflict, so no business owner restates it.

@@ -119,8 +119,8 @@ func (u *useBorrow) retireAfterClose(causes *frame.CloseCauses) {
 	u.settlement.complete()
 }
 
-func (u *Use) BeginClose(cause error) frame.Close {
-	if u == nil || u.borrow == nil {
+func (u Use) BeginClose(cause error) frame.Close {
+	if u.borrow == nil {
 		return frame.Close{}
 	}
 	return u.borrow.lifetime.BeginClose(cause)
@@ -132,7 +132,7 @@ func (u *useBorrow) settleRelease(proof frame.ReleaseProof) {
 	h := u.host
 	for u.approvalStarted {
 		err := frame.InvokeCallback("use settlement", func() error {
-			return h.protection.SettleUse(context.Background(), u.id, proof)
+			return h.durable.SettleUse(context.Background(), u.id, proof)
 		})
 		if err == nil {
 			return
@@ -162,22 +162,22 @@ func (u *useBorrow) retire(diagnostic error) {
 	u.selections = nil
 	u.instanceHolds = nil
 	u.stops = nil
-	u.hostResource = nil
-	u.ownerResource = nil
+	u.hostResource = frame.ResourceHandle{}
+	u.ownerResource = frame.ResourceHandle{}
 	u.owner = frame.Lifetime{}
 	u.scope = ScopeGrant{}
 	u.host = nil
 	h.mu.Unlock()
-	if ownerResource != nil {
+	if ownerResource.Valid() {
 		_ = ownerResource.ConfirmReleased(diagnostic)
 	}
-	if hostResource != nil {
+	if hostResource.Valid() {
 		_ = hostResource.ConfirmReleased(diagnostic)
 	}
 }
 
-func (u *Use) Close(ctx context.Context) (frame.CloseOutcome, error) {
-	if framevalue.IsNil(ctx) || u == nil || u.borrow == nil {
+func (u Use) Close(ctx context.Context) (frame.CloseOutcome, error) {
+	if framevalue.IsNil(ctx) || u.borrow == nil {
 		return frame.CloseOutcome{}, frame.ErrInvalid
 	}
 	borrow := u.borrow
@@ -202,8 +202,8 @@ func (u *useBorrow) close(ctx context.Context, observed *settlementFailure) (fra
 
 // WaitRetired joins the original exit, including stable execution-protection
 // settlement and removal of Host references. It never starts a second cleanup.
-func (u *Use) WaitRetired(ctx context.Context) (frame.CloseOutcome, error) {
-	if framevalue.IsNil(ctx) || u == nil || u.borrow == nil {
+func (u Use) WaitRetired(ctx context.Context) (frame.CloseOutcome, error) {
+	if framevalue.IsNil(ctx) || u.borrow == nil {
 		return frame.CloseOutcome{}, frame.ErrInvalid
 	}
 	borrow := u.borrow

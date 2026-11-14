@@ -47,7 +47,7 @@ func TestMetadataReadReportsOriginalCodecFailure(t *testing.T) {
 	}
 	plugin := installNative(t, host, "metadata", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "member", Contract: point.Ref()}}},
-		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			return []framehost.ExportValue{framehost.Contribute("member", point, fallibleMetadata{encoded}, "callable")}, nil
 		},
 	})
@@ -83,7 +83,7 @@ func TestMetadataReadReportsOriginalCodecFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, scope := ownerAndScope(t, host)
-	if err := host.With(ctx, scope, plan, func(access *framehost.Access) error {
+	if err := host.With(ctx, scope, plan, func(access framehost.Access) error {
 		_, err := selection.One(access)
 		return err
 	}); !errors.Is(err, errMetadataDecode) {

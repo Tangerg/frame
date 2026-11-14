@@ -21,7 +21,7 @@ func installRunValidator(t *testing.T, app *document.App, validate document.Vali
 	t.Helper()
 	plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("original-run-validator")), Units: []framehost.Unit{{
 		Declaration: framehost.UnitDeclaration{ID: "validator", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "validator", Contract: app.Contracts.Validators.Ref()}}},
-		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			return []framehost.ExportValue{framehost.Contribute("validator", app.Contracts.Validators, document.ValidatorMetadata{Name: "original-run", Order: 100}, validate)}, nil
 		},
 	}}})

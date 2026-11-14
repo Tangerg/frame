@@ -35,7 +35,7 @@ func TestPublicationPreparationRetainsItsInstanceUntilCallbackReturns(t *testing
 		cleaned := make(chan struct{})
 		plugin := installNative(t, host, "publisher", framehost.Unit{
 			Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "member", Contract: point.Ref()}}},
-			Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+			Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 				instance = setup.InstanceID()
 				if _, err := setup.Cleanup("original provider", func() error { close(cleaned); return nil }); err != nil {
 					return nil, err
@@ -50,7 +50,7 @@ func TestPublicationPreparationRetainsItsInstanceUntilCallbackReturns(t *testing
 		finished := make(chan error, 1)
 		go func() {
 			request, err := host.PreparePublication(t.Context(), instance, framehost.Contribute("dynamic", point, blockedPublicationMetadata{JSON: encoded, entered: entered, resume: resume}, "value"))
-			if request != nil {
+			if request.Valid() {
 				t.Error("retired instance produced publication authority")
 			}
 			finished <- err

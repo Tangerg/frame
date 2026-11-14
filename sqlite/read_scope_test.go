@@ -13,7 +13,7 @@ import (
 	"github.com/Tangerg/frame/sqlite"
 )
 
-func readScopeDatabase(t *testing.T) (*sqlite.Database, string) {
+func readScopeDatabase(t *testing.T) (sqlite.Database, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "read-scopes.db")
 	database, err := sqlite.OpenSchema(t.Context(), path, []string{`CREATE TABLE facts (value TEXT NOT NULL)`})

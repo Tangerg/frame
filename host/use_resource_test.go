@@ -19,7 +19,7 @@ func TestHostOwnedUseConsumesOneResource(t *testing.T) {
 	var cleanups atomic.Int32
 	plugin := installNative(t, host, "worker", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			_, err := setup.Cleanup("worker", func() error { cleanups.Add(1); return nil })
 			return nil, err
 		},

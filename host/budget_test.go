@@ -22,7 +22,7 @@ func TestLifetimeWorkCapacityDoesNotCancelAcceptedWork(t *testing.T) {
 		}
 	})
 	type result struct {
-		work *frame.Work
+		work frame.Work
 		err  error
 	}
 	completed := make(chan result, 16)
@@ -32,7 +32,7 @@ func TestLifetimeWorkCapacityDoesNotCancelAcceptedWork(t *testing.T) {
 			completed <- result{work, err}
 		}()
 	}
-	var accepted []*frame.Work
+	var accepted []frame.Work
 	for range 16 {
 		result := <-completed
 		if result.err == nil {
@@ -126,7 +126,7 @@ func TestHostUseCapacityIncludesUnconfirmedRetirement(t *testing.T) {
 	}
 	plugin := installNative(t, host, "provider", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: point.Ref()}}},
-		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			return []framehost.ExportValue{framehost.Contribute("value", point, "metadata", "original")}, nil
 		},
 	})
@@ -211,12 +211,12 @@ func TestWatchCapacityRefusesNewStreamsWithoutEvictingOriginal(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer original.Close()
-	if snapshot, watch, err := host.Watch(ctx, point.Ref()); !errors.Is(err, frame.ErrCapacity) || snapshot != (framehost.Snapshot{}) || watch != nil {
+	if snapshot, watch, err := host.Watch(ctx, point.Ref()); !errors.Is(err, frame.ErrCapacity) || snapshot != (framehost.Snapshot{}) || watch.Valid() {
 		t.Fatalf("watch capacity admitted a partial stream: %v, %v, %v", snapshot, watch, err)
 	}
 	plugin := installNative(t, host, "watched", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: point.Ref()}}},
-		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			return []framehost.ExportValue{framehost.Contribute("value", point, "metadata", "value")}, nil
 		},
 	})

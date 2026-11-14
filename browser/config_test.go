@@ -13,7 +13,7 @@ import (
 
 type nilRemoteSource struct{}
 
-func (*nilRemoteSource) Import(context.Context, *framehost.Setup, framehost.BoundValue) (browser.RemoteImport, error) {
+func (*nilRemoteSource) Import(context.Context, framehost.Setup, framehost.BoundValue) (browser.RemoteImport, error) {
 	return browser.RemoteImport{}, nil
 }
 

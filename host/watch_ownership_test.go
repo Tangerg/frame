@@ -18,7 +18,7 @@ func TestCopiedWatchReleasesItsOriginalSubscription(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	copied := *original
+	copied := original
 	copied.Close()
 	_, replacement, err := host.Watch(context.Background())
 	if err != nil {
@@ -26,7 +26,7 @@ func TestCopiedWatchReleasesItsOriginalSubscription(t *testing.T) {
 	}
 	original.Close()
 	copied.Close()
-	if _, extra, err := host.Watch(context.Background()); !errors.Is(err, frame.ErrCapacity) || extra != nil {
+	if _, extra, err := host.Watch(context.Background()); !errors.Is(err, frame.ErrCapacity) || extra.Valid() {
 		t.Fatalf("original handle released another subscription: %v", err)
 	}
 	select {

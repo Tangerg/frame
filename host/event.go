@@ -20,20 +20,23 @@ type eventRouteIdentity struct {
 	receiver  ExportRef
 }
 
-func (r *EventRoute) ID() string {
-	if r == nil || r.identity == nil {
+// Valid reports whether the handle names an admitted route; the zero EventRoute does not.
+func (r EventRoute) Valid() bool { return r.identity != nil }
+
+func (r EventRoute) ID() string {
+	if r.identity == nil {
 		return ""
 	}
 	return r.identity.id
 }
-func (r *EventRoute) Source() ExportRef {
-	if r == nil || r.identity == nil {
+func (r EventRoute) Source() ExportRef {
+	if r.identity == nil {
 		return ExportRef{}
 	}
 	return r.identity.source
 }
-func (r *EventRoute) Receiver() ExportRef {
-	if r == nil || r.identity == nil {
+func (r EventRoute) Receiver() ExportRef {
+	if r.identity == nil {
 		return ExportRef{}
 	}
 	return r.identity.receiver
@@ -45,7 +48,7 @@ type eventRoute struct {
 	identity  *eventRouteIdentity
 	source    *useBorrow
 	receiver  *useBorrow
-	resources []*frame.ResourceHandle
+	resources []frame.ResourceHandle
 }
 
 const eventRoutePrefix = "event route:"
@@ -73,12 +76,12 @@ func (u *useBorrow) exports(source ExportRef) bool {
 	return false
 }
 
-func (h *hostState) NewEventRoute(ctx context.Context, sourceUse, receiverUse *Use, source, receiver ExportRef) (*EventRoute, error) {
-	if sourceUse == nil || receiverUse == nil || sourceUse.borrow == nil || receiverUse.borrow == nil || sourceUse.borrow.authority != h.identity || receiverUse.borrow.authority != h.identity {
-		return nil, frame.ErrInvalid
+func (h *hostState) NewEventRoute(ctx context.Context, sourceUse, receiverUse Use, source, receiver ExportRef) (EventRoute, error) {
+	if sourceUse.borrow == nil || receiverUse.borrow == nil || sourceUse.borrow.authority != h.identity || receiverUse.borrow.authority != h.identity {
+		return EventRoute{}, frame.ErrInvalid
 	}
 	if source.Contract.Kind != EventKind || source.Contract != receiver.Contract {
-		return nil, frame.ErrContractMismatch
+		return EventRoute{}, frame.ErrContractMismatch
 	}
 	route := &eventRoute{identity: &eventRouteIdentity{id: rand.Text(), authority: h.identity, source: source, receiver: receiver}, source: sourceUse.borrow, receiver: receiverUse.borrow}
 	err := h.admission.Admit(ctx, func(context.Context) error {
@@ -90,9 +93,9 @@ func (h *hostState) NewEventRoute(ctx context.Context, sourceUse, receiverUse *U
 		return h.ownRouteLocked(route)
 	})
 	if err != nil {
-		return nil, err
+		return EventRoute{}, err
 	}
-	return &EventRoute{identity: route.identity}, nil
+	return EventRoute{identity: route.identity}, nil
 }
 
 func (h *hostState) admitRouteLocked(route *eventRoute) error {
@@ -146,8 +149,8 @@ func (h *hostState) validateRouteUsesLocked(route *eventRoute) error {
 	return nil
 }
 
-func (h *hostState) liveRouteLocked(token *EventRoute) (*eventRoute, error) {
-	if token == nil || token.identity == nil || token.identity.authority != h.identity {
+func (h *hostState) liveRouteLocked(token EventRoute) (*eventRoute, error) {
+	if token.identity == nil || token.identity.authority != h.identity {
 		return nil, frame.ErrInvalid
 	}
 	route := h.routes[token.identity.id]
@@ -157,7 +160,7 @@ func (h *hostState) liveRouteLocked(token *EventRoute) (*eventRoute, error) {
 	return route, h.validateRouteUsesLocked(route)
 }
 
-func (h *hostState) ValidateEventRoute(ctx context.Context, route *EventRoute) error {
+func (h *hostState) ValidateEventRoute(ctx context.Context, route EventRoute) error {
 	if err := frame.ContextError(ctx); err != nil {
 		return err
 	}
@@ -169,8 +172,8 @@ func (h *hostState) ValidateEventRoute(ctx context.Context, route *EventRoute) e
 
 // DeliverEvent registers delivery in each owner before calling application
 // code. A callback may reenter Host; no Host or admission lock crosses it.
-func DeliverEvent[T any](ctx context.Context, host Host, route *EventRoute, event Event[T], payload T, receive func(context.Context, T) error) error {
-	if !host.Valid() || route == nil || event.value == nil || receive == nil || route.Source().Contract != event.Ref() {
+func DeliverEvent[T any](ctx context.Context, host Host, route EventRoute, event Event[T], payload T, receive func(context.Context, T) error) error {
+	if !host.Valid() || !route.Valid() || event.value == nil || receive == nil || route.Source().Contract != event.Ref() {
 		return frame.ErrContractMismatch
 	}
 	delivery, err := host.enterRoute(ctx, route, event.value)
@@ -195,7 +198,7 @@ type eventDelivery struct {
 
 type eventParticipation struct {
 	use      *useBorrow
-	interval *frame.Work
+	interval frame.Work
 }
 
 func (d *eventDelivery) check() error {
@@ -224,7 +227,7 @@ func (d *eventDelivery) finish() {
 	}
 }
 
-func (h *hostState) enterRoute(ctx context.Context, token *EventRoute, event *declaration) (*eventDelivery, error) {
+func (h *hostState) enterRoute(ctx context.Context, token EventRoute, event *declaration) (*eventDelivery, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if !h.contracts.matches(event) {

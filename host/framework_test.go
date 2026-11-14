@@ -17,7 +17,7 @@ func TestScopedStartSharesOnlyTheOriginalGrantAndFinalStop(t *testing.T) {
 	ctx := testContext(t)
 	host := testHost(t, framehost.Config{})
 	var starts, stops atomic.Int32
-	unit, err := framehost.DefineUnit(framehost.UnitSpec{ID: "watcher", Prepare: func(s *framehost.Setup) error {
+	unit, err := framehost.DefineUnit(framehost.UnitSpec{ID: "watcher", Prepare: func(s framehost.Setup) error {
 		if s.ScopeGrant().ID() != "tenant-a" {
 			return errors.New("unexpected execution scope")
 		}
@@ -97,7 +97,7 @@ func TestRejectedUseNeverPreparesCode(t *testing.T) {
 	ctx := testContext(t)
 	host := testHost(t, framehost.Config{})
 	var prepares atomic.Int32
-	p := installNative(t, host, "watcher", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo}, Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+	p := installNative(t, host, "watcher", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo}, Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 		prepares.Add(1)
 		return nil, nil
 	}})
@@ -144,7 +144,7 @@ func TestRevocationDuringPrepareRefusesActivation(t *testing.T) {
 	host := testHost(t, framehost.Config{})
 	preparing := make(chan struct{})
 	var activated atomic.Bool
-	p := installNative(t, host, "slow", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo}, Setup: func(ctx context.Context, s *framehost.Setup) ([]framehost.ExportValue, error) {
+	p := installNative(t, host, "slow", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo}, Setup: func(ctx context.Context, s framehost.Setup) ([]framehost.ExportValue, error) {
 		if err := s.OnActivate(func(context.Context) error { activated.Store(true); return nil }); err != nil {
 			return nil, err
 		}
@@ -187,7 +187,7 @@ func TestOptionalAbsenceRequiresTheDeclaredContract(t *testing.T) {
 	}
 	absent := framehost.Optional("source", files)
 	foreign := framehost.Optional("source", count)
-	u, err := framehost.DefineUnit(framehost.UnitSpec{ID: "main", Imports: framehost.Imports(absent), Prepare: func(s *framehost.Setup) error {
+	u, err := framehost.DefineUnit(framehost.UnitSpec{ID: "main", Imports: framehost.Imports(absent), Prepare: func(s framehost.Setup) error {
 		if _, ok, err := absent.Get(s); ok || err != nil {
 			return errors.New("valid absence was rejected")
 		}

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
-	"errors"
 	"io"
 	"path/filepath"
 	"strings"
@@ -115,7 +114,7 @@ func exitCapacityHost(t *testing.T, requestBytes int, authority *exitCapacityRun
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := framehost.New(t.Context(), framehost.Config{Admission: admission, Epoch: store.Epoch(), Drivers: []framehost.Driver{driver}, Installations: store, ExecutionProtection: store})
+	host, err := framehost.New(t.Context(), framehost.Config{Authority: store, Drivers: []framehost.Driver{driver}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,21 +135,21 @@ func exitCapacityHost(t *testing.T, requestBytes int, authority *exitCapacityRun
 	return host, store, framehost.UnitRef{InstallationID: "provider", Release: plugin.Revision(), UnitID: "main"}
 }
 
-func TestProcessRefusesUnsettleableExitBeforeApprovalOrLaunch(t *testing.T) {
-	authority := &exitCapacityRunner{identity: runner.Identity{ID: "runner"}}
-	host, store, unit := exitCapacityHost(t, 2048, authority)
-	if _, err := host.ActivateUnit(t.Context(), "application", unit); !errors.Is(err, frame.ErrCapacity) {
-		t.Fatalf("exit capacity was not checked before admission: %v", err)
+func TestProcessExitProofIsIndependentOfTheRequestBudget(t *testing.T) {
+	authority := &exitCapacityRunner{
+		identity:    runner.Identity{ID: strings.Repeat("<", frame.MaxNameBytes)},
+		observation: runner.Observation{ProofID: strings.Repeat("<", frame.MaxNameBytes)},
 	}
-	authority.mu.Lock()
-	launches := authority.launches
-	authority.mu.Unlock()
-	if launches != 0 {
-		t.Fatalf("capacity refusal dispatched %d processes", launches)
+	host, store, unit := exitCapacityHost(t, 2048, authority)
+	if _, err := host.ActivateUnit(t.Context(), "application", unit); err != nil {
+		t.Fatalf("an attempt within the request budget was refused: %v", err)
+	}
+	if outcome, err := host.Close(t.Context()); !outcome.Released || err != nil {
+		t.Fatalf("maximal runner identity prevented release: released=%t error=%v", outcome.Released, err)
 	}
 	attempts, err := store.Attempts(t.Context())
-	if err != nil || len(attempts) != 0 {
-		t.Fatalf("capacity refusal accepted durable responsibility: %+v %v", attempts, err)
+	if err != nil || len(attempts) != 1 || attempts[0].State != sqlite.AttemptReleased {
+		t.Fatalf("original exit was not durably settled: %+v %v", attempts, err)
 	}
 }
 

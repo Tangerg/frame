@@ -12,7 +12,7 @@ import (
 // Resources exposes only a unit's declared immutable files. Reads return
 // detached bytes; the provider's original lease fences access after retirement.
 type Resources struct {
-	lease *Lease
+	lease Lease
 	files []string
 }
 
@@ -29,24 +29,24 @@ const contentResourceName = "static content"
 
 type ResourceDriver struct{ store *storeAuthority }
 
-func NewResourceDriver(store Store) (*ResourceDriver, error) {
+func NewResourceDriver(store Store) (ResourceDriver, error) {
 	if store.storeAuthority == nil {
-		return nil, frame.ErrInvalid
+		return ResourceDriver{}, frame.ErrInvalid
 	}
-	return &ResourceDriver{store: store.storeAuthority}, nil
+	return ResourceDriver{store: store.storeAuthority}, nil
 }
 
-func (*ResourceDriver) Profile() framehost.Profile { return framehost.StaticResource }
+func (ResourceDriver) Profile() framehost.Profile { return framehost.StaticResource }
 
-func (d *ResourceDriver) Prepare(ctx context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
-	if setup == nil {
+func (d ResourceDriver) Prepare(ctx context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
+	if !setup.Valid() {
 		return nil, ErrInvalid
 	}
 	lease, _, err := framehost.AcquireResource(setup, contentResourceName,
-		func(context.Context) (*Lease, error) {
+		func(context.Context) (Lease, error) {
 			return d.store.Acquire(ctx, setup.Binding().Source.Release)
 		},
-		func(lease *Lease) error { return lease.Close() },
+		func(lease Lease) error { return lease.Close() },
 	)
 	if err != nil {
 		return nil, err

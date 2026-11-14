@@ -14,7 +14,7 @@ func TestRunningUnitCopiesShareOneStartClaim(t *testing.T) {
 	var cleanups atomic.Int32
 	plugin := installNative(t, host, "worker", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			_, err := setup.Cleanup("worker", func() error { cleanups.Add(1); return nil })
 			return nil, err
 		},
@@ -32,7 +32,7 @@ func TestRunningUnitCopiesShareOneStartClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	copied := *first
+	copied := first
 	stopped := make(chan error, 2)
 	go func() { stopped <- first.Stop(ctx) }()
 	go func() { stopped <- copied.Stop(ctx) }()
@@ -72,7 +72,7 @@ func TestOriginalStartClaimsCannotWithdrawSuccessor(t *testing.T) {
 	var cleanups atomic.Int32
 	plugin := installNative(t, host, "worker", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			_, err := setup.Cleanup("worker", func() error { cleanups.Add(1); return nil })
 			return nil, err
 		},
@@ -103,7 +103,7 @@ func TestOriginalStartClaimsCannotWithdrawSuccessor(t *testing.T) {
 	if successor.ID() == original.ID() || other.ID() != original.ID() || cleanups.Load() != 1 {
 		t.Fatal("successor did not follow the original instance's confirmed exit")
 	}
-	for _, claim := range []*framehost.RunningUnit{original, other} {
+	for _, claim := range []framehost.RunningUnit{original, other} {
 		if err := claim.Stop(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -115,7 +115,7 @@ func TestOriginalStartClaimsCannotWithdrawSuccessor(t *testing.T) {
 	if current.ID() != successor.ID() || cleanups.Load() != 1 {
 		t.Fatal("an original start claim withdrew its successor")
 	}
-	for _, claim := range []*framehost.RunningUnit{current, successor} {
+	for _, claim := range []framehost.RunningUnit{current, successor} {
 		if err := claim.Stop(ctx); err != nil {
 			t.Fatal(err)
 		}

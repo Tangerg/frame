@@ -24,17 +24,17 @@ func NewQueryInvocation(member string, input value.JSON) (Invocation, error) {
 
 func NewCommandInvocation(commandID, member string, input value.JSON) (Invocation, error) {
 	if !ValidCommandID(commandID) {
-		return Invocation{}, errors.New("portable: bounded command identity required")
+		return Invocation{}, errors.New("frame: bounded command identity required")
 	}
 	return newInvocation(member, input, commandID)
 }
 
 func newInvocation(member string, input value.JSON, commandID string) (Invocation, error) {
 	if !ValidName(member) {
-		return Invocation{}, errors.New("portable: invocation member must be a bounded token")
+		return Invocation{}, errors.New("frame: invocation member must be a bounded token")
 	}
 	if err := input.Validate(); err != nil {
-		return Invocation{}, fmt.Errorf("portable: invocation input: %w", err)
+		return Invocation{}, fmt.Errorf("frame: invocation input: %w", err)
 	}
 	return Invocation{member: member, input: input, commandID: commandID}, nil
 }
@@ -55,7 +55,7 @@ func (i Invocation) Kind() MethodKind {
 
 func (m *Method) ValidateInvocation(invocation Invocation) error {
 	if m == nil || m.Name() != invocation.Member() || m.Kind() != invocation.Kind() {
-		return errors.New("portable: invocation does not match the admitted method")
+		return errors.New("frame: invocation does not match the admitted method")
 	}
 	return m.ValidateInput(invocation.Input())
 }

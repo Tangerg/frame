@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"errors"
 	"maps"
@@ -23,7 +22,7 @@ func (s *storeAuthority) CommitInstallation(ctx context.Context, change framehos
 	if err != nil {
 		return framehost.CommitRejected, err
 	}
-	request, err := json.Marshal(change)
+	request, err := jsonv2.Marshal(change)
 	if err != nil {
 		return framehost.CommitRejected, err
 	}
@@ -99,7 +98,7 @@ func (s *storeAuthority) applyInstallation(ctx context.Context, tx Executor, id 
 			return err
 		}
 	} else {
-		encoded, err := json.Marshal(change.After)
+		encoded, err := jsonv2.Marshal(change.After)
 		if err != nil {
 			return err
 		}
@@ -132,7 +131,7 @@ func checkInstalled(ctx context.Context, tx Executor, id framehost.InstallationI
 	case err != nil:
 		return err
 	}
-	encoded, err := json.Marshal(expected)
+	encoded, err := jsonv2.Marshal(expected)
 	if err != nil {
 		return err
 	}
@@ -208,11 +207,6 @@ func (s *storeAuthority) Installations(ctx context.Context) (records []framehost
 			}
 			if record.ID != id || id.Validate() != nil || record.Release.Validate() != nil {
 				return errors.New("sqlite: invalid installation record")
-			}
-			for _, unit := range record.Units {
-				if err := unit.Validate(); err != nil {
-					return err
-				}
 			}
 			records = append(records, record)
 		}

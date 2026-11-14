@@ -2,7 +2,7 @@ package document
 
 import (
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"errors"
 	"html"
 	"os"
@@ -41,7 +41,7 @@ func FilePlugin(contracts Contracts) (*framehost.Plugin, error) {
 			Profile: framehost.NativeGo,
 			Exports: []framehost.ExportDeclaration{{Name: fileReadExportName, Contract: contracts.Files.Ref()}},
 		},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			var configuration FileConfiguration
 			if err := json.Unmarshal(setup.Configuration(), &configuration); err != nil {
 				return nil, err
@@ -67,7 +67,7 @@ func ConverterPlugin(contracts Contracts, revision string) (*framehost.Plugin, e
 			Imports: []framehost.ImportDeclaration{{Slot: fileImportSlot, Contract: contracts.Files.Ref()}},
 			Exports: []framehost.ExportDeclaration{{Name: markdownExportName, Contract: contracts.Converters.Ref()}},
 		},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			files, err := framehost.Import(setup, fileImportSlot, contracts.Files)
 			if err != nil {
 				return nil, err
@@ -108,7 +108,7 @@ func ValidationPlugin(contracts Contracts) (*framehost.Plugin, error) {
 			Profile: framehost.NativeGo,
 			Exports: []framehost.ExportDeclaration{{Name: titleValidatorExportName, Contract: contracts.Validators.Ref()}},
 		},
-		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			return []framehost.ExportValue{framehost.Contribute(titleValidatorExportName, contracts.Validators, ValidatorMetadata{Name: titleRuleName, Order: defaultTitleValidationOrder}, Validator(func(ctx context.Context, converted Converted) ([]Diagnostic, error) {
 				if err := frame.ContextError(ctx); err != nil {
 					return nil, err

@@ -20,7 +20,7 @@ func TestUseApprovalSettlementMatchesOriginalCommit(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			store, _, admission := testStore(t)
-			host, err := framehost.New(t.Context(), framehost.Config{Admission: admission, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store})
+			host, err := framehost.New(t.Context(), framehost.Config{Authority: store})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -33,7 +33,7 @@ func TestUseApprovalSettlementMatchesOriginalCommit(t *testing.T) {
 			}
 			plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("original")), Units: []framehost.Unit{{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: contract.Ref()}}},
-				Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 					return []framehost.ExportValue{framehost.Provide("value", contract, "original")}, nil
 				},
 			}}})
@@ -73,7 +73,7 @@ func TestUseApprovalSettlementMatchesOriginalCommit(t *testing.T) {
 			}
 			installTransactionFault(t, store, fault)
 			use, acquireErr := host.Acquire(t.Context(), plan, framehost.UseConfig{Owner: owner, Scope: scope, Realm: realm, ExecutionID: "original-execution"})
-			if use != nil || !errors.Is(acquireErr, ackLost) {
+			if use.Valid() || !errors.Is(acquireErr, ackLost) {
 				t.Fatalf("fault did not affect the intended approval: use=%v err=%v", use, acquireErr)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

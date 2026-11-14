@@ -33,7 +33,7 @@ func TestStoreCopiesShareTheOriginalDirectoryClose(t *testing.T) {
 }
 
 func TestResourceDriverRejectsAnUnissuedStore(t *testing.T) {
-	if driver, err := NewResourceDriver(Store{}); !errors.Is(err, frame.ErrInvalid) || driver != nil {
+	if driver, err := NewResourceDriver(Store{}); !errors.Is(err, frame.ErrInvalid) || driver.store != nil {
 		t.Fatalf("unissued store became a resource driver: %v", err)
 	}
 }
@@ -65,7 +65,7 @@ func TestStoreHandleReplacementRetainsIssuedLeasesAndDrivers(t *testing.T) {
 			if err != nil || string(content) != "body { color: blue; }\n" {
 				t.Fatalf("handle replacement redirected the original lease: %q, %v", content, err)
 			}
-			host, err := framehost.New(t.Context(), framehost.Config{Admission: original.admission})
+			host, err := framehost.New(t.Context(), framehost.Config{Authority: original.admission})
 			if err != nil {
 				t.Fatal(err)
 			}

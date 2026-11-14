@@ -109,7 +109,7 @@ func checkPortableMetadata[M any](t *testing.T, document string, mutate ...func(
 
 	plugin := installNative(t, host, "metadata", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "member", Contract: point.Ref()}}},
-		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			return []framehost.ExportValue{framehost.Contribute("member", point, decoded, "callable")}, nil
 		},
 	})
@@ -172,7 +172,7 @@ func checkPortableMetadata[M any](t *testing.T, document string, mutate ...func(
 		t.Fatal(err)
 	}
 	_, scope := ownerAndScope(t, host)
-	if err := host.With(ctx, scope, plan, func(access *framehost.Access) error {
+	if err := host.With(ctx, scope, plan, func(access framehost.Access) error {
 		member, err := selection.One(access)
 		if err != nil {
 			return err

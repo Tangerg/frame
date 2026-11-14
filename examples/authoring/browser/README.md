@@ -76,9 +76,8 @@ original document descriptors, installs the authored Units and exposes the real
 authenticated `browser.Bridge`. The build script projects Units from their
 actual `defineUnit` declarations; it does not ask an author to repeat contract
 hashes, slots, export tables, LocalPlans or exit proofs. The fixture chooses the
-`browser-js` execution profile and the Host's unique-provider policy. The narrow
-author declaration deliberately has no `Providers` field: an unresolved import
-must not be serialized as an exact empty provider selection.
+`browser-js` execution profile and the Host's unique-provider policy. Author
+imports are plain `ImportDeclaration` values: a declaration names no provider.
 
 From the repository root, build the SDK and application fixture, then regenerate public types:
 

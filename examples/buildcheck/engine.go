@@ -82,7 +82,7 @@ func (e *Engine) Run(ctx context.Context) (Result, error) {
 		return Result{}, err
 	}
 	var result Result
-	err = e.Host.With(ctx, e.scope, plan, func(access *framehost.Access) error {
+	err = e.Host.With(ctx, e.scope, plan, func(access framehost.Access) error {
 		orderedPasses, err := passSelection.Members(access)
 		if err != nil {
 			return err

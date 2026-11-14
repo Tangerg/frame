@@ -38,14 +38,6 @@ type Artifact struct {
 	Executable bool              `json:"executable,omitempty"`
 }
 
-// An import is still a declaration here. Installation and binding supply its
-// exact provider references; a package cannot name a future InstallationID.
-type Import struct {
-	Slot     string                `json:"slot"`
-	Contract framehost.ContractRef `json:"contract"`
-	Optional bool                  `json:"optional,omitempty"`
-}
-
 type RuntimeReference struct {
 	Name    string            `json:"name"`
 	Version string            `json:"version"`
@@ -80,7 +72,7 @@ type Module struct {
 type Unit struct {
 	ID                    framehost.UnitID              `json:"id"`
 	Profile               framehost.Profile             `json:"profile"`
-	Imports               []Import                      `json:"imports,omitempty"`
+	Imports               []framehost.ImportDeclaration `json:"imports,omitempty"`
 	Exports               []framehost.ExportDeclaration `json:"exports,omitempty"`
 	Variants              []Variant                     `json:"variants,omitempty"`
 	Module                *Module                       `json:"module,omitempty"`

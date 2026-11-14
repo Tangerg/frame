@@ -19,41 +19,44 @@ type leaseClaim struct {
 	release Release
 }
 
-func (s *storeAuthority) claimRelease(release Release) *Lease {
+func (s *storeAuthority) claimRelease(release Release) Lease {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.leases[release.Digest]++
-	return &Lease{claim: &leaseClaim{store: s, release: release}}
+	return Lease{claim: &leaseClaim{store: s, release: release}}
 }
 
-func (s *storeAuthority) Acquire(ctx context.Context, digest value.Digest) (_ *Lease, err error) {
+func (s *storeAuthority) Acquire(ctx context.Context, digest value.Digest) (_ Lease, err error) {
 	done, err := s.beginOperation(newOperation)
 	if err != nil {
-		return nil, err
+		return Lease{}, err
 	}
 	defer done()
 	if digest.Validate() != nil {
-		return nil, ErrInvalid
+		return Lease{}, ErrInvalid
 	}
 	// Claim the content before reading it. The gate protects this claim and
 	// collection; hashing the immutable tree does not block unrelated admission.
-	var lease *Lease
+	var lease Lease
 	if err := s.admission.Under(ctx, func() error {
 		lease = s.claimRelease(Release{Digest: digest})
 		return nil
 	}); err != nil {
-		return nil, err
+		return Lease{}, err
 	}
 	release, err := s.inspect(ctx, digest)
 	if err != nil {
-		return nil, errors.Join(err, lease.Close())
+		return Lease{}, errors.Join(err, lease.Close())
 	}
 	lease.claim.release = release
 	return lease, nil
 }
 
-func (l *Lease) Read(ctx context.Context, name string) ([]byte, error) {
-	if l == nil || l.claim == nil {
+// Valid reports whether the handle names a content claim; the zero Lease does not.
+func (l Lease) Valid() bool { return l.claim != nil }
+
+func (l Lease) Read(ctx context.Context, name string) ([]byte, error) {
+	if l.claim == nil {
 		return nil, frame.ErrInvalid
 	}
 	claim := l.claim
@@ -67,8 +70,8 @@ func (l *Lease) Read(ctx context.Context, name string) ([]byte, error) {
 
 // Executable returns only a verified executable in the immutable leased tree.
 // The lease must remain held through creation and the execution's protection.
-func (l *Lease) Executable(ctx context.Context, name string) (string, error) {
-	if l == nil || l.claim == nil {
+func (l Lease) Executable(ctx context.Context, name string) (string, error) {
+	if l.claim == nil {
 		return "", frame.ErrInvalid
 	}
 	claim := l.claim
@@ -93,8 +96,8 @@ func (l *Lease) Executable(ctx context.Context, name string) (string, error) {
 	return filepath.Join(claim.store.directory, claim.release.Digest.String(), filepath.FromSlash(name)), nil
 }
 
-func (l *Lease) Close() error {
-	if l == nil || l.claim == nil {
+func (l Lease) Close() error {
+	if l.claim == nil {
 		return nil
 	}
 	claim := l.claim
@@ -118,8 +121,8 @@ func (l *Lease) Close() error {
 
 // Snapshot is a detached immutable declaration projection. Retaining it does not
 // retain content; the original Lease owns that claim until Close.
-func (l *Lease) Snapshot() Release {
-	if l == nil || l.claim == nil {
+func (l Lease) Snapshot() Release {
+	if l.claim == nil {
 		return Release{}
 	}
 	return l.claim.release.snapshot()
@@ -128,8 +131,8 @@ func (l *Lease) Snapshot() Release {
 // Directory permits a trusted profile adapter to open the exact admitted tree.
 // Keep this lease until every object that may use the directory has exited.
 // Directory is not a writable data root or proof that a process has exited.
-func (l *Lease) Directory() (string, error) {
-	if l == nil || l.claim == nil {
+func (l Lease) Directory() (string, error) {
+	if l.claim == nil {
 		return "", frame.ErrInvalid
 	}
 	claim := l.claim

@@ -78,7 +78,7 @@ func TestStandaloneRetainsOriginalConnectionUntilPhysicalClose(t *testing.T) {
 				return nil
 			}
 			connector := &trackedConnector{faultConnector: &faultConnector{driver: &modernc.Driver{}, dsn: storeDataSource(path), fault: fault}}
-			database := &Database{databaseOwner: &databaseOwner{db: sql.OpenDB(cursorConnector{Connector: connector})}}
+			database := Database{databaseOwner: &databaseOwner{db: sql.OpenDB(cursorConnector{Connector: connector})}}
 			database.db.SetMaxOpenConns(1)
 			t.Cleanup(func() {
 				allowClose.Store(true)
@@ -174,10 +174,10 @@ func TestDatabaseCopiesJoinTheOriginalTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer database.Close()
-	copy := *database
+	copy := database
 	if err := RunInTx(t.Context(), database, func(ctx context.Context) error {
-		return RunInTx(ctx, &copy, func(ctx context.Context) error {
-			_, err := Connection(ctx, &copy).ExecContext(ctx, `INSERT INTO facts VALUES ('original')`)
+		return RunInTx(ctx, copy, func(ctx context.Context) error {
+			_, err := Connection(ctx, copy).ExecContext(ctx, `INSERT INTO facts VALUES ('original')`)
 			return err
 		})
 	}); err != nil {
@@ -199,7 +199,7 @@ func TestUnresolvedCommitClosesItsOriginalDatabaseAfterHandleReplacement(t *test
 		}
 		return nil
 	}})
-	original := *database
+	original := database
 	defer original.Close()
 	replacement, err := OpenSchema(t.Context(), ":memory:", []string{`CREATE TABLE facts (value TEXT)`})
 	if err != nil {
@@ -210,7 +210,7 @@ func TestUnresolvedCommitClosesItsOriginalDatabaseAfterHandleReplacement(t *test
 		if _, err := Connection(ctx, database).ExecContext(ctx, `INSERT INTO facts VALUES ('original')`); err != nil {
 			return err
 		}
-		*database = *replacement
+		database = replacement
 		return nil
 	})
 	if !errors.Is(err, cause) || !errors.Is(err, ErrIndeterminate) {
@@ -233,7 +233,7 @@ func TestStandaloneUnresolvedCommitFencesQueuedTransactions(t *testing.T) {
 	defer unblock()
 	cause := errors.New("commit acknowledgement lost")
 	var commitIntercepted, closeObserved, fencedBeforeClose atomic.Bool
-	var database *Database
+	var database Database
 	database = cursorFaultDatabase(t, transactionFault{
 		afterExec: func(query string) error {
 			if query == "COMMIT" && commitIntercepted.CompareAndSwap(false, true) {

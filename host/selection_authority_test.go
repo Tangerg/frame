@@ -44,7 +44,7 @@ func TestCapturedPlanRejectsLostAuthorityBeforePublicationWithdrawal(t *testing.
 			}
 			plugin, err := Define(Definition{Revision: value.Hash([]byte("selection-authority")), Units: []Unit{{
 				Declaration: UnitDeclaration{ID: "main", Profile: NativeGo, Exports: []ExportDeclaration{{Name: "member", Contract: point.Ref()}}},
-				Setup: func(context.Context, *Setup) ([]ExportValue, error) {
+				Setup: func(context.Context, Setup) ([]ExportValue, error) {
 					return []ExportValue{Contribute("member", point, "metadata", "value")}, nil
 				},
 			}}})
@@ -89,7 +89,7 @@ func TestCapturedPlanRejectsLostAuthorityBeforePublicationWithdrawal(t *testing.
 				}
 			}
 			scenario.revoke(host, grant, instance)
-			err = host.validatePlanLocked(plan.bindingPlan)
+			err = host.validatePlanLocked(plan.plan)
 			host.mu.Unlock()
 			if !errors.Is(err, scenario.want) {
 				t.Fatalf("captured plan rejection = %v, want %v", err, scenario.want)
@@ -99,8 +99,8 @@ func TestCapturedPlanRejectsLostAuthorityBeforePublicationWithdrawal(t *testing.
 }
 
 func TestUseEnterRejectsUnissuedUse(t *testing.T) {
-	for _, use := range []*Use{nil, {}} {
-		if work, err := use.Enter(t.Context()); !errors.Is(err, frame.ErrInvalid) || work != nil {
+	for _, use := range []Use{{}} {
+		if work, err := use.Enter(t.Context()); !errors.Is(err, frame.ErrInvalid) || work.Valid() {
 			t.Fatalf("unissued use accepted work: %v, %v", work, err)
 		}
 	}

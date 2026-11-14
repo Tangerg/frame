@@ -71,7 +71,7 @@ func TestStoreHandlesKeepIssuedCapabilitiesWithTheirOriginalAuthority(t *testing
 			if err := reservation.Record(t.Context(), []byte("original receipt")); err != nil {
 				t.Fatalf("replacing the caller's Store changed an issued reservation: %v", err)
 			}
-			if copied.ID() != id || copied.Epoch() != epoch || !copied.IsAuthority(admission, epoch) {
+			if copied.ID() != id || copied.Epoch() != epoch || copied.Admission() != admission {
 				t.Fatal("copy lost its original authority identity")
 			}
 			var fact string

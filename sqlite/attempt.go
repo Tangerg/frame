@@ -3,7 +3,6 @@ package sqlite
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"errors"
 	"slices"
@@ -60,7 +59,7 @@ type ExitProof struct {
 
 func (p ExitProof) proves(attemptID string) bool {
 	return frame.ValidName(attemptID) && p.AttemptID == attemptID && frame.ValidName(p.Realm) && frame.ValidName(p.ExitID) && frame.ValidName(p.Kind) &&
-		len(p.Evidence) != 0
+		validExitEvidence(p.Evidence)
 }
 
 // LocalExit is the exit proof of an attempt that never started: its driver
@@ -91,7 +90,7 @@ func (s *storeAuthority) RecordAttempt(ctx context.Context, attempt Attempt) err
 	if attempt.Epoch != s.epoch {
 		return framehost.ErrFenced
 	}
-	encoded, err := json.Marshal(attempt)
+	encoded, err := jsonv2.Marshal(attempt)
 	if err != nil {
 		return err
 	}
@@ -213,7 +212,7 @@ func (s *storeAuthority) recordRelease(ctx context.Context, id string, proof Exi
 	if !proof.proves(id) {
 		return errors.New("sqlite: exact exit evidence is required")
 	}
-	encoded, err := s.encodeProof(proof)
+	encoded, err := encodeProof(proof)
 	if err != nil {
 		return err
 	}
@@ -253,8 +252,8 @@ func (s *storeAuthority) RecordExitProof(ctx context.Context, attemptID, scope, 
 	if !frame.ValidName(attemptID) || !frame.ValidName(scope) || !frame.ValidName(proofID) {
 		return frame.ErrInvalid
 	}
-	if err := s.CheckExitEvidenceCapacity(evidence); err != nil {
-		return err
+	if !validExitEvidence(evidence) {
+		return frame.ErrInvalid
 	}
 	evidence = bytes.Clone(evidence)
 	return s.admission.Maintenance(ctx, func() error {

@@ -20,30 +20,33 @@ func TestDefinitionValidatesExplicitProviders(t *testing.T) {
 	member.Contract = point.Ref()
 	otherMember := member
 	otherMember.Export = "other"
+	fixed := func(slot string, providers ...framehost.ExportRef) []framehost.SlotProviders {
+		return []framehost.SlotProviders{{Slot: slot, Providers: providers}}
+	}
 	for _, test := range []struct {
-		name      string
-		contract  framehost.ContractRef
-		optional  bool
-		providers []framehost.ExportRef
-		valid     bool
+		name     string
+		contract framehost.ContractRef
+		optional bool
+		fixed    []framehost.SlotProviders
+		valid    bool
 	}{
 		{name: "unresolved", contract: service.Ref(), valid: true},
-		{name: "required empty", contract: service.Ref(), providers: []framehost.ExportRef{}},
-		{name: "optional empty", contract: service.Ref(), optional: true, providers: []framehost.ExportRef{}, valid: true},
-		{name: "service", contract: service.Ref(), providers: []framehost.ExportRef{provider}, valid: true},
-		{name: "service multiple", contract: service.Ref(), providers: []framehost.ExportRef{provider, other}},
-		{name: "service duplicate", contract: service.Ref(), providers: []framehost.ExportRef{provider, provider}},
-		{name: "point duplicate", contract: point.Ref(), providers: []framehost.ExportRef{member, member}},
-		{name: "point multiple", contract: point.Ref(), providers: []framehost.ExportRef{member, otherMember}, valid: true},
+		{name: "required empty", contract: service.Ref(), fixed: fixed("input")},
+		{name: "optional empty", contract: service.Ref(), optional: true, fixed: fixed("input"), valid: true},
+		{name: "service", contract: service.Ref(), fixed: fixed("input", provider), valid: true},
+		{name: "service multiple", contract: service.Ref(), fixed: fixed("input", provider, other)},
+		{name: "service duplicate", contract: service.Ref(), fixed: fixed("input", provider, provider)},
+		{name: "point duplicate", contract: point.Ref(), fixed: fixed("input", member, member)},
+		{name: "point multiple", contract: point.Ref(), fixed: fixed("input", member, otherMember), valid: true},
+		{name: "undeclared slot", contract: service.Ref(), fixed: fixed("other", provider)},
+		{name: "repeated slot", contract: point.Ref(), fixed: append(fixed("input", member), fixed("input", otherMember)...)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			plugin, err := framehost.Define(framehost.Definition{
 				Revision: value.Hash([]byte(test.name)),
 				Units: []framehost.Unit{{
-					Declaration: framehost.UnitDeclaration{ID: "consumer", Profile: framehost.NativeGo, Imports: []framehost.ImportDeclaration{{
-						Slot: "input", Contract: test.contract, Optional: test.optional, Providers: test.providers,
-					}}},
-					Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+					Declaration: framehost.UnitDeclaration{ID: "consumer", Profile: framehost.NativeGo, Imports: []framehost.ImportDeclaration{{Slot: "input", Contract: test.contract, Optional: test.optional}}, Fixed: test.fixed},
+					Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 						t.Fatal("definition started plugin code")
 						return nil, nil
 					},

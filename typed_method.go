@@ -67,14 +67,16 @@ func (m TypedMethod[Input, Output]) implement(kind MethodKind, handler func(cont
 }
 
 func (m TypedMethod[Input, Output]) Query(ctx context.Context, service Service, input Input) (Output, error) {
-	return m.invoke(ctx, service, Query, "", input)
+	return m.call(ctx, service, input, NewQueryInvocation)
 }
 
 func (m TypedMethod[Input, Output]) Command(ctx context.Context, service Service, commandID string, input Input) (Output, error) {
-	return m.invoke(ctx, service, Command, commandID, input)
+	return m.call(ctx, service, input, func(member string, raw framevalue.JSON) (Invocation, error) {
+		return NewCommandInvocation(commandID, member, raw)
+	})
 }
 
-func (m TypedMethod[Input, Output]) invoke(ctx context.Context, service Service, kind MethodKind, commandID string, input Input) (Output, error) {
+func (m TypedMethod[Input, Output]) call(ctx context.Context, service Service, input Input, invocationOf func(string, framevalue.JSON) (Invocation, error)) (Output, error) {
 	var output Output
 	if m.method == nil || framevalue.IsNil(service) {
 		return output, ErrInvalid
@@ -86,12 +88,7 @@ func (m TypedMethod[Input, Output]) invoke(ctx context.Context, service Service,
 	if err != nil {
 		return output, err
 	}
-	var invocation Invocation
-	if kind == Query {
-		invocation, err = NewQueryInvocation(m.method.Name(), raw)
-	} else {
-		invocation, err = NewCommandInvocation(commandID, m.method.Name(), raw)
-	}
+	invocation, err := invocationOf(m.method.Name(), raw)
 	if err != nil {
 		return output, errors.Join(ErrInvalid, err)
 	}
@@ -116,7 +113,7 @@ func (m TypedMethod[Input, Output]) invoke(ctx context.Context, service Service,
 
 // Partial implementations cannot publish a usable handle for the full contract.
 func Implement(contract *Capability, members ...Implementation) (Service, error) {
-	if contract == nil || contract.Identity().Validate() != nil || len(members) != len(contract.Descriptor().Methods) {
+	if contract == nil || contract.Identity().Validate() != nil || len(members) != len(contract.methods) {
 		return nil, ErrContractMismatch
 	}
 	methods := make(map[string]Implementation, len(members))

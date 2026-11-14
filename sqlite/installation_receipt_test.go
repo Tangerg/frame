@@ -25,7 +25,7 @@ func TestCanceledInstallationPreparationReleasesItsPrivateReceipt(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer store.Close()
-	host, err := framehost.New(t.Context(), framehost.Config{Admission: admission, Installations: store})
+	host, err := framehost.New(t.Context(), framehost.Config{Authority: store})
 	if err != nil {
 		t.Fatal(err)
 	}

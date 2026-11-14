@@ -3,6 +3,7 @@ package value
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -26,13 +27,10 @@ func ProfileStringFormats() StringFormats {
 }
 
 func checkFormat(value any) error {
-	formats := ProfileStringFormats()
-	switch value {
-	case formats.Date, formats.Time, formats.DateTime, formats.UUID, formats.JSONPointer, formats.RelativeJSONPointer:
-		return nil
-	default:
+	if !slices.ContainsFunc(formatPredicates(), func(predicate formatPredicate) bool { return predicate.name == value }) {
 		return fmt.Errorf("portable: unsupported schema format %q", value)
 	}
+	return nil
 }
 
 type formatPredicate struct {

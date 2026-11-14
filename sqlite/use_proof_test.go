@@ -27,7 +27,7 @@ func TestUseReleasePersistsOriginalCloseWithoutDiagnostics(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	host, err := framehost.New(t.Context(), framehost.Config{Admission: admission, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store})
+	host, err := framehost.New(t.Context(), framehost.Config{Authority: store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestUseReleasePersistsOriginalCloseWithoutDiagnostics(t *testing.T) {
 	}
 	plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash(nil), Units: []framehost.Unit{{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: contract.Ref()}}},
-		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			return []framehost.ExportValue{framehost.Provide("value", contract, "value")}, nil
 		},
 	}}})

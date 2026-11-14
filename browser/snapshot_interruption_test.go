@@ -37,7 +37,7 @@ type snapshotMetadataDriver struct {
 
 func (snapshotMetadataDriver) Profile() framehost.Profile { return "snapshot-metadata" }
 func (snapshotMetadataDriver) RealmBound() bool           { return true }
-func (d snapshotMetadataDriver) Prepare(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+func (d snapshotMetadataDriver) Prepare(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 	return []framehost.ExportValue{{Name: "metadata", Contract: d.point, Metadata: d.metadata, Value: "content"}}, nil
 }
 

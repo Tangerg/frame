@@ -44,7 +44,7 @@ func TestDynamicPublicationCannotReplaceDeclaredSetup(t *testing.T) {
 			var providerID string
 			provider := installNative(t, host, "provider", framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "input", Contract: point.Ref()}}},
-				Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 					providerID = setup.InstanceID()
 					return []framehost.ExportValue{framehost.Contribute("input", point, "original", "original-value")}, nil
 				},
@@ -61,10 +61,10 @@ func TestDynamicPublicationCannotReplaceDeclaredSetup(t *testing.T) {
 				consumer := installNative(t, host, id, framehost.Unit{
 					Declaration: framehost.UnitDeclaration{
 						ID: "main", Profile: framehost.NativeGo,
-						Imports: []framehost.ImportDeclaration{{Slot: "input", Contract: dependency.Contract, Providers: []framehost.ExportRef{dependency}}},
+						Imports: []framehost.ImportDeclaration{{Slot: "input", Contract: dependency.Contract}}, Fixed: []framehost.SlotProviders{{Slot: "input", Providers: []framehost.ExportRef{dependency}}},
 						Exports: []framehost.ExportDeclaration{{Name: "output", Contract: service.Ref()}},
 					},
-					Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+					Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 						setups.Add(1)
 						inputs, err := setup.Imports("input")
 						if err != nil {
@@ -116,7 +116,7 @@ func TestDynamicPublicationCannotReplaceDeclaredSetup(t *testing.T) {
 				t.Fatalf("dynamic replacement entered durable admission: %v", err)
 			}
 			use, err := host.Acquire(ctx, plan, framehost.UseConfig{Owner: owner, Scope: grant})
-			if !errors.Is(err, framehost.ErrUnavailable) || use != nil || setups.Load() != 0 {
+			if !errors.Is(err, framehost.ErrUnavailable) || use.Valid() || setups.Load() != 0 {
 				t.Fatalf("dynamic replacement reached setup: use=%v, err=%v, setups=%d", use, err, setups.Load())
 			}
 			var records []framehost.InstallationRecord
@@ -132,7 +132,7 @@ func TestDynamicPublicationCannotReplaceDeclaredSetup(t *testing.T) {
 			}
 			admission := framehost.NewAdmission()
 			restored := testHost(t, framehost.Config{
-				Admission: admission, UseOwners: []framehost.UseOwner{business},
+				Authority: admission, UseOwners: []framehost.UseOwner{business},
 				ReadAcceptedBinding: func(admitted context.Context, id string, scope framehost.ScopeGrant) (framehost.BindingSnapshot, error) {
 					if err := admission.CheckAdmitted(admitted); err != nil {
 						return framehost.BindingSnapshot{}, err
@@ -186,7 +186,7 @@ func TestSetupRechecksOriginalExportAfterSlowPreparation(t *testing.T) {
 	var providerID string
 	provider := installNative(t, host, "provider", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "input", Contract: point.Ref()}}},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			providerID = setup.InstanceID()
 			return []framehost.ExportValue{framehost.Contribute("input", point, "original", "original-value")}, nil
 		},
@@ -198,10 +198,10 @@ func TestSetupRechecksOriginalExportAfterSlowPreparation(t *testing.T) {
 	consumer := installNative(t, host, "consumer", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{
 			ID: "main", Profile: framehost.NativeGo,
-			Imports: []framehost.ImportDeclaration{{Slot: "input", Contract: point.Ref(), Providers: []framehost.ExportRef{dependency}}},
+			Imports: []framehost.ImportDeclaration{{Slot: "input", Contract: point.Ref()}}, Fixed: []framehost.SlotProviders{{Slot: "input", Providers: []framehost.ExportRef{dependency}}},
 			Exports: []framehost.ExportDeclaration{{Name: "output", Contract: service.Ref()}},
 		},
-		Setup: func(ctx context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(ctx context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			inputs, err := setup.Imports("input")
 			if err != nil {
 				return nil, err

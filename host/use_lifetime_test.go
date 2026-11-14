@@ -37,15 +37,15 @@ func (p *useRetirementProtection) SettleUse(_ context.Context, id string, proof 
 func TestUseRetiresWhenItsOriginalLifetimeCloses(t *testing.T) {
 	for _, test := range []struct {
 		name  string
-		close func(context.Context, *framehost.Use) (frame.CloseOutcome, error)
+		close func(context.Context, framehost.Use) (frame.CloseOutcome, error)
 	}{
-		{"use close", func(ctx context.Context, use *framehost.Use) (frame.CloseOutcome, error) {
+		{"use close", func(ctx context.Context, use framehost.Use) (frame.CloseOutcome, error) {
 			return use.Close(ctx)
 		}},
-		{"lifetime close", func(ctx context.Context, use *framehost.Use) (frame.CloseOutcome, error) {
+		{"lifetime close", func(ctx context.Context, use framehost.Use) (frame.CloseOutcome, error) {
 			return use.Lifetime().Close(ctx)
 		}},
-		{"lifetime begin close", func(ctx context.Context, use *framehost.Use) (frame.CloseOutcome, error) {
+		{"lifetime begin close", func(ctx context.Context, use framehost.Use) (frame.CloseOutcome, error) {
 			return use.Lifetime().BeginClose(frame.ErrClosed).Wait(ctx)
 		}},
 	} {
@@ -59,7 +59,7 @@ func TestUseRetiresWhenItsOriginalLifetimeCloses(t *testing.T) {
 				host := testHost(t, framehost.Config{Limits: framehost.Limits{MaxUses: 1}})
 				plugin := installNative(t, host, "provider", framehost.Unit{
 					Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-					Setup:       func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil },
+					Setup:       func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil },
 				})
 				plan, err := host.PlanUnit(ctx, "", framehost.UnitRef{InstallationID: "provider", Release: plugin.Revision(), UnitID: "main"}, nil)
 				if err != nil {
@@ -117,7 +117,7 @@ func TestConfirmedUseRetirementWinsCanceledWait(t *testing.T) {
 	host := testHost(t, framehost.Config{})
 	plugin := installNative(t, host, "retired", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-		Setup:       func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil },
+		Setup:       func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil },
 	})
 	owner, scope := ownerAndScope(t, host)
 	use, err := host.AcquireUnit(ctx, framehost.UnitRef{InstallationID: "retired", Release: plugin.Revision(), UnitID: "main"}, framehost.UseConfig{Owner: owner, Scope: scope})
@@ -162,7 +162,7 @@ func TestUseOwnerCancellationSettlesOnceAcrossAdmission(t *testing.T) {
 					return ctx.Err()
 				}
 			}
-			host := testHost(t, framehost.Config{ExecutionProtection: protection})
+			host := testHost(t, framehost.Config{Authority: protectionAuthority(protection)})
 			t.Cleanup(func() {
 				if outcome, err := owner.Close(testContext(t)); err != nil || !outcome.Released {
 					t.Errorf("owner close: %+v, %v", outcome, err)
@@ -171,7 +171,7 @@ func TestUseOwnerCancellationSettlesOnceAcrossAdmission(t *testing.T) {
 			var providerCloses atomic.Int64
 			plugin := installNative(t, host, "provider", framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-				Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 					_, err := setup.Own(frame.Resource{Name: "provider resource", Close: func(context.Context) (frame.ReleaseState, error) {
 						providerCloses.Add(1)
 						return frame.ResourceReleased, nil
@@ -187,7 +187,7 @@ func TestUseOwnerCancellationSettlesOnceAcrossAdmission(t *testing.T) {
 			use, err := host.AcquireUnit(ctx, unit, framehost.UseConfig{Owner: owner, Scope: scope, Realm: "test-realm", ExecutionID: "test-execution"})
 			var outcome frame.CloseOutcome
 			if duringAdmission {
-				if use != nil || !errors.Is(err, frame.ErrClosed) {
+				if use.Valid() || !errors.Is(err, frame.ErrClosed) {
 					t.Fatalf("closed owner accepted publication: %v, %v", use, err)
 				}
 			} else {
@@ -253,7 +253,7 @@ func TestUseFollowsInstallationScopeForPreactivatedInstance(t *testing.T) {
 				var cleanups atomic.Int32
 				plugin := installNative(t, host, "provider", framehost.Unit{
 					Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: point.Ref()}}},
-					Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+					Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 						grant, instanceID = setup.ScopeGrant(), setup.InstanceID()
 						_, err := setup.Cleanup("original provider", func() error { cleanups.Add(1); return nil })
 						return []framehost.ExportValue{framehost.Contribute("value", point, "metadata", "original")}, err
@@ -324,13 +324,13 @@ func TestInstallationScopeFenceKeepsOriginalFailedSettlement(t *testing.T) {
 		ctx := testContext(t)
 		failure := errors.New("original settlement acknowledgement lost")
 		protection := &reservedUseProtection{failures: 1, failure: failure, releases: make(chan recordedUseRelease, 2)}
-		host := testHost(t, framehost.Config{ExecutionProtection: protection})
+		host := testHost(t, framehost.Config{Authority: protectionAuthority(protection)})
 		var grant framehost.ScopeGrant
 		var instanceID string
 		var cleanups atomic.Int32
 		plugin := installNative(t, host, "provider", framehost.Unit{
 			Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-			Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+			Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 				grant, instanceID = setup.ScopeGrant(), setup.InstanceID()
 				_, err := setup.Cleanup("original provider", func() error { cleanups.Add(1); return nil })
 				return nil, err
@@ -410,7 +410,7 @@ func TestUseRetiresAfterOriginalAuthorityCancellation(t *testing.T) {
 					protection.failures = 1
 				}
 				hostLifetime := frame.NewLifetime(t.Context())
-				host := testHost(t, framehost.Config{Lifetime: hostLifetime, ExecutionProtection: protection})
+				host := testHost(t, framehost.Config{Lifetime: hostLifetime, Authority: protectionAuthority(protection)})
 				input, err := framehost.NewContract[string]("execution.original", "1")
 				if err != nil {
 					t.Fatal(err)
@@ -422,15 +422,15 @@ func TestUseRetiresAfterOriginalAuthorityCancellation(t *testing.T) {
 				var cleanups atomic.Int32
 				provider := installNative(t, host, "provider", framehost.Unit{
 					Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: input.Ref()}}},
-					Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+					Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 						providerLifetime = setup.Lifetime()
 						_, err := setup.Cleanup("original provider", func() error { cleanups.Add(1); return nil })
 						return []framehost.ExportValue{framehost.Provide("value", input, "original")}, err
 					},
 				})
 				consumer := installNative(t, host, "consumer", framehost.Unit{
-					Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Imports: []framehost.ImportDeclaration{{Slot: "input", Contract: input.Ref(), Providers: []framehost.ExportRef{source("provider", provider, "main", "value", input.Ref())}}}},
-					Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+					Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Imports: []framehost.ImportDeclaration{{Slot: "input", Contract: input.Ref()}}, Fixed: []framehost.SlotProviders{{Slot: "input", Providers: []framehost.ExportRef{source("provider", provider, "main", "value", input.Ref())}}}},
+					Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 						instanceLifetime = setup.Lifetime()
 						_, err := setup.Cleanup("original consumer", func() error { cleanups.Add(1); return nil })
 						return nil, err

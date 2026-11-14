@@ -19,7 +19,7 @@ import (
 type cleanupProtocol struct{ connection *cleanupConnection }
 
 func (cleanupProtocol) Profile() framehost.Profile { return framehost.LocalProcess }
-func (p cleanupProtocol) Prepare(setup *framehost.Setup, metadata process.ExportMetadata, _ int) (process.Connection, error) {
+func (p cleanupProtocol) Prepare(setup framehost.Setup, metadata process.ExportMetadata, _ int) (process.Connection, error) {
 	for _, export := range setup.Unit().Exports {
 		p.connection.values = append(p.connection.values, metadata.Export(export, frame.Handler(func(_ context.Context, invocation frame.Invocation) (value.JSON, error) {
 			return invocation.Input(), nil

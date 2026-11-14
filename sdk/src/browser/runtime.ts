@@ -27,7 +27,11 @@ import type {
   UseGrant,
 } from "../protocol.generated.js";
 import { PROTOCOL } from "../protocol.generated.js";
-import { ControlChannel, type HostControl } from "./control.js";
+import {
+  ControlChannel,
+  type ConnectionState,
+  type HostControl,
+} from "./control.js";
 import { observePromise } from "../promise-observation.js";
 import {
   sameAuthority,
@@ -153,7 +157,7 @@ export class Runtime {
   readonly #load: RuntimeOptions["load"];
   readonly #remote: RuntimeOptions["remote"];
   readonly #outbox: ProofOutbox;
-  #connection: "connected" | "paused" | "cleanupOnly" | "closed" = "connected";
+  #connection: ConnectionState = "connected";
   #connectionRevision = 0;
   #revalidation?: {
     revision: number;
@@ -191,7 +195,7 @@ export class Runtime {
   get realm(): Realm {
     return this.#realm;
   }
-  get connection(): "connected" | "paused" | "cleanupOnly" | "closed" {
+  get connection(): ConnectionState {
     return this.#connection;
   }
   get pendingProofs(): readonly CloseProof[] {

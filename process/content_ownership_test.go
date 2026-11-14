@@ -26,7 +26,7 @@ type saturatedProcessDriver struct{ process *process.Driver }
 
 func (d saturatedProcessDriver) Profile() framehost.Profile { return d.process.Profile() }
 
-func (d saturatedProcessDriver) Prepare(ctx context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+func (d saturatedProcessDriver) Prepare(ctx context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 	for ctx.Err() == nil {
 		_, err := setup.Cleanup("occupied capacity", func() error { return nil })
 		if errors.Is(err, frame.ErrCapacity) {
@@ -59,8 +59,8 @@ func contentHost(t *testing.T, source contentSource, saturated bool) (framehost.
 		driver = saturatedProcessDriver{process: processDriver}
 	}
 	host, err := framehost.New(t.Context(), framehost.Config{
-		Admission: gate, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store,
-		Drivers: []framehost.Driver{driver},
+		Authority: store,
+		Drivers:   []framehost.Driver{driver},
 	})
 	if err != nil {
 		t.Fatal(err)

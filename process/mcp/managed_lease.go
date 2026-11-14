@@ -13,7 +13,7 @@ import (
 type managedLease struct {
 	ready    chan struct{}
 	grant    *ManagedCallback
-	owner    *frame.ResourceHandle
+	owner    frame.ResourceHandle
 	once     sync.Once
 	revoked  chan struct{}
 	released chan struct{}

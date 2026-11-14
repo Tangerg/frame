@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
+	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -345,7 +345,7 @@ func (a *App) startTask(ctx context.Context, task Task) error {
 	})
 }
 
-func (a *App) convert(ctx context.Context, task Task, use *framehost.Use) (TaskResult, error) {
+func (a *App) convert(ctx context.Context, task Task, use framehost.Use) (TaskResult, error) {
 	result := TaskResult{Diagnostics: []Diagnostic{}}
 	var runErr error
 	converted := false

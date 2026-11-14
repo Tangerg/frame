@@ -58,7 +58,7 @@ func TestHostAdmissionEndsWithItsOriginalLifetime(t *testing.T) {
 				t.Errorf("closed lifetime admitted a snapshot: %v", err)
 			}
 			if _, next, err := host.Watch(ctx, point.Ref()); !errors.Is(err, frame.ErrClosed) {
-				if next != nil {
+				if next.Valid() {
 					next.Close()
 				}
 				t.Errorf("closed lifetime admitted a watch: %v", err)
@@ -89,7 +89,7 @@ func TestHostWatchResourceBudgetTracksActualSubscriptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot, extra, err := host.Watch(ctx); !errors.Is(err, frame.ErrCapacity) || snapshot != (framehost.Snapshot{}) || extra != nil {
+	if snapshot, extra, err := host.Watch(ctx); !errors.Is(err, frame.ErrCapacity) || snapshot != (framehost.Snapshot{}) || extra.Valid() {
 		t.Fatalf("watch escaped its lifetime capacity: %v, %v, %v", snapshot, extra, err)
 	}
 	watch.Close()
@@ -122,7 +122,7 @@ func TestRetirementRemainsAvailableDuringRecovery(t *testing.T) {
 			var cleanups atomic.Int32
 			plugin := installNative(t, host, "retiring", framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-				Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 					_, err := setup.Cleanup("original resource", func() error { cleanups.Add(1); return nil })
 					return nil, err
 				},

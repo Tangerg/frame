@@ -3,7 +3,7 @@ package document
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"errors"
 	"sync"
 
@@ -69,7 +69,7 @@ type taskRun struct {
 	app        *App
 	id         string
 	epoch      uint64
-	work       *frame.Work
+	work       frame.Work
 	mu         sync.Mutex
 	phase      taskRunPhase
 	conclusion *taskConclusion

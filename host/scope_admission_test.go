@@ -14,10 +14,10 @@ func TestScopeFencedDuringApprovalIsRefused(t *testing.T) {
 	previous := runtime.GOMAXPROCS(1)
 	defer runtime.GOMAXPROCS(previous)
 	protection := &useRetirementProtection{releases: make(chan recordedUseRelease, 1)}
-	host := testHost(t, framehost.Config{ExecutionProtection: protection})
+	host := testHost(t, framehost.Config{Authority: protectionAuthority(protection)})
 	plugin := installNative(t, host, "approval-provider", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-		Setup:       func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil },
+		Setup:       func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil },
 	})
 	owner, scope := ownerAndScope(t, host)
 	protection.approve = func() error {
@@ -25,9 +25,9 @@ func TestScopeFencedDuringApprovalIsRefused(t *testing.T) {
 		return nil
 	}
 	use, err := host.AcquireUnit(t.Context(), framehost.UnitRef{InstallationID: "approval-provider", Release: plugin.Revision(), UnitID: "main"}, framehost.UseConfig{Owner: owner, Scope: scope, Realm: "realm"})
-	t.Logf("scope valid=%v, acquired use=%t, acquire error=%v", host.Admission().ValidateScope(scope), use != nil, err)
-	if use != nil || !errors.Is(err, framehost.ErrFenced) {
-		t.Errorf("acquisition published authority after its original scope was fenced: use=%t, error=%v", use != nil, err)
+	t.Logf("scope valid=%v, acquired use=%t, acquire error=%v", host.Admission().ValidateScope(scope), use.Valid(), err)
+	if use.Valid() || !errors.Is(err, framehost.ErrFenced) {
+		t.Errorf("acquisition published authority after its original scope was fenced: use=%t, error=%v", use.Valid(), err)
 	}
 }
 
@@ -46,7 +46,7 @@ func TestScopeFencedDuringAcceptedReadDoesNotPrepare(t *testing.T) {
 	}})
 	plugin := installNative(t, host, "reader-provider", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			prepared.Add(1)
 			return nil, nil
 		},

@@ -23,7 +23,7 @@ func (o *retainedUseOwner) Held(ctx context.Context, id framehost.InstallationID
 func TestUnavailableUseOwnerFencesAdmissionUntilRecovered(t *testing.T) {
 	ctx := testContext(t)
 	host := testHost(t, framehost.Config{})
-	plugin := installNative(t, host, "retained", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo}, Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+	plugin := installNative(t, host, "retained", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo}, Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 		return nil, nil
 	}})
 	unavailable := errors.New("original business store is unavailable")

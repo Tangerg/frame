@@ -56,18 +56,7 @@ function matchesWireAuthority(value: unknown): value is Authority {
 
 function matchesWireBindingSnapshot(value: unknown): value is BindingSnapshot {
   return (
-    wireObject(value, [
-      "formatVersion",
-      "roots",
-      "unitRoots",
-      "units",
-      "rule",
-    ]) &&
-    Object.hasOwn(value, "formatVersion") &&
-    typeof value["formatVersion"] === "number" &&
-    Number.isInteger(value["formatVersion"]) &&
-    value["formatVersion"] >= 0 &&
-    value["formatVersion"] <= 4294967295 &&
+    wireObject(value, ["roots", "unitRoots", "units", "selection"]) &&
     Object.hasOwn(value, "roots") &&
     wireArray(value["roots"], (item: unknown) => matchesWireExportRef(item)) &&
     Object.hasOwn(value, "unitRoots") &&
@@ -78,8 +67,8 @@ function matchesWireBindingSnapshot(value: unknown): value is BindingSnapshot {
     wireArray(value["units"], (item: unknown) =>
       matchesWireUnitBinding(item),
     ) &&
-    Object.hasOwn(value, "rule") &&
-    typeof value["rule"] === "string"
+    (!Object.hasOwn(value, "selection") ||
+      matchesWireDigest(value["selection"]))
   );
 }
 
@@ -215,9 +204,7 @@ function matchesWireExportRef(value: unknown): value is ExportRef {
   );
 }
 
-function matchesWireImportDeclaration(
-  value: unknown,
-): value is ImportDeclaration {
+function matchesWireImportBinding(value: unknown): value is ImportBinding {
   return (
     wireObject(value, ["slot", "contract", "optional", "providers"]) &&
     Object.hasOwn(value, "slot") &&
@@ -394,7 +381,7 @@ function matchesWireUnitBinding(value: unknown): value is UnitBinding {
     matchesWireDigest(value["configuration"]) &&
     Object.hasOwn(value, "imports") &&
     wireArray(value["imports"], (item: unknown) =>
-      matchesWireImportDeclaration(item),
+      matchesWireImportBinding(item),
     )
   );
 }
@@ -585,7 +572,7 @@ export interface WireValues {
   readonly Digest: Digest;
   readonly DocumentRef: DocumentRef;
   readonly ExportRef: ExportRef;
-  readonly ImportDeclaration: ImportDeclaration;
+  readonly ImportBinding: ImportBinding;
   readonly InstallationID: InstallationID;
   readonly OpenRealmRequest: OpenRealmRequest;
   readonly PreviewMetadata: PreviewMetadata;
@@ -620,7 +607,7 @@ const wireValues = {
   ["Digest"]: matchesWireDigest,
   ["DocumentRef"]: matchesWireDocumentRef,
   ["ExportRef"]: matchesWireExportRef,
-  ["ImportDeclaration"]: matchesWireImportDeclaration,
+  ["ImportBinding"]: matchesWireImportBinding,
   ["InstallationID"]: matchesWireInstallationID,
   ["OpenRealmRequest"]: matchesWireOpenRealmRequest,
   ["PreviewMetadata"]: matchesWirePreviewMetadata,
@@ -656,11 +643,10 @@ export interface Authority {
 }
 
 export interface BindingSnapshot {
-  readonly formatVersion: number;
   readonly roots: readonly ExportRef[];
   readonly unitRoots: readonly UnitRef[];
   readonly units: readonly UnitBinding[];
-  readonly rule: string;
+  readonly selection?: Digest;
 }
 
 export const ContractKindValues = ["service", "point", "event"] as const;
@@ -719,7 +705,7 @@ export interface ExportRef {
   readonly contract: ContractRef;
 }
 
-export interface ImportDeclaration {
+export interface ImportBinding {
   readonly slot: string;
   readonly contract: ContractRef;
   readonly optional: boolean;
@@ -807,7 +793,7 @@ export interface ThemeView {
 export interface UnitBinding {
   readonly source: UnitRef;
   readonly configuration: Digest;
-  readonly imports: readonly ImportDeclaration[];
+  readonly imports: readonly ImportBinding[];
 }
 
 export type UnitID = string;

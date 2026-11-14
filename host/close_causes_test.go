@@ -92,7 +92,7 @@ func TestHostClosePreservesNestedResourceCause(t *testing.T) {
 		t.Fatal(err)
 	}
 	original := &cleanupCause{}
-	plugin := installNative(t, host, "failure", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo}, Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+	plugin := installNative(t, host, "failure", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo}, Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 		_, err := setup.Own(frame.Resource{Name: "plugin resource", Close: func(context.Context) (frame.ReleaseState, error) { return frame.ResourceReleased, original }})
 		return nil, err
 	}})
@@ -116,7 +116,7 @@ func TestNestedUseClosePreservesEachOriginalCauseOnce(t *testing.T) {
 			t.Errorf("host close: %+v, %v", outcome, err)
 		}
 	})
-	plugin := installNative(t, host, "nested", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo}, Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil }})
+	plugin := installNative(t, host, "nested", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo}, Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil }})
 	unit := framehost.UnitRef{InstallationID: "nested", Release: plugin.Revision(), UnitID: "main"}
 	owner := frame.NewLifetime(context.Background())
 	t.Cleanup(func() {

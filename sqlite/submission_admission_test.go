@@ -199,7 +199,7 @@ func TestRejectedInstallationReclaimsItsPrivateSubmissionCapacity(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer store.Close()
-	h, err := framehost.New(t.Context(), framehost.Config{Admission: a, Installations: store})
+	h, err := framehost.New(t.Context(), framehost.Config{Authority: store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestInterruptedInstallationProjectionReleasesReceiptBeforeHostRecovery(t *t
 				t.Fatal(err)
 			}
 			defer store.Close()
-			host, err := framehost.New(t.Context(), framehost.Config{Admission: admission, Installations: store})
+			host, err := framehost.New(t.Context(), framehost.Config{Authority: store})
 			if err != nil {
 				t.Fatal(err)
 			}

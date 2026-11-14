@@ -17,7 +17,8 @@ const (
 )
 
 // Work handles share the original interval, so copying a handle cannot reopen
-// finished work or release another interval's capacity.
+// finished work or release another interval's capacity. The zero Work is
+// unissued: finishing it does nothing and it owns no resource.
 type Work struct {
 	interval *workInterval
 }
@@ -30,30 +31,30 @@ type workInterval struct {
 	finished bool
 }
 
-func (l *lifetimeRecord) Enter(ctx context.Context) (*Work, error) {
+func (l *lifetimeRecord) Enter(ctx context.Context) (Work, error) {
 	return l.enter(ctx, ownWork)
 }
 
 // hold registers a consumer that retirement drains instead of cancelling. Its
 // context ends only when the Lifetime itself begins closing.
-func (l *lifetimeRecord) Hold() (*Work, error) {
+func (l *lifetimeRecord) Hold() (Work, error) {
 	return l.enter(context.Background(), consumerHold)
 }
 
-func (l *lifetimeRecord) enter(ctx context.Context, kind workKind) (*Work, error) {
+func (l *lifetimeRecord) enter(ctx context.Context, kind workKind) (Work, error) {
 	if l == nil {
-		return nil, ErrInvalid
+		return Work{}, ErrInvalid
 	}
 	if err := ContextError(ctx); err != nil {
-		return nil, err
+		return Work{}, err
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.closingLocked() {
-		return nil, ErrClosed
+		return Work{}, ErrClosed
 	}
 	if len(l.work) >= l.limits.MaxWork {
-		return nil, fmt.Errorf("%w: lifetime work", ErrCapacity)
+		return Work{}, fmt.Errorf("%w: lifetime work", ErrCapacity)
 	}
 	child, cancel := context.WithCancelCause(ctx)
 	work := &workInterval{lifetime: l, ctx: child, cancel: cancel, kind: kind}
@@ -61,7 +62,7 @@ func (l *lifetimeRecord) enter(ctx context.Context, kind workKind) (*Work, error
 	if kind == consumerHold {
 		l.holds++
 	}
-	return &Work{interval: work}, nil
+	return Work{interval: work}, nil
 }
 
 func (l *lifetimeRecord) AwaitUnheld(ctx context.Context) error {
@@ -83,10 +84,12 @@ func (l *lifetimeRecord) AwaitUnheld(ctx context.Context) error {
 	}
 }
 
-func (w *Work) Context() context.Context { return w.interval.ctx }
+func (w Work) Valid() bool { return w.interval != nil }
 
-func (w *Work) Finish() {
-	if w == nil || w.interval == nil {
+func (w Work) Context() context.Context { return w.interval.ctx }
+
+func (w Work) Finish() {
+	if w.interval == nil {
 		return
 	}
 	interval := w.interval
@@ -108,15 +111,15 @@ func (w *Work) Finish() {
 
 // Own accepts a late resource only while the work which acquired it is still
 // registered. Retirement waits for that work before walking its resources.
-func (w *Work) Own(resource Resource, dependencies ...*ResourceHandle) (*ResourceHandle, error) {
-	if w == nil || w.interval == nil {
-		return nil, ErrInvalid
+func (w Work) Own(resource Resource, dependencies ...ResourceHandle) (ResourceHandle, error) {
+	if w.interval == nil {
+		return ResourceHandle{}, ErrInvalid
 	}
 	l := w.interval.lifetime
 	l.mu.Lock()
 	if w.interval.finished {
 		l.mu.Unlock()
-		return nil, ErrClosed
+		return ResourceHandle{}, ErrClosed
 	}
 	handle, err := l.ownLocked(resource, dependencies)
 	closing := l.closing != nil
@@ -133,7 +136,7 @@ func (w *Work) Own(resource Resource, dependencies ...*ResourceHandle) (*Resourc
 	return handle, err
 }
 
-func (w *Work) Cleanup(name string, closeResource func() error, dependencies ...*ResourceHandle) (*ResourceHandle, error) {
+func (w Work) Cleanup(name string, closeResource func() error, dependencies ...ResourceHandle) (ResourceHandle, error) {
 	return w.Own(cleanupResource(name, closeResource), dependencies...)
 }
 func (l *lifetimeRecord) Go(ctx context.Context, run func(context.Context)) error {

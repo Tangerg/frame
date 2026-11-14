@@ -3,7 +3,7 @@ package native
 import (
 	"cmp"
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"errors"
 	"io"
 	"os"
@@ -57,7 +57,7 @@ func Open(ctx context.Context, config Configuration, outputDirectory string) (_ 
 		return nil, err
 	}
 	var roots []framehost.ExportRef
-	for _, unit := range installed.Units {
+	for _, unit := range plugin.Units() {
 		for _, export := range unit.Exports {
 			roots = append(roots, framehost.ExportRef{InstallationID: installed.ID, Release: installed.Release, UnitID: unit.ID, Export: export.Name, Contract: export.Contract})
 		}
@@ -167,7 +167,7 @@ type View struct {
 
 // Cleanup retains the original resource even if a caller replaces its View.
 type viewResource struct {
-	use    *framehost.Use
+	use    framehost.Use
 	file   *os.File
 	size   int64
 	report Report

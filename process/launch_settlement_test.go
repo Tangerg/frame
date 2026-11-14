@@ -2,6 +2,7 @@ package process_test
 
 import (
 	"context"
+	json "encoding/json/v2"
 	"errors"
 	"io"
 	"os"
@@ -85,7 +86,7 @@ func newSettlementEnvironment(t *testing.T) *settlementEnvironment {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.host, err = framehost.New(t.Context(), framehost.Config{Admission: admission, Epoch: e.store.Epoch(), Drivers: []framehost.Driver{e.driver}, Installations: e.store, ExecutionProtection: e.store})
+	e.host, err = framehost.New(t.Context(), framehost.Config{Authority: e.store, Drivers: []framehost.Driver{e.driver}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,6 +106,19 @@ func newSettlementEnvironment(t *testing.T) *settlementEnvironment {
 	}
 	e.unit = framehost.UnitRef{InstallationID: "provider", Release: plugin.Revision(), UnitID: "main"}
 	return e
+}
+
+func (e *settlementEnvironment) assertRunnerExit(t *testing.T, state runner.State) {
+	t.Helper()
+	e.assertReleased(t, "runner-exit")
+	records, err := e.store.Attempts(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt runner.ExitReceipt
+	if err := json.Unmarshal(records[0].Proof.Evidence, &receipt); err != nil || receipt.State != state {
+		t.Fatalf("runner proof settled %q, want %q: %v", receipt.State, state, err)
+	}
 }
 
 func (e *settlementEnvironment) assertReleased(t *testing.T, kind string) {
@@ -183,7 +197,7 @@ func TestCapacityRefusalSettlesTheOriginalAttemptInTheCurrentEpoch(t *testing.T)
 	if _, err := e.host.ActivateUnit(t.Context(), "application", e.unit); !errors.Is(err, frame.ErrCapacity) {
 		t.Fatalf("capacity refusal: %v", err)
 	}
-	e.assertReleased(t, "runner-not-created")
+	e.assertRunnerExit(t, runner.NotCreated)
 }
 
 func TestReconcileNeverReplacesAnUnknownLaunchWithAnUndispatchedRetry(t *testing.T) {
@@ -218,5 +232,5 @@ func TestReconcileNeverReplacesAnUnknownLaunchWithAnUndispatchedRetry(t *testing
 	if err := e.driver.Reconcile(t.Context(), original.AttemptID); err != nil {
 		t.Fatalf("late original acceptance: %v", err)
 	}
-	e.assertReleased(t, "runner-wait")
+	e.assertRunnerExit(t, runner.Exited)
 }

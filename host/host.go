@@ -17,19 +17,18 @@ import (
 // must not consume the record or change its authorization.
 type AcceptedBindingReader func(ctx context.Context, recordID string, scope ScopeGrant) (BindingSnapshot, error)
 
+// Config composes a Host. Without an Authority the Host creates its own
+// volatile admission gate.
 type Config struct {
 	ReadAcceptedBinding AcceptedBindingReader
-	Admission           Admission
+	Authority           Authority
 	Lifetime            frame.Lifetime
-	Epoch               uint64
 	Drivers             []Driver
 	UseOwners           []UseOwner
-	Installations       InstallationStore
-	ExecutionProtection ExecutionProtection
 	Limits              Limits
 }
 
-// HostLimits bound every record a Host retains on behalf of its callers. A
+// Limits bound every record a Host retains on behalf of its callers. A
 // zero limit selects its default.
 type Limits struct {
 	MaxInstallations         int
@@ -52,6 +51,7 @@ const (
 )
 
 func (l Limits) resolve() (Limits, error) {
+	var err error
 	for _, limit := range []struct {
 		name     string
 		value    *int
@@ -65,7 +65,7 @@ func (l Limits) resolve() (Limits, error) {
 		{"uses", &l.MaxUses, defaultMaxUses},
 		{"event routes", &l.MaxEventRoutes, defaultMaxEventRoutes},
 	} {
-		if err := frame.ResolveLimit(limit.name, limit.value, limit.fallback); err != nil {
+		if *limit.value, err = frame.ResolveLimit(limit.name, *limit.value, limit.fallback); err != nil {
 			return Limits{}, err
 		}
 	}
@@ -81,10 +81,8 @@ type hostState struct {
 	identity            *frame.LifetimeDomain
 	admission           Admission
 	lifetime            frame.Lifetime
-	epoch               uint64
 	limits              Limits
-	store               InstallationStore
-	protection          ExecutionProtection
+	durable             Durable
 	readAcceptedBinding AcceptedBindingReader
 
 	mu                     sync.Mutex
@@ -106,18 +104,13 @@ func New(ctx context.Context, config Config) (_ Host, err error) {
 	if err := frame.ContextError(ctx); err != nil {
 		return Host{}, err
 	}
-	if config.Installations != nil && framevalue.IsNil(config.Installations) || config.ExecutionProtection != nil && framevalue.IsNil(config.ExecutionProtection) {
-		return Host{}, frame.ErrInvalid
+	admission, durable, err := config.authority()
+	if err != nil {
+		return Host{}, err
 	}
 	limits, err := config.Limits.resolve()
 	if err != nil {
 		return Host{}, err
-	}
-	if !config.Admission.Valid() {
-		config.Admission = NewAdmission()
-	}
-	if config.Epoch == 0 {
-		config.Epoch = 1
 	}
 	if !config.Lifetime.Valid() {
 		config.Lifetime = frame.NewLifetime(ctx)
@@ -135,12 +128,10 @@ func New(ctx context.Context, config Config) (_ Host, err error) {
 	}
 	h := &hostState{
 		identity:            new(frame.LifetimeDomain),
-		admission:           config.Admission,
+		admission:           admission,
 		lifetime:            config.Lifetime,
-		epoch:               config.Epoch,
 		limits:              limits,
-		store:               config.Installations,
-		protection:          config.ExecutionProtection,
+		durable:             durable,
 		readAcceptedBinding: config.ReadAcceptedBinding,
 		drivers:             make(map[Profile]registeredDriver),
 		contracts:           newContractRegistry(),
@@ -150,9 +141,6 @@ func New(ctx context.Context, config Config) (_ Host, err error) {
 		catalog:             newCatalog(limits.MaxPublications),
 		uses:                make(map[string]*useBorrow),
 		routes:              make(map[string]*eventRoute),
-	}
-	if err := h.validateDurableAuthority(); err != nil {
-		return Host{}, err
 	}
 	for _, driver := range config.Drivers {
 		if err := h.RegisterDriver(driver); err != nil {
@@ -165,12 +153,25 @@ func New(ctx context.Context, config Config) (_ Host, err error) {
 	return Host{h}, nil
 }
 
+func (c Config) authority() (Admission, Durable, error) {
+	if c.Authority == nil {
+		return NewAdmission(), nil, nil
+	}
+	if framevalue.IsNil(c.Authority) || !c.Authority.Admission().Valid() {
+		return Admission{}, nil, fmt.Errorf("%w: authority requires an issued admission", frame.ErrInvalid)
+	}
+	durable, persistent := c.Authority.(Durable)
+	if persistent && durable.Epoch() == 0 {
+		return Admission{}, nil, fmt.Errorf("%w: durable authority requires its epoch", frame.ErrInvalid)
+	}
+	return c.Authority.Admission(), durable, nil
+}
+
 func (h *hostState) newLifetime(ctx context.Context) frame.Lifetime {
 	return h.identity.NewLifetime(ctx)
 }
 
 func (h *hostState) Admission() Admission { return h.admission }
-func (h *hostState) Epoch() uint64        { return h.epoch }
 
 func (h *hostState) RegisterDriver(driver Driver) error {
 	if framevalue.IsNil(driver) {

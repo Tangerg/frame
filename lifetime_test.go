@@ -162,7 +162,7 @@ func TestResourceNamesRemainBoundedInCloseEvidence(t *testing.T) {
 				}
 				return frame.ResourceReleased, diagnostic
 			}}
-			var handle *frame.ResourceHandle
+			var handle frame.ResourceHandle
 			var closing frame.Close
 			var err error
 			if late {

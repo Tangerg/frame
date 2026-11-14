@@ -44,7 +44,7 @@ func rejectedDecision(problem string) DecisionResult {
 	return DecisionResult{Decision: Rejected, Problem: problem}
 }
 
-func (b *Bridge) Prepare(ctx context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+func (b *Bridge) Prepare(ctx context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 	if !b.config.Host.OwnsSetup(setup) {
 		return nil, framehost.ErrFenced
 	}
@@ -83,9 +83,6 @@ func (b *Bridge) Prepare(ctx context.Context, setup *framehost.Setup) ([]frameho
 		}
 	}()
 	attempt := sqlite.Attempt{ID: setup.InstanceID(), Epoch: setup.Epoch(), Source: setup.Binding().Source, Binding: setup.Snapshot(), Realm: string(RealmID(session.realm)), Profile: framehost.BrowserJS, Scope: setup.ScopeGrant().WireID(), ScopeGeneration: setup.ScopeGrant().Generation(), Generation: setup.Generation()}
-	if err := b.config.Store.CheckExitCapacity(unadmittedExitProof(attempt)); err != nil {
-		return nil, err
-	}
 	entry := &browserExecution{plan: plan, attempt: attempt, setup: setup, prepared: make(chan []framehost.ExportValue, 1), projectionBytes: projectionBytes}
 	registered := make(chan struct{})
 	resource, err := setup.Own(frame.Resource{Name: executionResourcePrefix + attempt.ID, Cancel: func(error) { b.fence(entry) }, Close: func(wait context.Context) (frame.ReleaseState, error) {
@@ -130,7 +127,7 @@ func (b *Bridge) Prepare(ctx context.Context, setup *framehost.Setup) ([]frameho
 }
 
 // reservePreparation counts a Setup against MaxPending before any I/O.
-func (b *Bridge) reservePreparation(setup *framehost.Setup) (*realmSession, error) {
+func (b *Bridge) reservePreparation(setup framehost.Setup) (*realmSession, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	session := b.sessions.get(setup.Realm())
@@ -140,7 +137,7 @@ func (b *Bridge) reservePreparation(setup *framehost.Setup) (*realmSession, erro
 	return session, b.executions.reserve()
 }
 
-func (b *Bridge) localPlan(ctx context.Context, realm Realm, setup *framehost.Setup) (LocalPlan, error) {
+func (b *Bridge) localPlan(ctx context.Context, realm Realm, setup framehost.Setup) (LocalPlan, error) {
 	unit, err := b.plannedUnit(ctx, setup)
 	if err != nil {
 		return LocalPlan{}, err
@@ -158,7 +155,7 @@ func (b *Bridge) localPlan(ctx context.Context, realm Realm, setup *framehost.Se
 	}, nil
 }
 
-func (b *Bridge) plannedUnit(ctx context.Context, setup *framehost.Setup) (PlannedUnit, error) {
+func (b *Bridge) plannedUnit(ctx context.Context, setup framehost.Setup) (PlannedUnit, error) {
 	module, err := b.config.Source.Module(ctx, setup.Binding())
 	if err != nil {
 		return PlannedUnit{}, err
@@ -179,8 +176,8 @@ func (b *Bridge) plannedUnit(ctx context.Context, setup *framehost.Setup) (Plann
 		Imports:           []Import{},
 		Exports:           setup.Unit().Exports,
 	}
-	for _, declaration := range binding.Imports {
-		imported, err := b.plannedImport(ctx, setup, declaration)
+	for _, bound := range binding.Imports {
+		imported, err := b.plannedImport(ctx, setup, bound.ImportDeclaration)
 		if err != nil {
 			return PlannedUnit{}, err
 		}
@@ -189,7 +186,7 @@ func (b *Bridge) plannedUnit(ctx context.Context, setup *framehost.Setup) (Plann
 	return unit, nil
 }
 
-func (b *Bridge) publicConfiguration(ctx context.Context, setup *framehost.Setup) (string, error) {
+func (b *Bridge) publicConfiguration(ctx context.Context, setup framehost.Setup) (string, error) {
 	if b.config.PublicConfiguration == nil {
 		return emptyConfiguration, nil
 	}
@@ -208,7 +205,7 @@ func (b *Bridge) publicConfiguration(ctx context.Context, setup *framehost.Setup
 
 // plannedImport projects one approved import: an object of this Realm, a
 // Portable transport bound by RemoteSource, or an accepted absence.
-func (b *Bridge) plannedImport(ctx context.Context, setup *framehost.Setup, declaration framehost.ImportDeclaration) (Import, error) {
+func (b *Bridge) plannedImport(ctx context.Context, setup framehost.Setup, declaration framehost.ImportDeclaration) (Import, error) {
 	values, err := setup.Imports(declaration.Slot)
 	if err != nil {
 		return Import{}, err
@@ -266,7 +263,7 @@ func (b *Bridge) closeExecution(ctx context.Context, entry *browserExecution) (f
 	registered := b.executions.get(entry.attempt.ID) == entry
 	b.mu.Unlock()
 	switch {
-	case !registered && owned == nil:
+	case !registered && !owned.Valid():
 		return frame.ResourceUnconfirmed, nil
 	case !registered:
 		return frame.ResourceReleased, nil

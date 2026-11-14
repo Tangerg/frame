@@ -36,7 +36,7 @@ func TestInstallToolArchive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := framehost.New(ctx, framehost.Config{Admission: gate})
+	host, err := framehost.New(ctx, framehost.Config{Authority: gate})
 	if err != nil {
 		t.Fatal(err)
 	}

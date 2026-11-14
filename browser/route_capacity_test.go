@@ -23,7 +23,7 @@ func TestRefusedRouteDoesNotConsumeHostCapacity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := framehost.New(ctx, framehost.Config{Admission: admission, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store, Limits: framehost.Limits{MaxEventRoutes: 1}})
+	host, err := framehost.New(ctx, framehost.Config{Authority: store, Limits: framehost.Limits{MaxEventRoutes: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}

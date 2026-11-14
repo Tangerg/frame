@@ -3,7 +3,7 @@ package document
 import (
 	"cmp"
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"errors"
 	"path/filepath"
 	"slices"
@@ -70,7 +70,7 @@ func Open(ctx context.Context, config Config) (_ *App, err error) {
 	}
 	lifetime := frame.NewLifetime(context.Background())
 	a := &App{Store: store, Contracts: contracts, owner: owner, lifetime: lifetime, runs: make(map[string]*taskRun)}
-	host, err := framehost.New(context.Background(), framehost.Config{ReadAcceptedBinding: a.readQueuedBinding, Admission: admission, Lifetime: lifetime, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store, UseOwners: []framehost.UseOwner{owner}})
+	host, err := framehost.New(context.Background(), framehost.Config{ReadAcceptedBinding: a.readQueuedBinding, Lifetime: lifetime, Authority: store, UseOwners: []framehost.UseOwner{owner}})
 	if err != nil {
 		return nil, err
 	}
@@ -299,24 +299,8 @@ func (a *App) Recover(ctx context.Context) error {
 func (a *App) currentScope() framehost.ScopeGrant { a.mu.Lock(); defer a.mu.Unlock(); return a.scope }
 
 func (a *App) activateDocumentProviders(ctx context.Context) error {
-	records, err := a.Store.Installations(ctx)
-	if err != nil {
-		return err
-	}
-	var roots []framehost.ExportRef
-	for _, record := range records {
-		if !record.Enabled {
-			continue
-		}
-		for _, unit := range record.Units {
-			for _, export := range unit.Exports {
-				if export.Contract == a.Contracts.Converters.Ref() || export.Contract == a.Contracts.Validators.Ref() {
-					roots = append(roots, framehost.ExportRef{InstallationID: record.ID, Release: record.Release, UnitID: unit.ID, Export: export.Name, Contract: export.Contract})
-				}
-			}
-		}
-	}
-	_, err = a.Host.Activate(ctx, roots...)
+	roots := append(a.Host.DeclaredExports(a.Contracts.Converters.Ref()), a.Host.DeclaredExports(a.Contracts.Validators.Ref())...)
+	_, err := a.Host.Activate(ctx, roots...)
 	return err
 }
 

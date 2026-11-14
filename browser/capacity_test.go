@@ -60,7 +60,7 @@ func TestPlanCapacityIsRefusedBeforeExposure(t *testing.T) {
 	const messageBytes = 4096
 	e := openConfiguredBridge(t, filepath.Join(t.TempDir(), "state.sqlite"), true, func(config *browser.BridgeConfig) {
 		config.MaxMessageBytes = messageBytes
-		config.PublicConfiguration = func(context.Context, *framehost.Setup) ([]byte, error) {
+		config.PublicConfiguration = func(context.Context, framehost.Setup) ([]byte, error) {
 			return json.Marshal(strings.Repeat("x", 2*messageBytes))
 		}
 	})
@@ -78,27 +78,10 @@ func TestPlanCapacityIsRefusedBeforeExposure(t *testing.T) {
 	}
 }
 
-func TestPlanAdmissionIncludesDurableExitCapacity(t *testing.T) {
-	for _, requestBytes := range []int{2048, 4096} {
-		t.Run(fmt.Sprint(requestBytes), func(t *testing.T) {
-			e := openBridgeEnvironment(t, sqlite.Config{Path: filepath.Join(t.TempDir(), "state.sqlite"), MaxRequestBytes: requestBytes}, true, nil)
-			if err := <-beginBrowserActivation(e, "component"); !errors.Is(err, frame.ErrCapacity) {
-				t.Fatalf("durably untransportable proof was admitted: %v", err)
-			}
-			poll, err := e.bridge.Poll(e.ctx, e.credentials.Token)
-			if err != nil || len(poll.Plans) != 0 || len(poll.Fences) != 0 {
-				t.Fatalf("refused proof budget exposed work: %+v %v", poll, err)
-			}
-			attempts, err := e.store.Attempts(e.ctx)
-			if err != nil || len(attempts) != 0 {
-				t.Fatalf("refused proof budget accepted durable responsibility: %+v %v", attempts, err)
-			}
-		})
-	}
-}
-
+// The exit proof is bounded by its own evidence limit, so a request budget
+// that once refused this plan neither refuses it nor blocks its release.
 func TestAdmittedExecutionCanPersistMaximumExitIdentity(t *testing.T) {
-	const requestBytes = 8192
+	const requestBytes = 4096
 	for _, spelling := range []struct{ name, character string }{
 		{"HTML", "<"}, {"quote", `"`}, {"backslash", `\`},
 	} {
@@ -128,7 +111,7 @@ func TestCompletePendingProjectionReservesEncodedBytesAndReturnsCapacityOnReleas
 	const messageBytes = 16 << 10
 	e := openConfiguredBridge(t, filepath.Join(t.TempDir(), "state.sqlite"), true, func(config *browser.BridgeConfig) {
 		config.MaxMessageBytes = messageBytes
-		config.PublicConfiguration = func(context.Context, *framehost.Setup) ([]byte, error) {
+		config.PublicConfiguration = func(context.Context, framehost.Setup) ([]byte, error) {
 			return json.Marshal(strings.Repeat("<", 600))
 		}
 	})

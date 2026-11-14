@@ -16,7 +16,7 @@ type accessInterval struct {
 	mu      sync.Mutex
 	use     *useBorrow
 	ctx     context.Context
-	work    *frame.Work
+	work    frame.Work
 	readers sync.WaitGroup
 }
 
@@ -26,7 +26,10 @@ type Member[M, V any] struct {
 	Value    V
 }
 
-func (a *Access) Context() context.Context {
+// Valid reports whether the handle names a borrow interval; the zero Access does not.
+func (a Access) Valid() bool { return a.interval != nil }
+
+func (a Access) Context() context.Context {
 	if a.interval == nil {
 		return nil
 	}
@@ -37,14 +40,14 @@ func (a *accessInterval) close() {
 	a.mu.Lock()
 	a.use = nil
 	work := a.work
-	a.work = nil
+	a.work = frame.Work{}
 	a.mu.Unlock()
 	a.readers.Wait()
 	work.Finish()
 }
 
-func withAccess(ctx context.Context, use *Use, call func(*Access) error) error {
-	if use == nil || use.borrow == nil || call == nil {
+func withAccess(ctx context.Context, use Use, call func(Access) error) error {
+	if use.borrow == nil || call == nil {
 		return frame.ErrInvalid
 	}
 	borrow := use.borrow
@@ -54,23 +57,20 @@ func withAccess(ctx context.Context, use *Use, call func(*Access) error) error {
 	}
 	interval := &accessInterval{use: borrow, ctx: work.Context(), work: work}
 	defer interval.close()
-	return call(&Access{interval: interval})
+	return call(Access{interval: interval})
 }
 
-func (h *hostState) With(ctx context.Context, grant ScopeGrant, plan BindingPlan, call func(*Access) error) error {
+func (h *hostState) With(ctx context.Context, grant ScopeGrant, plan BindingPlan, call func(Access) error) error {
 	if call == nil {
 		return frame.ErrInvalid
 	}
-	return WithPlan(ctx, Host{h}, plan, grant, func(use *Use) error { return withAccess(ctx, use, call) })
+	return WithPlan(ctx, Host{h}, plan, grant, func(use Use) error { return withAccess(ctx, use, call) })
 }
 
-func (s Selection[M, V]) Members(access *Access) ([]Member[M, V], error) {
-	if access == nil {
-		return nil, frame.ErrInvalid
-	}
+func (s Selection[M, V]) Members(access Access) ([]Member[M, V], error) {
 	interval := access.interval
 	if interval == nil {
-		return nil, frame.ErrClosed
+		return nil, frame.ErrInvalid
 	}
 	interval.mu.Lock()
 	use := interval.use
@@ -113,7 +113,7 @@ func (s Selection[M, V]) Members(access *Access) ([]Member[M, V], error) {
 	return members, nil
 }
 
-func (s Selection[M, V]) One(access *Access) (Member[M, V], error) {
+func (s Selection[M, V]) One(access Access) (Member[M, V], error) {
 	members, err := s.Members(access)
 	if err != nil {
 		return Member[M, V]{}, err

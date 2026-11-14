@@ -6,14 +6,16 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/Tangerg/frame"
 	framehost "github.com/Tangerg/frame/host"
+	"github.com/Tangerg/frame/value"
 )
 
 func optionalExport(t *testing.T, host framehost.Host, contract framehost.Contract[string], id string) framehost.ExportRef {
 	t.Helper()
 	plugin := installNative(t, host, id, framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: contract.Ref()}}},
-		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			return []framehost.ExportValue{framehost.Provide("value", contract, id)}, nil
 		},
 	})
@@ -33,7 +35,7 @@ func TestDeclarationPlanRechecksOptionalAbsenceAtAdmission(t *testing.T) {
 			var setups atomic.Int64
 			consumer := installNative(t, host, "consumer", framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: output.Ref()}}, Imports: []framehost.ImportDeclaration{{Slot: "optional", Contract: optional.Ref(), Optional: true}}},
-				Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 					setups.Add(1)
 					value, found, err := framehost.OptionalImport(setup, "optional", optional)
 					if err != nil {
@@ -66,9 +68,9 @@ func TestDeclarationPlanRechecksOptionalAbsenceAtAdmission(t *testing.T) {
 				_, err = host.ActivatePlan(ctx, "", plan)
 			case "acquire unit":
 				owner, scope := ownerAndScope(t, host)
-				var use *framehost.Use
+				var use framehost.Use
 				use, err = host.Acquire(ctx, plan, framehost.UseConfig{Owner: owner, Scope: scope})
-				if use != nil {
+				if use.Valid() {
 					t.Fatal("stale plan received a partial Use")
 				}
 			case "business commit":
@@ -120,7 +122,7 @@ func TestOptionalPreparationPremiseSurvivesSlowSetupAndActivation(t *testing.T) 
 			var activations atomic.Int64
 			consumer := installNative(t, host, "consumer", framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: output.Ref()}}, Imports: []framehost.ImportDeclaration{{Slot: "optional", Contract: optional.Ref(), Optional: true}}},
-				Setup: func(ctx context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(ctx context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 					if _, err := setup.Cleanup("original preparation", func() error { close(released); return nil }); err != nil {
 						return nil, err
 					}
@@ -207,7 +209,7 @@ func TestCommittedAbsenceRestoresExactlyBeforeFirstActivation(t *testing.T) {
 	}
 	consumer := installNative(t, original, "consumer", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: output.Ref()}}, Imports: []framehost.ImportDeclaration{{Slot: "optional", Contract: optional.Ref(), Optional: true}}},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			value, found, err := framehost.OptionalImport(setup, "optional", optional)
 			if err != nil {
 				return nil, err
@@ -255,7 +257,7 @@ func TestCommittedAbsenceRestoresExactlyBeforeFirstActivation(t *testing.T) {
 	optionalExport(t, restored, optional, "late")
 
 	owner, scope := ownerAndScope(t, restored)
-	if use, err := restored.AcquireRecord(ctx, "missing", framehost.UseConfig{Owner: owner, Scope: scope}); use != nil || !errors.Is(err, framehost.ErrUnavailable) {
+	if use, err := restored.AcquireRecord(ctx, "missing", framehost.UseConfig{Owner: owner, Scope: scope}); use.Valid() || !errors.Is(err, framehost.ErrUnavailable) {
 		t.Fatalf("missing owner record was acquired: %v", err)
 	}
 	use, err := restored.AcquireRecord(ctx, "original", framehost.UseConfig{Owner: owner, Scope: scope})
@@ -316,8 +318,8 @@ func TestFixedDeclarationBindingsDoNotReadOtherProviders(t *testing.T) {
 				providers = append(providers, optionalExport(t, host, optional, "selected"))
 			}
 			consumer := installNative(t, host, "consumer", framehost.Unit{
-				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: output.Ref()}}, Imports: []framehost.ImportDeclaration{{Slot: "optional", Contract: optional.Ref(), Optional: true, Providers: providers}}},
-				Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: output.Ref()}}, Imports: []framehost.ImportDeclaration{{Slot: "optional", Contract: optional.Ref(), Optional: true}}, Fixed: []framehost.SlotProviders{{Slot: "optional", Providers: providers}}},
+				Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 					value, found, err := framehost.OptionalImport(setup, "optional", optional)
 					if err != nil {
 						return nil, err
@@ -353,7 +355,7 @@ func TestFreshPlanCannotCommitAfterAnotherSetupOwnsItsUnit(t *testing.T) {
 	second := optionalExport(t, host, dependency, "second")
 	consumer := installNative(t, host, "consumer", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: output.Ref()}}, Imports: []framehost.ImportDeclaration{{Slot: "dependency", Contract: dependency.Ref()}}},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			value, err := framehost.Import(setup, "dependency", dependency)
 			if err != nil {
 				return nil, err
@@ -413,7 +415,7 @@ func TestRestoredUseReauthorizesTheOriginalRecordAfterPreparation(t *testing.T) 
 			}
 			plugin := installNative(t, h, "provider", framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: contract.Ref()}}},
-				Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 					close(entered)
 					<-resume
 					return []framehost.ExportValue{framehost.Provide("value", contract, "original")}, nil
@@ -431,7 +433,7 @@ func TestRestoredUseReauthorizesTheOriginalRecordAfterPreparation(t *testing.T) 
 			result := make(chan error, 1)
 			go func() {
 				use, err := h.AcquireRecord(ctx, "record", framehost.UseConfig{Owner: owner, Scope: scope})
-				if use != nil {
+				if use.Valid() {
 					_, closeErr := use.Close(ctx)
 					err = errors.Join(err, closeErr)
 				}
@@ -447,7 +449,7 @@ func TestRestoredUseReauthorizesTheOriginalRecordAfterPreparation(t *testing.T) 
 				case "revoked":
 					refusal = framehost.ErrUnavailable
 				case "rebound":
-					original.Rule = "other"
+					original.Selection = value.Hash([]byte("other"))
 				}
 				return nil
 			})
@@ -467,5 +469,58 @@ func TestRestoredUseReauthorizesTheOriginalRecordAfterPreparation(t *testing.T) 
 				t.Fatalf("owner reads=%d, acquisition=%v, want %v", reads, err, want)
 			}
 		})
+	}
+}
+
+func TestConsumerChoiceCannotOverrideFixedProviders(t *testing.T) {
+	ctx := testContext(t)
+	host := testHost(t, framehost.Config{})
+	output, _ := framehost.NewContract[string]("example.fixed.output", "1")
+	input, _ := framehost.NewContract[string]("example.fixed.input", "1")
+	if err := host.Register(output, input); err != nil {
+		t.Fatal(err)
+	}
+	fixed := optionalExport(t, host, input, "fixed")
+	other := optionalExport(t, host, input, "other")
+	consumer := installNative(t, host, "consumer", framehost.Unit{
+		Declaration: framehost.UnitDeclaration{
+			ID: "main", Profile: framehost.NativeGo,
+			Exports: []framehost.ExportDeclaration{{Name: "value", Contract: output.Ref()}},
+			Imports: []framehost.ImportDeclaration{{Slot: "input", Contract: input.Ref()}},
+			Fixed:   []framehost.SlotProviders{{Slot: "input", Providers: []framehost.ExportRef{fixed}}},
+		},
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil },
+	})
+	root := source("consumer", consumer, "main", "value", output.Ref())
+	choose := func(provider framehost.ExportRef) []framehost.BindingChoice {
+		return []framehost.BindingChoice{{Unit: root.Unit(), Slot: "input", Providers: []framehost.ExportRef{provider}}}
+	}
+	if _, err := host.PlanWith(ctx, "", choose(other), root); !errors.Is(err, frame.ErrContractMismatch) {
+		t.Fatalf("consumer choice replaced a fixed provider: %v", err)
+	}
+	plan, err := host.PlanWith(ctx, "", choose(fixed), root)
+	if err != nil {
+		t.Fatalf("choice equal to the fixed provider was refused: %v", err)
+	}
+	binding, err := plan.Snapshot()
+	if err != nil || len(binding.Units) != 2 {
+		t.Fatalf("fixed binding: %+v, %v", binding, err)
+	}
+}
+
+func TestDeclaredExportsListOnlyEnabledInstallations(t *testing.T) {
+	ctx := testContext(t)
+	host := testHost(t, framehost.Config{})
+	contract, _ := framehost.NewContract[string]("example.declared", "1")
+	if err := host.Register(contract); err != nil {
+		t.Fatal(err)
+	}
+	enabled := optionalExport(t, host, contract, "enabled")
+	disabled := optionalExport(t, host, contract, "disabled")
+	if err := host.SetEnabled(ctx, "disabled", false); err != nil {
+		t.Fatal(err)
+	}
+	if declared := host.DeclaredExports(contract.Ref()); len(declared) != 1 || declared[0] != enabled || declared[0] == disabled {
+		t.Fatalf("declared exports: %+v", declared)
 	}
 }

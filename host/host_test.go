@@ -77,7 +77,7 @@ func TestExactSlotsAndFrozenOptionalAbsence(t *testing.T) {
 		t.Fatal(err)
 	}
 	makeProvider := func(id, text string) (*framehost.Plugin, framehost.ExportRef) {
-		plugin := installNative(t, host, id, framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "text", Contract: service.Ref()}}}, Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		plugin := installNative(t, host, id, framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "text", Contract: service.Ref()}}}, Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			return []framehost.ExportValue{framehost.Provide("text", service, text)}, nil
 		}})
 		return plugin, source(id, plugin, "main", "text", service.Ref())
@@ -89,7 +89,7 @@ func TestExactSlotsAndFrozenOptionalAbsence(t *testing.T) {
 		t.Fatal(err)
 	}
 	var setups atomic.Int64
-	consumer := installNative(t, host, "consumer", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "text", Contract: service.Ref()}}, Imports: []framehost.ImportDeclaration{{Slot: "left", Contract: service.Ref(), Providers: []framehost.ExportRef{left}}, {Slot: "right", Contract: service.Ref(), Providers: []framehost.ExportRef{right}}, {Slot: "optional", Contract: optional.Ref(), Optional: true}}}, Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+	consumer := installNative(t, host, "consumer", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "text", Contract: service.Ref()}}, Imports: []framehost.ImportDeclaration{{Slot: "left", Contract: service.Ref()}, {Slot: "right", Contract: service.Ref()}, {Slot: "optional", Contract: optional.Ref(), Optional: true}}, Fixed: []framehost.SlotProviders{{Slot: "left", Providers: []framehost.ExportRef{left}}, {Slot: "right", Providers: []framehost.ExportRef{right}}}}, Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 		setups.Add(1)
 		leftValue, err := framehost.Import(setup, "left", service)
 		if err != nil {
@@ -113,7 +113,7 @@ func TestExactSlotsAndFrozenOptionalAbsence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	installNative(t, host, "late", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "optional", Contract: optional.Ref()}}}, Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+	installNative(t, host, "late", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "optional", Contract: optional.Ref()}}}, Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 		return []framehost.ExportValue{framehost.Provide("optional", optional, "late")}, nil
 	}})
 	again, err := host.Plan(ctx, root)
@@ -155,7 +155,7 @@ func TestOptionalImportRefusesMissingSetup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, found, err := framehost.OptionalImport(nil, "optional", contract); !errors.Is(err, frame.ErrInvalid) || found {
+	if _, found, err := framehost.OptionalImport(framehost.Setup{}, "optional", contract); !errors.Is(err, frame.ErrInvalid) || found {
 		t.Fatalf("missing setup was accepted: found=%v, %v", found, err)
 	}
 }
@@ -168,8 +168,8 @@ func TestPointReadSetMetadataAndWithdrawal(t *testing.T) {
 		t.Fatal(err)
 	}
 	metadata := map[string]string{"label": "first"}
-	var setup *framehost.Setup
-	plugin := installNative(t, host, "format", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "one", Contract: point.Ref()}}}, Setup: func(_ context.Context, s *framehost.Setup) ([]framehost.ExportValue, error) {
+	var setup framehost.Setup
+	plugin := installNative(t, host, "format", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "one", Contract: point.Ref()}}}, Setup: func(_ context.Context, s framehost.Setup) ([]framehost.ExportValue, error) {
 		setup = s
 		return []framehost.ExportValue{framehost.Contribute("one", point, metadata, func() string { return "one" })}, nil
 	}})
@@ -255,7 +255,7 @@ func TestLateReadyCannotEscapeScopeFence(t *testing.T) {
 	started := make(chan struct{})
 	resume := make(chan struct{})
 	released := make(chan struct{})
-	plugin := installNative(t, host, "late", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: contract.Ref()}}}, Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+	plugin := installNative(t, host, "late", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: contract.Ref()}}}, Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 		if _, err := setup.Cleanup("late resource", func() error { close(released); return nil }); err != nil {
 			return nil, err
 		}
@@ -295,7 +295,7 @@ func TestParentCloseRacingChildAcquireLeavesNoReference(t *testing.T) {
 	if err := host.Register(point); err != nil {
 		t.Fatal(err)
 	}
-	plugin := installNative(t, host, "child", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: point.Ref()}}}, Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+	plugin := installNative(t, host, "child", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: point.Ref()}}}, Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 		return []framehost.ExportValue{framehost.Contribute("value", point, "metadata", "value")}, nil
 	}})
 	if _, err := host.Activate(ctx, source("child", plugin, "main", "value", point.Ref())); err != nil {
@@ -311,7 +311,7 @@ func TestParentCloseRacingChildAcquireLeavesNoReference(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var child *framehost.Use
+		var child framehost.Use
 		var acquireErr error
 		var group sync.WaitGroup
 		group.Add(2)
@@ -321,7 +321,7 @@ func TestParentCloseRacingChildAcquireLeavesNoReference(t *testing.T) {
 		if acquireErr != nil && !errors.Is(acquireErr, frame.ErrClosed) {
 			t.Fatal(acquireErr)
 		}
-		if child != nil {
+		if child.Valid() {
 			if outcome, err := child.Close(ctx); err != nil || !outcome.Released {
 				t.Fatalf("child close: %+v %v", outcome, err)
 			}
@@ -358,7 +358,7 @@ func TestPortablePointHasIndependentMetadataAndValueIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	metadata, _ := framevalue.ParseJSON([]byte(`{"priority":2}`))
-	plugin := installNative(t, host, "portable", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "format", Contract: point.Ref()}}}, Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+	plugin := installNative(t, host, "portable", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "format", Contract: point.Ref()}}}, Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 		actual, err := setup.ValueContract(point.Ref())
 		if err != nil || actual != valueRef {
 			return nil, errors.New("wrong value contract")
@@ -381,10 +381,10 @@ func TestPortablePointHasIndependentMetadataAndValueIdentity(t *testing.T) {
 	}
 }
 
-func acquireExports(host framehost.Host, ctx context.Context, binding framehost.BindingSnapshot, config framehost.UseConfig) (*framehost.Use, error) {
+func acquireExports(host framehost.Host, ctx context.Context, binding framehost.BindingSnapshot, config framehost.UseConfig) (framehost.Use, error) {
 	plan, err := host.PlanWith(ctx, config.Realm, nil, binding.Roots...)
 	if err != nil {
-		return nil, err
+		return framehost.Use{}, err
 	}
 	return host.Acquire(ctx, plan, config)
 }
@@ -393,7 +393,7 @@ func TestReleaseDeclarationsAreImmutableAcrossInstallationTransitions(t *testing
 	h := testHost(t, framehost.Config{})
 	plugin := installNative(t, h, "original")
 	before, _ := h.Installation("original")
-	changed, err := framehost.Define(framehost.Definition{Revision: plugin.Revision(), Units: []framehost.Unit{{Declaration: framehost.UnitDeclaration{ID: "new", Profile: framehost.NativeGo}, Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil }}}})
+	changed, err := framehost.Define(framehost.Definition{Revision: plugin.Revision(), Units: []framehost.Unit{{Declaration: framehost.UnitDeclaration{ID: "new", Profile: framehost.NativeGo}, Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil }}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +440,7 @@ func TestHostCloseJoinsAdmittedInstallationChanges(t *testing.T) {
 		t.Run(action, func(t *testing.T) {
 			ctx := testContext(t)
 			store := &pausedInstallationStore{entered: make(chan struct{}), resume: make(chan struct{})}
-			h := testHost(t, framehost.Config{Installations: store})
+			h := testHost(t, framehost.Config{Authority: installationAuthority(store)})
 			plugin, err := framehost.Define(framehost.Definition{Revision: framevalue.Hash([]byte("original"))})
 			if err != nil {
 				t.Fatal(err)
@@ -516,8 +516,8 @@ func TestActivationRegistrationEndsWhenPreparationReturns(t *testing.T) {
 	}
 	metadata := waitingMetadata{make(chan struct{}), make(chan struct{})}
 	prepared := make(chan framehost.Setup, 1)
-	plugin := installNative(t, h, "p", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "u", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "e", Contract: point.Ref()}}}, Setup: func(_ context.Context, s *framehost.Setup) ([]framehost.ExportValue, error) {
-		prepared <- *s
+	plugin := installNative(t, h, "p", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "u", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "e", Contract: point.Ref()}}}, Setup: func(_ context.Context, s framehost.Setup) ([]framehost.ExportValue, error) {
+		prepared <- s
 		return []framehost.ExportValue{{Name: "e", Contract: point.Ref(), Metadata: metadata, Value: "v"}}, nil
 	}})
 	finished := make(chan error, 1)

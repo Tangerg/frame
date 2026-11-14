@@ -29,8 +29,8 @@ type Tools struct {
 
 func (Tools) Profile() framehost.Profile { return ToolsProfile }
 
-func (p Tools) Prepare(setup *framehost.Setup, metadata process.ExportMetadata, maximum int) (process.Connection, error) {
-	if setup == nil || maximum <= 0 || p.MaxCatalogPages <= 0 {
+func (p Tools) Prepare(setup framehost.Setup, metadata process.ExportMetadata, maximum int) (process.Connection, error) {
+	if !setup.Valid() || maximum <= 0 || p.MaxCatalogPages <= 0 {
 		return nil, fmt.Errorf("%w: MCP tools requires a setup and positive limits", frame.ErrInvalid)
 	}
 	unit := setup.Unit()

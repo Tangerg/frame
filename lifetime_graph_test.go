@@ -73,7 +73,7 @@ func TestRetirementReleasesSharedProvidersExactlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var retained *frame.ResourceHandle
+	var retained frame.ResourceHandle
 	for index := range 128 {
 		consumer, err := owner.Own(frame.Resource{Name: fmt.Sprintf("consumer-%d", index), Close: func(context.Context) (frame.ReleaseState, error) {
 			if index == 0 {
@@ -127,7 +127,7 @@ func TestCloseWaitJoinsCleanupUnlockedByLateProof(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				var independent *frame.ResourceHandle
+				var independent frame.ResourceHandle
 				if independentPending {
 					independent, err = owner.Own(frame.Resource{Name: "independent", Close: func(context.Context) (frame.ReleaseState, error) {
 						return frame.ResourceUnconfirmed, nil
@@ -200,7 +200,7 @@ func BenchmarkLifetimeDependencyChain(b *testing.B) {
 				if err != nil {
 					b.Fatal(err)
 				}
-				var dependencies []*frame.ResourceHandle
+				var dependencies []frame.ResourceHandle
 				for range size {
 					handle, err := owner.Own(frame.Resource{Name: "chain", Close: func(context.Context) (frame.ReleaseState, error) {
 						return frame.ResourceReleased, nil
@@ -208,7 +208,7 @@ func BenchmarkLifetimeDependencyChain(b *testing.B) {
 					if err != nil {
 						b.Fatal(err)
 					}
-					dependencies = []*frame.ResourceHandle{handle}
+					dependencies = []frame.ResourceHandle{handle}
 				}
 				if outcome, err := owner.Close(context.Background()); err != nil || !outcome.Released {
 					b.Fatalf("close: %+v, %v", outcome, err)

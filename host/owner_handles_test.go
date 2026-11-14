@@ -60,7 +60,7 @@ func TestHostCopiesAdvanceOneInstanceGenerationOwner(t *testing.T) {
 	copied := original
 	units := make([]framehost.Unit, 0, 2)
 	for _, id := range []framehost.UnitID{"first", "second"} {
-		unit, err := framehost.DefineUnit(framehost.UnitSpec{ID: id, Prepare: func(*framehost.Setup) error { return nil }})
+		unit, err := framehost.DefineUnit(framehost.UnitSpec{ID: id, Prepare: func(framehost.Setup) error { return nil }})
 		if err != nil {
 			t.Fatal(err)
 		}

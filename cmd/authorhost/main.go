@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"flag"
 	"fmt"
@@ -38,17 +39,10 @@ type AuthorPackage struct {
 }
 
 // The author declares contracts and slots, while the application chooses the
-// execution profile and provider policy. An empty exact Providers list must not
-// be confused with an unresolved slot awaiting the Host's unique-provider rule.
-type AuthorImport struct {
-	Slot     string                `json:"slot"`
-	Contract framehost.ContractRef `json:"contract"`
-	Optional bool                  `json:"optional"`
-}
-
+// execution profile and provider policy.
 type AuthorUnit struct {
 	ID      framehost.UnitID              `json:"id"`
-	Imports []AuthorImport                `json:"imports"`
+	Imports []framehost.ImportDeclaration `json:"imports"`
 	Exports []framehost.ExportDeclaration `json:"exports"`
 }
 
@@ -147,14 +141,8 @@ func readAuthor(packagePath, modulePath string) (author, error) {
 		return author{}, err
 	}
 	var manifest AuthorPackage
-	decoder := json.NewDecoder(bytes.NewReader(declaration))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&manifest); err != nil {
-		return author{}, err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return author{}, errors.New("authorhost: declaration has trailing data")
+	if err := jsonv2.Unmarshal(declaration, &manifest, jsonv2.RejectUnknownMembers(true)); err != nil {
+		return author{}, fmt.Errorf("authorhost: declaration: %w", err)
 	}
 	// This trusted fixture reads immutable bytes before starting execution. It
 	// does not claim remote package trust or define another distribution format.
@@ -165,11 +153,7 @@ func readAuthor(packagePath, modulePath string) (author, error) {
 func (p AuthorPackage) units() []framehost.Unit {
 	units := make([]framehost.Unit, len(p.Units))
 	for index, unit := range p.Units {
-		imports := make([]framehost.ImportDeclaration, len(unit.Imports))
-		for slot, declared := range unit.Imports {
-			imports[slot] = framehost.ImportDeclaration{Slot: declared.Slot, Contract: declared.Contract, Optional: declared.Optional}
-		}
-		units[index] = framehost.Unit{Declaration: framehost.UnitDeclaration{ID: unit.ID, Profile: framehost.BrowserJS, Imports: imports, Exports: unit.Exports}}
+		units[index] = framehost.Unit{Declaration: framehost.UnitDeclaration{ID: unit.ID, Profile: framehost.BrowserJS, Imports: unit.Imports, Exports: unit.Exports}}
 	}
 	return units
 }
@@ -184,7 +168,7 @@ func serve(state string, contracts document.Contracts, author author) (returned 
 		return err
 	}
 	defer func() { returned = errors.Join(returned, store.Close()) }()
-	host, err := framehost.New(context.Background(), framehost.Config{Admission: admission, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store})
+	host, err := framehost.New(context.Background(), framehost.Config{Authority: store})
 	if err != nil {
 		return err
 	}
@@ -202,7 +186,7 @@ func serve(state string, contracts document.Contracts, author author) (returned 
 	}
 	defer listener.Close()
 	origin := "http://" + listener.Addr().String()
-	bridge, err := browser.NewBridge(browser.BridgeConfig{Host: host, Store: store, Source: moduleSource{release: author.plugin.Revision(), digest: value.Hash(author.module)}, Points: []framehost.ContractRef{contracts.Converters.Ref(), contracts.Validators.Ref()}, PublicConfiguration: func(context.Context, *framehost.Setup) ([]byte, error) {
+	bridge, err := browser.NewBridge(browser.BridgeConfig{Host: host, Store: store, Source: moduleSource{release: author.plugin.Revision(), digest: value.Hash(author.module)}, Points: []framehost.ContractRef{contracts.Converters.Ref(), contracts.Validators.Ref()}, PublicConfiguration: func(context.Context, framehost.Setup) ([]byte, error) {
 		return json.Marshal(SourceConfiguration{DocumentBase: origin + "/documents/"})
 	}})
 	if err != nil {

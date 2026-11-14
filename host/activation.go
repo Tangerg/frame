@@ -30,10 +30,11 @@ func (h *hostState) ActivateIn(ctx context.Context, realm RealmID, roots ...Expo
 // ActivatePlan admits a declaration plan and rechecks its original candidate
 // reads through preparation. Recovery reads an accepted binding from its business owner.
 func (h *hostState) ActivatePlan(ctx context.Context, realm RealmID, plan BindingPlan) (BindingSnapshot, error) {
-	if plan.bindingPlan == nil || plan.kind != declarationPlan || plan.realm != realm {
+	declared, ok := plan.plan.(*declaredPlan)
+	if !ok || declared.realm != realm {
 		return BindingSnapshot{}, frame.ErrInvalid
 	}
-	prepared, err := h.activate(ctx, realm, ScopeGrant{}, h.plannedBinding(plan.bindingPlan))
+	prepared, err := h.activate(ctx, realm, ScopeGrant{}, h.plannedBinding(declared))
 	if err != nil {
 		return BindingSnapshot{}, err
 	}
@@ -56,18 +57,18 @@ func (h *hostState) resolvedBinding(realm RealmID, roots []ExportRef) activation
 		if err != nil {
 			return BindingSnapshot{}, nil, err
 		}
-		return plan.binding, plan.bindingReads, nil
+		return plan.binding, plan.reads, nil
 	}
 }
 
-func (h *hostState) plannedBinding(plan *bindingPlan) activationBinding {
+func (h *hostState) plannedBinding(plan *declaredPlan) activationBinding {
 	return func(context.Context) (BindingSnapshot, []bindingRead, error) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		if err := h.validatePlanLocked(plan); err != nil {
 			return BindingSnapshot{}, nil, err
 		}
-		return plan.binding.Clone(), plan.bindingReads, nil
+		return plan.binding.Clone(), plan.reads, nil
 	}
 }
 
@@ -87,7 +88,7 @@ func (h *hostState) acceptedBinding(recordID string, grant ScopeGrant) activatio
 	}
 }
 
-func (h *hostState) activate(ctx context.Context, realm RealmID, grant ScopeGrant, bind activationBinding) (*bindingPlan, error) {
+func (h *hostState) activate(ctx context.Context, realm RealmID, grant ScopeGrant, bind activationBinding) (*capturedPlan, error) {
 	var binding BindingSnapshot
 	var created []*unitInstance
 	var planned map[UnitRef]*unitInstance
@@ -143,13 +144,13 @@ func (h *hostState) activate(ctx context.Context, realm RealmID, grant ScopeGran
 
 // Preparation hands off its original instances. Looking them up again by unit
 // would allow a successor with the same binding to replace that preparation.
-func (h *hostState) capturePreparedLocked(binding BindingSnapshot, realm RealmID, instances map[UnitRef]*unitInstance) (*bindingPlan, error) {
+func (h *hostState) capturePreparedLocked(binding BindingSnapshot, realm RealmID, instances map[UnitRef]*unitInstance) (*capturedPlan, error) {
 	for _, bound := range binding.Units {
 		if err := instances[bound.Source].validateServingLocked(); err != nil {
 			return nil, err
 		}
 	}
-	plan := &bindingPlan{kind: instancePlan, owner: h.identity, realm: realm, binding: binding.Clone()}
+	plan := &capturedPlan{planHeader: planHeader{owner: h.identity, realm: realm, binding: binding.Clone()}}
 	for _, source := range binding.Roots {
 		instance := instances[source.Unit()]
 		export, err := instance.exports.bound(source)
@@ -266,7 +267,7 @@ func setupBinding(graph BindingSnapshot, exports []ExportRef, unit UnitRef) (Bin
 	if err != nil {
 		return BindingSnapshot{}, framevalue.Digest{}, err
 	}
-	binding.Rule = ""
+	binding.Selection = framevalue.Digest{}
 	identity, err := binding.Identity()
 	return binding, identity, err
 }

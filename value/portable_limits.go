@@ -2,7 +2,6 @@ package value
 
 import (
 	"bytes"
-	"encoding/json"
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
 	"errors"
@@ -242,11 +241,11 @@ func CheckDescriptorValue(value any) error {
 	return CheckDescriptor(buffer.Bytes())
 }
 
+// decodeBoundedJSON builds the tree of an already counted document; numbers
+// keep their lexemes for the schema compiler.
 func decodeBoundedJSON(raw []byte) (any, error) {
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
 	var value any
-	if err := decoder.Decode(&value); err != nil {
+	if err := jsonv2.Unmarshal(raw, &value, Numbers()); err != nil {
 		return nil, err
 	}
 	return value, nil

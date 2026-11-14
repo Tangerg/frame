@@ -208,10 +208,10 @@ func TestInstallationScopeCapacityIsCheckedBeforeTheDurableMutation(t *testing.T
 			t.Error(err)
 		}
 	})
-	host := testHost(t, framehost.Config{Admission: admission, Installations: store})
+	host := testHost(t, framehost.Config{Authority: store})
 	plugin := installNative(t, host, "original", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-		Setup:       func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil },
+		Setup:       func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil },
 	})
 	if _, err := host.Install(ctx, framehost.InstallationConfig{ID: "another", Plugin: plugin, Enabled: true}); !errors.Is(err, frame.ErrCapacity) {
 		t.Fatalf("installation bypassed scope capacity: %v", err)
@@ -260,20 +260,20 @@ func TestRestorationChecksTheWholeScopeBudgetBeforeProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	host := testHost(t, framehost.Config{Admission: admission})
+	host := testHost(t, framehost.Config{Authority: admission})
 	plugin, err := framehost.Define(framehost.Definition{
 		Revision: value.Hash([]byte("restored")),
 		Units: []framehost.Unit{{
 			Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-			Setup:       func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil },
+			Setup:       func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil },
 		}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	records := []framehost.InstallationRecord{
-		{ID: "first", Release: plugin.Revision(), Enabled: true, Units: plugin.Units()},
-		{ID: "second", Release: plugin.Revision(), Enabled: true, Units: plugin.Units()},
+		{ID: "first", Release: plugin.Revision(), Enabled: true},
+		{ID: "second", Release: plugin.Revision(), Enabled: true},
 	}
 	if err := host.Restore(t.Context(), records, []*framehost.Plugin{plugin}); !errors.Is(err, frame.ErrCapacity) {
 		t.Fatalf("restoration exceeded its original scope capacity: %v", err)

@@ -60,7 +60,7 @@ func TestRealmComponentsCannotAliasAnotherRealmsExecutionProof(t *testing.T) {
 	source := framehost.UnitRef{InstallationID: "provider", Release: value.Hash([]byte("provider")), UnitID: "view"}
 	attempt := sqlite.Attempt{
 		ID: "original-execution", Epoch: e.store.Epoch(), Source: source,
-		Binding: framehost.BindingSnapshot{FormatVersion: 1, Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{source}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil)}}},
+		Binding: framehost.BindingSnapshot{Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{source}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil)}}},
 		Realm:   string(browser.RealmID(original)), Profile: framehost.BrowserJS, Scope: "original-scope", ScopeGeneration: 1, Generation: 1,
 	}
 	if err := e.store.RecordAttempt(e.ctx, attempt); err != nil {

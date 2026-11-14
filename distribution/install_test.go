@@ -15,7 +15,7 @@ import (
 type analyzerDriver struct{ prepared int }
 
 func (*analyzerDriver) Profile() framehost.Profile { return "example-analyzer" }
-func (d *analyzerDriver) Prepare(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+func (d *analyzerDriver) Prepare(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 	d.prepared++
 	return nil, nil
 }
@@ -63,7 +63,7 @@ func TestExternalProfileArchiveNeedsItsHostDriver(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lease.Close()
-	host, err := framehost.New(ctx, framehost.Config{Admission: gate})
+	host, err := framehost.New(ctx, framehost.Config{Authority: gate})
 	if err != nil {
 		t.Fatal(err)
 	}

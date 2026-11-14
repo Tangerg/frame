@@ -1,12 +1,14 @@
 package browser
 
 import (
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
 
 	"github.com/Tangerg/frame"
 	framehost "github.com/Tangerg/frame/host"
+	"github.com/Tangerg/frame/sqlite"
 )
 
 const (
@@ -150,16 +152,10 @@ func (b *Bridge) checkExitCapacity(plan LocalPlan, kind CloseScopeKind, id strin
 	if err != nil {
 		return err
 	}
-	if kind == PublicationScope {
-		return b.config.Store.CheckExitEvidenceCapacity(encoded)
+	if len(encoded) > sqlite.MaxExitEvidenceBytes {
+		return fmt.Errorf("%w: exit evidence", frame.ErrCapacity)
 	}
-	exit := proof.exitProof(encoded)
-	if kind == ExecutionScope {
-		if err := b.config.Store.CheckExitCapacity(exit); err != nil {
-			return err
-		}
-	}
-	return b.config.Store.CheckRealmUseExitCapacity(exit)
+	return nil
 }
 
 func maximumEncodedName() string {

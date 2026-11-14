@@ -14,7 +14,7 @@ import (
 
 type preparedExport struct {
 	source   ExportRef
-	metadata any
+	metadata publicationMetadata
 	value    any
 	instance *unitInstance
 }
@@ -323,14 +323,17 @@ func (h *hostState) prepareExport(ctx context.Context, instance *unitInstance, e
 // identity that can safely distinguish implementations, closures or pointers.
 type PublicationRequest struct{ *preparedExport }
 
-func (h *hostState) PreparePublication(ctx context.Context, instanceID string, value ExportValue) (*PublicationRequest, error) {
+// Valid reports whether the request fixes a prepared export; the zero request does not.
+func (r PublicationRequest) Valid() bool { return r.preparedExport != nil }
+
+func (h *hostState) PreparePublication(ctx context.Context, instanceID string, value ExportValue) (PublicationRequest, error) {
 	if err := frame.ContextError(ctx); err != nil {
-		return nil, err
+		return PublicationRequest{}, err
 	}
 	h.mu.Lock()
 	instance := h.allInstances[instanceID]
 	err := ErrUnavailable
-	var work *frame.Work
+	var work frame.Work
 	if instance != nil {
 		err = instance.validateServingLocked()
 		if err == nil {
@@ -339,29 +342,29 @@ func (h *hostState) PreparePublication(ctx context.Context, instanceID string, v
 	}
 	h.mu.Unlock()
 	if err != nil {
-		return nil, err
+		return PublicationRequest{}, err
 	}
 	defer work.Finish()
 	if !instance.unit.declaresPoint(value.Contract) {
-		return nil, frame.ErrContractMismatch
+		return PublicationRequest{}, frame.ErrContractMismatch
 	}
 	if err := validateName("export name", value.Name); err != nil {
-		return nil, err
+		return PublicationRequest{}, err
 	}
 	prepared, err := h.prepareExport(work.Context(), instance, value)
 	if err != nil {
-		return nil, err
+		return PublicationRequest{}, err
 	}
 	if err := instance.validateCurrent(work.Context()); err != nil {
-		return nil, err
+		return PublicationRequest{}, err
 	}
-	return &PublicationRequest{preparedExport: prepared}, nil
+	return PublicationRequest{preparedExport: prepared}, nil
 }
 
 // A returned error proves this call did not publish. An earlier successful
 // operation remains authoritative and can only be replayed with its request.
-func (h *hostState) Publish(ctx context.Context, operationID string, request *PublicationRequest) (Publication, error) {
-	if request == nil || request.preparedExport == nil || request.instance.host != h {
+func (h *hostState) Publish(ctx context.Context, operationID string, request PublicationRequest) (Publication, error) {
+	if request.preparedExport == nil || request.instance.host != h {
 		return Publication{}, frame.ErrInvalid
 	}
 	if err := validateName("publication operation", operationID); err != nil {

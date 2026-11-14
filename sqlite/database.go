@@ -15,8 +15,11 @@ import (
 // cursors outside a transaction's lifetime.
 type Database struct{ *databaseOwner }
 
-func (d *Database) Close() error {
-	if d == nil {
+// Valid reports whether the handle names an opened database; the zero Database does not.
+func (d Database) Valid() bool { return d.databaseOwner != nil }
+
+func (d Database) Close() error {
+	if !d.Valid() {
 		return nil
 	}
 	return d.databaseOwner.close()
@@ -77,12 +80,12 @@ func (d *databaseOwner) transactionFailure() error {
 	return nil
 }
 
-func (d *Database) Read(ctx context.Context, query func(Reader) error) error {
-	if d == nil || d.databaseOwner == nil || query == nil {
+func (d Database) Read(ctx context.Context, query func(Reader) error) error {
+	if d.databaseOwner == nil || query == nil {
 		return frame.ErrInvalid
 	}
-	original := *d
-	return RunReadSnapshot(ctx, &original, func(ctx context.Context) error {
-		return query(readAccess{access: Connection(ctx, &original)})
+	original := d
+	return RunReadSnapshot(ctx, original, func(ctx context.Context) error {
+		return query(readAccess{access: Connection(ctx, original)})
 	})
 }

@@ -24,7 +24,7 @@ func TestCandidateProvenanceCannotCrossCaptureBoundaries(t *testing.T) {
 		}
 		plugin := installNative(t, host, "provider", framehost.Unit{
 			Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "primary", Contract: point.Ref()}, {Name: "other", Contract: other.Ref()}}},
-			Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+			Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 				value := func() string { calls.Add(1); return "original" }
 				return []framehost.ExportValue{framehost.Contribute("primary", point, "primary", value), framehost.Contribute("other", other, "other", value)}, nil
 			},
@@ -75,7 +75,7 @@ func TestCandidateProvenanceCannotCrossCaptureBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner, scope := ownerAndScope(t, foreignHost)
-	if use, err := foreignHost.Acquire(ctx, plan, framehost.UseConfig{Owner: owner, Scope: scope}); err == nil || use != nil {
+	if use, err := foreignHost.Acquire(ctx, plan, framehost.UseConfig{Owner: owner, Scope: scope}); err == nil || use.Valid() {
 		t.Fatalf("another Host admitted the original plan: %v, %v", use, err)
 	}
 	if err := host.Withdraw(ctx, candidates[0].ID()); err != nil {
@@ -103,7 +103,7 @@ func TestSameContributionKeyKeepsOldAndNewUsesDistinct(t *testing.T) {
 	var instanceID string
 	plugin := installNative(t, host, "provider", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: point.Ref()}}},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			instanceID = setup.InstanceID()
 			return []framehost.ExportValue{framehost.Contribute("value", point, "old", func() string { return "old implementation" })}, nil
 		},
@@ -147,14 +147,14 @@ func TestSameContributionKeyKeepsOldAndNewUsesDistinct(t *testing.T) {
 	if oldCandidate.Source() != newCandidate.Source() || oldCandidate.ID() == newCandidate.ID() || publication.ID != newCandidate.ID() {
 		t.Fatalf("same key lost publication identity: old=%s new=%s publication=%+v", oldCandidate.ID(), newCandidate.ID(), publication)
 	}
-	if use, err := host.Acquire(ctx, oldPlan, framehost.UseConfig{Owner: owner, Scope: scope}); !errors.Is(err, framehost.ErrStaleBinding) || use != nil {
+	if use, err := host.Acquire(ctx, oldPlan, framehost.UseConfig{Owner: owner, Scope: scope}); !errors.Is(err, framehost.ErrStaleBinding) || use.Valid() {
 		t.Fatalf("old publication was newly admitted after republishing: %v, %v", use, err)
 	}
 	newUse, err := host.Acquire(ctx, newPlan, framehost.UseConfig{Owner: owner, Scope: scope})
 	if err != nil {
 		t.Fatal(err)
 	}
-	read := func(use *framehost.Use, selection framehost.Selection[string, func() string], want string) {
+	read := func(use framehost.Use, selection framehost.Selection[string, func() string], want string) {
 		t.Helper()
 		if err := framehost.Borrow(ctx, use, selection, func(_ context.Context, values []func() string) error {
 			if len(values) != 1 || values[0]() != want {
@@ -188,7 +188,7 @@ func TestUnresolvableGraphsDoNotStartOrPublishPartialInstances(t *testing.T) {
 				t.Fatal(err)
 			}
 			var setups atomic.Int64
-			providerSetup := func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+			providerSetup := func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 				setups.Add(1)
 				return []framehost.ExportValue{framehost.Provide("input", input, "value")}, nil
 			}
@@ -201,7 +201,7 @@ func TestUnresolvableGraphsDoNotStartOrPublishPartialInstances(t *testing.T) {
 			}
 			consumer := framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "consumer", Profile: framehost.NativeGo, Imports: []framehost.ImportDeclaration{{Slot: "required-input", Contract: input.Ref()}}, Exports: []framehost.ExportDeclaration{{Name: "output", Contract: output.Ref()}}},
-				Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 					setups.Add(1)
 					return []framehost.ExportValue{framehost.Provide("output", output, "value")}, nil
 				},
@@ -251,7 +251,7 @@ func TestOneReleaseHasIndependentInstallationConfigurationAndLifetime(t *testing
 	released := map[framehost.InstallationID]chan struct{}{"left": make(chan struct{}), "right": make(chan struct{})}
 	plugin, err := framehost.Define(framehost.Definition{Revision: framevalue.Hash([]byte("one immutable release")), Units: []framehost.Unit{{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: contract.Ref()}}},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			id := setup.Binding().Source.InstallationID
 			if _, err := setup.Cleanup("installation resource", func() error { close(released[id]); return nil }); err != nil {
 				return nil, err
@@ -267,7 +267,7 @@ func TestOneReleaseHasIndependentInstallationConfigurationAndLifetime(t *testing
 		root    framehost.ExportRef
 		binding framehost.BindingSnapshot
 		scope   framehost.ScopeGrant
-		use     *framehost.Use
+		use     framehost.Use
 		value   value
 	}
 	acceptedByID := map[framehost.InstallationID]accepted{}
@@ -306,7 +306,7 @@ func TestOneReleaseHasIndependentInstallationConfigurationAndLifetime(t *testing
 	if err := host.ValidateUse(ctx, left.use); !errors.Is(err, framehost.ErrFenced) && !errors.Is(err, frame.ErrClosed) {
 		t.Fatalf("fenced installation scope still authorized its Use: %v", err)
 	}
-	if use, err := acquireExports(host, ctx, left.binding, framehost.UseConfig{Owner: owner, Scope: left.scope}); !errors.Is(err, framehost.ErrFenced) || use != nil {
+	if use, err := acquireExports(host, ctx, left.binding, framehost.UseConfig{Owner: owner, Scope: left.scope}); !errors.Is(err, framehost.ErrFenced) || use.Valid() {
 		t.Fatalf("fenced scope admitted another Use: %v, %v", use, err)
 	}
 	if _, err := left.use.Close(ctx); err != nil {
@@ -359,14 +359,14 @@ func TestPluginDeclaredPointDoesNotCreateAnImplicitSetupDependency(t *testing.T)
 	var declarerSetups, contributorSetups, calls atomic.Int64
 	installNative(t, host, "declaration-publisher", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "optional-runtime", Profile: framehost.NativeGo},
-		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			declarerSetups.Add(1)
 			return nil, nil
 		},
 	})
 	contributor := installNative(t, host, "independent-contributor", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "validate", Contract: point.Ref()}}},
-		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			contributorSetups.Add(1)
 			return []framehost.ExportValue{framehost.Contribute("validate", point, "plain-text", func() string { calls.Add(1); return "valid" })}, nil
 		},
@@ -423,7 +423,7 @@ func TestConvenientAndExplicitUsesKeepTheSameAdmissionAndOutcome(t *testing.T) {
 	var calls, closed atomic.Int64
 	plugin := installNative(t, host, "operation", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "run", Contract: point.Ref()}}},
-		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			return []framehost.ExportValue{framehost.Contribute("run", point, "operation", func() error { calls.Add(1); return outcome })}, nil
 		},
 	})
@@ -448,8 +448,8 @@ func TestConvenientAndExplicitUsesKeepTheSameAdmissionAndOutcome(t *testing.T) {
 	}
 	_, scope := ownerAndScope(t, host)
 	var bindingIdentity framevalue.Digest
-	var lastUse *framehost.Use
-	call := func(use *framehost.Use) error {
+	var lastUse framehost.Use
+	call := func(use framehost.Use) error {
 		lastUse = use
 		identity, err := use.Binding().Identity()
 		if err != nil {
@@ -540,7 +540,7 @@ func TestBorrowedHandlerCanRequestItsOwnDisableOrReplacementWithoutWaitingOnItse
 			}
 			plugin = installNative(t, host, "self", framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "change", Contract: contract.Ref()}}},
-				Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 					if _, err := setup.Cleanup("original provider", func() error { closes.Add(1); return nil }); err != nil {
 						return nil, err
 					}

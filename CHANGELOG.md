@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+- **Breaking:** a Host has one `host.Config.Authority`. An `Admission` is a
+  volatile authority; a `host.Durable` such as `sqlite.Store` also owns the
+  creation epoch, installation persistence and execution protection, and the
+  Host derives the gate and epoch from it. `Config.Admission`, `Config.Epoch`,
+  `Config.Installations`, `Config.ExecutionProtection`, `sqlite.Store.IsAuthority`,
+  `host.DurableAuthority` and `UsesAuthority` are removed; adapters compare
+  `Host.Durable()` or `Setup.Durable()` with their configured Store.
+- **Breaking:** `host.ImportDeclaration` names only a slot, contract and
+  optionality. A unit fixes exact providers with `UnitDeclaration.Fixed`
+  (`SlotProviders`); bindings hold resolved `host.ImportBinding` values. A nil
+  provider list no longer means "unresolved", and `distribution.Import` and the
+  authoring fixture's `AuthorImport` are replaced by `host.ImportDeclaration`.
+- **Breaking:** `BindingSnapshot` drops `FormatVersion` and replaces the
+  string `Rule` with the typed `Selection` digest. Snapshot identity uses one
+  JSON encoder, so nil and empty arrays share a spelling.
+- **Breaking:** `InstallationRecord` no longer repeats the release's unit
+  declarations; the restored `Plugin` owns them. `Host.DeclaredExports` lists
+  the exports enabled installations declare for a contract.
+- **Breaking:** move `frame.Target` to `mcp.Target`, its only consumer.
+  `frame.ResolveLimit` returns the resolved bound instead of writing through a
+  pointer. Root errors use the `frame:` prefix and Host errors `host:`.
+- **Breaking:** runner exit proofs use one `runner-exit` kind; the receipt's
+  state distinguishes exit from refusal. The runner journal drops its
+  hand-maintained `version` member.
+- Add `frame.Method.Streaming`. `frame.ContextError` returns the bare category
+  when a context carries no distinct cause.
+- `distribution.Open` defaults each zero limit independently; narrowing one
+  limit no longer refuses the store.
+- **Breaking:** every issued capability is a value handle with one unissued
+  zero state reported by `Valid`: `frame.Work` and `ResourceHandle`;
+  `host.Use`, `Setup`, `Access`, `Watch`, `RunningUnit`, `EventRoute` and
+  `PublicationRequest`; `sqlite.Database`; `distribution.Lease` and
+  `ResourceDriver`. Pointer-to-handle signatures (`*host.Setup`, `*frame.Work`,
+  `*host.Use` and the rest) take and return values; `UseConfig.Parent` is a
+  `Use` whose zero value means no parent.
+- **Breaking:** exit proofs no longer consume `sqlite.Config.MaxRequestBytes`.
+  Proof fields are bounded names and evidence is bounded by
+  `sqlite.MaxExitEvidenceBytes`, so any valid proof is storable. The probing
+  methods `CheckExitCapacity`, `CheckExitEvidenceCapacity` and
+  `CheckRealmUseExitCapacity` are removed.
+- Binding plans are a closed pair of declared and captured variants; a
+  publication's metadata is either its admitted wire document or a detached
+  native snapshot. Neither carries fields meaningful only to the other.
+- Typed decoders use strict JSON v2 (case-sensitive members, no duplicates or
+  trailing data), and the SQLite store encodes persisted rows with the same
+  codec it decodes them with.
+- SDK: `ConnectionState` names the browser Runtime's connection lifecycle,
+  `Release` is one shape over `ReleaseState`, and the Node SDK refuses a profile
+  keyword topology it cannot interpret instead of ignoring it.
 - **Breaking:** move plugin Host, declaration, binding, selection, admission and
   authoring APIs to `github.com/Tangerg/frame/host`. Construct a Host with
   `host.New(ctx, host.Config{})`; Host budgets use `host.Limits`. The root

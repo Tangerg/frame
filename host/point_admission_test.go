@@ -28,7 +28,7 @@ func TestMultiPointCaptureValidatesItsWholeReadSet(t *testing.T) {
 					{Name: "empty-seed", Contract: empty.Ref()},
 					{Name: "unrelated-seed", Contract: unrelated.Ref()},
 				}},
-				Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 					instanceID = setup.InstanceID()
 					return []framehost.ExportValue{
 						framehost.Contribute("first", first, "selected", "first-value"),
@@ -114,7 +114,7 @@ func TestMultiPointCaptureValidatesItsWholeReadSet(t *testing.T) {
 				t.Fatal(err)
 			}
 			calls := 0
-			useErr := framehost.WithPlan(ctx, host, plan, scope, func(use *framehost.Use) error {
+			useErr := framehost.WithPlan(ctx, host, plan, scope, func(use framehost.Use) error {
 				calls++
 				if err := framehost.Borrow(ctx, use, firstSelection, func(_ context.Context, values []string) error {
 					if len(values) != 1 || values[0] != "first-value" {

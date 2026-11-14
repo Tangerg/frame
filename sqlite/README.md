@@ -31,9 +31,9 @@ compare by their one private authority. Issued Owners and receipt reservations
 retain that authority directly. Copying or replacing a caller's Store handle
 cannot redirect an accepted capability to another database, admission gate or
 epoch. Every retained copy joins the same physical database shutdown.
-Host construction validates each declared durable authority against its Admission
-and epoch before driver callbacks. When both installation persistence and execution
-protection are durable, they must retain the same original Store.
+A Store is a `framehost.Durable` authority. Pass it as `host.Config.Authority`:
+the Host derives its admission gate and creation epoch from the Store, persists
+installations and protects surviving executions through that one value.
 Standalone transactions capture their original database owner before application
 callbacks. A lost commit acknowledgement fences and closes that owner even when
 the callback replaces its public Database handle.
@@ -89,7 +89,7 @@ evaluation error remains distinguishable from an additional cleanup failure.
 The Store never exposes its pool, so pool closure, independent writers and
 connection settings remain with its original lifecycle owner. Application adapters
 compose by passing the issued capability explicitly. The standalone transaction
-helpers accept the concrete `*Database` returned by `OpenSchema`, never a raw
+helpers accept the `Database` handle returned by `OpenSchema`, never a raw
 `*sql.DB`. `Connection` grants an executor only inside the original transaction
 context. For independent reads, `Database.Read` lends a scoped `Reader`; direct
 pool queries, settings and closure are not exposed. Store and standalone
@@ -239,14 +239,13 @@ original release proof or confirms that the approval did not commit. An absent
 row is conclusive only behind that transaction's writer barrier. An unconfirmed
 original connection seals the Store and cannot be mistaken for absent approval.
 
-`Config.MaxRequestBytes` defaults to 1 MiB and bounds complete encoded protection
-records, including proof envelopes. Drivers can compose admission with
-`CheckExitEvidenceCapacity` for subordinate proof bytes, `CheckExitCapacity`
-for attempt settlement and `CheckRealmUseExitCapacity` for reconstructed Uses.
-Each check uses its settlement's stored encoding, including base64 expansion of
-the original evidence. Drivers admit every possible exit path before recording
-an attempt. A configured capacity refusal returns `frame.ErrCapacity`
-before a driver accepts responsibility for work it cannot later settle.
+`Config.MaxRequestBytes` defaults to 1 MiB and bounds business submissions and
+the protection records a driver asks the Store to accept. Exit proofs are not
+part of that budget: every proof field is a bounded name except its opaque
+evidence, which `MaxExitEvidenceBytes` bounds. A valid proof is therefore always
+storable, so admitting an execution never depends on probing whether its
+eventual release would fit. A driver whose evidence can grow with its request
+compares that evidence with `MaxExitEvidenceBytes` before admission.
 
 ## Browser history capacity
 

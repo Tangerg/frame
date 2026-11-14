@@ -16,7 +16,7 @@ files := framehost.Required("files", contracts.Files)
 upper := framehost.Offer("uppercase", contracts.Converters)
 unit, err := framehost.DefineUnit(framehost.UnitSpec{
     ID: "converter", Imports: framehost.Imports(files), Exports: framehost.Exports(upper),
-    Prepare: func(setup *framehost.Setup) error {
+    Prepare: func(setup framehost.Setup) error {
         reader, err := files.Get(setup)
         if err != nil {
             return err

@@ -26,14 +26,14 @@ type catalogWatch struct {
 	contracts []ContractRef
 	changes   chan Change
 	stop      func() bool
-	resource  *frame.ResourceHandle
+	resource  frame.ResourceHandle
 }
 
 const watchResourceName = "contract watch"
 
 // Watch atomically registers observation and captures its initial view. A gap
 // ends this stream with ErrResyncRequired; it never silently drops a revision.
-func (h *hostState) Watch(ctx context.Context, points ...ContractRef) (Snapshot, *Watch, error) {
+func (h *hostState) Watch(ctx context.Context, points ...ContractRef) (Snapshot, Watch, error) {
 	var snapshot Snapshot
 	var watch *catalogWatch
 	err := h.admission.Under(ctx, func() error {
@@ -69,7 +69,7 @@ func (h *hostState) Watch(ctx context.Context, points ...ContractRef) (Snapshot,
 		return nil
 	})
 	if err != nil {
-		return Snapshot{}, nil, err
+		return Snapshot{}, Watch{}, err
 	}
 	stop := context.AfterFunc(ctx, func() { watch.close(nil) })
 	h.mu.Lock()
@@ -80,18 +80,21 @@ func (h *hostState) Watch(ctx context.Context, points ...ContractRef) (Snapshot,
 		watch.stop = stop
 		h.mu.Unlock()
 	}
-	return snapshot, &Watch{subscription: watch}, nil
+	return snapshot, Watch{subscription: watch}, nil
 }
 
-func (w *Watch) Changes() <-chan Change {
-	if w == nil || w.subscription == nil {
+// Valid reports whether the handle names a subscription; the zero Watch does not.
+func (w Watch) Valid() bool { return w.subscription != nil }
+
+func (w Watch) Changes() <-chan Change {
+	if w.subscription == nil {
 		return nil
 	}
 	return w.subscription.changes
 }
 
-func (w *Watch) Close() {
-	if w != nil && w.subscription != nil {
+func (w Watch) Close() {
+	if w.subscription != nil {
 		w.subscription.close(nil)
 	}
 }
@@ -135,7 +138,7 @@ func (w *catalogWatch) closeLocked(err error) {
 	}
 	close(w.changes)
 	_ = w.resource.ConfirmReleased(nil)
-	w.resource = nil
+	w.resource = frame.ResourceHandle{}
 }
 
 // discardBuffered never blocks: the receiver may drain concurrently.

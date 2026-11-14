@@ -64,9 +64,9 @@ func testInterruptedUseRelease(t *testing.T, protection *interruptedUseRelease, 
 	}
 }
 
-func acquireProtectedUse(t *testing.T, protection framehost.ExecutionProtection) (framehost.Host, frame.Lifetime, *framehost.Use) {
+func acquireProtectedUse(t *testing.T, protection framehost.ExecutionProtection) (framehost.Host, frame.Lifetime, framehost.Use) {
 	t.Helper()
-	host, err := framehost.New(context.Background(), framehost.Config{ExecutionProtection: protection})
+	host, err := framehost.New(context.Background(), framehost.Config{Authority: protectionAuthority(protection)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func acquireProtectedUse(t *testing.T, protection framehost.ExecutionProtection)
 	}
 	plugin := installNative(t, host, "provider", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-		Setup:       func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil },
+		Setup:       func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil },
 	})
 	use, err := host.AcquireUnit(testContext(t), framehost.UnitRef{InstallationID: "provider", Release: plugin.Revision(), UnitID: "main"}, framehost.UseConfig{Owner: owner, Scope: grant, Realm: "realm"})
 	if err != nil {

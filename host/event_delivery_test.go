@@ -36,7 +36,7 @@ func newEventDeliveryFixture(t *testing.T) eventDeliveryFixture {
 	var instanceLifetime frame.Lifetime
 	plugin := installNative(t, host, "event", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "source", Contract: event.Ref()}, {Name: "receiver", Contract: event.Ref()}}},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			instanceLifetime = setup.Lifetime()
 			return []framehost.ExportValue{{Name: "source", Contract: event.Ref()}, {Name: "receiver", Contract: event.Ref()}}, nil
 		},
@@ -51,7 +51,7 @@ func newEventDeliveryFixture(t *testing.T) eventDeliveryFixture {
 	return eventDeliveryFixture{host: host, hostLifetime: hostLifetime, instanceLifetime: instanceLifetime, event: event, source: sender, receiver: receiver, binding: binding, owner: owner, scope: scope}
 }
 
-func (f eventDeliveryFixture) acquire(t *testing.T) *framehost.Use {
+func (f eventDeliveryFixture) acquire(t *testing.T) framehost.Use {
 	t.Helper()
 	use, err := acquireExports(f.host, testContext(t), f.binding, framehost.UseConfig{Owner: f.owner, Scope: f.scope})
 	if err != nil {
@@ -65,10 +65,10 @@ func (f eventDeliveryFixture) acquire(t *testing.T) *framehost.Use {
 	return use
 }
 
-func occupyUseWork(t *testing.T, use *framehost.Use) []*frame.Work {
+func occupyUseWork(t *testing.T, use framehost.Use) []frame.Work {
 	t.Helper()
 	ctx := testContext(t)
-	var held []*frame.Work
+	var held []frame.Work
 	t.Cleanup(func() {
 		for _, work := range held {
 			work.Finish()
@@ -91,8 +91,8 @@ func TestEventDeliveryReservesOneIntervalPerDistinctUse(t *testing.T) {
 	ctx := testContext(t)
 	fixture := newEventDeliveryFixture(t)
 	use := fixture.acquire(t)
-	copied := *use
-	route, err := fixture.host.NewEventRoute(ctx, use, &copied, fixture.source, fixture.receiver)
+	copied := use
+	route, err := fixture.host.NewEventRoute(ctx, use, copied, fixture.source, fixture.receiver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestEventDeliveryReservesOneIntervalPerDistinctUse(t *testing.T) {
 	}
 	defer remaining.Finish()
 	if extra, err := use.Enter(ctx); !errors.Is(err, frame.ErrCapacity) {
-		if extra != nil {
+		if extra.Valid() {
 			extra.Finish()
 		}
 		t.Fatalf("delivery released another caller's interval: %v", err)
@@ -135,7 +135,7 @@ func TestEventRouteReservesOneResourcePerDistinctUse(t *testing.T) {
 	fixture := newEventDeliveryFixture(t)
 	use := fixture.acquire(t)
 	lifetime := use.Lifetime()
-	var held []*frame.ResourceHandle
+	var held []frame.ResourceHandle
 	t.Cleanup(func() {
 		for _, resource := range held {
 			if err := resource.ConfirmReleased(nil); err != nil {
@@ -159,12 +159,12 @@ func TestEventRouteReservesOneResourcePerDistinctUse(t *testing.T) {
 	if err := held[len(held)-1].ConfirmReleased(nil); err != nil {
 		t.Fatal(err)
 	}
-	copied := *use
-	route, err := fixture.host.NewEventRoute(ctx, use, &copied, fixture.source, fixture.receiver)
+	copied := use
+	route, err := fixture.host.NewEventRoute(ctx, use, copied, fixture.source, fixture.receiver)
 	if err != nil {
 		t.Fatalf("one participant needed more than its remaining resource: %v", err)
 	}
-	if _, err := fixture.host.NewEventRoute(ctx, use, &copied, fixture.source, fixture.receiver); !errors.Is(err, frame.ErrCapacity) {
+	if _, err := fixture.host.NewEventRoute(ctx, use, copied, fixture.source, fixture.receiver); !errors.Is(err, frame.ErrCapacity) {
 		t.Fatalf("route released another caller's resource: %v", err)
 	}
 	if err := fixture.host.ValidateEventRoute(ctx, route); err != nil {
@@ -240,7 +240,7 @@ func TestEventDeliveryRefusalReleasesOnlyItsOwnIntervals(t *testing.T) {
 	}
 	remaining.Finish()
 	if extra, err := receiver.Enter(ctx); !errors.Is(err, frame.ErrCapacity) {
-		if extra != nil {
+		if extra.Valid() {
 			extra.Finish()
 		}
 		t.Fatalf("refused delivery released another receiver interval: %v", err)
@@ -329,7 +329,7 @@ func TestInterruptedEventDeliveryReleasesItsOriginalIntervals(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("original callback did not finish")
 			}
-			for _, use := range []*framehost.Use{sender, receiver} {
+			for _, use := range []framehost.Use{sender, receiver} {
 				if outcome, err := use.Close(ctx); !outcome.Released || err != nil {
 					t.Fatalf("interrupted delivery retained its original Use: %+v, %v", outcome, err)
 				}

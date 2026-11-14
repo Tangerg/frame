@@ -24,7 +24,7 @@ func TestSetupDeclarationOwnsExportReconstruction(t *testing.T) {
 	}
 	plugin := installNative(t, host, "provider", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "service", Contract: service.Ref()}, {Name: "declared", Contract: point.Ref()}}},
-		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			return []framehost.ExportValue{
 				{Name: "service", Contract: service.Ref(), Value: "service value"},
 				{Name: "declared", Contract: point.Ref(), Metadata: "declared metadata", Value: "declared value"},

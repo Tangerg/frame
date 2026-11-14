@@ -15,7 +15,7 @@ import (
 // owned by Setup's instance; it cannot choose replacements for imports.
 type Driver interface {
 	Profile() Profile
-	Prepare(context.Context, *Setup) ([]ExportValue, error)
+	Prepare(context.Context, Setup) ([]ExportValue, error)
 }
 
 // ExportValidator admits a driver's host-side representation when its execution
@@ -37,7 +37,7 @@ type registeredDriver struct {
 	realmBound bool
 }
 
-type SetupFunc func(context.Context, *Setup) ([]ExportValue, error)
+type SetupFunc func(context.Context, Setup) ([]ExportValue, error)
 
 type ExportValue struct {
 	Name     string
@@ -63,7 +63,7 @@ type Setup struct{ *setupCall }
 type setupCall struct {
 	host     *hostState
 	instance *unitInstance
-	work     *frame.Work
+	work     frame.Work
 	imports  map[string][]BoundValue
 
 	mu       sync.Mutex
@@ -72,69 +72,73 @@ type setupCall struct {
 	activate func(context.Context) error
 }
 
-func (s *Setup) Unit() UnitDeclaration     { return s.instance.unit.Clone() }
-func (s *Setup) Binding() UnitBinding      { return s.instance.binding.Clone() }
-func (s *Setup) Snapshot() BindingSnapshot { return s.instance.snapshot.Clone() }
-func (s *Setup) Configuration() []byte     { return bytes.Clone(s.instance.configuration) }
-func (s *Setup) InstanceID() string        { return s.instance.id }
-func (s *Setup) Generation() uint64        { return s.instance.generation }
-func (s *Setup) Epoch() uint64             { return s.host.epoch }
-func (s *Setup) ScopeGrant() ScopeGrant    { return s.instance.grant() }
-func (s *Setup) Realm() RealmID            { return s.instance.realm }
-func (s *Setup) Lifetime() frame.Lifetime {
-	if s == nil || s.setupCall == nil {
+func (s Setup) Unit() UnitDeclaration     { return s.instance.unit.Clone() }
+func (s Setup) Binding() UnitBinding      { return s.instance.binding.Clone() }
+func (s Setup) Snapshot() BindingSnapshot { return s.instance.snapshot.Clone() }
+func (s Setup) Configuration() []byte     { return bytes.Clone(s.instance.configuration) }
+func (s Setup) InstanceID() string        { return s.instance.id }
+func (s Setup) Generation() uint64        { return s.instance.generation }
+func (s Setup) Epoch() uint64             { return s.host.Epoch() }
+func (s Setup) ScopeGrant() ScopeGrant    { return s.instance.grant() }
+func (s Setup) Realm() RealmID            { return s.instance.realm }
+
+// Valid reports whether the handle names a preparation; the zero Setup does not.
+func (s Setup) Valid() bool { return s.setupCall != nil }
+
+func (s Setup) Lifetime() frame.Lifetime {
+	if s.setupCall == nil {
 		return frame.Lifetime{}
 	}
 	return s.instance.lifetime
 }
 
-func (s *Setup) Context() context.Context {
-	if s == nil || s.setupCall == nil {
+func (s Setup) Context() context.Context {
+	if s.setupCall == nil {
 		return nil
 	}
 	return s.work.Context()
 }
 
-func (s *Setup) ValueContract(ref ContractRef) (ContractRef, error) {
+func (s Setup) ValueContract(ref ContractRef) (ContractRef, error) {
 	return s.host.ValueContract(ref)
 }
 
-func (s *Setup) ContractDescriptor(ref ContractRef) ([]byte, error) {
+func (s Setup) ContractDescriptor(ref ContractRef) ([]byte, error) {
 	return s.host.ContractDescriptor(ref)
 }
 
-func (s *Setup) Capability(ref ContractRef) (*frame.Capability, error) {
+func (s Setup) Capability(ref ContractRef) (*frame.Capability, error) {
 	return s.host.Capability(ref)
 }
 
-func (s *Setup) Own(resource frame.Resource, dependencies ...*frame.ResourceHandle) (*frame.ResourceHandle, error) {
-	if s == nil || s.setupCall == nil {
-		return nil, frame.ErrInvalid
+func (s Setup) Own(resource frame.Resource, dependencies ...frame.ResourceHandle) (frame.ResourceHandle, error) {
+	if s.setupCall == nil {
+		return frame.ResourceHandle{}, frame.ErrInvalid
 	}
 	return s.work.Own(resource, dependencies...)
 }
-func (s *Setup) Cleanup(name string, closeResource func() error, dependencies ...*frame.ResourceHandle) (*frame.ResourceHandle, error) {
-	if s == nil || s.setupCall == nil {
-		return nil, frame.ErrInvalid
+func (s Setup) Cleanup(name string, closeResource func() error, dependencies ...frame.ResourceHandle) (frame.ResourceHandle, error) {
+	if s.setupCall == nil {
+		return frame.ResourceHandle{}, frame.ErrInvalid
 	}
 	return s.work.Cleanup(name, closeResource, dependencies...)
 }
 
-func (h *hostState) OwnsSetup(s *Setup) bool {
-	return h != nil && s != nil && s.setupCall != nil && s.host == h
+func (h *hostState) OwnsSetup(s Setup) bool {
+	return h != nil && s.setupCall != nil && s.host == h
 }
 
 // ValidateCurrent checks the original instance and frozen binding together,
 // before a driver exposes a previously prepared execution to its realm.
-func (s *Setup) ValidateCurrent(ctx context.Context) error {
-	if s == nil || s.setupCall == nil {
+func (s Setup) ValidateCurrent(ctx context.Context) error {
+	if s.setupCall == nil {
 		return frame.ErrInvalid
 	}
 	return s.instance.validateCurrent(ctx)
 }
 
-func (s *Setup) OnActivate(activate func(context.Context) error) error {
-	if s == nil || s.setupCall == nil || activate == nil {
+func (s Setup) OnActivate(activate func(context.Context) error) error {
+	if s.setupCall == nil || activate == nil {
 		return frame.ErrInvalid
 	}
 	call := s.setupCall
@@ -163,8 +167,8 @@ func (c *setupCall) seal(exports []ExportValue) ([]ExportValue, func(context.Con
 	return exports, activate
 }
 
-func (s *Setup) Imports(slot string) ([]BoundValue, error) {
-	if s == nil || s.setupCall == nil {
+func (s Setup) Imports(slot string) ([]BoundValue, error) {
+	if s.setupCall == nil {
 		return nil, frame.ErrInvalid
 	}
 	values, found := s.imports[slot]
@@ -176,8 +180,8 @@ func (s *Setup) Imports(slot string) ([]BoundValue, error) {
 
 // readImport returns the single value bound to the import the author expects.
 // An optional import without a provider reports found=false.
-func readImport[T any](setup *Setup, expected ImportDeclaration) (value T, found bool, err error) {
-	if setup == nil || setup.setupCall == nil || expected.Contract == (ContractRef{}) {
+func readImport[T any](setup Setup, expected ImportDeclaration) (value T, found bool, err error) {
+	if setup.setupCall == nil || expected.Contract == (ContractRef{}) {
 		return value, false, frame.ErrInvalid
 	}
 	declared, exists := setup.instance.unit.importSlot(expected.Slot)
@@ -205,12 +209,12 @@ func readImport[T any](setup *Setup, expected ImportDeclaration) (value T, found
 	return value, true, nil
 }
 
-func Import[T any](setup *Setup, slot string, contract Contract[T]) (T, error) {
+func Import[T any](setup Setup, slot string, contract Contract[T]) (T, error) {
 	value, _, err := readImport[T](setup, ImportDeclaration{Slot: slot, Contract: contract.Ref()})
 	return value, err
 }
 
-func OptionalImport[T any](setup *Setup, slot string, contract Contract[T]) (T, bool, error) {
+func OptionalImport[T any](setup Setup, slot string, contract Contract[T]) (T, bool, error) {
 	return readImport[T](setup, ImportDeclaration{Slot: slot, Contract: contract.Ref(), Optional: true})
 }
 

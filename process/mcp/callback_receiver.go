@@ -56,7 +56,7 @@ func (r *CallbackReceiver) Grant(ctx context.Context, method *frame.Method, hand
 		return ManagedCallback{}, frame.ErrInvalid
 	}
 	method = new(*method)
-	if method.Identity().Validate() != nil || len(method.Descriptor().Stream) != 0 {
+	if method.Identity().Validate() != nil || method.Streaming() {
 		return ManagedCallback{}, frame.ErrInvalid
 	}
 	return r.open(ctx, callbackRoute{method.Name(), method.Identity().Digest().String(), method.Kind(), func(call context.Context, id string, input value.JSON) (value.JSON, error) {

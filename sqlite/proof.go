@@ -1,46 +1,20 @@
 package sqlite
 
 import (
-	"encoding/json"
-
-	"github.com/Tangerg/frame"
+	json "encoding/json/v2"
 )
 
-func (s *storeAuthority) encodeProof(proof any) ([]byte, error) {
-	encoded, err := json.Marshal(proof)
-	if err != nil {
-		return nil, err
-	}
-	if len(encoded) > s.maxRequestBytes {
-		return nil, frame.ErrCapacity
-	}
-	return encoded, nil
+// MaxExitEvidenceBytes bounds the opaque evidence of one exit proof. Every
+// other proof field is a bounded name, so any valid proof is storable: an
+// execution admitted today can always record the proof that releases it,
+// independently of the business request budget.
+const MaxExitEvidenceBytes = 1 << 20
+
+func validExitEvidence(evidence []byte) bool {
+	return len(evidence) != 0 && len(evidence) <= MaxExitEvidenceBytes
 }
 
-func (s *storeAuthority) CheckExitEvidenceCapacity(evidence []byte) error {
-	if len(evidence) == 0 {
-		return frame.ErrInvalid
-	}
-	if len(evidence) > s.maxRequestBytes {
-		return frame.ErrCapacity
-	}
-	return nil
-}
-
-func (s *storeAuthority) CheckExitCapacity(proof ExitProof) error {
-	if !proof.proves(proof.AttemptID) {
-		return frame.ErrInvalid
-	}
-	_, err := s.encodeProof(proof)
-	return err
-}
-
-// A Realm may outlive its Host, so admission must include the envelope used
-// when that original proof releases reconstructed Uses.
-func (s *storeAuthority) CheckRealmUseExitCapacity(proof ExitProof) error {
-	if !proof.proves(proof.AttemptID) {
-		return frame.ErrInvalid
-	}
-	_, err := s.encodeProof(UseProof{Realm: &proof})
-	return err
+// encodeProof spells a validated proof; validation already bounds its size.
+func encodeProof(proof any) ([]byte, error) {
+	return json.Marshal(proof)
 }

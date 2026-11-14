@@ -32,8 +32,8 @@ type ManagedExport struct {
 
 func (ManagedProtocol) Profile() framehost.Profile { return ManagedProfile }
 
-func (p ManagedProtocol) Prepare(setup *framehost.Setup, metadata process.ExportMetadata, maxBytes int) (process.Connection, error) {
-	if p.Exports == nil || setup == nil {
+func (p ManagedProtocol) Prepare(setup framehost.Setup, metadata process.ExportMetadata, maxBytes int) (process.Connection, error) {
+	if p.Exports == nil || !setup.Valid() {
 		return nil, frame.ErrInvalid
 	}
 	unit := setup.Unit()
@@ -68,7 +68,7 @@ func (p ManagedProtocol) Prepare(setup *framehost.Setup, metadata process.Export
 // by exactly the contributions that use it.
 type managedBuilder struct {
 	protocol   ManagedProtocol
-	setup      *framehost.Setup
+	setup      framehost.Setup
 	connection *managedConnection
 	imports    map[string]framehost.ImportDeclaration
 	used       map[string]bool
@@ -127,7 +127,7 @@ type managedConnection struct {
 	openCall      OpenManagedCall
 	openStream    OpenManagedStream
 	openCallbacks OpenManagedCallbacks
-	setup         *framehost.Setup
+	setup         framehost.Setup
 	maxBytes      int
 	onActivate    func(func(context.Context) error) error
 	catalog       managedCatalog

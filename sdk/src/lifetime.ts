@@ -9,17 +9,11 @@ export interface Failure {
   readonly category: ErrorCode | "exception" | "thrown_value";
 }
 
-export type Release =
-  | {
-      readonly status: "released";
-      readonly evidence?: string;
-      readonly error?: unknown;
-    }
-  | {
-      readonly status: "unconfirmed";
-      readonly evidence?: string;
-      readonly error?: unknown;
-    };
+export interface Release {
+  readonly status: ReleaseState;
+  readonly evidence?: string;
+  readonly error?: unknown;
+}
 
 export interface CloseOutcome {
   readonly closeId: string;

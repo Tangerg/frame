@@ -60,3 +60,11 @@ func TestContextErrorRejectsTypedNilBeforeCallingItsMethods(t *testing.T) {
 		t.Fatalf("typed nil parent admitted: %v", err)
 	}
 }
+
+func TestContextErrorWithoutCustomCauseIsTheCategoryAlone(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := frame.ContextError(ctx); err != context.Canceled {
+		t.Fatalf("cancellation without a cause was rewrapped: %#v", err)
+	}
+}

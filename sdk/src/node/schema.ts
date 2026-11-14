@@ -50,14 +50,44 @@ function multipleOf(value: JSONNumber, divisor: JSONNumber): boolean {
   return new ProfileDecimal(value.toString()).mod(divisor.toString()).isZero();
 }
 
+const schemaChildren = ["map", "schema", "array"] as const;
+const schemaEdges = ["same", "descend"] as const;
+
 interface SchemaKeyword {
-  children?: "map" | "schema" | "array";
-  edge?: "same" | "descend";
+  children?: (typeof schemaChildren)[number];
+  edge?: (typeof schemaEdges)[number];
   value?: string;
   annotation?: boolean;
 }
-const keywords: Readonly<Record<string, SchemaKeyword>> = profile.schema
-  .keywords as Record<string, SchemaKeyword>;
+
+function member<T extends string>(
+  vocabulary: readonly T[],
+  value: unknown,
+): value is T | undefined {
+  return value === undefined || vocabulary.some((known) => known === value);
+}
+
+// The Go profile owns keyword topology. A traversal kind this interpreter does
+// not know must stop the SDK from loading, never become an ignored keyword.
+function admitKeywords(
+  declared: Readonly<Record<string, Readonly<Record<string, unknown>>>>,
+): Readonly<Record<string, SchemaKeyword>> {
+  const admitted: Record<string, SchemaKeyword> = Object.create(null);
+  for (const [name, keyword] of Object.entries(declared)) {
+    const { children, edge, value, annotation } = keyword;
+    if (
+      !member(schemaChildren, children) ||
+      !member(schemaEdges, edge) ||
+      (value !== undefined && typeof value !== "string") ||
+      (annotation !== undefined && typeof annotation !== "boolean")
+    )
+      throw new Error(`portable: unsupported profile keyword ${name}`);
+    admitted[name] = Object.freeze({ children, edge, value, annotation });
+  }
+  return Object.freeze(admitted);
+}
+
+const keywords = admitKeywords(profile.schema.keywords);
 
 function pointerToken(key: string): string {
   return key.replaceAll("~", "~0").replaceAll("/", "~1");
@@ -78,7 +108,7 @@ function localReference(value: unknown): string {
 interface Subschema {
   value: unknown;
   suffix: string;
-  edge?: "same" | "descend";
+  edge?: SchemaKeyword["edge"];
 }
 function* subschemas(key: string, field: unknown): Generator<Subschema> {
   const keyword = keywords[key];

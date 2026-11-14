@@ -51,7 +51,7 @@ func compilerUnit(point framehost.Point[PassMetadata, CompilerPass]) framehost.U
 	emission := PassMetadata{Stage: "emit", Order: emitPassOrder}
 	normalize := framehost.Offer(normalization.Stage, point)
 	emit := framehost.Offer(emission.Stage, point)
-	return framehost.UnitSpec{ID: "compiler", Exports: framehost.Exports(normalize, emit), Prepare: func(setup *framehost.Setup) error {
+	return framehost.UnitSpec{ID: "compiler", Exports: framehost.Exports(normalize, emit), Prepare: func(setup framehost.Setup) error {
 		if err := normalize.Bind(setup, normalization, CompilerPass(func(ctx context.Context, input string) (string, error) {
 			if err := frame.ContextError(ctx); err != nil {
 				return "", err
@@ -101,7 +101,7 @@ func analysisUnit(point framehost.Point[AnalyzerMetadata, Analyzer]) framehost.U
 	}
 	todo := framehost.Offer(unfinished.metadata.Name, point)
 	length := framehost.Offer(longLine.metadata.Name, point)
-	return framehost.UnitSpec{ID: "analysis", Exports: framehost.Exports(todo, length), Prepare: func(setup *framehost.Setup) error {
+	return framehost.UnitSpec{ID: "analysis", Exports: framehost.Exports(todo, length), Prepare: func(setup framehost.Setup) error {
 		if err := todo.Bind(setup, unfinished.metadata, Analyzer(unfinished.analyze)); err != nil {
 			return err
 		}
@@ -114,7 +114,7 @@ func formatterUnit(point framehost.Point[FormatterMetadata, Formatter]) framehos
 	unchanged := FormatterMetadata{Name: "identity", Priority: identityFormatterPriority}
 	trim := framehost.Offer(trimmed.Name, point)
 	identity := framehost.Offer(unchanged.Name, point)
-	return framehost.UnitSpec{ID: "format", Exports: framehost.Exports(trim, identity), Prepare: func(setup *framehost.Setup) error {
+	return framehost.UnitSpec{ID: "format", Exports: framehost.Exports(trim, identity), Prepare: func(setup framehost.Setup) error {
 		if err := trim.Bind(setup, trimmed, Formatter(func(ctx context.Context, input SourceRevision) (Patch, error) {
 			if err := frame.ContextError(ctx); err != nil {
 				return Patch{}, err
@@ -135,7 +135,7 @@ func formatterUnit(point framehost.Point[FormatterMetadata, Formatter]) framehos
 func tracingUnit(point framehost.Point[AroundMetadata, Around]) framehost.UnitSpec {
 	metadata := AroundMetadata{Name: "trace", Order: traceAroundOrder}
 	trace := framehost.Offer(metadata.Name, point)
-	return framehost.UnitSpec{ID: "trace", Exports: framehost.Exports(trace), Prepare: func(setup *framehost.Setup) error {
+	return framehost.UnitSpec{ID: "trace", Exports: framehost.Exports(trace), Prepare: func(setup framehost.Setup) error {
 		return trace.Bind(setup, metadata, Around(func(ctx context.Context, input SourceRevision, next Next) (Result, error) {
 			if next == nil {
 				return Result{}, errors.New("buildcheck: continuation is required")

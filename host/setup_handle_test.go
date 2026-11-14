@@ -30,8 +30,8 @@ func TestSetupReplacementCannotChangeOriginalPreparationCompletion(t *testing.T)
 			output := framehost.Export("value", contract)
 			var original framehost.Setup
 			activations := 0
-			prepare := func(setup *framehost.Setup) error {
-				original = *setup
+			prepare := func(setup framehost.Setup) error {
+				original = setup
 				if err := setup.OnActivate(func(context.Context) error {
 					activations++
 					return nil
@@ -43,12 +43,12 @@ func TestSetupReplacementCannotChangeOriginalPreparationCompletion(t *testing.T)
 						return err
 					}
 				}
-				*setup = framehost.Setup{}
+				setup = framehost.Setup{}
 				return nil
 			}
 			unit := framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: framehost.Exports(output)},
-				Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 					return []framehost.ExportValue{framehost.Provide("value", contract, "original value")}, prepare(setup)
 				},
 			}
@@ -69,7 +69,7 @@ func TestSetupReplacementCannotChangeOriginalPreparationCompletion(t *testing.T)
 				t.Fatalf("original registration outlived preparation: %v", err)
 			}
 			if typed {
-				if err := output.Bind(&original, "late replacement"); !errors.Is(err, frame.ErrClosed) {
+				if err := output.Bind(original, "late replacement"); !errors.Is(err, frame.ErrClosed) {
 					t.Fatalf("original export staging outlived preparation: %v", err)
 				}
 			}
@@ -93,15 +93,15 @@ func TestSetupOwnsReturnedAndStagedExports(t *testing.T) {
 	var activations atomic.Int32
 	plugin := installNative(t, host, "setup-result", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: framehost.Exports(bound, returned)},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
-			original = *setup
-			if err := bound.Bind(&original, "staged value"); err != nil {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
+			original = setup
+			if err := bound.Bind(original, "staged value"); err != nil {
 				return nil, err
 			}
 			if err := setup.OnActivate(func(context.Context) error { activations.Add(1); return nil }); err != nil {
 				return nil, err
 			}
-			*setup = framehost.Setup{}
+			setup = framehost.Setup{}
 			return []framehost.ExportValue{framehost.Provide("returned", contract, "returned value")}, nil
 		},
 	})
@@ -133,7 +133,7 @@ func TestSetupOwnsReturnedAndStagedExports(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := bound.Bind(&original, "late value"); !errors.Is(err, frame.ErrClosed) {
+	if err := bound.Bind(original, "late value"); !errors.Is(err, frame.ErrClosed) {
 		t.Fatalf("export staging outlived the original call: %v", err)
 	}
 	if err := original.OnActivate(func(context.Context) error { return nil }); !errors.Is(err, frame.ErrClosed) {
@@ -155,7 +155,7 @@ func TestSetupRejectsDuplicatesAcrossItsWholeResult(t *testing.T) {
 	var bound, activated, cleaned atomic.Int32
 	plugin := installNative(t, host, "duplicate-result", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: framehost.Exports(output)},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			if _, err := setup.Cleanup("original result", func() error { cleaned.Add(1); return nil }); err != nil {
 				return nil, err
 			}
@@ -214,8 +214,8 @@ func TestInterruptedSetupSealsItsWholeResult(t *testing.T) {
 				output := framehost.Export("value", contract)
 				var original framehost.Setup
 				var activated, cleaned atomic.Int32
-				prepare := func(setup *framehost.Setup) error {
-					original = *setup
+				prepare := func(setup framehost.Setup) error {
+					original = setup
 					if _, err := setup.Cleanup("original preparation", func() error { cleaned.Add(1); return nil }); err != nil {
 						return err
 					}
@@ -229,7 +229,7 @@ func TestInterruptedSetupSealsItsWholeResult(t *testing.T) {
 				}
 				unit := framehost.Unit{
 					Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: framehost.Exports(output)},
-					Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+					Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 						return nil, prepare(setup)
 					},
 				}
@@ -250,7 +250,7 @@ func TestInterruptedSetupSealsItsWholeResult(t *testing.T) {
 				if activated.Load() != 0 || cleaned.Load() != 1 {
 					t.Fatalf("interruption changed the original exit: activations=%d cleanups=%d", activated.Load(), cleaned.Load())
 				}
-				if err := output.Bind(&original, "late value"); !errors.Is(err, frame.ErrClosed) {
+				if err := output.Bind(original, "late value"); !errors.Is(err, frame.ErrClosed) {
 					t.Fatalf("ended result accepted another export: %v", err)
 				}
 				if err := original.OnActivate(func(context.Context) error { return nil }); !errors.Is(err, frame.ErrClosed) {

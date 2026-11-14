@@ -48,7 +48,7 @@ func TestPublishedLeaseCopiesShareOneContentClaim(t *testing.T) {
 	}
 }
 
-func checkCopiedLeaseClaim(t *testing.T, store Store, original *Lease) {
+func checkCopiedLeaseClaim(t *testing.T, store Store, original Lease) {
 	t.Helper()
 	t.Cleanup(func() { _ = original.Close() })
 	release := original.Snapshot()
@@ -57,9 +57,9 @@ func checkCopiedLeaseClaim(t *testing.T, store Store, original *Lease) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = independent.Close() })
-	copied := *original
+	copied := original
 	var closers sync.WaitGroup
-	for _, lease := range []*Lease{original, &copied} {
+	for _, lease := range []Lease{original, copied} {
 		closers.Go(func() {
 			if err := lease.Close(); err != nil {
 				t.Error(err)
@@ -67,7 +67,7 @@ func checkCopiedLeaseClaim(t *testing.T, store Store, original *Lease) {
 		})
 	}
 	closers.Wait()
-	for _, lease := range []*Lease{original, &copied} {
+	for _, lease := range []Lease{original, copied} {
 		if _, err := lease.Read(t.Context(), "theme.css"); !errors.Is(err, frame.ErrClosed) {
 			t.Errorf("closed claim allowed a read: %v", err)
 		}

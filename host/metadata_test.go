@@ -25,7 +25,7 @@ func TestMetadataSnapshotDetachesOverlappingSliceViews(t *testing.T) {
 	metadata[1] = metadata[:1]
 	plugin := installNative(t, host, "metadata", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "entry", Contract: point.Ref()}}},
-		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			return []framehost.ExportValue{framehost.Contribute("entry", point, any(metadata), "value")}, nil
 		},
 	})
@@ -84,7 +84,7 @@ func TestMetadataRefusesCyclesAndLiveValues(t *testing.T) {
 			}
 			plugin := installNative(t, host, "metadata", framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "entry", Contract: point.Ref()}}},
-				Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 					return []framehost.ExportValue{framehost.Contribute("entry", point, test.value, "value")}, nil
 				},
 			})

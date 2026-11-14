@@ -58,14 +58,14 @@ func TestInterruptedInstallationWriteRequiresRecovery(t *testing.T) {
 				t.Run(operation+"/"+phase+"/"+interrupt.name, func(t *testing.T) {
 					ctx := testContext(t)
 					store := &interruptedInstallationStore{}
-					host := testHost(t, framehost.Config{Installations: store})
+					host := testHost(t, framehost.Config{Authority: installationAuthority(store)})
 					prepared := make(chan string, 1)
 					var cleanups atomic.Int32
 					plugin, err := framehost.Define(framehost.Definition{
 						Revision: value.Hash([]byte("interrupted-installation")),
 						Units: []framehost.Unit{{
 							Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-							Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+							Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 								prepared <- setup.InstanceID()
 								_, err := setup.Cleanup("original resource", func() error { cleanups.Add(1); return nil })
 								return nil, err
@@ -159,11 +159,11 @@ func TestInterruptedEnableRecoversOriginalTransition(t *testing.T) {
 	} {
 		t.Run(interruption.name, func(t *testing.T) {
 			store := &interruptedInstallationStore{}
-			host := testHost(t, framehost.Config{Installations: store})
+			host := testHost(t, framehost.Config{Authority: installationAuthority(store)})
 			var prepared atomic.Int64
 			plugin := installNative(t, host, "provider", framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-				Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 					prepared.Add(1)
 					return nil, nil
 				},

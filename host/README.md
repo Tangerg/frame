@@ -8,7 +8,10 @@ The package never selects alternatives after a binding has been admitted.
 `Host` and `Admission` are value handles to private owners. Copies observe the
 same catalog, generation sequence, recovery barrier and scope authority.
 Replacing a caller's handle cannot redirect an in-flight operation. `Config`
-captures the issued Admission and application Lifetime handles.
+captures one `Authority` and the application Lifetime handle. An `Admission` is
+a volatile authority; a `Durable` authority such as the SQLite Store also owns
+the creation epoch, installation persistence and execution protection, so the
+Host derives the gate and epoch from it.
 
 Frame's root package owns callable contracts and structured resource lifetimes.
 Each Host has one lifecycle domain for its internal lifetimes. The domain can

@@ -12,7 +12,7 @@ import (
 type browserExecution struct {
 	plan            LocalPlan
 	attempt         sqlite.Attempt
-	setup           *framehost.Setup
+	setup           framehost.Setup
 	prepared        chan []framehost.ExportValue
 	registration    *attemptRegistration
 	runtime         *runtimePreparation
@@ -21,7 +21,7 @@ type browserExecution struct {
 }
 
 type attemptRegistration struct {
-	resource  *frame.ResourceHandle
+	resource  frame.ResourceHandle
 	uncertain bool
 }
 
@@ -34,8 +34,8 @@ type readyReport struct {
 	digest      value.Digest
 }
 
-func (e *browserExecution) recordAttempt(resource *frame.ResourceHandle, failure error) {
-	if e.registration != nil || resource == nil {
+func (e *browserExecution) recordAttempt(resource frame.ResourceHandle, failure error) {
+	if e.registration != nil || !resource.Valid() {
 		panic("browser: invalid attempt registration")
 	}
 	e.registration = &attemptRegistration{resource: resource, uncertain: failure != nil}
@@ -44,9 +44,9 @@ func (e *browserExecution) recordAttempt(resource *frame.ResourceHandle, failure
 	}
 }
 
-func (e *browserExecution) resourceHandle() *frame.ResourceHandle {
+func (e *browserExecution) resourceHandle() frame.ResourceHandle {
 	if e.registration == nil {
-		return nil
+		return frame.ResourceHandle{}
 	}
 	return e.registration.resource
 }

@@ -3,7 +3,7 @@ package host
 import (
 	"context"
 	"crypto/rand"
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"reflect"
 	"slices"
@@ -32,7 +32,7 @@ type pointRead struct {
 type snapshotMember struct {
 	id         string
 	source     ExportRef
-	metadata   any
+	metadata   publicationMetadata
 	instanceID string
 	binding    BindingSnapshot
 	durable    bool
@@ -61,18 +61,7 @@ func (c CandidateRef) ID() string         { return c.member.id }
 func (c CandidateRef) Source() ExportRef  { return c.member.source }
 func (c CandidateRef) InstanceID() string { return c.member.instanceID }
 func (c CandidateRef) MetadataJSON() ([]byte, error) {
-	if value, ok := c.member.metadata.(framevalue.JSON); ok {
-		return value.Bytes(), nil
-	}
-	detached, err := snapshotMetadata(c.member.metadata)
-	if err != nil {
-		return nil, err
-	}
-	value, err := framevalue.EncodeJSON(detached)
-	if err != nil {
-		return nil, err
-	}
-	return value.Bytes(), nil
+	return c.member.metadata.wireJSON()
 }
 
 type SelectionRef struct {
@@ -87,29 +76,39 @@ type Selection[M, V any] struct{ value SelectionRef }
 
 func (s Selection[M, V]) Ref() SelectionRef { return s.value }
 
-// BindingPlan is an exact graph awaiting admission. A resolved plan carries
-// the candidate reads its preparation depends on; a captured plan carries the
-// catalog members its selections chose; a restored plan names ready instances.
-// Admission retains this immutable graph independently of caller-owned handles.
-type BindingPlan struct{ *bindingPlan }
+// BindingPlan is an exact graph awaiting admission. A declared plan still
+// needs preparation and carries the candidate reads it depends on; a captured
+// plan names the exact catalog members and instances it borrows. Admission
+// retains this immutable graph independently of caller-owned handles.
+type BindingPlan struct{ plan admissionPlan }
 
-type bindingPlanKind uint8
+// admissionPlan is closed over *declaredPlan and *capturedPlan. Each variant
+// owns the checks and the acquisition path its own evidence requires.
+type admissionPlan interface {
+	header() *planHeader
+	validateLocked(*hostState) error
+	acquire(context.Context, *hostState, UseConfig) (Use, error)
+}
 
-const (
-	declarationPlan bindingPlanKind = iota + 1
-	instancePlan
-)
+type planHeader struct {
+	owner   *frame.LifetimeDomain
+	realm   RealmID
+	binding BindingSnapshot
+}
 
-type bindingPlan struct {
-	kind         bindingPlanKind
-	owner        *frame.LifetimeDomain
-	realm        RealmID
-	binding      BindingSnapshot
+func (p *planHeader) header() *planHeader { return p }
+
+type declaredPlan struct {
+	planHeader
+	reads []bindingRead
+}
+
+type capturedPlan struct {
+	planHeader
 	catalogReads []pointRead
 	members      []snapshotMember
 	selections   []SelectionRef
 	unitMembers  []unitMember
-	bindingReads []bindingRead
 }
 
 type unitMember struct {
@@ -119,21 +118,23 @@ type unitMember struct {
 
 // durable reports whether the plan can be reconstructed from its binding
 // alone. A dynamic publication has no setup slot to reconstruct it from.
-func (p *bindingPlan) durable() bool {
+func (p *capturedPlan) durable() bool {
 	return !slices.ContainsFunc(p.members, func(member snapshotMember) bool { return !member.durable })
 }
 
 // Snapshot is an immutable data projection, not admission or a commit receipt.
 // A new business record validates its original plan with ValidatePlanUnder in
 // that record's shared admission before retaining this exact graph.
-func (p *bindingPlan) Snapshot() (BindingSnapshot, error) {
-	if p == nil {
+func (p BindingPlan) Snapshot() (BindingSnapshot, error) {
+	switch plan := p.plan.(type) {
+	case nil:
 		return BindingSnapshot{}, frame.ErrInvalid
+	case *capturedPlan:
+		if !plan.durable() {
+			return BindingSnapshot{}, fmt.Errorf("%w: dynamic publication has no stable reconstruction contract", frame.ErrInvalid)
+		}
 	}
-	if !p.durable() {
-		return BindingSnapshot{}, fmt.Errorf("%w: dynamic publication has no stable reconstruction contract", frame.ErrInvalid)
-	}
-	return p.binding.Clone(), nil
+	return p.plan.header().binding.Clone(), nil
 }
 
 func (h *hostState) Snapshot(ctx context.Context, points ...ContractRef) (Snapshot, error) {
@@ -213,12 +214,8 @@ func Candidates[M, V any](snapshot Snapshot, point Point[M, V]) ([]Candidate[M, 
 	}
 	result := make([]Candidate[M, V], len(members))
 	for i, member := range members {
-		_, encoded := member.metadata.(framevalue.JSON)
-		if member.metadata != nil && !encoded {
-			actual := reflect.TypeOf(member.metadata)
-			if !actual.AssignableTo(reflect.TypeFor[M]()) {
-				return nil, frame.ErrContractMismatch
-			}
+		if !member.metadata.readableAs(reflect.TypeFor[M]()) {
+			return nil, frame.ErrContractMismatch
 		}
 		result[i] = Candidate[M, V]{snapshot: snapshot.catalogSnapshot, member: member}
 	}
@@ -299,8 +296,8 @@ func Capture(snapshot Snapshot, selections ...SelectionRef) (BindingPlan, error)
 	if snapshot.catalogSnapshot == nil {
 		return BindingPlan{}, frame.ErrInvalid
 	}
-	plan := &bindingPlan{kind: instancePlan, owner: snapshot.owner, realm: snapshot.realm, catalogReads: slices.Clone(snapshot.reads), selections: slices.Clone(selections)}
-	graph := newBindingSnapshot(nil, nil, nil)
+	plan := &capturedPlan{planHeader: planHeader{owner: snapshot.owner, realm: snapshot.realm}, catalogReads: slices.Clone(snapshot.reads), selections: slices.Clone(selections)}
+	var graph BindingSnapshot
 	units := make(map[UnitRef]UnitBinding)
 	rules := make([]selectionRule, 0, len(selections))
 	for _, selection := range selections {
@@ -323,11 +320,11 @@ func Capture(snapshot Snapshot, selections ...SelectionRef) (BindingPlan, error)
 		graph.Units = append(graph.Units, unit)
 	}
 	if len(rules) > 0 {
-		encoded, err := json.Marshal(rules)
+		encoded, err := json.Marshal(rules, json.Deterministic(true))
 		if err != nil {
 			return BindingPlan{}, err
 		}
-		graph.Rule = framevalue.Hash(encoded).String()
+		graph.Selection = framevalue.Hash(encoded)
 	}
 	binding, err := reachableBinding(graph, graph.Roots, nil)
 	if err != nil {
@@ -342,7 +339,7 @@ func (h *hostState) ValidatePlanUnder(ctx context.Context, plan BindingPlan) (Bi
 		return BindingSnapshot{}, err
 	}
 	h.mu.Lock()
-	err := h.validatePlanLocked(plan.bindingPlan)
+	err := h.validatePlanLocked(plan.plan)
 	h.mu.Unlock()
 	if err != nil {
 		return BindingSnapshot{}, err
@@ -350,28 +347,27 @@ func (h *hostState) ValidatePlanUnder(ctx context.Context, plan BindingPlan) (Bi
 	return plan.Snapshot()
 }
 
-func (h *hostState) validatePlanLocked(plan *bindingPlan) error {
-	if plan == nil || plan.owner != h.identity {
+func (h *hostState) validatePlanLocked(plan admissionPlan) error {
+	if plan == nil || plan.header().owner != h.identity {
 		return ErrStaleBinding
 	}
 	if h.lifetime.IsClosing() {
 		return frame.ErrClosed
 	}
-	switch plan.kind {
-	case declarationPlan:
-		if err := h.validatePreparationLocked(plan); err != nil {
-			return err
-		}
-	case instancePlan:
-	default:
-		return ErrStaleBinding
-	}
-	for _, read := range plan.catalogReads {
+	return plan.validateLocked(h)
+}
+
+func (p *declaredPlan) validateLocked(h *hostState) error { return h.validatePreparationLocked(p) }
+
+// A captured plan stays admissible only while every catalog read, member and
+// instance it names is unchanged and still serving.
+func (p *capturedPlan) validateLocked(h *hostState) error {
+	for _, read := range p.catalogReads {
 		if h.catalog.revision(read.ref) != read.revision {
 			return ErrStaleBinding
 		}
 	}
-	for _, member := range plan.members {
+	for _, member := range p.members {
 		actual := h.catalog.member(member.source.Contract, member.id)
 		if actual == nil || actual.source != member.source || actual.instance.id != member.instanceID {
 			return ErrStaleBinding
@@ -380,7 +376,7 @@ func (h *hostState) validatePlanLocked(plan *bindingPlan) error {
 			return err
 		}
 	}
-	for _, member := range plan.unitMembers {
+	for _, member := range p.unitMembers {
 		instance := h.allInstances[member.instanceID]
 		if instance == nil || instance.binding.Source != member.source {
 			return ErrStaleBinding
@@ -392,7 +388,15 @@ func (h *hostState) validatePlanLocked(plan *bindingPlan) error {
 	return nil
 }
 
-func (h *hostState) validatePreparationLocked(plan *bindingPlan) error {
+func (p *declaredPlan) acquire(ctx context.Context, h *hostState, config UseConfig) (Use, error) {
+	return h.acquireActivated(ctx, config, "", h.plannedBinding(p))
+}
+
+func (p *capturedPlan) acquire(ctx context.Context, h *hostState, config UseConfig) (Use, error) {
+	return h.acquirePrepared(ctx, p, config, "")
+}
+
+func (h *hostState) validatePreparationLocked(plan *declaredPlan) error {
 	if err := h.validateBindingLocked(plan.binding); err != nil {
 		return err
 	}
@@ -425,7 +429,7 @@ func (h *hostState) validatePreparationLocked(plan *bindingPlan) error {
 			return err
 		}
 	}
-	return h.validateBindingReadsLocked(plan.bindingReads)
+	return h.validateBindingReadsLocked(plan.reads)
 }
 
 // validateProviderLocked accepts an export whose instance has not prepared yet;

@@ -19,7 +19,7 @@ func (m publicationMetadata) MarshalJSON() ([]byte, error) {
 	return []byte(`"metadata"`), nil
 }
 
-func scopedPublisher(t *testing.T) (framehost.Host, framehost.ScopeGrant, *framehost.RunningUnit, framehost.Point[string, string]) {
+func scopedPublisher(t *testing.T) (framehost.Host, framehost.ScopeGrant, framehost.RunningUnit, framehost.Point[string, string]) {
 	t.Helper()
 	host := testHost(t, framehost.Config{})
 	descriptor := []byte(`{"protocol":"publication-test"}`)
@@ -40,7 +40,7 @@ func scopedPublisher(t *testing.T) (framehost.Host, framehost.ScopeGrant, *frame
 	t.Cleanup(unblock)
 	plugin := installNative(t, host, "publisher", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "initial", Contract: point.Ref()}}},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			_, err := setup.Cleanup("publication-owner", func() error { <-release; return nil })
 			if err != nil {
 				return nil, err
@@ -94,7 +94,7 @@ func TestPublicationRechecksOriginalGrantAfterMetadataPreparation(t *testing.T) 
 			host.Admission().FenceScope(grant.ID())
 		}),
 	})
-	if err == nil || !prepared || request != nil {
+	if err == nil || !prepared || request.Valid() {
 		t.Fatalf("revoked preparation produced publication authority: prepared=%v request=%v error=%v", prepared, request, err)
 	}
 	if _, err := host.Publication(running.ID(), "revoked-during-preparation"); !errors.Is(err, framehost.ErrUnavailable) {
@@ -102,7 +102,7 @@ func TestPublicationRechecksOriginalGrantAfterMetadataPreparation(t *testing.T) 
 	}
 }
 
-func preparePublication(t *testing.T, host framehost.Host, instanceID string, value framehost.ExportValue) *framehost.PublicationRequest {
+func preparePublication(t *testing.T, host framehost.Host, instanceID string, value framehost.ExportValue) framehost.PublicationRequest {
 	t.Helper()
 	request, err := host.PreparePublication(t.Context(), instanceID, value)
 	if err != nil {
@@ -119,8 +119,8 @@ func TestPublicationReplayRetainsItsOriginalIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	copied := *request
-	if replayed, err := host.Publish(t.Context(), "original", &copied); err != nil || replayed != first {
+	copied := request
+	if replayed, err := host.Publish(t.Context(), "original", copied); err != nil || replayed != first {
 		t.Fatalf("copied request replaced its original prepared value: %+v, %v", replayed, err)
 	}
 	value.Value = "mutated after preparation"

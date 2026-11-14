@@ -20,20 +20,20 @@ const (
 	primaryResultMask = 0xff
 )
 
-func OpenSchema(ctx context.Context, path string, statements []string) (result *Database, err error) {
+func OpenSchema(ctx context.Context, path string, statements []string) (result Database, err error) {
 	dsn := fmt.Sprintf(
 		"file:%s?_txlock=immediate&_pragma=foreign_keys(ON)&_pragma=busy_timeout(%d)",
 		url.PathEscape(filepath.ToSlash(path)), busyTimeout/time.Millisecond,
 	)
 	db, err := openDatabase(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("sqlite: open %q: %w", path, err)
+		return Database{}, fmt.Errorf("sqlite: open %q: %w", path, err)
 	}
 	// Acquire the write slot before reading a mutable snapshot: a deferred
 	// upgrade can fail immediately even when the busy timeout allows waiting.
 	// One connection serializes this owner's write-sets; SQLite coordinates peers.
 	db.SetMaxOpenConns(1)
-	database := &Database{databaseOwner: &databaseOwner{db: db}}
+	database := Database{databaseOwner: &databaseOwner{db: db}}
 	defer func() {
 		if err != nil {
 			err = errors.Join(err, database.Close())
@@ -47,11 +47,11 @@ func OpenSchema(ctx context.Context, path string, statements []string) (result *
 
 	if path != ":memory:" {
 		if err := admitWAL(ctx, db); err != nil {
-			return nil, errors.Join(fmt.Errorf("sqlite: admit wal: %w", err), frame.ContextError(ctx))
+			return Database{}, errors.Join(fmt.Errorf("sqlite: admit wal: %w", err), frame.ContextError(ctx))
 		}
 	}
 	if err := InstallSchema(ctx, database, statements); err != nil {
-		return nil, err
+		return Database{}, err
 	}
 	return database, nil
 }
@@ -110,12 +110,12 @@ func waitForSQLite(ctx context.Context, limit time.Duration, attempt func() erro
 	}
 }
 
-func InstallSchema(ctx context.Context, db *Database, stmts []string) error {
-	if db == nil || db.databaseOwner == nil {
+func InstallSchema(ctx context.Context, db Database, stmts []string) error {
+	if db.databaseOwner == nil {
 		return frame.ErrInvalid
 	}
-	original := *db
-	db = &original
+	original := db
+	db = original
 	expected, err := schemaShape(ctx, stmts)
 	if err != nil {
 		return fmt.Errorf("sqlite: declared schema: %w", err)

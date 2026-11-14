@@ -69,14 +69,14 @@ func TestUnpublishedUseKeepsItsOriginalSettlement(t *testing.T) {
 					}
 					return nil
 				}
-				host, err := framehost.New(t.Context(), framehost.Config{Lifetime: lifetime, ExecutionProtection: protection, Limits: framehost.Limits{MaxUses: 1}})
+				host, err := framehost.New(t.Context(), framehost.Config{Lifetime: lifetime, Authority: protectionAuthority(protection), Limits: framehost.Limits{MaxUses: 1}})
 				if err != nil {
 					t.Fatal(err)
 				}
 				var cleanups atomic.Int64
 				plugin := installNative(t, host, "provider", framehost.Unit{
 					Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-					Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+					Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 						_, err := setup.Cleanup("original provider", func() error { cleanups.Add(1); return nil })
 						return nil, err
 					},
@@ -87,7 +87,7 @@ func TestUnpublishedUseKeepsItsOriginalSettlement(t *testing.T) {
 				}
 				root := framehost.UnitRef{InstallationID: "provider", Release: plugin.Revision(), UnitID: "main"}
 				use, err := host.AcquireUnit(t.Context(), root, framehost.UseConfig{Owner: owner, Scope: scope, Realm: "realm"})
-				if use != nil || !errors.Is(err, frame.ErrClosed) {
+				if use.Valid() || !errors.Is(err, frame.ErrClosed) {
 					t.Errorf("closed owner published its grant: %v, %v", use, err)
 				}
 				synctest.Wait()
@@ -150,7 +150,7 @@ func TestUseReservesLocalCapacityBeforeProtection(t *testing.T) {
 				t.Fatal(err)
 			}
 			protection := &reservedUseProtection{releases: make(chan recordedUseRelease, 1)}
-			host := testHost(t, framehost.Config{Lifetime: lifetime, ExecutionProtection: protection})
+			host := testHost(t, framehost.Config{Lifetime: lifetime, Authority: protectionAuthority(protection)})
 			owner, err := frame.NewLifetimeWithLimits(t.Context(), frame.LifetimeLimits{MaxResources: 1})
 			if err != nil {
 				t.Fatal(err)
@@ -162,7 +162,7 @@ func TestUseReservesLocalCapacityBeforeProtection(t *testing.T) {
 			}
 			plugin := installNative(t, host, "provider", framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-				Setup:       func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil },
+				Setup:       func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil },
 			})
 			scope, err := host.Admission().OpenScope(t.Context(), "consumer")
 			if err != nil {
@@ -170,7 +170,7 @@ func TestUseReservesLocalCapacityBeforeProtection(t *testing.T) {
 			}
 			root := framehost.UnitRef{InstallationID: "provider", Release: plugin.Revision(), UnitID: "main"}
 			use, err := host.AcquireUnit(t.Context(), root, framehost.UseConfig{Owner: owner, Scope: scope, Realm: "realm"})
-			if use != nil || !errors.Is(err, frame.ErrCapacity) || protection.approvals.Load() != 0 {
+			if use.Valid() || !errors.Is(err, frame.ErrCapacity) || protection.approvals.Load() != 0 {
 				t.Fatalf("protection preceded its local capacity: %v, %v, approvals=%d", use, err, protection.approvals.Load())
 			}
 			if outcome, err := owner.Close(testContext(t)); err != nil || !outcome.Released {

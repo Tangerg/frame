@@ -403,7 +403,7 @@ func TestExecutionProtectionOutlivesBusinessAndEpoch(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := framehost.UnitRef{InstallationID: "converter", Release: value.Hash([]byte("release")), UnitID: "backend"}
-	binding := framehost.BindingSnapshot{FormatVersion: 1, Roots: []framehost.ExportRef{{InstallationID: source.InstallationID, Release: source.Release, UnitID: source.UnitID, Export: "convert", Contract: contract.Ref()}}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil), Imports: []framehost.ImportDeclaration{}}}}
+	binding := framehost.BindingSnapshot{Roots: []framehost.ExportRef{{InstallationID: source.InstallationID, Release: source.Release, UnitID: source.UnitID, Export: "convert", Contract: contract.Ref()}}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil), Imports: []framehost.ImportBinding{}}}}
 	attempt := Attempt{ID: "attempt-1", Epoch: store.Epoch(), Source: source, Binding: binding, Realm: "runner-1", Profile: "local-process"}
 	if err := store.RecordAttempt(context.Background(), attempt); err != nil {
 		t.Fatal(err)
@@ -415,7 +415,7 @@ func TestExecutionProtectionOutlivesBusinessAndEpoch(t *testing.T) {
 	if err != nil || len(dependencies) != 1 {
 		t.Fatalf("execution protection: %v %v", dependencies, err)
 	}
-	attempt.Binding.Rule = "changed"
+	attempt.Binding.Selection = value.Hash([]byte("changed"))
 	if err := store.RecordAttempt(context.Background(), attempt); !errors.Is(err, ErrConflict) {
 		t.Fatalf("widened execution: %v", err)
 	}
@@ -471,7 +471,7 @@ func TestProtectionQueriesExcludeProvenHistory(t *testing.T) {
 	store, _, a := testStore(t)
 	ctx := t.Context()
 	ref := framehost.UnitRef{InstallationID: "one", Release: value.Hash([]byte("release")), UnitID: "u"}
-	binding := framehost.BindingSnapshot{FormatVersion: 1, Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{ref}, Units: []framehost.UnitBinding{{Source: ref, Configuration: value.Hash(nil)}}}
+	binding := framehost.BindingSnapshot{Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{ref}, Units: []framehost.UnitBinding{{Source: ref, Configuration: value.Hash(nil)}}}
 	active := Attempt{ID: "active", Epoch: store.Epoch(), Source: ref, Binding: binding, Realm: "runner", Profile: framehost.LocalProcess}
 	if err := store.RecordAttempt(ctx, active); err != nil {
 		t.Fatal(err)

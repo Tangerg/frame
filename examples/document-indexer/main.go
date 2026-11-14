@@ -121,9 +121,10 @@ func (d *documents) install(ctx context.Context, h framehost.Host, pluginRevisio
 		host.Declaration.Exports = append(host.Declaration.Exports, framehost.ExportDeclaration{Name: slot, Contract: ref})
 		values = append(values, framehost.Provide(slot, contract, service.implementation))
 		provider := framehost.ExportRef{InstallationID: hostID, Release: hostRevision, UnitID: host.Declaration.ID, Export: slot, Contract: ref}
-		child.Declaration.Imports = append(child.Declaration.Imports, framehost.ImportDeclaration{Slot: slot, Contract: ref, Providers: []framehost.ExportRef{provider}})
+		child.Declaration.Imports = append(child.Declaration.Imports, framehost.ImportDeclaration{Slot: slot, Contract: ref})
+		child.Declaration.Fixed = append(child.Declaration.Fixed, framehost.SlotProviders{Slot: slot, Providers: []framehost.ExportRef{provider}})
 	}
-	host.Setup = func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) { return values, nil }
+	host.Setup = func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) { return values, nil }
 	if _, err := install(ctx, h, hostID, hostRevision, host); err != nil {
 		return framehost.UnitRef{}, err
 	}
@@ -215,7 +216,7 @@ func run(ctx context.Context, entry string) (answer string, returned error) {
 	if err != nil {
 		return "", err
 	}
-	host, err := framehost.New(ctx, framehost.Config{Admission: gate, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store, Drivers: []framehost.Driver{driver}})
+	host, err := framehost.New(ctx, framehost.Config{Authority: store, Drivers: []framehost.Driver{driver}})
 	if err != nil {
 		return "", err
 	}

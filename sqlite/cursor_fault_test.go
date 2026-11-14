@@ -39,7 +39,7 @@ func (r *cursorFaultRows) Close() error {
 	return err
 }
 
-func cursorFaultDatabase(t *testing.T, fault transactionFault) *Database {
+func cursorFaultDatabase(t *testing.T, fault transactionFault) Database {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "cursors.db")
 	seed, err := OpenSchema(t.Context(), path, []string{`CREATE TABLE facts (value TEXT NOT NULL)`})
@@ -49,7 +49,7 @@ func cursorFaultDatabase(t *testing.T, fault transactionFault) *Database {
 	if err := seed.Close(); err != nil {
 		t.Fatal(err)
 	}
-	database := &Database{databaseOwner: &databaseOwner{db: sql.OpenDB(cursorConnector{Connector: &faultConnector{driver: &modernc.Driver{}, dsn: storeDataSource(path), fault: fault}})}}
+	database := Database{databaseOwner: &databaseOwner{db: sql.OpenDB(cursorConnector{Connector: &faultConnector{driver: &modernc.Driver{}, dsn: storeDataSource(path), fault: fault}})}}
 	database.db.SetMaxOpenConns(1)
 	database.db.SetMaxIdleConns(1)
 	t.Cleanup(func() {

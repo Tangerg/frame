@@ -31,10 +31,10 @@ func (s OptionalSlot[T]) importDeclaration() ImportDeclaration {
 	d.Optional = true
 	return d
 }
-func (s RequiredSlot[T]) Get(setup *Setup) (T, error) {
+func (s RequiredSlot[T]) Get(setup Setup) (T, error) {
 	return Import(setup, s.name, s.contract)
 }
-func (s OptionalSlot[T]) Get(setup *Setup) (T, bool, error) {
+func (s OptionalSlot[T]) Get(setup Setup) (T, bool, error) {
 	return OptionalImport(setup, s.slot.name, s.slot.contract)
 }
 
@@ -81,10 +81,10 @@ func (s ServiceExport[T]) exportDeclaration() ExportDeclaration {
 func (s PointExport[M, V]) exportDeclaration() ExportDeclaration {
 	return ExportDeclaration{Name: s.name, Contract: s.point.Ref()}
 }
-func (s ServiceExport[T]) Bind(setup *Setup, value T) error {
+func (s ServiceExport[T]) Bind(setup Setup, value T) error {
 	return setup.bind(Provide(s.name, s.contract, value))
 }
-func (s PointExport[M, V]) Bind(setup *Setup, metadata M, value V) error {
+func (s PointExport[M, V]) Bind(setup Setup, metadata M, value V) error {
 	return setup.bind(Contribute(s.name, s.point, metadata, value))
 }
 
@@ -92,7 +92,7 @@ type UnitSpec struct {
 	ID      UnitID
 	Imports []ImportDeclaration
 	Exports []ExportDeclaration
-	Prepare func(*Setup) error
+	Prepare func(Setup) error
 }
 
 func DefineUnit(spec UnitSpec) (Unit, error) {
@@ -104,13 +104,13 @@ func DefineUnit(spec UnitSpec) (Unit, error) {
 	if prepare == nil {
 		return Unit{}, fmt.Errorf("%w: native preparation required", frame.ErrInvalid)
 	}
-	return Unit{Declaration: d.Clone(), Setup: func(_ context.Context, s *Setup) ([]ExportValue, error) {
+	return Unit{Declaration: d.Clone(), Setup: func(_ context.Context, s Setup) ([]ExportValue, error) {
 		return nil, prepare(s)
 	}}, nil
 }
 
-func (s *Setup) bind(value ExportValue) error {
-	if s == nil || s.setupCall == nil {
+func (s Setup) bind(value ExportValue) error {
+	if s.setupCall == nil {
 		return frame.ErrInvalid
 	}
 	call := s.setupCall
@@ -132,14 +132,14 @@ func (s *Setup) bind(value ExportValue) error {
 
 // AcquireResource reserves release capacity before opening the resource. The
 // opener transfers ownership only on success; on failure it owns its rollback.
-func AcquireResource[T any](setup *Setup, name string, open func(context.Context) (T, error), closeResource func(T) error) (T, *frame.ResourceHandle, error) {
+func AcquireResource[T any](setup Setup, name string, open func(context.Context) (T, error), closeResource func(T) error) (T, frame.ResourceHandle, error) {
 	var value T
-	if setup == nil || open == nil || closeResource == nil {
-		return value, nil, frame.ErrInvalid
+	if !setup.Valid() || open == nil || closeResource == nil {
+		return value, frame.ResourceHandle{}, frame.ErrInvalid
 	}
 	work, err := setup.Lifetime().Enter(setup.Context())
 	if err != nil {
-		return value, nil, err
+		return value, frame.ResourceHandle{}, err
 	}
 	defer work.Finish()
 	opened := false
@@ -150,13 +150,13 @@ func AcquireResource[T any](setup *Setup, name string, open func(context.Context
 		return closeResource(value)
 	})
 	if err != nil {
-		return value, nil, err
+		return value, frame.ResourceHandle{}, err
 	}
 	value, err = open(work.Context())
 	if err != nil {
 		_ = handle.ConfirmReleased(nil)
 		var zero T
-		return zero, nil, err
+		return zero, frame.ResourceHandle{}, err
 	}
 	opened = true
 	return value, handle, nil

@@ -4,11 +4,10 @@ export function taskView(id, state = "completed") {
     id,
     source,
     binding: {
-      formatVersion: 1,
       roots: [],
       unitRoots: [],
       units: [],
-      rule: "test selection",
+      selection: "b".repeat(64),
     },
     state,
     runEpoch: "1",

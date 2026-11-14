@@ -66,7 +66,7 @@ func newMetadataAccess(t *testing.T) metadataAccessFixture {
 	}
 	plugin := installNative(t, host, "metadata", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "member", Contract: point.Ref()}}},
-		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			return []framehost.ExportValue{framehost.Contribute("member", point, accessCodecMetadata("metadata"), "value")}, nil
 		},
 	})
@@ -99,8 +99,8 @@ func TestMetadataCodecCanReenterItsOriginalAccess(t *testing.T) {
 	reentered := make(chan error, 1)
 	var copied framehost.Access
 	defer activeMetadataAccess.Store(nil)
-	err := f.host.With(ctx, f.scope, f.plan, func(access *framehost.Access) error {
-		copied = *access
+	err := f.host.With(ctx, f.scope, f.plan, func(access framehost.Access) error {
+		copied = access
 		hook := &metadataAccessHook{call: func() error {
 			go func() {
 				member, err := f.selection.One(access)
@@ -124,7 +124,7 @@ func TestMetadataCodecCanReenterItsOriginalAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("codec could not reenter the original access: %v", err)
 	}
-	if _, err := f.selection.One(&copied); !errors.Is(err, frame.ErrClosed) {
+	if _, err := f.selection.One(copied); !errors.Is(err, frame.ErrClosed) {
 		t.Fatalf("copied access survived its original borrow: %v", err)
 	}
 }
@@ -144,9 +144,9 @@ func TestBorrowJoinsAnAcceptedMetadataReadBeforeReleasingItsWork(t *testing.T) {
 	}})
 	defer activeMetadataAccess.Store(nil)
 	go func() {
-		borrowed <- f.host.With(ctx, f.scope, f.plan, func(access *framehost.Access) error {
-			copied = *access
-			go func() { _, err := f.selection.One(&copied); read <- err }()
+		borrowed <- f.host.With(ctx, f.scope, f.plan, func(access framehost.Access) error {
+			copied = access
+			go func() { _, err := f.selection.One(copied); read <- err }()
 			<-entered
 			close(callbackReturned)
 			return nil
@@ -176,7 +176,7 @@ func TestBorrowJoinsAnAcceptedMetadataReadBeforeReleasingItsWork(t *testing.T) {
 	if readErr != nil && !errors.Is(readErr, frame.ErrClosed) {
 		t.Fatalf("accepted metadata read failed: %v", readErr)
 	}
-	if _, err := f.selection.One(&copied); !errors.Is(err, frame.ErrClosed) {
+	if _, err := f.selection.One(copied); !errors.Is(err, frame.ErrClosed) {
 		t.Fatalf("closed access accepted another metadata read: %v", err)
 	}
 }
@@ -188,7 +188,7 @@ func TestMetadataReadUsesTheOriginalBorrowWorkBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var held []*frame.Work
+	var held []frame.Work
 	defer func() {
 		for _, work := range held {
 			work.Finish()

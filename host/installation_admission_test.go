@@ -45,7 +45,7 @@ func TestInstallationRevalidatesAfterRetentionRead(t *testing.T) {
 					storage := &observedInstallationStore{resultStore: resultStore{state: framehost.CommitSucceeded}}
 					config := framehost.Config{}
 					if persistence.withStore {
-						config.Installations = storage
+						config.Authority = installationAuthority(storage)
 					}
 					host := testHost(t, config)
 					original, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("original"))})

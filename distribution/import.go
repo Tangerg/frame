@@ -10,26 +10,26 @@ import (
 	"github.com/Tangerg/frame/value"
 )
 
-func (s *storeAuthority) ImportDirectoryHeld(ctx context.Context, directory string) (lease *Lease, err error) {
+func (s *storeAuthority) ImportDirectoryHeld(ctx context.Context, directory string) (lease Lease, err error) {
 	done, err := s.beginOperation(newOperation)
 	if err != nil {
-		return nil, err
+		return Lease{}, err
 	}
 	defer done()
 	input, err := os.OpenRoot(directory)
 	if err != nil {
-		return nil, err
+		return Lease{}, err
 	}
 	defer func() {
 		err = errors.Join(err, input.Close())
-		if err != nil && lease != nil {
+		if err != nil && lease.Valid() {
 			err = errors.Join(err, lease.Close())
-			lease = nil
+			lease = Lease{}
 		}
 	}()
 	staged, err := s.stage()
 	if err != nil {
-		return nil, err
+		return Lease{}, err
 	}
 	defer func() { err = errors.Join(err, staged.discard()) }()
 	err = staged.paths.walk(ctx, input, staged.limits.Entries, func(name string, entry fs.DirEntry) error {
@@ -39,58 +39,58 @@ func (s *storeAuthority) ImportDirectoryHeld(ctx context.Context, directory stri
 		return staged.copyRegular(ctx, input, name, entry)
 	})
 	if err != nil {
-		return nil, err
+		return Lease{}, err
 	}
 	return s.publishHeld(ctx, staged, Source{Location: directory})
 }
 
 // Networking and trust policy belong to the application. This operation keeps
 // the digest-pinned archive and its installed content under one original lease.
-func (s *storeAuthority) ImportArchiveHeld(ctx context.Context, fileName string, expected value.Digest) (lease *Lease, err error) {
+func (s *storeAuthority) ImportArchiveHeld(ctx context.Context, fileName string, expected value.Digest) (lease Lease, err error) {
 	done, err := s.beginOperation(newOperation)
 	if err != nil {
-		return nil, err
+		return Lease{}, err
 	}
 	defer done()
 	if expected.Validate() != nil {
-		return nil, ErrInvalid
+		return Lease{}, ErrInvalid
 	}
 	file, err := localfile.OpenRegular(fileName)
 	if err != nil {
-		return nil, err
+		return Lease{}, err
 	}
 	defer func() {
 		err = errors.Join(err, file.Close())
-		if err != nil && lease != nil {
+		if err != nil && lease.Valid() {
 			err = errors.Join(err, lease.Close())
-			lease = nil
+			lease = Lease{}
 		}
 	}()
 	info, err := file.Stat()
 	if err != nil {
-		return nil, err
+		return Lease{}, err
 	}
 	if !info.Mode().IsRegular() || info.Size() > s.limits.ArchiveBytes {
-		return nil, ErrCapacity
+		return Lease{}, ErrCapacity
 	}
 	data, err := readBounded(ctx, file, s.limits.ArchiveBytes)
 	if err != nil {
-		return nil, err
+		return Lease{}, err
 	}
 	if value.Hash(data) != expected {
-		return nil, ErrIntegrity
+		return Lease{}, ErrIntegrity
 	}
 	archive, err := s.limits.openArchive(data)
 	if err != nil {
-		return nil, err
+		return Lease{}, err
 	}
 	staged, err := s.stage()
 	if err != nil {
-		return nil, err
+		return Lease{}, err
 	}
 	defer func() { err = errors.Join(err, staged.discard()) }()
 	if err := staged.extract(ctx, archive, s.limits); err != nil {
-		return nil, err
+		return Lease{}, err
 	}
 	return s.publishHeld(ctx, staged, Source{Location: fileName, ArchiveDigest: expected})
 }

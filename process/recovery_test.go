@@ -145,7 +145,7 @@ func recordAttempt(t *testing.T, store sqlite.Store, identity runner.Identity) s
 	}
 	contract := framehost.ContractRef{Name: capability.Descriptor().Reference, Version: "1", Digest: capability.Identity().Digest(), Kind: framehost.ServiceKind, Mode: framehost.PortableMode}
 	root := framehost.ExportRef{InstallationID: "original", Release: value.Hash([]byte("release")), UnitID: "backend", Export: "echo", Contract: contract}
-	binding := framehost.BindingSnapshot{FormatVersion: 1, Roots: []framehost.ExportRef{root}, Units: []framehost.UnitBinding{{Source: root.Unit(), Configuration: value.Hash([]byte(`{}`)), Imports: []framehost.ImportDeclaration{}}}}
+	binding := framehost.BindingSnapshot{Roots: []framehost.ExportRef{root}, Units: []framehost.UnitBinding{{Source: root.Unit(), Configuration: value.Hash([]byte(`{}`)), Imports: []framehost.ImportBinding{}}}}
 	attempt := sqlite.Attempt{ID: "approved-before-crash", Epoch: store.Epoch(), Source: root.Unit(), Binding: binding, Realm: identity.ID, Profile: framehost.LocalProcess}
 	if err := store.RecordAttempt(t.Context(), attempt); err != nil {
 		t.Fatal(err)
@@ -197,7 +197,7 @@ func TestRecoverOriginalExitHandoffAcrossHostRestart(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			proof := sqlite.ExitProof{AttemptID: attempt.ID, Realm: attempt.Realm, ExitID: exit.ProofID, Kind: "runner-not-created", Evidence: evidence}
+			proof := sqlite.ExitProof{AttemptID: attempt.ID, Realm: attempt.Realm, ExitID: exit.ProofID, Kind: "runner-exit", Evidence: evidence}
 			if err := store.AcceptExit(ctx, attempt.ID, proof); err != nil {
 				t.Fatal(err)
 			}

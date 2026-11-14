@@ -47,7 +47,7 @@ func TestTerminalExitDoesNotRetainOriginalContext(t *testing.T) {
 	runtime.KeepAlive(exit)
 }
 
-func closedUse(t *testing.T) (*Use, weak.Pointer[hostState], weak.Pointer[retainedHostPayload]) {
+func closedUse(t *testing.T) (Use, weak.Pointer[hostState], weak.Pointer[retainedHostPayload]) {
 	t.Helper()
 	ctx := t.Context()
 	host, err := New(ctx, Config{})
@@ -65,7 +65,7 @@ func closedUse(t *testing.T) (*Use, weak.Pointer[hostState], weak.Pointer[retain
 	value.bytes[0] = 1
 	plugin, err := Define(Definition{Revision: framevalue.Hash([]byte("retention")), Units: []Unit{{
 		Declaration: UnitDeclaration{ID: "value", Profile: NativeGo, Exports: []ExportDeclaration{{Name: "value", Contract: service.Ref()}}},
-		Setup: func(context.Context, *Setup) ([]ExportValue, error) {
+		Setup: func(context.Context, Setup) ([]ExportValue, error) {
 			return []ExportValue{Provide("value", service, value)}, nil
 		},
 	}}})
@@ -97,7 +97,7 @@ func closedUse(t *testing.T) (*Use, weak.Pointer[hostState], weak.Pointer[retain
 	}); err != nil {
 		t.Fatal(err)
 	}
-	copied := *use
+	copied := use
 	if outcome, err := use.Close(ctx); err != nil || !outcome.Released {
 		t.Fatalf("use close: %+v, %v", outcome, err)
 	}
@@ -107,7 +107,7 @@ func closedUse(t *testing.T) (*Use, weak.Pointer[hostState], weak.Pointer[retain
 	if outcome, err := host.Close(ctx); err != nil || !outcome.Released {
 		t.Fatalf("host close: %+v, %v", outcome, err)
 	}
-	return &copied, weak.Make(host.hostState), weak.Make(value)
+	return copied, weak.Make(host.hostState), weak.Make(value)
 }
 
 func TestTerminalUseDoesNotRetainHostOrNativeObject(t *testing.T) {
@@ -129,7 +129,7 @@ func TestTerminalUseDoesNotRetainHostOrNativeObject(t *testing.T) {
 	runtime.KeepAlive(use)
 }
 
-func stoppedRunningUnit(t *testing.T) (*RunningUnit, weak.Pointer[hostState], weak.Pointer[retainedHostPayload]) {
+func stoppedRunningUnit(t *testing.T) (RunningUnit, weak.Pointer[hostState], weak.Pointer[retainedHostPayload]) {
 	t.Helper()
 	host, err := New(context.Background(), Config{})
 	if err != nil {
@@ -137,7 +137,7 @@ func stoppedRunningUnit(t *testing.T) (*RunningUnit, weak.Pointer[hostState], we
 	}
 	value := new(retainedHostPayload)
 	value.bytes[0] = 1
-	unit, err := DefineUnit(UnitSpec{ID: "worker", Prepare: func(*Setup) error {
+	unit, err := DefineUnit(UnitSpec{ID: "worker", Prepare: func(Setup) error {
 		if value.bytes[0] != 1 {
 			return errors.New("retained payload changed")
 		}
@@ -185,10 +185,10 @@ func TestStoppedRunningUnitDoesNotRetainHostOrPlugin(t *testing.T) {
 	runtime.KeepAlive(running)
 }
 
-func acquireRetentionUse(host Host, ctx context.Context, binding BindingSnapshot, config UseConfig) (*Use, error) {
+func acquireRetentionUse(host Host, ctx context.Context, binding BindingSnapshot, config UseConfig) (Use, error) {
 	plan, err := host.PlanWith(ctx, config.Realm, nil, binding.Roots...)
 	if err != nil {
-		return nil, err
+		return Use{}, err
 	}
 	return host.Acquire(ctx, plan, config)
 }

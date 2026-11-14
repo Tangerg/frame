@@ -69,7 +69,7 @@ func (r *instanceRetirement) awaitExit(ctx context.Context) (frame.CloseOutcome,
 // wait on the consumer that cancellation must release.
 type instanceHold struct {
 	instance *unitInstance
-	work     *frame.Work
+	work     frame.Work
 }
 
 type heldInstances []instanceHold
@@ -173,7 +173,7 @@ type unitInstance struct {
 	configuration []byte
 	setup         SetupFunc
 	lifetime      frame.Lifetime
-	resource      *frame.ResourceHandle
+	resource      frame.ResourceHandle
 	providerHolds heldInstances
 	stops         []func() bool
 
@@ -252,8 +252,8 @@ func (i *unitInstance) observationLocked() InstanceObservation {
 
 // holdProvidersLocked holds every provider that the binding planned before i,
 // so a provider cannot retire beneath its consumer.
-func (i *unitInstance) holdProvidersLocked(planned map[UnitRef]*unitInstance) ([]*frame.ResourceHandle, error) {
-	var resources []*frame.ResourceHandle
+func (i *unitInstance) holdProvidersLocked(planned map[UnitRef]*unitInstance) ([]frame.ResourceHandle, error) {
+	var resources []frame.ResourceHandle
 	held := make(map[*unitInstance]bool)
 	for _, requirement := range i.binding.Imports {
 		for _, source := range requirement.Providers {
@@ -293,7 +293,7 @@ func (i *unitInstance) releaseProvidersLocked() {
 }
 
 func (i *unitInstance) prepare() {
-	err := errors.New("frame: preparation exited without returning")
+	err := errors.New("host: preparation exited without returning")
 	// Codecs and driver validation share the original preparation's failure
 	// boundary, including panic and Goexit, before anything becomes visible.
 	defer func() {
@@ -328,7 +328,7 @@ func (i *unitInstance) prepareUnit() error {
 			return err
 		}
 	}
-	setup := &Setup{&setupCall{host: h, instance: i, work: work}}
+	setup := Setup{&setupCall{host: h, instance: i, work: work}}
 	h.mu.Lock()
 	run, err := i.setupFuncLocked()
 	if err == nil {
@@ -543,7 +543,7 @@ func (i *unitInstance) beginRetire() {
 
 // registerInstanceLocked makes instance a Host resource that retires after its
 // consumers, and retires it when a provider, its start grant or itself ends.
-func (h *hostState) registerInstanceLocked(instance *unitInstance, providers []*frame.ResourceHandle) error {
+func (h *hostState) registerInstanceLocked(instance *unitInstance, providers []frame.ResourceHandle) error {
 	causes := instance.retirement.causes
 	resource, err := h.lifetime.Own(frame.Resource{
 		Name:   instanceResourceName(instance.id),
@@ -662,7 +662,7 @@ func awaitRetired(ctx context.Context, retired <-chan struct{}) error {
 	}
 }
 
-func invokeSetup(setup SetupFunc, ctx context.Context, value *Setup) (exports []ExportValue, activate func(context.Context) error, err error) {
+func invokeSetup(setup SetupFunc, ctx context.Context, value Setup) (exports []ExportValue, activate func(context.Context) error, err error) {
 	call := value.setupCall
 	defer func() {
 		exports, activate = call.seal(exports)

@@ -67,7 +67,7 @@ func TestCachedTreeRevalidatesPathsAndCapacity(t *testing.T) {
 				t.Fatal(err)
 			}
 			lease, err := store.Acquire(t.Context(), release.Digest)
-			if lease != nil {
+			if lease.Valid() {
 				_ = lease.Close()
 			}
 			if !errors.Is(err, mutation.want) {

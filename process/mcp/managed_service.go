@@ -88,7 +88,7 @@ func (s *ManagedService) invoke(ctx context.Context, invocation frame.Invocation
 		return framevalue.JSON{}, err
 	}
 	method, ok := s.contract.capability.Method(invocation.Member())
-	if !ok || (len(method.Descriptor().Stream) != 0) != (emit != nil) || (emit != nil && s.openStream == nil) {
+	if !ok || method.Streaming() != (emit != nil) || (emit != nil && s.openStream == nil) {
 		return framevalue.JSON{}, fmt.Errorf("%w: managed member %q does not support this invocation", frame.ErrContractMismatch, invocation.Member())
 	}
 	if err := method.ValidateInvocation(invocation); err != nil {

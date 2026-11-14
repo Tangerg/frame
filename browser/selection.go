@@ -99,7 +99,7 @@ func (b *Bridge) useConfig(session *realmSession, entry *browserExecution, paren
 	return config, nil
 }
 
-func (b *Bridge) deliverUse(ctx context.Context, session *realmSession, entry *browserExecution, use *framehost.Use, operationID string, operation *controlOperation) (UseGrant, error) {
+func (b *Bridge) deliverUse(ctx context.Context, session *realmSession, entry *browserExecution, use framehost.Use, operationID string, operation *controlOperation) (UseGrant, error) {
 	grant := UseGrant{OperationID: operationID, ParentUseID: operation.parentID, ID: use.ID(), ApprovalToken: b.signer.approval(use.ID()), Authority: b.authority, Realm: session.realm, Execution: entry.plan.Execution, ScopeID: entry.plan.ScopeID, ScopeGeneration: entry.plan.ScopeGeneration, Objects: []ObjectRef{}}
 	for _, source := range use.Sources() {
 		err := framehost.BorrowExport(ctx, use, source, func(_ context.Context, object Object) error {
@@ -226,14 +226,14 @@ func (b *Bridge) reserveRoute(useID string) (*browserUse, error) {
 	return retained, b.routes.reserve()
 }
 
-func (b *Bridge) newEventRoute(ctx context.Context, use *framehost.Use, source, receiver LocalExport) (*framehost.EventRoute, error) {
+func (b *Bridge) newEventRoute(ctx context.Context, use framehost.Use, source, receiver LocalExport) (framehost.EventRoute, error) {
 	sourceRef, err := localSource(ctx, use, source)
 	if err != nil {
-		return nil, err
+		return framehost.EventRoute{}, err
 	}
 	receiverRef, err := localSource(ctx, use, receiver)
 	if err != nil {
-		return nil, err
+		return framehost.EventRoute{}, err
 	}
 	return b.config.Host.NewEventRoute(ctx, use, use, sourceRef, receiverRef)
 }
@@ -251,7 +251,7 @@ func (b *Bridge) ValidateRoute(ctx context.Context, token string, route RouteGra
 	return b.config.Host.ValidateEventRoute(ctx, original.original)
 }
 
-func localSource(ctx context.Context, use *framehost.Use, local LocalExport) (framehost.ExportRef, error) {
+func localSource(ctx context.Context, use framehost.Use, local LocalExport) (framehost.ExportRef, error) {
 	for _, source := range use.Sources() {
 		var matches bool
 		err := framehost.BorrowExport(ctx, use, source, func(_ context.Context, object Object) error { matches = object.Reference.Export == local; return nil })

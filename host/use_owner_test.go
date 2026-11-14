@@ -12,7 +12,7 @@ import (
 )
 
 type retirementReentryError struct {
-	use     *framehost.Use
+	use     framehost.Use
 	once    sync.Once
 	reenter func()
 }
@@ -30,9 +30,9 @@ func TestReleasedUseDropsOriginalEdgesBeforeForwardingDiagnostics(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	var reverse *framehost.Use
+	var reverse framehost.Use
 	t.Cleanup(func() {
-		if reverse != nil {
+		if reverse.Valid() {
 			if outcome, err := reverse.Close(ctx); !outcome.Released || err != nil {
 				t.Errorf("reverse use close: %+v, %v", outcome, err)
 			}
@@ -44,13 +44,13 @@ func TestReleasedUseDropsOriginalEdgesBeforeForwardingDiagnostics(t *testing.T) 
 	var left, right frame.Lifetime
 	plugin := installNative(t, host, "owners", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "left", Profile: framehost.NativeGo},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			left = setup.Lifetime()
 			return nil, nil
 		},
 	}, framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "right", Profile: framehost.NativeGo},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			right = setup.Lifetime()
 			return nil, nil
 		},
@@ -82,7 +82,7 @@ func TestReleasedUseDropsOriginalEdgesBeforeForwardingDiagnostics(t *testing.T) 
 	if outcome, err := use.Close(ctx); !outcome.Released || !errors.Is(err, frame.ErrCloseFailed) {
 		t.Fatalf("original Use close: %+v, %v", outcome, err)
 	}
-	if reverse == nil || acquireErr != nil {
+	if !reverse.Valid() || acquireErr != nil {
 		t.Fatalf("released edge still governed diagnostic reentry: %v", acquireErr)
 	}
 }
@@ -98,7 +98,7 @@ func TestDynamicUseCyclesAreRejectedWithoutRetainingInstances(t *testing.T) {
 				id := framehost.InstallationID(fmt.Sprintf("owner-%d", index))
 				plugin := installNative(t, host, string(id), framehost.Unit{
 					Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-					Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+					Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 						owners[index] = setup.Lifetime()
 						return nil, nil
 					},
@@ -115,10 +115,10 @@ func TestDynamicUseCyclesAreRejectedWithoutRetainingInstances(t *testing.T) {
 				}
 			}
 			use, err := host.AcquireUnit(ctx, roots[0], framehost.UseConfig{Owner: owners[size-1], Scope: scope})
-			if use != nil {
+			if use.Valid() {
 				_, _ = use.Close(ctx)
 			}
-			if !errors.Is(err, framehost.ErrDependencyCycle) || use != nil {
+			if !errors.Is(err, framehost.ErrDependencyCycle) || use.Valid() {
 				t.Fatalf("dynamic cycle admitted: use=%v error=%v", use, err)
 			}
 			for _, root := range roots {
@@ -145,8 +145,8 @@ func TestUseAdmissionRejectsOriginalOwnerCycles(t *testing.T) {
 	if err := host.Register(service); err != nil {
 		t.Fatal(err)
 	}
-	setups := make(map[framehost.UnitID]*framehost.Setup)
-	prepare := func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+	setups := make(map[framehost.UnitID]framehost.Setup)
+	prepare := func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 		setups[setup.Unit().ID] = setup
 		if setup.Unit().ID == "provider" {
 			return []framehost.ExportValue{framehost.Provide("service", service, "value")}, nil
@@ -158,7 +158,7 @@ func TestUseAdmissionRejectsOriginalOwnerCycles(t *testing.T) {
 	})
 	providerSource := source("provider", provider, "provider", "service", service.Ref())
 	consumer := installNative(t, host, "consumer", framehost.Unit{
-		Declaration: framehost.UnitDeclaration{ID: "consumer", Profile: framehost.NativeGo, Imports: []framehost.ImportDeclaration{{Slot: "service", Contract: service.Ref(), Providers: []framehost.ExportRef{providerSource}}}}, Setup: prepare,
+		Declaration: framehost.UnitDeclaration{ID: "consumer", Profile: framehost.NativeGo, Imports: []framehost.ImportDeclaration{{Slot: "service", Contract: service.Ref()}}, Fixed: []framehost.SlotProviders{{Slot: "service", Providers: []framehost.ExportRef{providerSource}}}}, Setup: prepare,
 	})
 	independent := installNative(t, host, "independent", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "independent", Profile: framehost.NativeGo}, Setup: prepare,
@@ -174,7 +174,7 @@ func TestUseAdmissionRejectsOriginalOwnerCycles(t *testing.T) {
 		}
 	}
 	owner, scope := ownerAndScope(t, host)
-	acquire := func(id framehost.UnitID, config framehost.UseConfig) (*framehost.Use, error) {
+	acquire := func(id framehost.UnitID, config framehost.UseConfig) (framehost.Use, error) {
 		t.Helper()
 		plan, err := host.PlanUnit(ctx, "", refs[id], nil)
 		if err != nil {
@@ -183,7 +183,7 @@ func TestUseAdmissionRejectsOriginalOwnerCycles(t *testing.T) {
 		return host.Acquire(ctx, plan, config)
 	}
 	for _, id := range []framehost.UnitID{"provider", "consumer"} {
-		if use, err := acquire(id, framehost.UseConfig{Owner: setups["provider"].Lifetime(), Scope: scope}); !errors.Is(err, framehost.ErrDependencyCycle) || use != nil {
+		if use, err := acquire(id, framehost.UseConfig{Owner: setups["provider"].Lifetime(), Scope: scope}); !errors.Is(err, framehost.ErrDependencyCycle) || use.Valid() {
 			t.Fatalf("owner cycle accepted for %s: use=%v error=%v", id, use, err)
 		}
 	}
@@ -191,7 +191,7 @@ func TestUseAdmissionRejectsOriginalOwnerCycles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if use, err := acquire("consumer", framehost.UseConfig{Owner: parent.Lifetime(), Parent: parent}); !errors.Is(err, framehost.ErrDependencyCycle) || use != nil {
+	if use, err := acquire("consumer", framehost.UseConfig{Owner: parent.Lifetime(), Parent: parent}); !errors.Is(err, framehost.ErrDependencyCycle) || use.Valid() {
 		t.Fatalf("nested owner cycle accepted: use=%v error=%v", use, err)
 	}
 	if _, err := parent.Close(ctx); err != nil {

@@ -11,10 +11,6 @@ import (
 )
 
 type absentDriver struct{ framehost.Driver }
-type absentStore struct {
-	framehost.InstallationStore
-	framehost.ExecutionProtection
-}
 
 func TestRegistrationRejectsTypedNilCollaborators(t *testing.T) {
 	host := testHost(t, framehost.Config{})
@@ -28,8 +24,7 @@ func TestRegistrationRejectsTypedNilCollaborators(t *testing.T) {
 		t.Fatalf("typed nil business owner admitted: %v", err)
 	}
 	for _, config := range []framehost.Config{
-		{Installations: (*absentStore)(nil)},
-		{ExecutionProtection: (*absentStore)(nil)},
+		{Authority: (*durableDouble)(nil)},
 		{Drivers: []framehost.Driver{(*absentDriver)(nil)}},
 	} {
 		if host, err := framehost.New(t.Context(), config); host.Valid() || !errors.Is(err, frame.ErrInvalid) {
@@ -41,7 +36,7 @@ func TestRegistrationRejectsTypedNilCollaborators(t *testing.T) {
 func TestFailedHostConstructionDoesNotRegisterPartialBusinessOwners(t *testing.T) {
 	admission := framehost.NewAdmission()
 	owner := &diagnosticUseOwner{id: "consumer.original"}
-	if host, err := framehost.New(t.Context(), framehost.Config{Admission: admission, UseOwners: []framehost.UseOwner{owner, nil}}); host.Valid() || !errors.Is(err, frame.ErrInvalid) {
+	if host, err := framehost.New(t.Context(), framehost.Config{Authority: admission, UseOwners: []framehost.UseOwner{owner, nil}}); host.Valid() || !errors.Is(err, frame.ErrInvalid) {
 		t.Fatalf("invalid construction was accepted: %v, %v", host, err)
 	}
 	if err := admission.RegisterUseOwner(owner); err != nil {
@@ -61,7 +56,7 @@ func TestActualExportsRejectTypedNilValues(t *testing.T) {
 		}
 		plugin := installNative(t, host, "absent-value", framehost.Unit{
 			Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "actual", Contract: contract.Ref()}}},
-			Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+			Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 				return []framehost.ExportValue{framehost.Provide("actual", contract, value)}, nil
 			},
 		})
@@ -160,7 +155,7 @@ func TestDescriptorRegistrationPreservesGoTypeAdmission(t *testing.T) {
 			}
 			plugin := installNative(t, host, "invalid", framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: text.Ref()}}},
-				Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 					return []framehost.ExportValue{{Name: "value", Contract: text.Ref(), Value: 42}}, nil
 				},
 			})
@@ -185,7 +180,7 @@ func TestGoExportsRequireTheirLocalTypeBinding(t *testing.T) {
 			}
 			unit := framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: profile, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: contract.Ref()}}}}
 			if profile == framehost.NativeGo {
-				unit.Setup = func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+				unit.Setup = func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 					return []framehost.ExportValue{framehost.Provide("value", contract, "local value")}, nil
 				}
 			}

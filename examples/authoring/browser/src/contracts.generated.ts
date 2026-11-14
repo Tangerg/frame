@@ -68,18 +68,6 @@ function matchesWireActivityView(value: unknown): value is ActivityView {
   );
 }
 
-function matchesWireAuthorImport(value: unknown): value is AuthorImport {
-  return (
-    wireObject(value, ["slot", "contract", "optional"]) &&
-    Object.hasOwn(value, "slot") &&
-    typeof value["slot"] === "string" &&
-    Object.hasOwn(value, "contract") &&
-    matchesWireContractRef(value["contract"]) &&
-    Object.hasOwn(value, "optional") &&
-    typeof value["optional"] === "boolean"
-  );
-}
-
 function matchesWireAuthorPackage(value: unknown): value is AuthorPackage {
   return (
     wireObject(value, ["units"]) &&
@@ -95,7 +83,7 @@ function matchesWireAuthorUnit(value: unknown): value is AuthorUnit {
     matchesWireUnitID(value["id"]) &&
     Object.hasOwn(value, "imports") &&
     wireArray(value["imports"], (item: unknown) =>
-      matchesWireAuthorImport(item),
+      matchesWireImportDeclaration(item),
     ) &&
     Object.hasOwn(value, "exports") &&
     wireArray(value["exports"], (item: unknown) =>
@@ -250,6 +238,20 @@ function matchesWireExportDeclaration(
   );
 }
 
+function matchesWireImportDeclaration(
+  value: unknown,
+): value is ImportDeclaration {
+  return (
+    wireObject(value, ["slot", "contract", "optional"]) &&
+    Object.hasOwn(value, "slot") &&
+    typeof value["slot"] === "string" &&
+    Object.hasOwn(value, "contract") &&
+    matchesWireContractRef(value["contract"]) &&
+    Object.hasOwn(value, "optional") &&
+    typeof value["optional"] === "boolean"
+  );
+}
+
 function matchesWireRealm(value: unknown): value is Realm {
   return (
     wireObject(value, ["id", "epoch"]) &&
@@ -352,7 +354,6 @@ export function decodeHTTPOutput<K extends keyof HTTPOutputs>(
 export interface WireValues {
   readonly ActivationRequest: ActivationRequest;
   readonly ActivityView: ActivityView;
-  readonly AuthorImport: AuthorImport;
   readonly AuthorPackage: AuthorPackage;
   readonly AuthorUnit: AuthorUnit;
   readonly Authority: Authority;
@@ -368,6 +369,7 @@ export interface WireValues {
   readonly Document: Document;
   readonly DocumentRef: DocumentRef;
   readonly ExportDeclaration: ExportDeclaration;
+  readonly ImportDeclaration: ImportDeclaration;
   readonly Realm: Realm;
   readonly SourceConfiguration: SourceConfiguration;
   readonly UnitID: UnitID;
@@ -377,7 +379,6 @@ export interface WireValues {
 const wireValues = {
   ["ActivationRequest"]: matchesWireActivationRequest,
   ["ActivityView"]: matchesWireActivityView,
-  ["AuthorImport"]: matchesWireAuthorImport,
   ["AuthorPackage"]: matchesWireAuthorPackage,
   ["AuthorUnit"]: matchesWireAuthorUnit,
   ["Authority"]: matchesWireAuthority,
@@ -393,6 +394,7 @@ const wireValues = {
   ["Document"]: matchesWireDocument,
   ["DocumentRef"]: matchesWireDocumentRef,
   ["ExportDeclaration"]: matchesWireExportDeclaration,
+  ["ImportDeclaration"]: matchesWireImportDeclaration,
   ["Realm"]: matchesWireRealm,
   ["SourceConfiguration"]: matchesWireSourceConfiguration,
   ["UnitID"]: matchesWireUnitID,
@@ -417,19 +419,13 @@ export interface ActivityView {
   readonly cancelled: import("@frame/sdk/json").JSONNumber;
 }
 
-export interface AuthorImport {
-  readonly slot: string;
-  readonly contract: ContractRef;
-  readonly optional: boolean;
-}
-
 export interface AuthorPackage {
   readonly units: readonly AuthorUnit[];
 }
 
 export interface AuthorUnit {
   readonly id: UnitID;
-  readonly imports: readonly AuthorImport[];
+  readonly imports: readonly ImportDeclaration[];
   readonly exports: readonly ExportDeclaration[];
 }
 
@@ -496,6 +492,12 @@ export interface DocumentRef {
 export interface ExportDeclaration {
   readonly name: string;
   readonly contract: ContractRef;
+}
+
+export interface ImportDeclaration {
+  readonly slot: string;
+  readonly contract: ContractRef;
+  readonly optional: boolean;
 }
 
 export interface Realm {

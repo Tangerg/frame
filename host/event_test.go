@@ -16,7 +16,7 @@ func TestNativeEventRouteIsOwnedByUsesAndCallbackCanReenter(t *testing.T) {
 	if err := host.Register(event); err != nil {
 		t.Fatal(err)
 	}
-	plugin := installNative(t, host, "event", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "source", Contract: event.Ref()}, {Name: "receiver", Contract: event.Ref()}}}, Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+	plugin := installNative(t, host, "event", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "source", Contract: event.Ref()}, {Name: "receiver", Contract: event.Ref()}}}, Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 		return []framehost.ExportValue{{Name: "source", Contract: event.Ref()}, {Name: "receiver", Contract: event.Ref()}}, nil
 	}})
 	sender := source("event", plugin, "main", "source", event.Ref())
@@ -76,8 +76,8 @@ func TestWatchOverflowRequiresResnapshot(t *testing.T) {
 	if err := host.Register(point); err != nil {
 		t.Fatal(err)
 	}
-	var setup *framehost.Setup
-	plugin := installNative(t, host, "watch", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "initial", Contract: point.Ref()}}}, Setup: func(_ context.Context, s *framehost.Setup) ([]framehost.ExportValue, error) {
+	var setup framehost.Setup
+	plugin := installNative(t, host, "watch", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "initial", Contract: point.Ref()}}}, Setup: func(_ context.Context, s framehost.Setup) ([]framehost.ExportValue, error) {
 		setup = s
 		return []framehost.ExportValue{framehost.Contribute("initial", point, "initial", "initial")}, nil
 	}})

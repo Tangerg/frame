@@ -163,7 +163,7 @@ func (p *peer) readLoop() {
 			if complete {
 				msg, parseErr := parseEnvelope(partial)
 				if parseErr == nil {
-					parseErr = p.receive(msg)
+					parseErr = msg.deliverTo(p)
 				}
 				if parseErr != nil {
 					p.end(parseErr)
@@ -185,70 +185,106 @@ func (p *peer) readLoop() {
 
 var errInvalidEnvelope = errors.New("process: invalid envelope fields")
 
+// incoming is one admitted frame. parseEnvelope settles its variant from the
+// members it carries, so delivery never re-derives the kind of message.
+type incoming interface {
+	deliverTo(*peer) error
+}
+
+type (
+	incomingRequest struct {
+		id     string
+		number uint64
+		method string
+		params jsontext.Value
+	}
+	incomingCancel struct{ target string }
+	incomingReply  struct {
+		number uint64
+		reply  envelope
+	}
+)
+
 // parseEnvelope identifies a message by exactly the members it carries; a
 // member sent as null is present, which decoding into envelope would hide.
-func parseEnvelope(raw []byte) (envelope, error) {
+func parseEnvelope(raw []byte) (incoming, error) {
 	var fields rawEnvelope
 	if err := json.Unmarshal(raw, &fields, json.RejectUnknownMembers(true)); err != nil {
-		return envelope{}, err
+		return nil, err
 	}
 	present := fields.present()
 	switch {
 	case shapes.Request.Admits(present):
-		return fields.request(false)
+		return fields.request()
 	case shapes.Cancel.Admits(present):
-		return fields.request(true)
+		return fields.cancellation()
 	case shapes.Result.Admits(present):
-		id, err := fields.identity()
-		return envelope{ID: id, Result: fields.Result}, err
+		id, number, err := fields.identity()
+		return incomingReply{number: number, reply: envelope{ID: id, Result: fields.Result}}, err
 	case shapes.Failure.Admits(present):
 		return fields.failure()
 	default:
-		return envelope{}, errInvalidEnvelope
+		return nil, errInvalidEnvelope
 	}
 }
 
-// request admits a call, which carries its identity, or a cancellation,
-// which carries none.
-func (r rawEnvelope) request(cancel bool) (envelope, error) {
-	var msg envelope
-	if r.Method.Kind() != '"' || json.Unmarshal(r.Method, &msg.Method) != nil || msg.Method == "" || r.Params.Kind() != '{' {
-		return envelope{}, errInvalidEnvelope
+func (r rawEnvelope) method() (string, error) {
+	var method string
+	if r.Method.Kind() != '"' || json.Unmarshal(r.Method, &method) != nil || method == "" || r.Params.Kind() != '{' {
+		return "", errInvalidEnvelope
 	}
-	if cancel != (msg.Method == wire.Methods.Cancel) {
-		return envelope{}, errInvalidEnvelope
-	}
-	if !cancel {
-		var err error
-		if msg.ID, err = r.identity(); err != nil {
-			return envelope{}, err
-		}
-	}
-	msg.Params = r.Params
-	return msg, nil
+	return method, nil
 }
 
-func (r rawEnvelope) failure() (envelope, error) {
-	id, err := r.identity()
+func (r rawEnvelope) request() (incoming, error) {
+	method, err := r.method()
+	if err != nil || method == wire.Methods.Cancel {
+		return nil, errInvalidEnvelope
+	}
+	id, number, err := r.identity()
 	if err != nil {
-		return envelope{}, err
+		return nil, err
+	}
+	return incomingRequest{id: id, number: number, method: method, params: r.Params}, nil
+}
+
+func (r rawEnvelope) cancellation() (incoming, error) {
+	method, err := r.method()
+	if err != nil || method != wire.Methods.Cancel {
+		return nil, errInvalidEnvelope
+	}
+	var target cancelParams
+	if decodeRequest(r.Params, &target) != nil {
+		return nil, errors.New("process: invalid cancellation")
+	}
+	if _, ok := requestNumber(target.ID); !ok {
+		return nil, errors.New("process: invalid cancellation identity")
+	}
+	return incomingCancel{target: target.ID}, nil
+}
+
+func (r rawEnvelope) failure() (incoming, error) {
+	id, number, err := r.identity()
+	if err != nil {
+		return nil, err
 	}
 	var problem Problem
-	if r.Error.Kind() != '{' || framevalue.DecodeValue(r.Error, &problem, "error") != nil || problem.Code == "" {
-		return envelope{}, errInvalidEnvelope
+	if r.Error.Kind() != '{' || framevalue.DecodeValue(r.Error, &problem, "error") != nil || !problem.valid() {
+		return nil, errInvalidEnvelope
 	}
-	return envelope{ID: id, Error: &problem}, nil
+	return incomingReply{number: number, reply: envelope{ID: id, Error: &problem}}, nil
 }
 
-func (r rawEnvelope) identity() (string, error) {
+func (r rawEnvelope) identity() (string, uint64, error) {
 	var id string
 	if r.ID.Kind() != '"' || json.Unmarshal(r.ID, &id) != nil {
-		return "", errInvalidEnvelope
+		return "", 0, errInvalidEnvelope
 	}
-	if _, ok := requestNumber(id); !ok {
-		return "", errInvalidEnvelope
+	number, ok := requestNumber(id)
+	if !ok {
+		return "", 0, errInvalidEnvelope
 	}
-	return id, nil
+	return id, number, nil
 }
 
 func requestNumber(id string) (uint64, bool) {
@@ -256,32 +292,9 @@ func requestNumber(id string) (uint64, bool) {
 	return n, err == nil && n != 0 && strconv.FormatUint(n, 10) == id
 }
 
-func (p *peer) receive(msg envelope) error {
-	if msg.Method == wire.Methods.Cancel && msg.ID == "" {
-		return p.receiveCancellation(msg)
-	}
-	n, ok := requestNumber(msg.ID)
-	if !ok {
-		return errors.New("process: invalid message identity")
-	}
+func (c incomingCancel) deliverTo(p *peer) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if msg.Method == "" {
-		return p.receiveResponseLocked(msg, n)
-	}
-	return p.receiveRequestLocked(msg, n)
-}
-
-func (p *peer) receiveCancellation(msg envelope) error {
-	var c cancelParams
-	if msg.Result != nil || msg.Error != nil || decodeRequest(msg.Params, &c) != nil {
-		return errors.New("process: invalid cancellation")
-	}
-	if _, ok := requestNumber(c.ID); !ok {
-		return errors.New("process: invalid cancellation identity")
-	}
-	p.mu.Lock()
-	cancel := p.running[c.ID]
+	cancel := p.running[c.target]
 	p.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -289,57 +302,61 @@ func (p *peer) receiveCancellation(msg envelope) error {
 	return nil
 }
 
-func (p *peer) receiveResponseLocked(msg envelope, n uint64) error {
-	if msg.Params != nil || (msg.Result == nil) == (msg.Error == nil) || n > p.next || msg.Error != nil && !msg.Error.valid() {
-		return errors.New("process: invalid response")
+func (r incomingReply) deliverTo(p *peer) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if r.number > p.next {
+		return errors.New("process: response precedes its request")
 	}
-	reply := p.pending[msg.ID]
+	reply := p.pending[r.reply.ID]
 	if reply == nil {
 		return errors.New("process: duplicate or unknown response")
 	}
-	delete(p.pending, msg.ID)
-	reply <- msg
+	delete(p.pending, r.reply.ID)
+	reply <- r.reply
 	return nil
 }
 
-// receiveRequestLocked starts a request; identities must strictly increase.
-func (p *peer) receiveRequestLocked(msg envelope, n uint64) error {
-	if n <= p.lastIn || msg.Result != nil || msg.Error != nil || msg.Params.Kind() != '{' {
+// Request identities must strictly increase.
+func (r incomingRequest) deliverTo(p *peer) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if r.number <= p.lastIn {
 		return errors.New("process: invalid request")
 	}
-	p.lastIn = n
+	p.lastIn = r.number
 	if len(p.running) >= wire.MaxInFlight {
-		return p.sendLocked(envelope{ID: msg.ID, Error: &Problem{wire.Errors.Capacity, "too many active calls"}})
+		return p.sendLocked(envelope{ID: r.id, Error: &Problem{wire.Errors.Capacity, "too many active calls"}})
 	}
 	ctx, cancel := context.WithCancel(p.ctx)
-	p.running[msg.ID] = cancel
+	p.running[r.id] = cancel
 	p.workers.Add(1)
-	go p.respond(ctx, cancel, msg)
+	go p.respond(ctx, cancel, r)
 	return nil
 }
 
-func (p *peer) respond(ctx context.Context, cancel context.CancelFunc, msg envelope) {
+func (p *peer) respond(ctx context.Context, cancel context.CancelFunc, request incomingRequest) {
 	defer p.workers.Done()
 	defer cancel()
-	reply := envelope{ID: msg.ID, Error: unknownProblem()}
+	reply := envelope{ID: request.id, Error: unknownProblem()}
 	// Handler and diagnostic methods may panic or call Goexit. Only a fully
 	// classified reply replaces the default; completion invokes neither again.
 	defer func() {
 		_ = recover()
 		p.mu.Lock()
-		delete(p.running, msg.ID)
+		delete(p.running, request.id)
 		sendErr := p.sendLocked(reply)
 		p.mu.Unlock()
 		if sendErr != nil {
 			p.end(sendErr)
 		}
 	}()
-	result, err := p.handle(ctx, msg.Method, msg.Params)
+	result, err := p.handle(ctx, request.method, request.params)
 	if err != nil {
-		reply = envelope{ID: msg.ID, Error: responseProblem(err)}
+		reply = envelope{ID: request.id, Error: responseProblem(err)}
 		return
 	}
-	reply = envelope{ID: msg.ID, Result: result}
+	reply = envelope{ID: request.id, Result: result}
 }
 
 func unknownProblem() *Problem {

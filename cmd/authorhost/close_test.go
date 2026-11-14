@@ -29,7 +29,7 @@ func TestSealRouteClosesOriginalRealmAfterActivationWaitWasCancelled(t *testing.
 			t.Error(err)
 		}
 	})
-	host, err := framehost.New(ctx, framehost.Config{Admission: admission, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store})
+	host, err := framehost.New(ctx, framehost.Config{Authority: store})
 	if err != nil {
 		t.Fatal(err)
 	}

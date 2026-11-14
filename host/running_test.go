@@ -31,7 +31,7 @@ func TestStartDoesNotReserveUseResources(t *testing.T) {
 			if scenario.occupiedUse {
 				plugin := installNative(t, host, "borrowed", framehost.Unit{
 					Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-					Setup:       func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil },
+					Setup:       func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil },
 				})
 				root := framehost.UnitRef{InstallationID: "borrowed", Release: plugin.Revision(), UnitID: "main"}
 				if _, err := host.AcquireUnit(ctx, root, framehost.UseConfig{Owner: owner, Scope: grant}); err != nil {
@@ -41,7 +41,7 @@ func TestStartDoesNotReserveUseResources(t *testing.T) {
 			var cleanups atomic.Int32
 			plugin := installNative(t, host, "worker", framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-				Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 					_, err := setup.Cleanup("worker", func() error { cleanups.Add(1); return nil })
 					return nil, err
 				},
@@ -78,7 +78,7 @@ func TestStartRefusesGrantFencedDuringPreparation(t *testing.T) {
 	var cleanups atomic.Int32
 	plugin := installNative(t, host, "worker", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			if _, err := setup.Cleanup("worker", func() error { cleanups.Add(1); return nil }); err != nil {
 				return nil, err
 			}
@@ -89,7 +89,7 @@ func TestStartRefusesGrantFencedDuringPreparation(t *testing.T) {
 		},
 	})
 	root := framehost.UnitRef{InstallationID: "worker", Release: plugin.Revision(), UnitID: "main"}
-	if running, err := host.StartUnit(ctx, grant, root); running != nil || err == nil {
+	if running, err := host.StartUnit(ctx, grant, root); running.Valid() || err == nil {
 		t.Fatalf("preparation replaced the original fenced grant: running=%v error=%v", running, err)
 	}
 	if err := host.WaitRetired(ctx, "worker"); err != nil {
@@ -108,7 +108,7 @@ func TestRunningStopJoinsOriginalRetirementAfterCanceledWait(t *testing.T) {
 	var cleanups atomic.Int32
 	plugin := installNative(t, host, "worker", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			_, err := setup.Cleanup("worker", func() error {
 				cleanups.Add(1)
 				close(entered)

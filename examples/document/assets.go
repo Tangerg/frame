@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"embed"
-	"encoding/json"
+	json "encoding/json/v2"
 	"errors"
 	"net/url"
 	"os"

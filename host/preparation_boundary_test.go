@@ -72,7 +72,7 @@ func testMetadataPreparationFailure[M any](t *testing.T, metadata M, cause error
 	var cleanups atomic.Int64
 	plugin := installNative(t, host, "provider", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "member", Contract: point.Ref()}}},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			if _, err := setup.Cleanup("original provider", func() error { cleanups.Add(1); return nil }); err != nil {
 				return nil, err
 			}
@@ -105,7 +105,7 @@ type panickingExportDriver struct {
 }
 
 func (*panickingExportDriver) Profile() framehost.Profile { return "test.export-validator" }
-func (d *panickingExportDriver) Prepare(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+func (d *panickingExportDriver) Prepare(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 	if _, err := setup.Cleanup("original driver resource", func() error { d.cleanups.Add(1); return nil }); err != nil {
 		return nil, err
 	}
@@ -161,13 +161,13 @@ func TestScopeFencedDuringSetupRefusesMetadataCallback(t *testing.T) {
 	var encodes atomic.Int64
 	plugin := installNative(t, host, "provider", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "member", Contract: point.Ref()}}},
-		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			host.Admission().FenceScope(grant.ID())
 			return []framehost.ExportValue{framehost.Contribute("member", point, observedMetadata{JSON: encoded, encodes: &encodes}, "value")}, nil
 		},
 	})
 	use, err := host.AcquireUnit(testContext(t), framehost.UnitRef{InstallationID: "provider", Release: plugin.Revision(), UnitID: "main"}, framehost.UseConfig{Owner: owner, Scope: grant})
-	if use != nil || err == nil || encodes.Load() != 0 {
+	if use.Valid() || err == nil || encodes.Load() != 0 {
 		t.Fatalf("fenced preparation ran metadata code: use=%v, encodes=%d, error=%v", use, encodes.Load(), err)
 	}
 }
@@ -185,7 +185,7 @@ func TestPreparationPanicCannotExecuteItsDiagnosticPayload(t *testing.T) {
 	var formatted, cleanups atomic.Int64
 	plugin := installNative(t, host, "provider", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			if _, err := setup.Cleanup("original provider", func() error { cleanups.Add(1); return nil }); err != nil {
 				return nil, err
 			}

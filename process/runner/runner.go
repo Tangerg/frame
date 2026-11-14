@@ -164,7 +164,6 @@ type storedAttempt struct {
 }
 
 const (
-	journalVersion            = 3
 	journalFilename           = "attempts.json"
 	lostWaitReason            = "runner restarted without the original child wait identity"
 	defaultMaxAttempts        = 4096
@@ -172,7 +171,6 @@ const (
 )
 
 type journal struct {
-	Version  int                      `json:"version"`
 	Epoch    uint64                   `json:"epoch"`
 	Attempts map[string]storedAttempt `json:"attempts"`
 }
@@ -279,7 +277,7 @@ func (c Config) resolve() (Config, error) {
 func loadJournal(directory *os.Root, maxAttempts int) (journal, error) {
 	data, err := directory.ReadFile(journalFilename)
 	if errors.Is(err, os.ErrNotExist) {
-		return journal{Version: journalVersion, Attempts: make(map[string]storedAttempt)}, nil
+		return journal{Attempts: make(map[string]storedAttempt)}, nil
 	}
 	if err != nil {
 		return journal{}, err
@@ -288,7 +286,7 @@ func loadJournal(directory *os.Root, maxAttempts int) (journal, error) {
 	if err := framevalue.DecodeValue(data, &loaded, "runner journal"); err != nil {
 		return journal{}, fmt.Errorf("runner: invalid journal: %w", err)
 	}
-	if loaded.Version != journalVersion || loaded.Attempts == nil || len(loaded.Attempts) > maxAttempts {
+	if loaded.Attempts == nil || len(loaded.Attempts) > maxAttempts {
 		return journal{}, errors.New("runner: incompatible journal")
 	}
 	for id, attempt := range loaded.Attempts {

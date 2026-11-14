@@ -37,7 +37,7 @@ func TestWALAdmissionKeepsCallerCancellationBeforeSchemaInitialization(t *testin
 	ctx, cancel := context.WithTimeoutCause(t.Context(), 25*time.Millisecond, cause)
 	defer cancel()
 	type result struct {
-		db  *sqlite.Database
+		db  sqlite.Database
 		err error
 	}
 	settled := make(chan result, 1)
@@ -53,13 +53,13 @@ func TestWALAdmissionKeepsCallerCancellationBeforeSchemaInitialization(t *testin
 	case <-time.After(time.Second):
 		_ = read.Rollback()
 		opened = <-settled
-		if opened.db != nil {
+		if opened.db.Valid() {
 			_ = opened.db.Close()
 		}
 		t.Fatalf("WAL admission ignored cancellation until the read owner released: %v", opened.err)
 	}
 	db, err := opened.db, opened.err
-	if db != nil {
+	if db.Valid() {
 		_ = db.Close()
 		t.Fatal("WAL conversion crossed another owner's read transaction")
 	}

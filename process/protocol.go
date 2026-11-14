@@ -15,7 +15,7 @@ import (
 // not acquire resources. The driver alone owns launch, attach and exit proof.
 type Protocol interface {
 	Profile() framehost.Profile
-	Prepare(*framehost.Setup, ExportMetadata, int) (Connection, error)
+	Prepare(framehost.Setup, ExportMetadata, int) (Connection, error)
 }
 
 // Connection is private to one execution. Close follows every Connect, including

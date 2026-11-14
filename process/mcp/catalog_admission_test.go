@@ -24,7 +24,7 @@ type catalogExport struct {
 	capability *frame.Capability
 }
 
-func prepareCatalog(t *testing.T, ctx context.Context, exports []catalogExport, check func(context.Context, *framehost.Setup) error) error {
+func prepareCatalog(t *testing.T, ctx context.Context, exports []catalogExport, check func(context.Context, framehost.Setup) error) error {
 	t.Helper()
 	host, err := framehost.New(ctx, framehost.Config{})
 	if err != nil {
@@ -53,7 +53,7 @@ func prepareCatalog(t *testing.T, ctx context.Context, exports []catalogExport, 
 		Revision: value.Hash([]byte("catalog-admission")),
 		Units: []framehost.Unit{{
 			Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: declarations},
-			Setup: func(ctx context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+			Setup: func(ctx context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 				if err := check(ctx, setup); err != nil {
 					return nil, err
 				}
@@ -109,7 +109,7 @@ func TestToolsPrepareRejectsContradictorySharedSchemas(t *testing.T) {
 				}
 				exports = append(exports, catalogExport{name, capability})
 			}
-			err := prepareCatalog(t, ctx, exports, func(_ context.Context, setup *framehost.Setup) error {
+			err := prepareCatalog(t, ctx, exports, func(_ context.Context, setup framehost.Setup) error {
 				connection, err := (Tools{MaxCatalogPages: 1}).Prepare(setup, nil, 1<<20)
 				if connection != nil {
 					_ = connection.Close(context.Background())
@@ -152,7 +152,7 @@ func TestToolsPrepareRetainsSharedViewsAndRemoteRequirements(t *testing.T) {
 					slices.Reverse(exports)
 				}
 				protocol := Tools{MaxCatalogPages: 1, FullResult: func(export framehost.ExportDeclaration, _ string) bool { return export.Name == "envelope" }}
-				err := prepareCatalog(t, ctx, exports, func(ctx context.Context, setup *framehost.Setup) error {
+				err := prepareCatalog(t, ctx, exports, func(ctx context.Context, setup framehost.Setup) error {
 					connection, err := protocol.Prepare(setup, nil, 1<<20)
 					if err != nil {
 						return err
@@ -239,7 +239,7 @@ func TestManagedPrepareOwnsGlobalMethodIdentity(t *testing.T) {
 			}
 			protocol := ManagedProtocol{Exports: func(framehost.UnitBinding) (map[string]ManagedExport, error) { return declared, nil }}
 			connected := false
-			err := prepareCatalog(t, ctx, exports, func(ctx context.Context, setup *framehost.Setup) error {
+			err := prepareCatalog(t, ctx, exports, func(ctx context.Context, setup framehost.Setup) error {
 				connection, err := protocol.Prepare(setup, nil, 1<<20)
 				if err != nil {
 					return err

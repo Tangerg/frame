@@ -1,7 +1,7 @@
 package mcp
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 
 	"github.com/Tangerg/frame"
@@ -26,10 +26,12 @@ type toolRequirements map[string]toolRequirement
 
 func (r toolRequirements) admit(export string, member *toolMember) error {
 	descriptor := member.method.Descriptor()
-	if len(descriptor.Stream) != 0 {
+	if member.method.Streaming() {
 		return fmt.Errorf("%w: MCP tool %q must be unary", frame.ErrContractMismatch, descriptor.Name)
 	}
-	var schema struct{ Type value.SchemaType }
+	var schema struct {
+		Type value.SchemaType `json:"type"`
+	}
 	if err := json.Unmarshal(descriptor.Input, &schema); err != nil || schema.Type != value.TypeObject {
 		return fmt.Errorf("%w: MCP tool %q needs an object input schema", frame.ErrContractMismatch, descriptor.Name)
 	}

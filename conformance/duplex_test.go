@@ -148,7 +148,7 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := framehost.New(ctx, framehost.Config{Admission: gate, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store, Drivers: []framehost.Driver{driver}})
+	h, err := framehost.New(ctx, framehost.Config{Authority: store, Drivers: []framehost.Driver{driver}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,11 +173,11 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	original := &upstream{started: make(chan struct{}), stopped: make(chan struct{})}
-	source := install(ctx, t, h, "source", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "provider", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "upstream", Contract: ref}}}, Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+	source := install(ctx, t, h, "source", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "provider", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "upstream", Contract: ref}}}, Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 		return []framehost.ExportValue{framehost.Provide("upstream", contract, frame.Service(original))}, nil
 	}})
 	provider := framehost.ExportRef{InstallationID: source.InstallationID, UnitID: source.UnitID, Release: source.Release, Export: "upstream", Contract: ref}
-	worker := install(ctx, t, h, "node", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "worker", Profile: framehost.LocalProcess, Imports: []framehost.ImportDeclaration{{Slot: "upstream", Contract: ref, Providers: []framehost.ExportRef{provider}}}, Exports: []framehost.ExportDeclaration{{Name: "relay", Contract: ref}}}})
+	worker := install(ctx, t, h, "node", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "worker", Profile: framehost.LocalProcess, Imports: []framehost.ImportDeclaration{{Slot: "upstream", Contract: ref}}, Fixed: []framehost.SlotProviders{{Slot: "upstream", Providers: []framehost.ExportRef{provider}}}, Exports: []framehost.ExportDeclaration{{Name: "relay", Contract: ref}}}})
 	export := framehost.ExportRef{InstallationID: worker.InstallationID, UnitID: worker.UnitID, Release: worker.Release, Export: "relay", Contract: ref}
 	plan, err := h.Plan(ctx, export)
 	if err != nil {
@@ -187,7 +187,7 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = framehost.WithPlan(ctx, h, plan, grant, func(use *framehost.Use) error {
+	err = framehost.WithPlan(ctx, h, plan, grant, func(use framehost.Use) error {
 		return framehost.BorrowExport[frame.Service](ctx, use, export, func(ctx context.Context, relay frame.Service) error {
 			input, _ := framevalue.EncodeJSON("done")
 			var seen []string

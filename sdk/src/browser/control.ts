@@ -7,6 +7,12 @@ import { FrameError } from "../errors.js";
 import { captureProtocol } from "../protocol-capture.js";
 import { observePromise } from "../promise-observation.js";
 
+/**
+ * A Runtime's relation to its Host: connected admits new work, paused awaits
+ * revalidation, cleanupOnly may only settle existing work, closed admits none.
+ */
+export type ConnectionState = "connected" | "paused" | "cleanupOnly" | "closed";
+
 /** The application supplies an authenticated transport to its single Go Host. */
 export type HostControl = {
   [K in keyof ControlInputs]: ControlInputs[K] extends Record<string, never>

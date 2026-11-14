@@ -73,7 +73,7 @@ func TestPreparedBindingCannotAdoptSuccessorInstances(t *testing.T) {
 			}
 			dependency, err := Define(Definition{Revision: value.Hash([]byte("identity-dependency")), Units: []Unit{{
 				Declaration: UnitDeclaration{ID: "provider", Profile: NativeGo, Exports: []ExportDeclaration{{Name: "value", Contract: input.Ref()}}},
-				Setup: func(_ context.Context, setup *Setup) ([]ExportValue, error) {
+				Setup: func(_ context.Context, setup Setup) ([]ExportValue, error) {
 					return []ExportValue{Provide("value", input, string(setup.Configuration()))}, nil
 				},
 			}}})
@@ -82,7 +82,7 @@ func TestPreparedBindingCannotAdoptSuccessorInstances(t *testing.T) {
 			}
 			rootPlugin, err := Define(Definition{Revision: value.Hash([]byte("identity-root")), Units: []Unit{{
 				Declaration: UnitDeclaration{ID: "consumer", Profile: NativeGo, Imports: []ImportDeclaration{{Slot: "input", Contract: input.Ref()}}, Exports: []ExportDeclaration{{Name: "value", Contract: output.Ref()}}},
-				Setup: func(_ context.Context, setup *Setup) ([]ExportValue, error) {
+				Setup: func(_ context.Context, setup Setup) ([]ExportValue, error) {
 					provider, err := Import(setup, "input", input)
 					if err != nil {
 						return nil, err
@@ -109,7 +109,7 @@ func TestPreparedBindingCannotAdoptSuccessorInstances(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			prepared, err := host.activate(ctx, "", ScopeGrant{}, host.plannedBinding(plan.bindingPlan))
+			prepared, err := host.activate(ctx, "", ScopeGrant{}, host.plannedBinding(plan.plan.(*declaredPlan)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -146,13 +146,13 @@ func TestPreparedBindingCannotAdoptSuccessorInstances(t *testing.T) {
 				t.Fatalf("replacement setup identity differs from its configuration: same=%t error=%v", same, err)
 			}
 			config := UseConfig{Owner: owner, Scope: scope}
-			var use *Use
+			var use Use
 			use, err = host.acquirePrepared(ctx, prepared, config, scenario.recordID)
-			if !errors.Is(err, ErrStaleBinding) || use != nil {
-				if use != nil {
+			if !errors.Is(err, ErrStaleBinding) || use.Valid() {
+				if use.Valid() {
 					_, _ = use.Close(ctx)
 				}
-				t.Fatalf("old binding acquired another setup: use=%v, err=%v", use != nil, err)
+				t.Fatalf("old binding acquired another setup: use=%v, err=%v", use.Valid(), err)
 			}
 			accepted = fresh
 			if scenario.recordID != "" {

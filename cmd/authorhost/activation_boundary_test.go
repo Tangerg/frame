@@ -44,8 +44,7 @@ func TestActivateRejectsInvalidCompleteBodyBeforeCreatingExecution(t *testing.T)
 				}
 			})
 			host, err := framehost.New(ctx, framehost.Config{
-				Admission: admission, Epoch: store.Epoch(),
-				Installations: store, ExecutionProtection: store,
+				Authority: store,
 			})
 			if err != nil {
 				t.Fatal(err)

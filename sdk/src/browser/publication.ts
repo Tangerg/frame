@@ -10,7 +10,11 @@ import type {
   PublicationResult,
 } from "../protocol.generated.js";
 import { sameObject } from "./identity.js";
-import { isControlRefusal, type ControlChannel } from "./control.js";
+import {
+  isControlRefusal,
+  type ConnectionState,
+  type ControlChannel,
+} from "./control.js";
 import type { ExecutionResources } from "./execution.js";
 import type { ProofOutbox } from "./outbox.js";
 
@@ -122,7 +126,7 @@ export class PublicationReceipt {
 
 export interface PublicationChannel {
   readonly channel: ControlChannel;
-  readonly mode: "connected" | "cleanupOnly";
+  readonly mode: Extract<ConnectionState, "connected" | "cleanupOnly">;
 }
 
 interface PublicationContent<M, V> {

@@ -69,7 +69,7 @@ func TestPreparationGoexitRetiresItsOriginalInstance(t *testing.T) {
 			var closed atomic.Int64
 			plugin := installNative(t, host, phase, framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-				Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 					if _, err := setup.Cleanup("original resource", func() error { closed.Add(1); return nil }); err != nil {
 						return nil, err
 					}
@@ -133,7 +133,7 @@ func TestPreparationPanicRetainsOriginalErrorCause(t *testing.T) {
 			original := errors.New("original preparation failure")
 			plugin := installNative(t, host, phase, framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-				Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 					if phase == "activation" {
 						return nil, setup.OnActivate(func(context.Context) error { panic(original) })
 					}

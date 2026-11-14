@@ -40,7 +40,7 @@ func TestNativeAndBrowserShareContractWithRealmLocalValues(t *testing.T) {
 			}
 			native, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("native-shared-contract")), Units: []framehost.Unit{{
 				Declaration: framehost.UnitDeclaration{ID: "view", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "shared", Contract: point.Ref()}}},
-				Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 					return []framehost.ExportValue{framehost.Contribute("shared", point, testMetadata{Label: "native"}, "native value")}, nil
 				},
 			}}})

@@ -17,5 +17,9 @@ func ContextError(ctx context.Context) error {
 	if err == nil {
 		return nil
 	}
-	return errors.Join(err, context.Cause(ctx))
+	// Distinct dynamic types compare unequal without inspecting the cause.
+	if cause := context.Cause(ctx); cause != err {
+		return errors.Join(err, cause)
+	}
+	return err
 }

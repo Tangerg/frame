@@ -71,7 +71,7 @@ func TestParentCancellationFencesAdmissionBeforeNotification(t *testing.T) {
 	}
 	parent.cancel()
 	if extra, err := lifetime.Enter(t.Context()); !errors.Is(err, frame.ErrClosed) {
-		if extra != nil {
+		if extra.Valid() {
 			extra.Finish()
 		}
 		t.Errorf("parent cancellation admitted new work: %v", err)

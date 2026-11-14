@@ -107,7 +107,7 @@ func TestCloseJoinsAcceptedIOAndLeasesAfterItsOnlyWaiterCancels(t *testing.T) {
 		t.Fatal(err)
 	}
 	type result struct {
-		lease *Lease
+		lease Lease
 		err   error
 	}
 	installed := make(chan result, 1)

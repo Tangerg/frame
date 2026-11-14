@@ -18,7 +18,7 @@ func TestScopedRetirementKeepsOriginalCancellationCause(t *testing.T) {
 	var cleanups atomic.Int32
 	plugin := installNative(t, host, "original-cause", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			_, err := setup.Own(frame.Resource{
 				Name:   "original execution",
 				Cancel: func(cause error) { notified <- cause },
@@ -62,7 +62,7 @@ func TestScopedStartDoesNotAdoptInstallationScopedInstance(t *testing.T) {
 	var cleanups atomic.Int32
 	plugin := installNative(t, host, "worker", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			prepared <- setup.ScopeGrant()
 			_, err := setup.Cleanup("worker", func() error { cleanups.Add(1); return nil })
 			return nil, err
@@ -77,7 +77,7 @@ func TestScopedStartDoesNotAdoptInstallationScopedInstance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if running, err := host.StartUnit(ctx, grant, root); running != nil || !errors.Is(err, framehost.ErrFenced) {
+	if running, err := host.StartUnit(ctx, grant, root); running.Valid() || !errors.Is(err, framehost.ErrFenced) {
 		t.Fatalf("installation-scoped runtime was adopted by another grant: %+v, %v", running, err)
 	}
 	host.Admission().FenceScope(grant.ID())
@@ -126,7 +126,7 @@ func TestScopedStartKeepsInstallationScopedProviderAlive(t *testing.T) {
 	var providerPrepares, providerCleanups atomic.Int32
 	provider := installNative(t, host, "provider", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "text", Contract: service.Ref()}}},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			providerPrepares.Add(1)
 			if _, err := setup.Cleanup("provider", func() error { providerCleanups.Add(1); return nil }); err != nil {
 				return nil, err
@@ -138,7 +138,7 @@ func TestScopedStartKeepsInstallationScopedProviderAlive(t *testing.T) {
 	if _, err := host.Activate(ctx, providerRef); err != nil {
 		t.Fatal(err)
 	}
-	var running []*framehost.RunningUnit
+	var running []framehost.RunningUnit
 	var grants []framehost.ScopeGrant
 	var roots []framehost.UnitRef
 	for _, id := range []string{"consumer-one", "consumer-two"} {
@@ -147,8 +147,8 @@ func TestScopedStartKeepsInstallationScopedProviderAlive(t *testing.T) {
 			t.Fatal(err)
 		}
 		consumer := installNative(t, host, id, framehost.Unit{
-			Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Imports: []framehost.ImportDeclaration{{Slot: "text", Contract: service.Ref(), Providers: []framehost.ExportRef{providerRef}}}},
-			Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+			Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Imports: []framehost.ImportDeclaration{{Slot: "text", Contract: service.Ref()}}, Fixed: []framehost.SlotProviders{{Slot: "text", Providers: []framehost.ExportRef{providerRef}}}},
+			Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 				if setup.ScopeGrant() != grant {
 					return nil, errors.New("consumer prepared under another grant")
 				}
@@ -205,7 +205,7 @@ func TestScopedStartRefusesInstallationScopedPreparationBeforeWaiting(t *testing
 	t.Cleanup(unblock)
 	plugin := installNative(t, host, "preparing", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			close(entered)
 			<-release
 			return nil, nil
@@ -226,7 +226,7 @@ func TestScopedStartRefusesInstallationScopedPreparationBeforeWaiting(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if running, err := host.StartUnit(ctx, grant, root); running != nil || !errors.Is(err, framehost.ErrFenced) {
+	if running, err := host.StartUnit(ctx, grant, root); running.Valid() || !errors.Is(err, framehost.ErrFenced) {
 		t.Fatalf("scoped start waited for another authority's plugin preparation: %+v, %v", running, err)
 	}
 	unblock()

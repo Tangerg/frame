@@ -38,12 +38,12 @@ func (id ScopeID) String() string         { return string(id) }
 func (id RealmID) String() string         { return string(id) }
 
 var (
-	ErrStaleBinding     = errors.New("frame: stale binding")
-	ErrUnavailable      = errors.New("frame: unavailable")
-	ErrInUse            = errors.New("frame: installation in use")
-	ErrAmbiguous        = errors.New("frame: ambiguous provider")
-	ErrDependencyCycle  = errors.New("frame: dependency cycle")
-	ErrRecoveryRequired = errors.New("frame: recovery required")
-	ErrFenced           = errors.New("frame: scope fenced")
-	ErrResyncRequired   = errors.New("frame: resynchronization required")
+	ErrStaleBinding     = errors.New("host: stale binding")
+	ErrUnavailable      = errors.New("host: unavailable")
+	ErrInUse            = errors.New("host: installation in use")
+	ErrAmbiguous        = errors.New("host: ambiguous provider")
+	ErrDependencyCycle  = errors.New("host: dependency cycle")
+	ErrRecoveryRequired = errors.New("host: recovery required")
+	ErrFenced           = errors.New("host: scope fenced")
+	ErrResyncRequired   = errors.New("host: resynchronization required")
 )

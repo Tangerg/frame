@@ -22,7 +22,7 @@ type ModuleSource interface {
 // The adapter registers all sessions and call resources with the original Setup
 // before returning. A descriptor alone never creates a callable transport.
 type RemoteSource interface {
-	Import(context.Context, *framehost.Setup, framehost.BoundValue) (RemoteImport, error)
+	Import(context.Context, framehost.Setup, framehost.BoundValue) (RemoteImport, error)
 }
 
 type BridgeConfig struct {
@@ -33,7 +33,7 @@ type BridgeConfig struct {
 	// PublicConfiguration is the consumer's explicit public projection. Opaque
 	// installation configuration may contain credentials and is never sent by
 	// default. The instance keeps the original configuration digest as identity.
-	PublicConfiguration func(context.Context, *framehost.Setup) ([]byte, error)
+	PublicConfiguration func(context.Context, framehost.Setup) ([]byte, error)
 	MaxRealms           int
 	MaxPending          int
 	MaxMessageBytes     int64
@@ -76,8 +76,8 @@ type Bridge struct {
 // that released it; until then the Realm may still use and delegate it.
 type browserUse struct {
 	grant      UseGrant
-	use        *framehost.Use
-	resource   *frame.ResourceHandle
+	use        framehost.Use
+	resource   frame.ResourceHandle
 	releasedBy string
 }
 
@@ -85,11 +85,11 @@ func (u *browserUse) released() bool { return u.releasedBy != "" }
 
 type browserRoute struct {
 	grant    RouteGrant
-	original *framehost.EventRoute
+	original framehost.EventRoute
 }
 
 func NewBridge(config BridgeConfig) (*Bridge, error) {
-	if !config.Host.Valid() || framevalue.IsNil(config.Source) || !config.Host.UsesAuthority(config.Store) {
+	if !config.Host.Valid() || framevalue.IsNil(config.Source) || config.Host.Durable() != framehost.Durable(config.Store) {
 		return nil, frame.ErrInvalid
 	}
 	if config.Remote != nil && framevalue.IsNil(config.Remote) {

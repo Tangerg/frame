@@ -77,7 +77,7 @@ func (s *storeAuthority) RealmReceipt(ctx context.Context, id string) ([]byte, e
 }
 
 func (r *ReceiptReservation) Record(ctx context.Context, data []byte) error {
-	if r == nil || r.store == nil || len(data) == 0 {
+	if r.store == nil || len(data) == 0 {
 		return frame.ErrInvalid
 	}
 	return r.store.transaction(ctx, func(tx Executor) error {

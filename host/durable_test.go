@@ -12,6 +12,44 @@ import (
 	"github.com/Tangerg/frame/value"
 )
 
+// durableDouble completes a test's persistence double into a Durable. The
+// half a test does not exercise accepts every request.
+type durableDouble struct {
+	framehost.InstallationStore
+	framehost.ExecutionProtection
+	admission framehost.Admission
+}
+
+func (d durableDouble) Admission() framehost.Admission { return d.admission }
+func (durableDouble) Epoch() uint64                    { return 1 }
+
+func installationAuthority(store framehost.InstallationStore) framehost.Durable {
+	return durableDouble{InstallationStore: store, ExecutionProtection: acceptedProtection{}, admission: framehost.NewAdmission()}
+}
+
+func protectionAuthority(protection framehost.ExecutionProtection) framehost.Durable {
+	return durableDouble{InstallationStore: acceptedInstallations{}, ExecutionProtection: protection, admission: framehost.NewAdmission()}
+}
+
+type acceptedProtection struct{}
+
+func (acceptedProtection) ApproveUse(context.Context, framehost.UseApproval) error { return nil }
+func (acceptedProtection) SettleUse(context.Context, string, frame.ReleaseProof) error {
+	return nil
+}
+
+type acceptedInstallations struct{}
+
+func (acceptedInstallations) CommitInstallation(context.Context, framehost.InstallationChange) (framehost.CommitState, error) {
+	return framehost.CommitSucceeded, nil
+}
+func (acceptedInstallations) ConfirmInstallation(context.Context, framehost.InstallationID) error {
+	return nil
+}
+func (acceptedInstallations) Installations(context.Context) ([]framehost.InstallationRecord, error) {
+	return nil, nil
+}
+
 type authorityProbeDriver struct {
 	framehost.Driver
 	called *bool
@@ -22,48 +60,54 @@ func (d authorityProbeDriver) Profile() framehost.Profile {
 	return "test.authority-admission"
 }
 
-func TestHostRejectsMismatchedDurableAuthorityBeforeDriverCallbacks(t *testing.T) {
-	admission := framehost.NewAdmission()
-	open := func(name string) sqlite.Store {
-		store, err := sqlite.Open(t.Context(), sqlite.Config{Path: filepath.Join(t.TempDir(), name), Admission: admission})
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			if err := store.Close(); err != nil {
-				t.Error(err)
-			}
-		})
-		return store
-	}
-	first, second := open("first.db"), open("second.db")
+func TestHostRejectsUnissuedAuthorityBeforeDriverCallbacks(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		config framehost.Config
+		name      string
+		authority framehost.Authority
 	}{
-		{"zero installation authority", framehost.Config{Admission: admission, Installations: sqlite.Store{}}},
-		{"zero protection authority", framehost.Config{Admission: admission, ExecutionProtection: sqlite.Store{}}},
-		{"installation admission", framehost.Config{Admission: framehost.NewAdmission(), Installations: first}},
-		{"protection admission", framehost.Config{Admission: framehost.NewAdmission(), ExecutionProtection: first}},
-		{"installation epoch", framehost.Config{Admission: admission, Epoch: first.Epoch() + 1, Installations: first}},
-		{"protection epoch", framehost.Config{Admission: admission, Epoch: first.Epoch() + 1, ExecutionProtection: first}},
-		{"split authorities", framehost.Config{Admission: admission, Epoch: first.Epoch(), Installations: first, ExecutionProtection: second}},
-		{"implicit admission", framehost.Config{Installations: first, ExecutionProtection: first}},
+		{"unissued admission", framehost.Admission{}},
+		{"unissued store", sqlite.Store{}},
+		{"typed nil durable", (*durableDouble)(nil)},
+		{"durable without epoch", zeroEpochDurable{protectionAuthority(acceptedProtection{}).(durableDouble)}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			called := false
-			test.config.Drivers = []framehost.Driver{authorityProbeDriver{called: &called}}
-			host, err := framehost.New(t.Context(), test.config)
+			host, err := framehost.New(t.Context(), framehost.Config{Authority: test.authority, Drivers: []framehost.Driver{authorityProbeDriver{called: &called}}})
 			if host.Valid() {
 				_, _ = host.Close(t.Context())
 			}
 			if host.Valid() || !errors.Is(err, frame.ErrInvalid) {
-				t.Errorf("mismatched durable authority admitted: host=%t, error=%v", host.Valid(), err)
+				t.Errorf("unissued authority admitted: host=%t, error=%v", host.Valid(), err)
 			}
 			if called {
 				t.Error("driver callback ran before authority validation")
 			}
 		})
+	}
+}
+
+type zeroEpochDurable struct{ durableDouble }
+
+func (zeroEpochDurable) Epoch() uint64 { return 0 }
+
+func TestHostDerivesAdmissionAndEpochFromItsDurableAuthority(t *testing.T) {
+	admission := framehost.NewAdmission()
+	store, err := sqlite.Open(t.Context(), sqlite.Config{Path: filepath.Join(t.TempDir(), "host.db"), Admission: admission})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	host := testHost(t, framehost.Config{Authority: store})
+	if host.Admission() != admission || host.Epoch() != store.Epoch() || host.Durable() != framehost.Durable(store) {
+		t.Fatalf("host kept another authority: epoch=%d, store epoch=%d", host.Epoch(), store.Epoch())
+	}
+	volatile := testHost(t, framehost.Config{Authority: admission})
+	if volatile.Admission() != admission || volatile.Durable() != nil || volatile.Epoch() != 1 {
+		t.Fatalf("volatile host gained durable authority: epoch=%d", volatile.Epoch())
 	}
 }
 
@@ -83,13 +127,13 @@ func (s resultStore) Installations(context.Context) ([]framehost.InstallationRec
 }
 
 func TestInstallationReportsTheOriginalCommit(t *testing.T) {
-	plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("test")), Units: []framehost.Unit{{Declaration: framehost.UnitDeclaration{ID: "sample", Profile: framehost.NativeGo}, Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil }}}})
+	plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("test")), Units: []framehost.Unit{{Declaration: framehost.UnitDeclaration{ID: "sample", Profile: framehost.NativeGo}, Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil }}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, state := range []framehost.CommitState{framehost.CommitRejected, framehost.CommitIndeterminate, framehost.CommitSucceeded} {
 		t.Run(string(state), func(t *testing.T) {
-			host, err := framehost.New(t.Context(), framehost.Config{Installations: resultStore{state, errors.New("confirmation unavailable")}})
+			host, err := framehost.New(t.Context(), framehost.Config{Authority: installationAuthority(resultStore{state, errors.New("confirmation unavailable")})})
 			if err != nil {
 				t.Fatal(err)
 			}

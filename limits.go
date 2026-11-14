@@ -4,15 +4,14 @@ import (
 	"fmt"
 )
 
-func ResolveLimit(name string, value *int, fallback int) error {
-	if value == nil {
-		return ErrInvalid
+// ResolveLimit applies a configuration's zero-means-default convention and
+// refuses a negative bound before any owner records against it.
+func ResolveLimit(name string, value, fallback int) (int, error) {
+	if value == 0 {
+		return fallback, nil
 	}
-	if *value == 0 {
-		*value = fallback
+	if value < 1 {
+		return 0, fmt.Errorf("%w: %s limit", ErrInvalid, name)
 	}
-	if *value < 1 {
-		return fmt.Errorf("%w: %s limit", ErrInvalid, name)
-	}
-	return nil
+	return value, nil
 }

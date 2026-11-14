@@ -5,13 +5,13 @@ import (
 )
 
 type standaloneQuery struct {
-	database  *Database
+	database  Database
 	ctx       context.Context
 	statement string
 	args      []any
 }
 
-func databaseQuery(database *Database, ctx context.Context, statement string, args ...any) standaloneQuery {
+func databaseQuery(database Database, ctx context.Context, statement string, args ...any) standaloneQuery {
 	return standaloneQuery{database, ctx, statement, args}
 }
 func (q standaloneQuery) Scan(dest ...any) error {

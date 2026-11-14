@@ -13,7 +13,7 @@ import (
 
 func TestRecoveredInstallationEnableAdvancesOriginalAuthority(t *testing.T) {
 	store, _, admission := testStore(t)
-	host, err := framehost.New(t.Context(), framehost.Config{Admission: admission, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store})
+	host, err := framehost.New(t.Context(), framehost.Config{Authority: store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func TestRecoveredInstallationEnableAdvancesOriginalAuthority(t *testing.T) {
 	var setups atomic.Int64
 	plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("original-enable")), Units: []framehost.Unit{{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			setups.Add(1)
 			return nil, nil
 		},

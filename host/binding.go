@@ -2,8 +2,7 @@ package host
 
 import (
 	"cmp"
-	"encoding/json"
-	jsonv2 "encoding/json/v2"
+	json "encoding/json/v2"
 	"fmt"
 	"slices"
 
@@ -74,55 +73,57 @@ func (r ExportRef) Validate() error {
 	return r.Contract.Validate()
 }
 
+// ImportDeclaration is one slot an author requires. It names no provider:
+// selection or the unit's fixed choices decide the exact exports.
 type ImportDeclaration struct {
-	Slot      string      `json:"slot"`
-	Contract  ContractRef `json:"contract"`
-	Optional  bool        `json:"optional"`
-	Providers []ExportRef `json:"providers"`
-}
-
-func (d ImportDeclaration) Clone() ImportDeclaration {
-	d.Providers = slices.Clone(d.Providers)
-	return d
-}
-
-// equal distinguishes unresolved providers (nil) from a resolved empty set.
-func (d ImportDeclaration) equal(other ImportDeclaration) bool {
-	return d.Slot == other.Slot && d.Contract == other.Contract && d.Optional == other.Optional &&
-		(d.Providers == nil) == (other.Providers == nil) && slices.Equal(d.Providers, other.Providers)
+	Slot     string      `json:"slot"`
+	Contract ContractRef `json:"contract"`
+	Optional bool        `json:"optional"`
 }
 
 func (d ImportDeclaration) Validate() error {
 	if err := validateName("import slot", d.Slot); err != nil {
 		return err
 	}
-	if err := d.Contract.Validate(); err != nil {
-		return err
-	}
-	if d.Providers == nil {
-		return nil
-	}
-	return d.validateProviders()
+	return d.Contract.Validate()
 }
 
-func (d ImportDeclaration) validateProviders() error {
-	if !d.Optional && len(d.Providers) == 0 || d.Contract.Kind == ServiceKind && len(d.Providers) > 1 {
+// validateProviders checks one exact provider set against the slot's contract
+// and cardinality. An empty set is absence, admitted only for an optional slot.
+func (d ImportDeclaration) validateProviders(providers []ExportRef) error {
+	if !d.Optional && len(providers) == 0 || d.Contract.Kind == ServiceKind && len(providers) > 1 {
 		return fmt.Errorf("%w: import cardinality", frame.ErrInvalid)
 	}
-	providers := make(map[ExportRef]bool, len(d.Providers))
-	for _, provider := range d.Providers {
+	seen := make(map[ExportRef]bool, len(providers))
+	for _, provider := range providers {
 		if err := provider.Validate(); err != nil {
 			return err
 		}
 		if provider.Contract != d.Contract {
 			return frame.ErrContractMismatch
 		}
-		if providers[provider] {
+		if seen[provider] {
 			return fmt.Errorf("%w: duplicate import provider", frame.ErrInvalid)
 		}
-		providers[provider] = true
+		seen[provider] = true
 	}
 	return nil
+}
+
+// SlotProviders fixes the exact providers of one declared slot. Its presence is
+// the decision, so an empty set unambiguously chooses absence.
+type SlotProviders struct {
+	Slot      string      `json:"slot"`
+	Providers []ExportRef `json:"providers"`
+}
+
+func (p SlotProviders) Clone() SlotProviders {
+	p.Providers = slices.Clone(p.Providers)
+	return p
+}
+
+func (p SlotProviders) equal(other SlotProviders) bool {
+	return p.Slot == other.Slot && slices.Equal(p.Providers, other.Providers)
 }
 
 type ExportDeclaration struct {
@@ -130,19 +131,23 @@ type ExportDeclaration struct {
 	Contract ContractRef `json:"contract"`
 }
 
+// UnitDeclaration is immutable release metadata. Fixed slots are wired by the
+// declaration itself; every other import is resolved when a binding is planned.
 type UnitDeclaration struct {
 	ID      UnitID              `json:"id"`
 	Profile Profile             `json:"profile"`
 	Imports []ImportDeclaration `json:"imports"`
 	Exports []ExportDeclaration `json:"exports"`
+	Fixed   []SlotProviders     `json:"fixed"`
 }
 
 func (d UnitDeclaration) Clone() UnitDeclaration {
 	d.Imports = slices.Clone(d.Imports)
-	for i := range d.Imports {
-		d.Imports[i] = d.Imports[i].Clone()
-	}
 	d.Exports = slices.Clone(d.Exports)
+	d.Fixed = slices.Clone(d.Fixed)
+	for i := range d.Fixed {
+		d.Fixed[i] = d.Fixed[i].Clone()
+	}
 	return d
 }
 
@@ -155,14 +160,23 @@ func (d UnitDeclaration) importSlot(slot string) (ImportDeclaration, bool) {
 	return ImportDeclaration{}, false
 }
 
-// declaresPoint permits dynamic membership in a Point the unit declared. A
-// service export cannot be added or replaced after setup.
-func (unit UnitDeclaration) declaresPoint(contract ContractRef) bool {
-	return contract.Kind == PointKind && slices.ContainsFunc(unit.Exports, func(export ExportDeclaration) bool { return export.Contract == contract })
+func (d UnitDeclaration) fixedProviders(slot string) ([]ExportRef, bool) {
+	for _, fixed := range d.Fixed {
+		if fixed.Slot == slot {
+			return fixed.Providers, true
+		}
+	}
+	return nil, false
 }
 
-func (unit UnitDeclaration) export(name string) (ExportDeclaration, bool) {
-	for _, export := range unit.Exports {
+// declaresPoint permits dynamic membership in a Point the unit declared. A
+// service export cannot be added or replaced after setup.
+func (d UnitDeclaration) declaresPoint(contract ContractRef) bool {
+	return contract.Kind == PointKind && slices.ContainsFunc(d.Exports, func(export ExportDeclaration) bool { return export.Contract == contract })
+}
+
+func (d UnitDeclaration) export(name string) (ExportDeclaration, bool) {
+	for _, export := range d.Exports {
 		if export.Name == name {
 			return export, true
 		}
@@ -171,8 +185,8 @@ func (unit UnitDeclaration) export(name string) (ExportDeclaration, bool) {
 }
 
 func (d UnitDeclaration) equal(other UnitDeclaration) bool {
-	return d.ID == other.ID && d.Profile == other.Profile &&
-		slices.EqualFunc(d.Imports, other.Imports, ImportDeclaration.equal) && slices.Equal(d.Exports, other.Exports)
+	return d.ID == other.ID && d.Profile == other.Profile && slices.Equal(d.Imports, other.Imports) &&
+		slices.Equal(d.Exports, other.Exports) && slices.EqualFunc(d.Fixed, other.Fixed, SlotProviders.equal)
 }
 
 func (d UnitDeclaration) Validate() error {
@@ -182,36 +196,77 @@ func (d UnitDeclaration) Validate() error {
 	if err := d.Profile.Validate(); err != nil {
 		return err
 	}
-	seen := make(map[string]bool)
+	exports := make(map[string]bool, len(d.Exports))
 	for _, value := range d.Exports {
 		if err := validateName("export name", value.Name); err != nil {
 			return err
 		}
-		if seen[value.Name] {
+		if exports[value.Name] {
 			return fmt.Errorf("%w: duplicate export %s", frame.ErrInvalid, value.Name)
 		}
-		seen[value.Name] = true
+		exports[value.Name] = true
 		if err := value.Contract.Validate(); err != nil {
 			return err
 		}
 	}
-	seen = make(map[string]bool)
+	slots := make(map[string]bool, len(d.Imports))
 	for _, value := range d.Imports {
 		if err := value.Validate(); err != nil {
 			return err
 		}
-		if seen[value.Slot] {
+		if slots[value.Slot] {
 			return fmt.Errorf("%w: duplicate import slot %s", frame.ErrInvalid, value.Slot)
 		}
-		seen[value.Slot] = true
+		slots[value.Slot] = true
+	}
+	return d.validateFixed()
+}
+
+func (d UnitDeclaration) validateFixed() error {
+	fixed := make(map[string]bool, len(d.Fixed))
+	for _, choice := range d.Fixed {
+		declared, found := d.importSlot(choice.Slot)
+		if !found {
+			return fmt.Errorf("%w: fixed providers for undeclared slot %s", frame.ErrInvalid, choice.Slot)
+		}
+		if fixed[choice.Slot] {
+			return fmt.Errorf("%w: duplicate fixed slot %s", frame.ErrInvalid, choice.Slot)
+		}
+		fixed[choice.Slot] = true
+		if err := declared.validateProviders(choice.Providers); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
+// ImportBinding is a declared slot together with the exact providers an
+// admitted binding resolved for it; an empty set is resolved absence.
+type ImportBinding struct {
+	ImportDeclaration
+	Providers []ExportRef `json:"providers"`
+}
+
+func (b ImportBinding) Clone() ImportBinding {
+	b.Providers = slices.Clone(b.Providers)
+	return b
+}
+
+func (b ImportBinding) equal(other ImportBinding) bool {
+	return b.ImportDeclaration == other.ImportDeclaration && slices.Equal(b.Providers, other.Providers)
+}
+
+func (b ImportBinding) Validate() error {
+	if err := b.ImportDeclaration.Validate(); err != nil {
+		return err
+	}
+	return b.validateProviders(b.Providers)
+}
+
 type UnitBinding struct {
-	Source        UnitRef             `json:"source"`
-	Configuration framevalue.Digest   `json:"configuration"`
-	Imports       []ImportDeclaration `json:"imports"`
+	Source        UnitRef           `json:"source"`
+	Configuration framevalue.Digest `json:"configuration"`
+	Imports       []ImportBinding   `json:"imports"`
 }
 
 func (b UnitBinding) Clone() UnitBinding {
@@ -224,33 +279,31 @@ func (b UnitBinding) Clone() UnitBinding {
 
 func (b UnitBinding) canonical() UnitBinding {
 	b = b.Clone()
-	if b.Imports == nil {
-		b.Imports = []ImportDeclaration{}
-	}
-	slices.SortFunc(b.Imports, func(a, b ImportDeclaration) int { return cmp.Compare(a.Slot, b.Slot) })
+	slices.SortFunc(b.Imports, func(a, b ImportBinding) int { return cmp.Compare(a.Slot, b.Slot) })
 	return b
 }
 
 func (b UnitBinding) equal(other UnitBinding) bool {
 	left, right := b.canonical(), other.canonical()
-	return left.Source == right.Source && left.Configuration == right.Configuration && slices.EqualFunc(left.Imports, right.Imports, ImportDeclaration.equal)
+	return left.Source == right.Source && left.Configuration == right.Configuration && slices.EqualFunc(left.Imports, right.Imports, ImportBinding.equal)
 }
 
 // BindingSnapshot is immutable routing evidence when retained by its domain
 // owner. It contains no running pointer, publication grant or business outcome.
+// Selection identifies the consumer ordering rules a capture applied. Setup
+// bindings have none: provider rules belong to the consumer, not setup identity.
 type BindingSnapshot struct {
-	FormatVersion uint32        `json:"formatVersion"`
-	Roots         []ExportRef   `json:"roots"`
-	UnitRoots     []UnitRef     `json:"unitRoots"`
-	Units         []UnitBinding `json:"units"`
-	Rule          string        `json:"rule"`
+	Roots     []ExportRef       `json:"roots"`
+	UnitRoots []UnitRef         `json:"unitRoots"`
+	Units     []UnitBinding     `json:"units"`
+	Selection framevalue.Digest `json:"selection,omitzero"`
 }
 
 // ParseBinding decodes retained routing evidence without selecting providers.
 // The original owner must still validate it under admission before a new use.
 func ParseBinding(data []byte) (BindingSnapshot, error) {
 	var binding BindingSnapshot
-	if err := jsonv2.Unmarshal(data, &binding, jsonv2.RejectUnknownMembers(true)); err != nil {
+	if err := json.Unmarshal(data, &binding, json.RejectUnknownMembers(true)); err != nil {
 		return BindingSnapshot{}, err
 	}
 	if err := binding.Validate(); err != nil {
@@ -277,18 +330,6 @@ func compareExport(a, b ExportRef) int {
 	return cmp.Or(compareUnit(a.Unit(), b.Unit()), cmp.Compare(a.Export, b.Export))
 }
 
-const bindingFormatVersion = 1
-
-func newBindingSnapshot(roots []ExportRef, unitRoots []UnitRef, units []UnitBinding) BindingSnapshot {
-	if roots == nil {
-		roots = []ExportRef{}
-	}
-	if units == nil {
-		units = []UnitBinding{}
-	}
-	return BindingSnapshot{FormatVersion: bindingFormatVersion, Roots: slices.Clone(roots), UnitRoots: slices.Clone(unitRoots), Units: units}
-}
-
 func (b BindingSnapshot) sameIdentity(other BindingSnapshot) (bool, error) {
 	left, err := b.Identity()
 	if err != nil {
@@ -299,14 +340,6 @@ func (b BindingSnapshot) sameIdentity(other BindingSnapshot) (bool, error) {
 }
 
 func (b BindingSnapshot) Validate() error {
-	if b.FormatVersion != bindingFormatVersion || b.Roots == nil || b.Units == nil {
-		return fmt.Errorf("%w: binding format or missing arrays", frame.ErrInvalid)
-	}
-	if b.Rule != "" {
-		if err := validateName("selection rule", b.Rule); err != nil {
-			return err
-		}
-	}
 	units := make(map[UnitRef]UnitBinding, len(b.Units))
 	for _, unit := range b.Units {
 		if err := unit.validate(); err != nil {
@@ -336,18 +369,11 @@ func (u UnitBinding) validate() error {
 			return fmt.Errorf("%w: duplicate bound import", frame.ErrInvalid)
 		}
 		slots[binding.Slot] = true
-		if err := binding.validateBound(); err != nil {
+		if err := binding.Validate(); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-func (d ImportDeclaration) validateBound() error {
-	if d.Providers == nil {
-		return fmt.Errorf("%w: unresolved import", frame.ErrInvalid)
-	}
-	return d.Validate()
 }
 
 func (b BindingSnapshot) validateRoots(units map[UnitRef]UnitBinding) error {
@@ -436,19 +462,18 @@ func (b BindingSnapshot) Dependencies() []Dependency {
 	return CompactDependencies(values)
 }
 
+// CanonicalJSON is the identity spelling: units and slots are sorted, while
+// root and provider order remain part of the accepted binding.
 func (b BindingSnapshot) CanonicalJSON() ([]byte, error) {
 	if err := b.Validate(); err != nil {
 		return nil, err
 	}
 	value := b.Clone()
-	if value.UnitRoots == nil {
-		value.UnitRoots = []UnitRef{}
-	}
 	slices.SortFunc(value.Units, func(a, b UnitBinding) int { return compareUnit(a.Source, b.Source) })
 	for i := range value.Units {
 		value.Units[i] = value.Units[i].canonical()
 	}
-	return json.Marshal(value)
+	return json.Marshal(value, json.Deterministic(true))
 }
 
 func (b BindingSnapshot) Identity() (framevalue.Digest, error) {

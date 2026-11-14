@@ -33,7 +33,7 @@ func TestInstallationRetainsItsCapturedPlugin(t *testing.T) {
 				t.Helper()
 				plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte(revision)), Units: []framehost.Unit{{
 					Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "result", Contract: contract.Ref()}}},
-					Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+					Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 						return []framehost.ExportValue{framehost.Provide("result", contract, result)}, nil
 					},
 				}}})
@@ -43,7 +43,7 @@ func TestInstallationRetainsItsCapturedPlugin(t *testing.T) {
 				return plugin
 			}
 			original := define("original-release", "original implementation")
-			expected := framehost.InstallationRecord{ID: "captured", Release: original.Revision(), Enabled: true, Units: original.Units()}
+			expected := framehost.InstallationRecord{ID: "captured", Release: original.Revision(), Enabled: true}
 			config := framehost.InstallationConfig{ID: expected.ID, Plugin: original, Enabled: true}
 			switch operation {
 			case "install":
@@ -78,7 +78,7 @@ func TestInstallationRetainsItsCapturedPlugin(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := framehost.WithPlan(ctx, host, plan, scope, func(use *framehost.Use) error {
+			if err := framehost.WithPlan(ctx, host, plan, scope, func(use framehost.Use) error {
 				return framehost.BorrowExport(ctx, use, source, func(_ context.Context, got string) error {
 					if got != "original implementation" {
 						t.Errorf("captured release executed %q", got)

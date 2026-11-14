@@ -95,10 +95,11 @@ func NewAdmission() Admission {
 // NewAdmissionWithLimits bounds scope and business-owner records. A fenced
 // scope retains its generation and still occupies capacity.
 func NewAdmissionWithLimits(limits AdmissionLimits) (Admission, error) {
-	if err := frame.ResolveLimit("scopes", &limits.MaxScopes, defaultMaxScopes); err != nil {
+	var err error
+	if limits.MaxScopes, err = frame.ResolveLimit("scopes", limits.MaxScopes, defaultMaxScopes); err != nil {
 		return Admission{}, err
 	}
-	if err := frame.ResolveLimit("use owners", &limits.MaxUseOwners, defaultMaxUseOwners); err != nil {
+	if limits.MaxUseOwners, err = frame.ResolveLimit("use owners", limits.MaxUseOwners, defaultMaxUseOwners); err != nil {
 		return Admission{}, err
 	}
 	return Admission{&admissionState{
@@ -328,7 +329,7 @@ func (a *admissionState) held(ctx context.Context, owner registeredUseOwner, id 
 	values, err := owner.source.Held(ctx, id)
 	returned = true
 	if err != nil {
-		failure := fmt.Errorf("frame: read retained dependencies from %s: %w", owner.id, err)
+		failure := fmt.Errorf("host: read retained dependencies from %s: %w", owner.id, err)
 		if onlyRequestCancellation(ctx, err) {
 			return nil, failure
 		}
@@ -336,7 +337,7 @@ func (a *admissionState) held(ctx context.Context, owner registeredUseOwner, id 
 	}
 	for _, value := range values {
 		if err := value.Validate(); err != nil {
-			return nil, a.untrusted(fmt.Errorf("frame: invalid retained dependency from %s: %w", owner.id, err))
+			return nil, a.untrusted(fmt.Errorf("host: invalid retained dependency from %s: %w", owner.id, err))
 		}
 		if value.InstallationID != id {
 			return nil, a.untrusted(fmt.Errorf("%w: use owner %s returned another installation", frame.ErrInvalid, owner.id))

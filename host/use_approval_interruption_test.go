@@ -32,14 +32,14 @@ func TestInterruptedUseApprovalKeepsOriginalSettlement(t *testing.T) {
 						return approvalFailure
 					},
 				}
-				host, err := framehost.New(t.Context(), framehost.Config{ExecutionProtection: protection})
+				host, err := framehost.New(t.Context(), framehost.Config{Authority: protectionAuthority(protection)})
 				if err != nil {
 					t.Fatal(err)
 				}
 				var cleanups atomic.Int64
 				plugin := installNative(t, host, "provider", framehost.Unit{
 					Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-					Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+					Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 						_, err := setup.Cleanup("original provider", func() error { cleanups.Add(1); return nil })
 						return nil, err
 					},
@@ -55,7 +55,7 @@ func TestInterruptedUseApprovalKeepsOriginalSettlement(t *testing.T) {
 						}
 					}()
 					use, err := host.AcquireUnit(t.Context(), framehost.UnitRef{InstallationID: "provider", Release: plugin.Revision(), UnitID: "main"}, framehost.UseConfig{Owner: owner, Scope: scope, Realm: "realm"})
-					if interruption != "error" || use != nil || !errors.Is(err, approvalFailure) {
+					if interruption != "error" || use.Valid() || !errors.Is(err, approvalFailure) {
 						t.Errorf("interrupted approval conclusion: use=%v, error=%v", use, err)
 					}
 				}()

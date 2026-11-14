@@ -17,7 +17,7 @@ type realmValueDriver struct {
 
 func (realmValueDriver) Profile() framehost.Profile { return "test.realm-value" }
 func (d realmValueDriver) RealmBound() bool         { return d.bound }
-func (d realmValueDriver) Prepare(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+func (d realmValueDriver) Prepare(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 	return []framehost.ExportValue{framehost.Provide("value", d.contract, string(setup.Realm()))}, nil
 }
 
@@ -47,7 +47,7 @@ func TestExactRootUsesItsDriverRealmWhenOtherRealmsAreReady(t *testing.T) {
 				}
 				driver := realmValueDriver{contract: contract, bound: bound}
 				var accepted framehost.BindingSnapshot
-				host := testHost(t, framehost.Config{Drivers: []framehost.Driver{driver}, ExecutionProtection: realmUseProtection{}, ReadAcceptedBinding: func(context.Context, string, framehost.ScopeGrant) (framehost.BindingSnapshot, error) {
+				host := testHost(t, framehost.Config{Drivers: []framehost.Driver{driver}, Authority: protectionAuthority(realmUseProtection{}), ReadAcceptedBinding: func(context.Context, string, framehost.ScopeGrant) (framehost.BindingSnapshot, error) {
 					return accepted.Clone(), nil
 				}})
 				if err := host.Register(contract); err != nil {
@@ -77,7 +77,7 @@ func TestExactRootUsesItsDriverRealmWhenOtherRealmsAreReady(t *testing.T) {
 						t.Fatal(err)
 					}
 					for _, restore := range []bool{false, true} {
-						var use *framehost.Use
+						var use framehost.Use
 						config := framehost.UseConfig{Owner: owner, Scope: scope, Realm: realm}
 						if restore {
 							use, err = host.AcquireRecord(ctx, "accepted-record", config)
@@ -121,7 +121,7 @@ func TestAcquireUnitInheritsBeforePlanning(t *testing.T) {
 				t.Fatal(err)
 			}
 			driver := realmValueDriver{contract: contract, bound: bound}
-			host := testHost(t, framehost.Config{Drivers: []framehost.Driver{driver}, ExecutionProtection: realmUseProtection{}})
+			host := testHost(t, framehost.Config{Drivers: []framehost.Driver{driver}, Authority: protectionAuthority(realmUseProtection{})})
 			if err := host.Register(contract); err != nil {
 				t.Fatal(err)
 			}
@@ -164,17 +164,17 @@ func TestAcquireUnitInheritsBeforePlanning(t *testing.T) {
 				{Owner: parent.Lifetime(), Parent: parent, Scope: otherScope},
 				{Owner: parent.Lifetime(), Parent: parent, ExecutionID: "other-execution"},
 			} {
-				if use, err := host.AcquireUnit(t.Context(), root, config); use != nil || !errors.Is(err, frame.ErrInvalid) {
+				if use, err := host.AcquireUnit(t.Context(), root, config); use.Valid() || !errors.Is(err, frame.ErrInvalid) {
 					t.Fatalf("conflicting child escaped its parent: %v, %v", use, err)
 				}
 			}
 			if _, err := parent.Close(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			if use, err := host.AcquireUnit(t.Context(), root, framehost.UseConfig{Owner: parent.Lifetime(), Parent: parent}); use != nil || !errors.Is(err, frame.ErrClosed) {
+			if use, err := host.AcquireUnit(t.Context(), root, framehost.UseConfig{Owner: parent.Lifetime(), Parent: parent}); use.Valid() || !errors.Is(err, frame.ErrClosed) {
 				t.Fatalf("closed parent admitted another descendant: %v, %v", use, err)
 			}
-			if use, err := host.AcquireUnit(t.Context(), root, framehost.UseConfig{}); use != nil || !errors.Is(err, frame.ErrInvalid) {
+			if use, err := host.AcquireUnit(t.Context(), root, framehost.UseConfig{}); use.Valid() || !errors.Is(err, frame.ErrInvalid) {
 				t.Fatalf("missing owner was not refused at the boundary: %v, %v", use, err)
 			}
 		})

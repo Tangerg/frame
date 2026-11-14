@@ -38,9 +38,9 @@ func TestConfirmedInstanceExitAllowsSuccessorBeforeDiagnosticForwarding(t *testi
 			if err != nil {
 				t.Fatal(err)
 			}
-			var resource *frame.ResourceHandle
+			var resource frame.ResourceHandle
 			t.Cleanup(func() {
-				if resource != nil {
+				if resource.Valid() {
 					if err := resource.ConfirmReleased(nil); err != nil {
 						t.Error(err)
 					}
@@ -54,7 +54,7 @@ func TestConfirmedInstanceExitAllowsSuccessorBeforeDiagnosticForwarding(t *testi
 			diagnostic := &instanceExitDiagnostic{}
 			plugin := installNative(t, host, "successor", framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-				Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 					if prepares.Add(1) != 1 {
 						successorID = setup.InstanceID()
 						return nil, nil
@@ -110,9 +110,9 @@ func TestInstanceObservationProjectsOriginalCloseEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var handle *frame.ResourceHandle
+	var handle frame.ResourceHandle
 	t.Cleanup(func() {
-		if handle != nil {
+		if handle.Valid() {
 			if err := handle.ConfirmReleased(nil); err != nil {
 				t.Error(err)
 			}
@@ -130,7 +130,7 @@ func TestInstanceObservationProjectsOriginalCloseEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	cleanupFailure := errors.New("original connection still lacks termination evidence")
-	var setup *framehost.Setup
+	var setup framehost.Setup
 	var cleanupCalls atomic.Int64
 	plugin := installNative(t, host, "diagnostics", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{
@@ -138,7 +138,7 @@ func TestInstanceObservationProjectsOriginalCloseEvidence(t *testing.T) {
 			Profile: framehost.NativeGo,
 			Exports: []framehost.ExportDeclaration{{Name: "output", Contract: service.Ref()}},
 		},
-		Setup: func(_ context.Context, current *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, current framehost.Setup) ([]framehost.ExportValue, error) {
 			setup = current
 			var err error
 			handle, err = current.Own(frame.Resource{
@@ -348,7 +348,7 @@ func TestInstallationRestorationPreservesScopeRevocation(t *testing.T) {
 			var grant framehost.ScopeGrant
 			plugin := installNative(t, host, "original", framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-				Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 					grant = setup.ScopeGrant()
 					return nil, nil
 				},

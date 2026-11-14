@@ -107,7 +107,7 @@ func (r *remote) Stream(ctx context.Context, invocation frame.Invocation, emit f
 }
 func (r *remote) invoke(ctx context.Context, invocation frame.Invocation, emit frame.Emit) (result value.JSON, err error) {
 	method, ok := r.contract.Method(invocation.Member())
-	if !ok || (len(method.Descriptor().Stream) > 0) != (emit != nil) {
+	if !ok || method.Streaming() != (emit != nil) {
 		return value.JSON{}, mismatch()
 	}
 	if err := method.ValidateInvocation(invocation); err != nil {
@@ -153,7 +153,7 @@ func dispatchCall(ctx context.Context, conn *peer, services map[string]binding, 
 	}
 	method, ok := selected.contract.Method(params.Member)
 	invocation, err := params.invocation()
-	if err != nil || !ok || method.ValidateInvocation(invocation) != nil || (len(method.Descriptor().Stream) > 0) != (params.Stream != "") {
+	if err != nil || !ok || method.ValidateInvocation(invocation) != nil || method.Streaming() != (params.Stream != "") {
 		return nil, mismatch()
 	}
 	var result value.JSON

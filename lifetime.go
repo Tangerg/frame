@@ -79,7 +79,8 @@ type resourceEntry struct {
 }
 
 // ResourceHandle reports evidence to the original resource owner. It cannot
-// restart cleanup or transfer release ownership to a different lifetime.
+// restart cleanup or transfer release ownership to a different lifetime. The
+// zero handle is unissued.
 type ResourceHandle struct {
 	lifetime *lifetimeRecord
 	entry    *resourceEntry
@@ -97,12 +98,9 @@ type Lifetime struct{ *lifetimeRecord }
 type LifetimeID struct{ owner *lifetimeRecord }
 
 func (l *lifetimeRecord) Identity() LifetimeID { return LifetimeID{l} }
-func (h *ResourceHandle) OwnerID() LifetimeID {
-	if h == nil {
-		return LifetimeID{}
-	}
-	return LifetimeID{h.lifetime}
-}
+func (h ResourceHandle) OwnerID() LifetimeID   { return LifetimeID{h.lifetime} }
+
+func (h ResourceHandle) Valid() bool { return h.entry != nil }
 
 type lifetimeRecord struct {
 	// Host-created lifetimes stay inside the admission domain that can inspect
@@ -170,10 +168,11 @@ func NewLifetimeWithLimits(parent context.Context, limits LifetimeLimits) (Lifet
 	if framevalue.IsNil(parent) {
 		return Lifetime{}, ErrInvalid
 	}
-	if err := ResolveLimit("lifetime work", &limits.MaxWork, defaultLifetimeWork); err != nil {
+	var err error
+	if limits.MaxWork, err = ResolveLimit("lifetime work", limits.MaxWork, defaultLifetimeWork); err != nil {
 		return Lifetime{}, err
 	}
-	if err := ResolveLimit("lifetime resources", &limits.MaxResources, defaultLifetimeResources); err != nil {
+	if limits.MaxResources, err = ResolveLimit("lifetime resources", limits.MaxResources, defaultLifetimeResources); err != nil {
 		return Lifetime{}, err
 	}
 	ctx, cancel := context.WithCancelCause(parent)
@@ -249,31 +248,31 @@ func (l *lifetimeRecord) Cancel(cause error) {
 
 func (l *lifetimeRecord) signalLocked() { close(l.changed); l.changed = make(chan struct{}) }
 
-func (l *lifetimeRecord) Own(resource Resource, dependencies ...*ResourceHandle) (*ResourceHandle, error) {
+func (l *lifetimeRecord) Own(resource Resource, dependencies ...ResourceHandle) (ResourceHandle, error) {
 	if l == nil {
-		return nil, ErrInvalid
+		return ResourceHandle{}, ErrInvalid
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.closingLocked() {
-		return nil, ErrClosed
+		return ResourceHandle{}, ErrClosed
 	}
 	return l.ownLocked(resource, dependencies)
 }
 
-func (l *lifetimeRecord) ownLocked(resource Resource, dependencies []*ResourceHandle) (*ResourceHandle, error) {
+func (l *lifetimeRecord) ownLocked(resource Resource, dependencies []ResourceHandle) (ResourceHandle, error) {
 	if resource.Name == "" || resource.Close == nil {
-		return nil, ErrInvalid
+		return ResourceHandle{}, ErrInvalid
 	}
 	if len(l.resources) >= l.limits.MaxResources {
-		return nil, fmt.Errorf("%w: lifetime resources", ErrCapacity)
+		return ResourceHandle{}, fmt.Errorf("%w: lifetime resources", ErrCapacity)
 	}
 	resource.Name = BoundedDiagnostic(resource.Name)
 	entry := &resourceEntry{resource: resource, index: len(l.resources)}
 	seen := make(map[*resourceEntry]bool)
 	for _, dependency := range dependencies {
-		if dependency == nil || dependency.lifetime != l || dependency.entry.released {
-			return nil, fmt.Errorf("%w: resource dependency", ErrInvalid)
+		if !dependency.Valid() || dependency.lifetime != l || dependency.entry.released {
+			return ResourceHandle{}, fmt.Errorf("%w: resource dependency", ErrInvalid)
 		}
 		if seen[dependency.entry] {
 			continue
@@ -286,7 +285,7 @@ func (l *lifetimeRecord) ownLocked(resource Resource, dependencies []*ResourceHa
 	}
 	l.resources = append(l.resources, entry)
 	l.signalLocked()
-	return &ResourceHandle{lifetime: l, entry: entry}, nil
+	return ResourceHandle{lifetime: l, entry: entry}, nil
 }
 
 func cleanupResource(name string, closeResource func() error) Resource {
@@ -302,7 +301,7 @@ func cleanupResource(name string, closeResource func() error) Resource {
 	return resource
 }
 
-func (l *lifetimeRecord) Cleanup(name string, closeResource func() error, dependencies ...*ResourceHandle) (*ResourceHandle, error) {
+func (l *lifetimeRecord) Cleanup(name string, closeResource func() error, dependencies ...ResourceHandle) (ResourceHandle, error) {
 	return l.Own(cleanupResource(name, closeResource), dependencies...)
 }
 func (l *lifetimeRecord) BeginClose(cause error) Close {
@@ -582,8 +581,8 @@ func (l *lifetimeRecord) recordFailureLocked(name, detail string, cause error) {
 	l.failures = append(l.failures, CloseFailure{Resource: name, Detail: detail})
 }
 
-func (h *ResourceHandle) ConfirmReleased(diagnostic error) error {
-	if h == nil || h.lifetime == nil || h.entry == nil {
+func (h ResourceHandle) ConfirmReleased(diagnostic error) error {
+	if !h.Valid() {
 		return ErrInvalid
 	}
 	detail := closeFailureDetail(diagnostic)

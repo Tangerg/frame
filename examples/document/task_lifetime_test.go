@@ -24,7 +24,7 @@ func TestCloseJoinsTaskSettlementBeforeClosingItsStore(t *testing.T) {
 				ID: "settlement", Profile: framehost.NativeGo,
 				Exports: []framehost.ExportDeclaration{{Name: "settlement", Contract: app.Contracts.Validators.Ref()}},
 			},
-			Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+			Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 				return []framehost.ExportValue{framehost.Contribute("settlement", app.Contracts.Validators,
 					document.ValidatorMetadata{Name: "settlement", Order: 100},
 					document.Validator(func(ctx context.Context, _ document.Converted) ([]document.Diagnostic, error) {

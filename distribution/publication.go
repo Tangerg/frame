@@ -10,18 +10,18 @@ import (
 	"github.com/Tangerg/frame/value"
 )
 
-func (s *storeAuthority) publishHeld(ctx context.Context, staged *staging, source Source) (result *Lease, err error) {
+func (s *storeAuthority) publishHeld(ctx context.Context, staged *staging, source Source) (result Lease, err error) {
 	release, err := s.validate(ctx, staged.root, unsealedTree)
 	if err != nil {
-		return nil, err
+		return Lease{}, err
 	}
 	if err := s.checkTrust(ctx, source, release); err != nil {
-		return nil, errors.Join(ErrUntrusted, err)
+		return Lease{}, errors.Join(ErrUntrusted, err)
 	}
 	if err := sealReleaseContents(ctx, staged.root, release.Manifest, s.limits.Entries); err != nil {
-		return nil, err
+		return Lease{}, err
 	}
-	var lease *Lease
+	var lease Lease
 	var existing fs.FileInfo
 	err = s.admission.Under(ctx, func() error {
 		destination := release.Digest.String()
@@ -52,18 +52,18 @@ func (s *storeAuthority) publishHeld(ctx context.Context, staged *staging, sourc
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return Lease{}, err
 	}
 	// Until this call transfers the lease, cached trust may refuse or panic.
 	defer func() {
-		if result == nil {
+		if !result.Valid() {
 			err = errors.Join(err, lease.Close())
 		}
 	}()
 	if existing != nil {
 		cached, err := s.admitCached(ctx, source, release.Digest, existing)
 		if err != nil {
-			return nil, err
+			return Lease{}, err
 		}
 		lease.claim.release = cached
 	}

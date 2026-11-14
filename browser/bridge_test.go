@@ -85,7 +85,7 @@ func openBridgeEnvironment(t *testing.T, storeConfig sqlite.Config, cleanup bool
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := framehost.New(context.Background(), framehost.Config{Admission: admission, Epoch: store.Epoch(), Installations: store, ExecutionProtection: store})
+	host, err := framehost.New(context.Background(), framehost.Config{Authority: store})
 	if err != nil {
 		t.Fatal(err)
 	}

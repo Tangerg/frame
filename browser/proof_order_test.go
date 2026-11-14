@@ -28,7 +28,7 @@ func TestPublicationProofReplayCompletesLocalRetirement(t *testing.T) {
 	attempt := sqlite.Attempt{
 		ID: "execution", Epoch: store.Epoch(), Realm: string(RealmID(realm)), Profile: framehost.BrowserJS,
 		Scope: "scope", ScopeGeneration: 1, Generation: 1, Source: source,
-		Binding: framehost.BindingSnapshot{FormatVersion: 1, Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{source}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil)}}},
+		Binding: framehost.BindingSnapshot{Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{source}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil)}}},
 	}
 	if err := store.RecordAttempt(ctx, attempt); err != nil {
 		t.Fatal(err)

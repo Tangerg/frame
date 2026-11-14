@@ -1,6 +1,7 @@
 package distribution
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"io/fs"
@@ -30,6 +31,21 @@ const (
 
 func DefaultLimits() Limits {
 	return Limits{Entries: defaultMaxEntries, ExpandedBytes: defaultExpandedBytes, ArchiveBytes: defaultArchiveBytes, ManifestBytes: defaultManifestBytes, CompressionRatio: defaultCompressionRatio}
+}
+
+// resolve selects the default of each zero bound independently, so narrowing
+// one limit keeps the others at their defaults.
+func (l Limits) resolve() (Limits, error) {
+	defaults := DefaultLimits()
+	l.Entries = cmp.Or(l.Entries, defaults.Entries)
+	l.ExpandedBytes = cmp.Or(l.ExpandedBytes, defaults.ExpandedBytes)
+	l.ArchiveBytes = cmp.Or(l.ArchiveBytes, defaults.ArchiveBytes)
+	l.ManifestBytes = cmp.Or(l.ManifestBytes, defaults.ManifestBytes)
+	l.CompressionRatio = cmp.Or(l.CompressionRatio, defaults.CompressionRatio)
+	if l.Entries < 1 || l.ExpandedBytes < 1 || l.ArchiveBytes < 1 || l.ManifestBytes < 1 {
+		return Limits{}, ErrCapacity
+	}
+	return l, nil
 }
 
 type Source struct {
@@ -80,12 +96,11 @@ func Open(config Config) (Store, error) {
 	if config.Directory == "" || !config.Admission.Valid() || config.Trust == nil || config.Retained == nil {
 		return Store{}, errors.New("distribution: directory, admission, trust and retention reader are required")
 	}
-	if config.Limits == (Limits{}) {
-		config.Limits = DefaultLimits()
+	limits, err := config.Limits.resolve()
+	if err != nil {
+		return Store{}, err
 	}
-	if config.Limits.Entries < 1 || config.Limits.ExpandedBytes < 1 || config.Limits.ArchiveBytes < 1 || config.Limits.ManifestBytes < 1 || config.Limits.CompressionRatio < 1 {
-		return Store{}, ErrCapacity
-	}
+	config.Limits = limits
 	directory, err := filepath.Abs(config.Directory)
 	if err != nil {
 		return Store{}, err

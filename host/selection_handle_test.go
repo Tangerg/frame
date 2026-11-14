@@ -32,7 +32,7 @@ func newSelectionHandles(t *testing.T) selectionHandles {
 	}
 	plugin := installNative(t, host, "providers", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "first", Contract: point.Ref()}, {Name: "second", Contract: point.Ref()}}},
-		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			return []framehost.ExportValue{framehost.Contribute("first", point, "first", "first"), framehost.Contribute("second", point, "second", "second")}, nil
 		},
 	})
@@ -99,7 +99,7 @@ func TestAcquireKeepsItsOriginalPlanAcrossAdmissionWait(t *testing.T) {
 	}
 	wait := &admissionWaitContext{Context: ctx, waiting: make(chan struct{})}
 	type acquired struct {
-		use *framehost.Use
+		use framehost.Use
 		err error
 	}
 	completed := make(chan acquired, 1)

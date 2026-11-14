@@ -21,11 +21,11 @@ func TestInvalidUseIdentityIsRejectedBeforePreparation(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			protection := &useRetirementProtection{approve: func() error { return nil }, releases: make(chan recordedUseRelease, 1)}
-			host := testHost(t, framehost.Config{ExecutionProtection: protection})
+			host := testHost(t, framehost.Config{Authority: protectionAuthority(protection)})
 			var prepared atomic.Int32
 			plugin := installNative(t, host, "provider", framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-				Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 					prepared.Add(1)
 					return nil, nil
 				},
@@ -33,7 +33,7 @@ func TestInvalidUseIdentityIsRejectedBeforePreparation(t *testing.T) {
 			owner, scope := ownerAndScope(t, host)
 			root := framehost.UnitRef{InstallationID: "provider", Release: plugin.Revision(), UnitID: "main"}
 			use, err := host.AcquireUnit(t.Context(), root, framehost.UseConfig{Owner: owner, Scope: scope, Realm: test.realm, ExecutionID: test.execution})
-			if use != nil || !errors.Is(err, frame.ErrInvalid) {
+			if use.Valid() || !errors.Is(err, frame.ErrInvalid) {
 				t.Fatalf("invalid use identity was admitted: %v", err)
 			}
 			if prepared.Load() != 0 {
@@ -64,7 +64,7 @@ func TestUseAdmissionReadsOriginalOwners(t *testing.T) {
 			var providerLifetime, instanceLifetime frame.Lifetime
 			provider := installNative(t, host, "provider", framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: input.Ref()}}},
-				Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 					providerLifetime = setup.Lifetime()
 					return []framehost.ExportValue{framehost.Provide("value", input, "original")}, nil
 				},
@@ -72,10 +72,10 @@ func TestUseAdmissionReadsOriginalOwners(t *testing.T) {
 			var calls atomic.Int32
 			consumer := installNative(t, host, "consumer", framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo,
-					Imports: []framehost.ImportDeclaration{{Slot: "input", Contract: input.Ref(), Providers: []framehost.ExportRef{source("provider", provider, "main", "value", input.Ref())}}},
+					Imports: []framehost.ImportDeclaration{{Slot: "input", Contract: input.Ref()}}, Fixed: []framehost.SlotProviders{{Slot: "input", Providers: []framehost.ExportRef{source("provider", provider, "main", "value", input.Ref())}}},
 					Exports: []framehost.ExportDeclaration{{Name: "call", Contract: output.Ref()}},
 				},
-				Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 					instanceLifetime = setup.Lifetime()
 					value, err := framehost.Import(setup, "input", input)
 					return []framehost.ExportValue{framehost.Provide("call", output, func() string { calls.Add(1); return value })}, err
@@ -135,7 +135,7 @@ func TestUseGrantRechecksRuntimeAfterApproval(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx := testContext(t)
 			protection := &useRetirementProtection{releases: make(chan recordedUseRelease, 1)}
-			host := testHost(t, framehost.Config{ExecutionProtection: protection})
+			host := testHost(t, framehost.Config{Authority: protectionAuthority(protection)})
 			input, err := framehost.NewContract[string]("approval.input", "1")
 			if err != nil {
 				t.Fatal(err)
@@ -146,14 +146,14 @@ func TestUseGrantRechecksRuntimeAfterApproval(t *testing.T) {
 			var providerLifetime, instanceLifetime frame.Lifetime
 			provider := installNative(t, host, "provider", framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: input.Ref()}}},
-				Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 					providerLifetime = setup.Lifetime()
 					return []framehost.ExportValue{framehost.Provide("value", input, "original")}, nil
 				},
 			})
 			consumer := installNative(t, host, "consumer", framehost.Unit{
-				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Imports: []framehost.ImportDeclaration{{Slot: "input", Contract: input.Ref(), Providers: []framehost.ExportRef{source("provider", provider, "main", "value", input.Ref())}}}},
-				Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Imports: []framehost.ImportDeclaration{{Slot: "input", Contract: input.Ref()}}, Fixed: []framehost.SlotProviders{{Slot: "input", Providers: []framehost.ExportRef{source("provider", provider, "main", "value", input.Ref())}}}},
+				Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 					instanceLifetime = setup.Lifetime()
 					return nil, nil
 				},
@@ -168,8 +168,8 @@ func TestUseGrantRechecksRuntimeAfterApproval(t *testing.T) {
 			}
 			owner, scope := ownerAndScope(t, host)
 			use, err := host.AcquireUnit(ctx, framehost.UnitRef{InstallationID: "consumer", Release: consumer.Revision(), UnitID: "main"}, framehost.UseConfig{Owner: owner, Scope: scope, Realm: "approval"})
-			if use != nil || !errors.Is(err, frame.ErrClosed) {
-				if use != nil {
+			if use.Valid() || !errors.Is(err, frame.ErrClosed) {
+				if use.Valid() {
 					_, _ = use.Close(ctx)
 				}
 				t.Fatalf("approval published a Use after its original runtime stopped: %v, %v", use, err)
@@ -210,7 +210,7 @@ func TestCapturedBindingCannotExtendADrainingProvider(t *testing.T) {
 			var cleanups atomic.Int32
 			provider := installNative(t, host, "provider", framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: input.Ref()}}},
-				Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 					providerID = setup.InstanceID()
 					_, err := setup.Cleanup("original provider", func() error { cleanups.Add(1); return nil })
 					return []framehost.ExportValue{framehost.Provide("value", input, "original")}, err
@@ -219,8 +219,8 @@ func TestCapturedBindingCannotExtendADrainingProvider(t *testing.T) {
 			dependency := source("provider", provider, "main", "value", input.Ref())
 			if transitive {
 				middle := installNative(t, host, "middle", framehost.Unit{
-					Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Imports: []framehost.ImportDeclaration{{Slot: "input", Contract: input.Ref(), Providers: []framehost.ExportRef{dependency}}}, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: input.Ref()}}},
-					Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+					Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Imports: []framehost.ImportDeclaration{{Slot: "input", Contract: input.Ref()}}, Fixed: []framehost.SlotProviders{{Slot: "input", Providers: []framehost.ExportRef{dependency}}}, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: input.Ref()}}},
+					Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 						value, err := framehost.Import(setup, "input", input)
 						return []framehost.ExportValue{framehost.Provide("value", input, value)}, err
 					},
@@ -228,8 +228,8 @@ func TestCapturedBindingCannotExtendADrainingProvider(t *testing.T) {
 				dependency = source("middle", middle, "main", "value", input.Ref())
 			}
 			consumer := installNative(t, host, "consumer", framehost.Unit{
-				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Imports: []framehost.ImportDeclaration{{Slot: "input", Contract: input.Ref(), Providers: []framehost.ExportRef{dependency}}}, Exports: []framehost.ExportDeclaration{{Name: "read", Contract: output.Ref()}}},
-				Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Imports: []framehost.ImportDeclaration{{Slot: "input", Contract: input.Ref()}}, Fixed: []framehost.SlotProviders{{Slot: "input", Providers: []framehost.ExportRef{dependency}}}, Exports: []framehost.ExportDeclaration{{Name: "read", Contract: output.Ref()}}},
+				Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 					value, err := framehost.Import(setup, "input", input)
 					return []framehost.ExportValue{framehost.Provide("read", output, func() string { return value })}, err
 				},
@@ -264,14 +264,14 @@ func TestCapturedBindingCannotExtendADrainingProvider(t *testing.T) {
 			if err := host.RetireInstance(ctx, providerID); err != nil {
 				t.Fatal(err)
 			}
-			if next, err := host.Acquire(ctx, plan, config); next != nil || !errors.Is(err, framehost.ErrStaleBinding) {
-				if next != nil {
+			if next, err := host.Acquire(ctx, plan, config); next.Valid() || !errors.Is(err, framehost.ErrStaleBinding) {
+				if next.Valid() {
 					defer next.Close(context.Background())
 				}
 				t.Errorf("captured admission extended an original draining provider: use=%v error=%v", next, err)
 			}
-			if next, err := host.AcquireUnit(ctx, root.Unit(), config); next != nil || err == nil {
-				if next != nil {
+			if next, err := host.AcquireUnit(ctx, root.Unit(), config); next.Valid() || err == nil {
+				if next.Valid() {
 					defer next.Close(context.Background())
 				}
 				t.Errorf("declaration admission extended an original draining provider: use=%v error=%v", next, err)

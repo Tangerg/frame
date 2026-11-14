@@ -28,7 +28,7 @@ type managedContribution struct {
 	ID         string              `json:"id"`
 	Export     string              `json:"export"`
 	Requires   []managedDependency `json:"requires"`
-	Background *frame.Target       `json:"background,omitzero"`
+	Background *Target             `json:"background,omitzero"`
 }
 
 type managedParams struct {

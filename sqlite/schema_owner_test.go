@@ -48,7 +48,7 @@ func TestBusinessOwnerCannotEraseExecutionProtection(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := framehost.UnitRef{InstallationID: "provider", Release: value.Hash(nil), UnitID: "main"}
-	binding := framehost.BindingSnapshot{FormatVersion: 1, Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{source}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil)}}}
+	binding := framehost.BindingSnapshot{Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{source}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil)}}}
 	if err := store.RecordAttempt(t.Context(), sqlite.Attempt{ID: "running", Epoch: store.Epoch(), Source: source, Binding: binding, Realm: "realm", Profile: framehost.LocalProcess}); err != nil {
 		t.Fatal(err)
 	}
@@ -203,8 +203,8 @@ func TestInstallationProjectionUsesItsOriginalSchemaOwner(t *testing.T) {
 				_, err := tx.ExecContext(ctx, `INSERT INTO projections VALUES(?)`, change.After.ID)
 				return err
 			}
-			store, admission := schemaOwnerStore(t, declaration)
-			host, err := framehost.New(t.Context(), framehost.Config{Admission: admission, Installations: store})
+			store, _ := schemaOwnerStore(t, declaration)
+			host, err := framehost.New(t.Context(), framehost.Config{Authority: store})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -71,7 +71,7 @@ func TestPreparedMetadataKeepsItsOriginalContractAndProjection(t *testing.T) {
 			}
 			plugin := installNative(t, host, "metadata", framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "member", Contract: point.Ref()}}},
-				Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+				Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 					return []framehost.ExportValue{{Name: "member", Contract: point.Ref(), Metadata: metadata, Value: "callable"}}, nil
 				},
 			})

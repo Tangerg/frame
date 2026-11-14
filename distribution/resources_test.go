@@ -9,9 +9,9 @@ import (
 	framehost "github.com/Tangerg/frame/host"
 )
 
-type resourceCapacityDriver struct{ *ResourceDriver }
+type resourceCapacityDriver struct{ ResourceDriver }
 
-func (d resourceCapacityDriver) Prepare(ctx context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+func (d resourceCapacityDriver) Prepare(ctx context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 	for {
 		_, err := setup.Cleanup("occupied", func() error { return nil })
 		if errors.Is(err, frame.ErrCapacity) {
@@ -33,7 +33,7 @@ func TestResourceDriverReservesCleanupBeforeOpeningContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := framehost.New(ctx, framehost.Config{Admission: store.admission, Drivers: []framehost.Driver{resourceCapacityDriver{driver}}})
+	host, err := framehost.New(ctx, framehost.Config{Authority: store.admission, Drivers: []framehost.Driver{resourceCapacityDriver{driver}}})
 	if err != nil {
 		t.Fatal(err)
 	}

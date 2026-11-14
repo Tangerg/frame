@@ -225,7 +225,7 @@ func TestAuthoredMultiPointCaptureRefusesAChangedValidatorSet(t *testing.T) {
 	point := workbench.Contracts.Validators
 	addition, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("authoring/extra-validator/1")), Units: []framehost.Unit{{
 		Declaration: framehost.UnitDeclaration{ID: "validation", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "extra", Contract: point.Ref()}}},
-		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			return []framehost.ExportValue{framehost.Contribute("extra", point, document.ValidatorMetadata{Name: "extra", Order: 30}, document.Validator(func(context.Context, document.Converted) ([]document.Diagnostic, error) { return nil, nil }))}, nil
 		},
 	}}})

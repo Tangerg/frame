@@ -5,7 +5,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
+	json "encoding/json/v2"
 	"errors"
 	"fmt"
 
@@ -208,8 +208,13 @@ func (s *storeAuthority) fenceUnlessRefused(err error) error {
 	return err
 }
 
-func (s Store) IsAuthority(admission framehost.Admission, epoch uint64) bool {
-	return s.storeAuthority != nil && s.admission == admission && s.epoch == epoch
+// Admission is the gate every Store transaction enters. A Host composed with
+// this Store as its Durable admits through the same gate.
+func (s Store) Admission() framehost.Admission {
+	if s.storeAuthority == nil {
+		return framehost.Admission{}
+	}
+	return s.admission
 }
 
 // Recovery and diagnostics may read without reopening admission. Mutations

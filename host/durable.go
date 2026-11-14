@@ -1,41 +1,41 @@
 package host
 
-import (
-	"fmt"
-	"reflect"
+// Authority supplies the admission gate a Host enters. An Admission alone is a
+// volatile authority: nothing it admits outlives the process.
+type Authority interface {
+	Admission() Admission
+}
 
-	"github.com/Tangerg/frame"
-	framevalue "github.com/Tangerg/frame/value"
-)
-
-// DurableAuthority ties execution evidence to the store that owns this Host's installation transitions.
-type DurableAuthority interface {
+// Durable is an Authority that also persists installations and protects
+// surviving executions. It owns the creation epoch fencing its records, so the
+// Host derives the gate and the epoch from it instead of holding copies.
+type Durable interface {
+	Authority
+	Epoch() uint64
 	InstallationStore
 	ExecutionProtection
-	IsAuthority(Admission, uint64) bool
 }
 
-func (h *hostState) validateDurableAuthority() error {
-	installation, installationDurable := h.store.(DurableAuthority)
-	protection, protectionDurable := h.protection.(DurableAuthority)
-	if installationDurable && !installation.IsAuthority(h.admission, h.epoch) {
-		return fmt.Errorf("%w: installation authority differs from host admission or epoch", frame.ErrInvalid)
+func (a Admission) Admission() Admission { return a }
+
+// volatileEpoch numbers the single creation generation of a Host without a
+// Durable authority: no older epoch can hold work that must be fenced.
+const volatileEpoch = 1
+
+func (h *hostState) Epoch() uint64 {
+	if h.durable == nil {
+		return volatileEpoch
 	}
-	if protectionDurable && !protection.IsAuthority(h.admission, h.epoch) {
-		return fmt.Errorf("%w: execution protection authority differs from host admission or epoch", frame.ErrInvalid)
-	}
-	if installationDurable && protectionDurable && !h.UsesAuthority(installation) {
-		return fmt.Errorf("%w: installation and execution protection require the same durable authority", frame.ErrInvalid)
-	}
-	return nil
+	return h.durable.Epoch()
 }
 
-func (h *hostState) UsesAuthority(store DurableAuthority) bool {
-	return h != nil && !framevalue.IsNil(store) && reflect.TypeOf(store).Comparable() &&
-		h.store == InstallationStore(store) && h.protection == ExecutionProtection(store) &&
-		store.IsAuthority(h.admission, h.epoch)
-}
+// Durable lets an adapter that writes to the same store refuse a Setup issued
+// by a Host composed with a different one.
+func (h *hostState) Durable() Durable { return h.durable }
 
-func (s *Setup) UsesAuthority(store DurableAuthority) bool {
-	return s != nil && s.setupCall != nil && s.host.UsesAuthority(store)
+func (s Setup) Durable() Durable {
+	if s.setupCall == nil {
+		return nil
+	}
+	return s.host.durable
 }

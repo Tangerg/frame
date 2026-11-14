@@ -15,7 +15,7 @@ type wireMetadataDriver struct {
 }
 
 func (wireMetadataDriver) Profile() framehost.Profile { return "test.wire-metadata" }
-func (d wireMetadataDriver) Prepare(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+func (d wireMetadataDriver) Prepare(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 	return []framehost.ExportValue{{Name: "member", Contract: d.point, Metadata: d.metadata, Value: "original value"}}, nil
 }
 
@@ -100,7 +100,7 @@ func TestPublishedWireMetadataHasNoFrozenGoTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, scope := ownerAndScope(t, host)
-	if err := host.With(t.Context(), scope, plan, func(access *framehost.Access) error {
+	if err := host.With(t.Context(), scope, plan, func(access framehost.Access) error {
 		member, err := selection.One(access)
 		if err != nil {
 			return err

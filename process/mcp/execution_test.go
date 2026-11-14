@@ -66,7 +66,7 @@ func checkExecution(t *testing.T, protocol process.Protocol, capability *frame.C
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := framehost.New(ctx, framehost.Config{Admission: admission, Epoch: store.Epoch(), Drivers: []framehost.Driver{driver}, Installations: store, ExecutionProtection: store})
+	host, err := framehost.New(ctx, framehost.Config{Authority: store, Drivers: []framehost.Driver{driver}})
 	if err != nil {
 		t.Fatal(err)
 	}

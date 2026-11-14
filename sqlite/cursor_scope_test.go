@@ -44,7 +44,7 @@ func TestReadSnapshotClosesItsCursorsBeforeRestoringWriter(t *testing.T) {
 		if err := row.Err(); !errors.Is(err, sql.ErrTxDone) {
 			t.Fatalf("expired row concealed its original callback lifetime: %v", err)
 		}
-		for _, enter := range []func(context.Context, *sqlite.Database, func(context.Context) error) error{sqlite.RunReadSnapshot, sqlite.RunInTx} {
+		for _, enter := range []func(context.Context, sqlite.Database, func(context.Context) error) error{sqlite.RunReadSnapshot, sqlite.RunInTx} {
 			entered := false
 			err := enter(expired, database, func(context.Context) error { entered = true; return nil })
 			if entered || !errors.Is(err, sql.ErrTxDone) {
@@ -184,10 +184,10 @@ func TestHandledCursorErrorsDoNotBecomeConnectionCleanupFailures(t *testing.T) {
 }
 
 func TestTransactionsRefuseAnUninitializedDatabase(t *testing.T) {
-	database := &sqlite.Database{}
+	database := sqlite.Database{}
 	for _, test := range []struct {
 		name  string
-		enter func(context.Context, *sqlite.Database, func(context.Context) error) error
+		enter func(context.Context, sqlite.Database, func(context.Context) error) error
 	}{
 		{name: "write", enter: sqlite.RunInTx},
 		{name: "independent", enter: sqlite.RunIndependentTx},

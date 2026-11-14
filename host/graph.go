@@ -39,15 +39,23 @@ func (h *hostState) exportLocked(ref ExportRef) error {
 	return fmt.Errorf("%w: exact export %s", frame.ErrContractMismatch, ref.Export)
 }
 
+// DeclaredExports lists the exports enabled installations declare for contract.
+// It is a declaration read: no instance has necessarily published them.
+func (h *hostState) DeclaredExports(contract ContractRef) []ExportRef {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.candidatesLocked(contract)
+}
+
 func (h *hostState) candidatesLocked(contract ContractRef) []ExportRef {
 	var result []ExportRef
 	for _, installation := range h.installations {
 		if !installation.record.Enabled {
 			continue
 		}
-		for _, unit := range installation.record.Units {
-			source := installation.record.Unit(unit.ID)
-			for _, export := range unit.Exports {
+		for _, unit := range installation.plugin.units {
+			source := installation.record.Unit(unit.Declaration.ID)
+			for _, export := range unit.Declaration.Exports {
 				if export.Contract == contract {
 					result = append(result, ExportRef{InstallationID: source.InstallationID, Release: source.Release, UnitID: source.UnitID, Export: export.Name, Contract: contract})
 				}
@@ -58,8 +66,8 @@ func (h *hostState) candidatesLocked(contract ContractRef) []ExportRef {
 	return result
 }
 
-// BindingChoice is a consumer's explicit providers for one unresolved slot.
-// An empty, non-nil Providers chooses absence for an optional slot.
+// BindingChoice is a consumer's explicit providers for one slot the unit does
+// not fix. The choice itself is the decision: an empty set chooses absence.
 type BindingChoice struct {
 	Unit      UnitRef
 	Slot      string
@@ -95,33 +103,39 @@ func (h *hostState) Plan(ctx context.Context, roots ...ExportRef) (BindingPlan, 
 	return h.PlanWith(ctx, "", nil, roots...)
 }
 
-// PlanWith accepts a consumer's explicit choices for unresolved slots. The
+func declared(plan *declaredPlan, err error) (BindingPlan, error) {
+	if err != nil {
+		return BindingPlan{}, err
+	}
+	return BindingPlan{plan}, nil
+}
+
+// PlanWith accepts a consumer's explicit choices for slots the unit leaves open. The
 // choices are an input to this capture, never another mutable routing table.
 // An existing instance keeps its original setup binding or rejects the capture.
 func (h *hostState) PlanWith(ctx context.Context, realm RealmID, choices []BindingChoice, roots ...ExportRef) (BindingPlan, error) {
-	return h.plan(ctx, realm, choices, roots, nil)
+	return declared(h.plan(ctx, realm, choices, roots, nil))
 }
 
 // PlanUnit captures a unit with no required public export, such as an approved
 // background entry. Unit ownership still includes its complete exact imports.
 func (h *hostState) PlanUnit(ctx context.Context, realm RealmID, root UnitRef, choices []BindingChoice) (BindingPlan, error) {
-	return h.plan(ctx, realm, choices, nil, []UnitRef{root})
+	return declared(h.plan(ctx, realm, choices, nil, []UnitRef{root}))
 }
 
-func (h *hostState) plan(ctx context.Context, realm RealmID, choices []BindingChoice, roots []ExportRef, unitRoots []UnitRef) (BindingPlan, error) {
+func (h *hostState) plan(ctx context.Context, realm RealmID, choices []BindingChoice, roots []ExportRef, unitRoots []UnitRef) (*declaredPlan, error) {
 	if err := frame.ContextError(ctx); err != nil {
-		return BindingPlan{}, err
+		return nil, err
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.lifetime.IsClosing() {
-		return BindingPlan{}, frame.ErrClosed
+		return nil, frame.ErrClosed
 	}
-	plan, err := h.resolveLocked(roots, unitRoots, realm, choices)
-	return BindingPlan{plan}, err
+	return h.resolveLocked(roots, unitRoots, realm, choices)
 }
 
-func (h *hostState) resolveLocked(roots []ExportRef, unitRoots []UnitRef, realm RealmID, choices []BindingChoice) (*bindingPlan, error) {
+func (h *hostState) resolveLocked(roots []ExportRef, unitRoots []UnitRef, realm RealmID, choices []BindingChoice) (*declaredPlan, error) {
 	chosen, err := h.indexChoicesLocked(choices)
 	if err != nil {
 		return nil, err
@@ -140,25 +154,24 @@ func (h *hostState) resolveLocked(roots []ExportRef, unitRoots []UnitRef, realm 
 			return nil, err
 		}
 	}
-	binding := newBindingSnapshot(roots, unitRoots, resolution.units)
+	binding := BindingSnapshot{Roots: slices.Clone(roots), UnitRoots: slices.Clone(unitRoots), Units: resolution.units}
 	if err := binding.Validate(); err != nil {
 		return nil, err
 	}
-	return &bindingPlan{owner: h.identity, binding: binding, realm: realm, kind: declarationPlan, bindingReads: resolution.reads}, nil
+	return &declaredPlan{planHeader: planHeader{owner: h.identity, realm: realm, binding: binding}, reads: resolution.reads}, nil
 }
 
 func (h *hostState) indexChoicesLocked(choices []BindingChoice) (map[slotKey][]ExportRef, error) {
 	chosen := make(map[slotKey][]ExportRef, len(choices))
 	for _, choice := range choices {
-		if choice.Providers == nil {
-			return nil, fmt.Errorf("%w: binding choice without providers", frame.ErrInvalid)
-		}
 		unit, _, err := h.unitLocked(choice.Unit)
 		if err != nil {
 			return nil, err
 		}
-		declared, found := unit.Declaration.importSlot(choice.Slot)
-		if !found || declared.Providers != nil && !slices.Equal(declared.Providers, choice.Providers) {
+		if _, found := unit.Declaration.importSlot(choice.Slot); !found {
+			return nil, frame.ErrContractMismatch
+		}
+		if fixed, isFixed := unit.Declaration.fixedProviders(choice.Slot); isFixed && !slices.Equal(fixed, choice.Providers) {
 			return nil, frame.ErrContractMismatch
 		}
 		key := slotKey{unit: choice.Unit, slot: choice.Slot}
@@ -203,28 +216,49 @@ func (r *bindingResolution) resolve(ref UnitRef) error {
 	r.path = append(r.path, ref.String())
 	defer func() { r.path = r.path[:len(r.path)-1] }()
 	bound := UnitBinding{Source: ref, Configuration: framevalue.Hash(installation.record.Configuration)}
-	requirements := unit.Declaration.Imports
 	// A live instance of the same configuration keeps its original providers.
 	if existing := h.instances[instanceKey{source: ref, realm: realm}]; existing != nil && existing.binding.Configuration == bound.Configuration {
-		requirements = existing.binding.Imports
 		r.reads = append(r.reads, existing.preparation.reads...)
+		bound.Imports, err = r.retained(ref, existing.binding.Imports)
+	} else {
+		bound.Imports, err = r.resolved(ref, unit.Declaration)
 	}
-	for _, requirement := range requirements {
-		providers, err := r.providers(ref, requirement)
-		if err != nil {
-			return err
-		}
-		if err := r.resolveProviders(ref, requirement, providers); err != nil {
-			return err
-		}
-		requirement = requirement.Clone()
-		requirement.Providers = providers
-		bound.Imports = append(bound.Imports, requirement)
+	if err != nil {
+		return err
 	}
 	delete(r.visiting, ref)
 	r.visited[ref] = true
 	r.units = append(r.units, bound)
 	return nil
+}
+
+func (r *bindingResolution) retained(ref UnitRef, imports []ImportBinding) ([]ImportBinding, error) {
+	bound := make([]ImportBinding, 0, len(imports))
+	for _, original := range imports {
+		if chosen, exists := r.chosen[slotKey{unit: ref, slot: original.Slot}]; exists && !slices.Equal(chosen, original.Providers) {
+			return nil, fmt.Errorf("%w: existing setup binding for %s", ErrStaleBinding, original.Slot)
+		}
+		if err := r.resolveProviders(ref, original.ImportDeclaration, original.Providers); err != nil {
+			return nil, err
+		}
+		bound = append(bound, original.Clone())
+	}
+	return bound, nil
+}
+
+func (r *bindingResolution) resolved(ref UnitRef, unit UnitDeclaration) ([]ImportBinding, error) {
+	bound := make([]ImportBinding, 0, len(unit.Imports))
+	for _, requirement := range unit.Imports {
+		providers, err := r.providers(ref, unit, requirement)
+		if err != nil {
+			return nil, err
+		}
+		if err := r.resolveProviders(ref, requirement, providers); err != nil {
+			return nil, err
+		}
+		bound = append(bound, ImportBinding{ImportDeclaration: requirement, Providers: providers})
+	}
+	return bound, nil
 }
 
 func (r *bindingResolution) resolveProviders(ref UnitRef, requirement ImportDeclaration, providers []ExportRef) error {
@@ -245,29 +279,24 @@ func (r *bindingResolution) resolveProviders(ref UnitRef, requirement ImportDecl
 	return nil
 }
 
-// providers chooses the exports that satisfy one import of ref: a recorded
-// binding, the caller's choice, or the sole live candidate.
-func (r *bindingResolution) providers(ref UnitRef, requirement ImportDeclaration) ([]ExportRef, error) {
-	providers := requirement.Providers
-	if providers == nil {
-		r.reads = append(r.reads, bindingRead{unit: ref, slot: requirement.Slot, contract: requirement.Contract, candidates: r.host.candidatesLocked(requirement.Contract)})
-	}
-	if chosen, exists := r.chosen[slotKey{unit: ref, slot: requirement.Slot}]; exists {
-		if providers != nil && !slices.Equal(providers, chosen) {
-			return nil, fmt.Errorf("%w: existing setup binding for %s", ErrStaleBinding, requirement.Slot)
-		}
-		providers = chosen
-	}
-	if providers == nil {
+// providers chooses the exports for one declared import of ref: the unit's
+// fixed choice, the caller's choice, or the sole live candidate. Only slots the
+// declaration leaves open record a candidate read for admission.
+func (r *bindingResolution) providers(ref UnitRef, unit UnitDeclaration, requirement ImportDeclaration) ([]ExportRef, error) {
+	providers, fixed := unit.fixedProviders(requirement.Slot)
+	if !fixed {
 		providers = r.host.candidatesLocked(requirement.Contract)
-		if requirement.Contract.Kind == ServiceKind && len(providers) > 1 {
+		r.reads = append(r.reads, bindingRead{unit: ref, slot: requirement.Slot, contract: requirement.Contract, candidates: providers})
+		if chosen, exists := r.chosen[slotKey{unit: ref, slot: requirement.Slot}]; exists {
+			providers = chosen
+		} else if requirement.Contract.Kind == ServiceKind && len(providers) > 1 {
 			return nil, fmt.Errorf("%w: import %s", ErrAmbiguous, requirement.Slot)
 		}
 	}
 	if len(providers) == 0 && !requirement.Optional {
 		return nil, fmt.Errorf("%w: required import %s", ErrUnavailable, requirement.Slot)
 	}
-	return append([]ExportRef{}, providers...), nil
+	return slices.Clone(providers), nil
 }
 
 // reachableBinding projects the units reachable from roots, each after all of
@@ -277,8 +306,7 @@ func reachableBinding(source BindingSnapshot, roots []ExportRef, unitRoots []Uni
 	for _, unit := range source.Units {
 		units[unit.Source] = unit
 	}
-	result := newBindingSnapshot(roots, unitRoots, nil)
-	result.Rule = source.Rule
+	result := BindingSnapshot{Roots: slices.Clone(roots), UnitRoots: slices.Clone(unitRoots), Selection: source.Selection}
 	seen := make(map[UnitRef]bool)
 	var visit func(UnitRef) error
 	visit = func(ref UnitRef) error {
@@ -347,8 +375,10 @@ func (h *hostState) validateBindingLocked(binding BindingSnapshot) error {
 		}
 		for _, bound := range unit.Imports {
 			declared, found := declaration.Declaration.importSlot(bound.Slot)
-			if !found || declared.Contract != bound.Contract || declared.Optional != bound.Optional ||
-				declared.Providers != nil && !slices.Equal(declared.Providers, bound.Providers) {
+			if !found || declared != bound.ImportDeclaration {
+				return ErrStaleBinding
+			}
+			if fixed, isFixed := declaration.Declaration.fixedProviders(bound.Slot); isFixed && !slices.Equal(fixed, bound.Providers) {
 				return ErrStaleBinding
 			}
 			for _, provider := range bound.Providers {

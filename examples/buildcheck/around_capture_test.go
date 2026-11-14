@@ -39,7 +39,7 @@ func TestAroundContinuationKeepsItsOriginalRemainderAfterPointChanges(t *testing
 	var instanceID string
 	plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("mutable-around")), Units: []framehost.Unit{{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "tail", Contract: e.Contracts.Around.Ref()}}},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			instanceID = setup.InstanceID()
 			return []framehost.ExportValue{framehost.Contribute("tail", e.Contracts.Around, buildcheck.AroundMetadata{Name: "tail", Order: 20}, marked("original remainder"))}, nil
 		},

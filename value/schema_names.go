@@ -3,7 +3,6 @@ package value
 import (
 	"bytes"
 	"encoding/base64"
-	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"fmt"
 	"maps"
@@ -26,9 +25,7 @@ func ReadableDefinitions(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 	var document map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	if err := decoder.Decode(&document); err != nil {
+	if err := jsonv2.Unmarshal(raw, &document, Numbers()); err != nil {
 		return nil, fmt.Errorf("portable: schema: %w", err)
 	}
 	definitions, ok := document[KeywordDefs].(map[string]any)

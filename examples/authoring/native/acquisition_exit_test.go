@@ -28,7 +28,7 @@ func TestInterruptedAcquisitionClosesItsUndeliveredUse(t *testing.T) {
 				Revision: value.Hash([]byte("interrupted-acquisition")),
 				Units: []framehost.Unit{{
 					Declaration: framehost.UnitDeclaration{ID: "validation", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "interrupt", Contract: point.Ref()}}},
-					Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+					Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 						return []framehost.ExportValue{framehost.Contribute("interrupt", point, document.ValidatorMetadata{Name: "interrupt"}, document.Validator(func(context.Context, document.Converted) ([]document.Diagnostic, error) {
 							interruption.exit()
 							return nil, nil

@@ -12,7 +12,7 @@ import (
 )
 
 func TestOpenRejectsIncompleteJournalWithoutRewriting(t *testing.T) {
-	valid, err := json.Marshal(journal{Version: journalVersion, Attempts: map[string]storedAttempt{}})
+	valid, err := json.Marshal(journal{Attempts: map[string]storedAttempt{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,17 +22,15 @@ func TestOpenRejectsIncompleteJournalWithoutRewriting(t *testing.T) {
 	}{
 		{name: "empty object", data: `{}`},
 		{name: "null", data: `null`},
-		{name: "missing version", data: `{"epoch":7,"attempts":{}}`},
-		{name: "null version", data: `{"version":null,"epoch":7,"attempts":{}}`},
-		{name: "missing epoch", data: fmt.Sprintf(`{"version":%d,"attempts":{}}`, journalVersion)},
-		{name: "null epoch", data: fmt.Sprintf(`{"version":%d,"epoch":null,"attempts":{}}`, journalVersion)},
-		{name: "missing attempts", data: fmt.Sprintf(`{"version":%d,"epoch":7}`, journalVersion)},
-		{name: "null attempts", data: fmt.Sprintf(`{"version":%d,"epoch":7,"attempts":null}`, journalVersion)},
-		{name: "obsolete version", data: fmt.Sprintf(`{"version":%d,"epoch":7,"attempts":{}}`, journalVersion-1)},
-		{name: "negative epoch", data: fmt.Sprintf(`{"version":%d,"epoch":-1,"attempts":{}}`, journalVersion)},
-		{name: "unknown field", data: fmt.Sprintf(`{"version":%d,"epoch":0,"attempts":{},"extra":true}`, journalVersion)},
-		{name: "duplicate field", data: fmt.Sprintf(`{"version":%d,"epoch":0,"epoch":7,"attempts":{}}`, journalVersion)},
-		{name: "missing observation", data: fmt.Sprintf(`{"version":%d,"epoch":7,"attempts":{"original":{"requestDigest":%q}}}`, journalVersion, value.Hash(nil).String())},
+		{name: "missing epoch", data: `{"attempts":{}}`},
+		{name: "null epoch", data: `{"epoch":null,"attempts":{}}`},
+		{name: "missing attempts", data: `{"epoch":7}`},
+		{name: "null attempts", data: `{"epoch":7,"attempts":null}`},
+		{name: "former version member", data: `{"version":3,"epoch":7,"attempts":{}}`},
+		{name: "negative epoch", data: `{"epoch":-1,"attempts":{}}`},
+		{name: "unknown field", data: `{"epoch":0,"attempts":{},"extra":true}`},
+		{name: "duplicate field", data: `{"epoch":0,"epoch":7,"attempts":{}}`},
+		{name: "missing observation", data: fmt.Sprintf(`{"epoch":7,"attempts":{"original":{"requestDigest":%q}}}`, value.Hash(nil).String())},
 		{name: "trailing object", data: string(valid) + `{}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -88,7 +86,7 @@ func TestOpenValidatesAttemptEpochBeforeRestoringWait(t *testing.T) {
 		t.Run(fmt.Sprint(epoch), func(t *testing.T) {
 			config := Config{Directory: t.TempDir()}
 			observation := Observation{AttemptID: "original", Epoch: epoch, RunnerID: "prior-runner", State: Running, PID: 123}
-			original, err := json.Marshal(journal{Version: journalVersion, Epoch: 1, Attempts: map[string]storedAttempt{
+			original, err := json.Marshal(journal{Epoch: 1, Attempts: map[string]storedAttempt{
 				observation.AttemptID: {Observation: observation, RequestDigest: value.Hash(nil)},
 			}})
 			if err != nil {

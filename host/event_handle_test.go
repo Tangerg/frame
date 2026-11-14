@@ -19,7 +19,7 @@ func TestEventRouteHandleCopiesRetainOnlyTheirOriginalAuthority(t *testing.T) {
 	if err := host.Register(event); err != nil {
 		t.Fatal(err)
 	}
-	plugin := installNative(t, host, "event", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "source", Contract: event.Ref()}, {Name: "receiver", Contract: event.Ref()}}}, Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+	plugin := installNative(t, host, "event", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "source", Contract: event.Ref()}, {Name: "receiver", Contract: event.Ref()}}}, Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 		return []framehost.ExportValue{{Name: "source", Contract: event.Ref()}, {Name: "receiver", Contract: event.Ref()}}, nil
 	}})
 	sender := source("event", plugin, "main", "source", event.Ref())
@@ -37,22 +37,19 @@ func TestEventRouteHandleCopiesRetainOnlyTheirOriginalAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	originalUse := *use
-	*use = framehost.Use{}
-	use = &originalUse
-	original := *route
-	*route = framehost.EventRoute{}
+	original := route
+	route = framehost.EventRoute{}
 	if err := host.ValidateEventRoute(ctx, route); !errors.Is(err, frame.ErrInvalid) {
 		t.Fatalf("zero handle retained authority: %v", err)
 	}
 	if original.ID() == "" || original.Source() != sender || original.Receiver() != receiver {
 		t.Fatal("copy lost its original identity")
 	}
-	if err := host.ValidateEventRoute(ctx, &original); err != nil {
+	if err := host.ValidateEventRoute(ctx, original); err != nil {
 		t.Fatalf("copy lost its original authority: %v", err)
 	}
 	var delivered string
-	if err := framehost.DeliverEvent(ctx, host, &original, event, "payload", func(_ context.Context, value string) error {
+	if err := framehost.DeliverEvent(ctx, host, original, event, "payload", func(_ context.Context, value string) error {
 		delivered = value
 		return nil
 	}); err != nil || delivered != "payload" {
@@ -64,7 +61,7 @@ func TestEventRouteHandleCopiesRetainOnlyTheirOriginalAuthority(t *testing.T) {
 	if result, err := use.Close(ctx); err != nil || !result.Released {
 		t.Fatalf("original Use did not release: %+v, %v", result, err)
 	}
-	if err := host.ValidateEventRoute(ctx, &original); !errors.Is(err, frame.ErrClosed) {
+	if err := host.ValidateEventRoute(ctx, original); !errors.Is(err, frame.ErrClosed) {
 		t.Fatalf("copy outlived its original Use: %v", err)
 	}
 	next, err := acquireExports(host, ctx, binding, framehost.UseConfig{Owner: owner, Scope: scope})

@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"errors"
-	"math"
 
 	"github.com/Tangerg/frame"
 	framehost "github.com/Tangerg/frame/host"
@@ -26,15 +24,12 @@ func (s *storeAuthority) ApproveUse(ctx context.Context, approval framehost.UseA
 	if approval.Epoch != s.epoch {
 		return framehost.ErrFenced
 	}
-	encoded, err := json.Marshal(approval)
+	encoded, err := jsonv2.Marshal(approval)
 	if err != nil {
 		return err
 	}
 	if len(encoded) > s.maxRequestBytes {
 		return frame.ErrCapacity
-	}
-	if _, err := s.encodeProof(UseProof{Host: &frame.ReleaseProof{CloseID: math.MaxUint64}}); err != nil {
-		return err
 	}
 	return s.fenceUnlessRefused(s.transaction(ctx, func(tx Executor) error {
 		return recordOnce(func() (bool, error) {
@@ -137,7 +132,7 @@ func (s *storeAuthority) SettleUse(ctx context.Context, id string, proof frame.R
 	if !frame.ValidName(id) || proof.CloseID == 0 {
 		return frame.ErrInvalid
 	}
-	encoded, err := s.encodeProof(UseProof{Host: &proof})
+	encoded, err := encodeProof(UseProof{Host: &proof})
 	if err != nil {
 		return err
 	}
@@ -175,7 +170,7 @@ func (s *storeAuthority) ReleaseRealmUse(ctx context.Context, id string, realm f
 	if !frame.ValidName(id) || realm.Validate() != nil || !proof.proves(executionID) || proof.Realm != string(realm) {
 		return frame.ErrInvalid
 	}
-	encoded, err := s.encodeProof(UseProof{Realm: &proof})
+	encoded, err := encodeProof(UseProof{Realm: &proof})
 	if err != nil {
 		return err
 	}

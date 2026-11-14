@@ -24,7 +24,7 @@ func TestAccessCopiesEndWithOriginalBorrow(t *testing.T) {
 	}
 	plugin, err := Define(Definition{Revision: framevalue.Hash([]byte("access-copy")), Units: []Unit{{
 		Declaration: UnitDeclaration{ID: "main", Profile: NativeGo, Exports: []ExportDeclaration{{Name: "original", Contract: point.Ref()}}},
-		Setup: func(context.Context, *Setup) ([]ExportValue, error) {
+		Setup: func(context.Context, Setup) ([]ExportValue, error) {
 			return []ExportValue{Contribute("original", point, "metadata", "implementation")}, nil
 		},
 	}}})
@@ -62,18 +62,18 @@ func TestAccessCopiesEndWithOriginalBorrow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var original *Access
+	var original Access
 	var copied Access
-	if err := withAccess(ctx, use, func(access *Access) error {
+	if err := withAccess(ctx, use, func(access Access) error {
 		original = access
-		copied = *access
-		member, err := selection.One(&copied)
+		copied = access
+		member, err := selection.One(copied)
 		if err != nil || member.Value != "implementation" {
 			t.Fatalf("live copied access lost its original member: %+v, %v", member, err)
 		}
-		saved := *use
-		*use = Use{}
-		defer func() { *use = saved }()
+		saved := use
+		use = Use{}
+		defer func() { use = saved }()
 		member, err = selection.One(access)
 		if err != nil || member.Value != "implementation" {
 			t.Fatalf("overwriting the user handle changed an admitted access: %+v, %v", member, err)
@@ -82,7 +82,7 @@ func TestAccessCopiesEndWithOriginalBorrow(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, access := range []*Access{original, &copied} {
+	for _, access := range []Access{original, copied} {
 		if member, err := selection.One(access); !errors.Is(err, frame.ErrClosed) {
 			t.Errorf("ended borrow still exposed its member: %+v, %v", member, err)
 		}

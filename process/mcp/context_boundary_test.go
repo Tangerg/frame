@@ -30,7 +30,7 @@ func TestManagedBoundariesRejectAMissingContext(t *testing.T) {
 		call func(context.Context) error
 	}{
 		{name: "invocation evidence", call: func(ctx context.Context) error {
-			_, err := WithInvocation(ctx, Invocation{ID: "operation", Origin: "consumer", Target: frame.Target{Scope: "entry", Reference: "original"}})
+			_, err := WithInvocation(ctx, Invocation{ID: "operation", Origin: "consumer", Target: Target{Scope: "entry", Reference: "original"}})
 			return err
 		}},
 		{name: "input validation", call: func(ctx context.Context) error {

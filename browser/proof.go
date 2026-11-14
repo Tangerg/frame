@@ -278,7 +278,7 @@ func awaitOperations(ctx context.Context, operations []*controlOperation) error 
 // join its children regardless of the order of the durable records.
 func (b *Bridge) releaseCovered(ctx context.Context, covered map[string]bool, records []sqlite.UseRecord, attempt sqlite.Attempt, proof sqlite.ExitProof) error {
 	b.mu.Lock()
-	var resources []*frame.ResourceHandle
+	var resources []frame.ResourceHandle
 	for id := range covered {
 		if live := b.uses[id]; live != nil {
 			resources = append(resources, live.resource)
@@ -298,7 +298,7 @@ func (b *Bridge) releaseCovered(ctx context.Context, covered map[string]bool, re
 	return nil
 }
 
-func confirmAll(resources []*frame.ResourceHandle) error {
+func confirmAll(resources []frame.ResourceHandle) error {
 	for _, resource := range resources {
 		if err := resource.ConfirmReleased(nil); err != nil {
 			return err

@@ -37,9 +37,10 @@ func benchmarkGraph(b *testing.B, count int) (framehost.Host, framehost.BindingS
 	for index := range count {
 		declaration := framehost.UnitDeclaration{ID: ref(index).UnitID, Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "value", Contract: contract.Ref()}}}
 		if index > 0 {
-			declaration.Imports = []framehost.ImportDeclaration{{Slot: "previous", Contract: contract.Ref(), Providers: []framehost.ExportRef{ref(index - 1)}}}
+			declaration.Imports = []framehost.ImportDeclaration{{Slot: "previous", Contract: contract.Ref()}}
+			declaration.Fixed = []framehost.SlotProviders{{Slot: "previous", Providers: []framehost.ExportRef{ref(index - 1)}}}
 		}
-		units[index] = framehost.Unit{Declaration: declaration, Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		units[index] = framehost.Unit{Declaration: declaration, Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			value := 0
 			if index > 0 {
 				var err error

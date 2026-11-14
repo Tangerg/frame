@@ -47,10 +47,10 @@ type Method struct {
 
 func AdmitMethod(descriptor MethodDescriptor) (*Method, error) {
 	if !ValidName(descriptor.Name) || (descriptor.Target != "" && !ValidName(descriptor.Target)) {
-		return nil, errors.New("capability: method name and declared target must be bounded tokens")
+		return nil, errors.New("frame: method name and declared target must be bounded tokens")
 	}
 	if !slices.Contains(descriptor.Kind.JSONSchemaEnum(), string(descriptor.Kind)) {
-		return nil, errors.New("capability: method kind must be query or command")
+		return nil, errors.New("frame: method kind must be query or command")
 	}
 	if err := checkMethodDescriptor(descriptor); err != nil {
 		return nil, err
@@ -61,20 +61,20 @@ func AdmitMethod(descriptor MethodDescriptor) (*Method, error) {
 	descriptor = descriptor.clone()
 	input, err := framevalue.AdmitSchema(descriptor.Input)
 	if err != nil {
-		return nil, fmt.Errorf("capability: %s input contract: %w", descriptor.Name, err)
+		return nil, fmt.Errorf("frame: %s input contract: %w", descriptor.Name, err)
 	}
 	if input.Validate([]byte("null")) == nil {
-		return nil, errors.New("capability: method input must exclude null")
+		return nil, errors.New("frame: method input must exclude null")
 	}
 	output, err := framevalue.AdmitSchema(descriptor.Output)
 	if err != nil {
-		return nil, fmt.Errorf("capability: %s output contract: %w", descriptor.Name, err)
+		return nil, fmt.Errorf("frame: %s output contract: %w", descriptor.Name, err)
 	}
 	var stream framevalue.Schema
 	if len(descriptor.Stream) != 0 {
 		stream, err = framevalue.AdmitSchema(descriptor.Stream)
 		if err != nil {
-			return nil, fmt.Errorf("capability: %s stream contract: %w", descriptor.Name, err)
+			return nil, fmt.Errorf("frame: %s stream contract: %w", descriptor.Name, err)
 		}
 	}
 	method := &Method{descriptor: descriptor, input: input, output: output, stream: stream}
@@ -123,9 +123,13 @@ func (m *Method) ValidateOutput(output jsontext.Value) error {
 	return m.output.Validate(output)
 }
 
+// Streaming reports whether the contract declares a chunk schema; callers pair
+// it with the presence of an emit callback before dispatch.
+func (m *Method) Streaming() bool { return len(m.descriptor.Stream) != 0 }
+
 func (m *Method) ValidateChunk(chunk jsontext.Value) error {
-	if len(m.descriptor.Stream) == 0 {
-		return errors.New("capability: method does not support streaming")
+	if !m.Streaming() {
+		return errors.New("frame: method does not support streaming")
 	}
 	return m.stream.Validate(chunk)
 }

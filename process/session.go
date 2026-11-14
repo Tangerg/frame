@@ -80,14 +80,14 @@ type localProtocol struct{}
 func (localProtocol) Profile() framehost.Profile { return framehost.LocalProcess }
 
 type assembly struct {
-	setup    *framehost.Setup
+	setup    framehost.Setup
 	session  *hostSession
 	expected description
 	grants   preparation
 	values   []framehost.ExportValue
 }
 
-func (localProtocol) Prepare(setup *framehost.Setup, metadata ExportMetadata, maximum int) (Connection, error) {
+func (localProtocol) Prepare(setup framehost.Setup, metadata ExportMetadata, maximum int) (Connection, error) {
 	s := &hostSession{}
 	s.peer = newPeer(nil, maximum, s.dispatch)
 	s.grants = map[string]binding{}

@@ -19,20 +19,18 @@ const (
 	CommitIndeterminate CommitState = "indeterminate"
 )
 
+// InstallationRecord is the durable projection of one installation. The
+// release digest names its declarations; their single owner is the Plugin
+// supplied again when the record is restored.
 type InstallationRecord struct {
 	ID            InstallationID    `json:"id"`
 	Release       framevalue.Digest `json:"release"`
 	Configuration []byte            `json:"configuration"`
 	Enabled       bool              `json:"enabled"`
-	Units         []UnitDeclaration `json:"units"`
 }
 
 func (r InstallationRecord) Clone() InstallationRecord {
 	r.Configuration = bytes.Clone(r.Configuration)
-	r.Units = slices.Clone(r.Units)
-	for i := range r.Units {
-		r.Units[i] = r.Units[i].Clone()
-	}
 	return r
 }
 
@@ -42,7 +40,7 @@ func (r InstallationRecord) Unit(id UnitID) UnitRef {
 
 func (r InstallationRecord) equal(other InstallationRecord) bool {
 	return r.ID == other.ID && r.Release == other.Release && r.Enabled == other.Enabled &&
-		bytes.Equal(r.Configuration, other.Configuration) && sameUnitDeclarations(r.Units, other.Units)
+		bytes.Equal(r.Configuration, other.Configuration)
 }
 
 type InstallationChange struct {
@@ -78,7 +76,7 @@ func (c InstallationConfig) capture() (*installed, error) {
 	}
 	return &installed{
 		plugin: plugin,
-		record: InstallationRecord{ID: c.ID, Release: plugin.revision, Configuration: bytes.Clone(c.Configuration), Enabled: c.Enabled, Units: plugin.Units()},
+		record: InstallationRecord{ID: c.ID, Release: plugin.revision, Configuration: bytes.Clone(c.Configuration), Enabled: c.Enabled},
 	}, nil
 }
 
@@ -99,7 +97,7 @@ type InstallationFailure struct {
 }
 
 func (e *InstallationFailure) Error() string {
-	return "frame: installation " + e.ID.String() + " (" + string(e.State) + "): " + e.Cause.Error()
+	return "host: installation " + e.ID.String() + " (" + string(e.State) + "): " + e.Cause.Error()
 }
 func (e *InstallationFailure) Unwrap() error { return e.Cause }
 
@@ -311,6 +309,11 @@ func (h *hostState) planInstallationTransition(id InstallationID, prepare func(*
 	if err != nil {
 		return nil, err
 	}
+	if next != nil {
+		if err := h.checkReleaseLocked(next.plugin); err != nil {
+			return nil, err
+		}
+	}
 	if current != nil && next != nil && current.record.equal(next.record) {
 		return nil, nil
 	}
@@ -324,10 +327,7 @@ func (h *hostState) planInstallationTransition(id InstallationID, prepare func(*
 	if next == nil {
 		return transition, nil
 	}
-	if err := h.checkReleaseLocked(next.record); err != nil {
-		return nil, err
-	}
-	if err := h.validateUnitsLocked(next.record.Units); err != nil {
+	if err := h.validateUnitsLocked(next.plugin.Units()); err != nil {
 		return nil, err
 	}
 	return transition, nil
@@ -395,7 +395,7 @@ func (h *hostState) commitInstallation(ctx context.Context, transition *installa
 	h.mu.Lock()
 	h.installationTransition = transition
 	h.mu.Unlock()
-	if h.store == nil {
+	if h.durable == nil {
 		return CommitSucceeded, nil
 	}
 	returned := false
@@ -404,7 +404,7 @@ func (h *hostState) commitInstallation(ctx context.Context, transition *installa
 			h.admission.RequireRecovery(fmt.Errorf("%w: installation commit interrupted", ErrRecoveryRequired))
 		}
 	}()
-	state, err := h.store.CommitInstallation(ctx, transition.change())
+	state, err := h.durable.CommitInstallation(ctx, transition.change())
 	returned = true
 	switch state {
 	case CommitSucceeded:
@@ -424,7 +424,7 @@ func (h *hostState) commitInstallation(ctx context.Context, transition *installa
 }
 
 func (h *hostState) confirmInstallation(ctx context.Context, id InstallationID) error {
-	if h.store == nil {
+	if h.durable == nil {
 		return nil
 	}
 	returned := false
@@ -433,7 +433,7 @@ func (h *hostState) confirmInstallation(ctx context.Context, id InstallationID) 
 			h.admission.RequireRecovery(fmt.Errorf("%w: installation confirmation interrupted", ErrRecoveryRequired))
 		}
 	}()
-	err := h.store.ConfirmInstallation(ctx, id)
+	err := h.durable.ConfirmInstallation(ctx, id)
 	returned = true
 	if err != nil {
 		h.admission.RequireRecovery(err)
@@ -442,11 +442,11 @@ func (h *hostState) confirmInstallation(ctx context.Context, id InstallationID) 
 	return nil
 }
 
-// A release identifies immutable declarations, so every installation of the
-// same release must declare exactly the same units.
-func (h *hostState) checkReleaseLocked(record InstallationRecord) error {
+// A caller supplies the release digest of a native Plugin, so two Plugins can
+// claim one release. Every installation of a release must declare the same units.
+func (h *hostState) checkReleaseLocked(plugin Plugin) error {
 	for _, original := range h.installations {
-		if original.record.Release == record.Release && !sameUnitDeclarations(original.record.Units, record.Units) {
+		if original.plugin.revision == plugin.revision && !sameUnitDeclarations(original.plugin.Units(), plugin.Units()) {
 			return fmt.Errorf("%w: release declarations changed", frame.ErrContractMismatch)
 		}
 	}
@@ -549,21 +549,18 @@ func (h *hostState) restoredInstallationsLocked(records []InstallationRecord, de
 		if err := record.ID.Validate(); err != nil {
 			return nil, err
 		}
-		if err := h.checkReleaseLocked(record); err != nil {
-			return nil, err
-		}
 		plugin, found := definitions[record.Release]
 		if !found {
 			return nil, fmt.Errorf("%w: definition for retained release", ErrUnavailable)
 		}
+		if err := h.checkReleaseLocked(plugin); err != nil {
+			return nil, err
+		}
 		if restored[record.ID] != nil {
 			return nil, frame.ErrInvalid
 		}
-		if err := h.validateUnitsLocked(record.Units); err != nil {
+		if err := h.validateUnitsLocked(plugin.Units()); err != nil {
 			return nil, err
-		}
-		if !sameUnitDeclarations(record.Units, plugin.Units()) {
-			return nil, frame.ErrContractMismatch
 		}
 		restored[record.ID] = &installed{record: record.Clone(), plugin: plugin}
 		if record.Enabled {

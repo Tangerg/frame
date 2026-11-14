@@ -13,17 +13,17 @@ func TestUseOwnerRejectsForeignDependencyAuthority(t *testing.T) {
 	ctx := testContext(t)
 	first := testHost(t, framehost.Config{})
 	second := testHost(t, framehost.Config{})
-	var setup *framehost.Setup
+	var setup framehost.Setup
 	firstPlugin := installNative(t, first, "first", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-		Setup: func(_ context.Context, original *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, original framehost.Setup) ([]framehost.ExportValue, error) {
 			setup = original
 			return nil, nil
 		},
 	})
 	secondPlugin := installNative(t, second, "second", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-		Setup:       func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil },
+		Setup:       func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil },
 	})
 	firstRoot := framehost.UnitRef{InstallationID: "first", Release: firstPlugin.Revision(), UnitID: "main"}
 	secondRoot := framehost.UnitRef{InstallationID: "second", Release: secondPlugin.Revision(), UnitID: "main"}
@@ -39,14 +39,14 @@ func TestUseOwnerRejectsForeignDependencyAuthority(t *testing.T) {
 	}
 	for _, foreign := range []frame.Lifetime{setup.Lifetime(), firstUse.Lifetime()} {
 		use, err := second.AcquireUnit(ctx, secondRoot, framehost.UseConfig{Owner: foreign, Scope: secondScope})
-		if use != nil {
+		if use.Valid() {
 			_, _ = use.Close(ctx)
 		}
-		if !errors.Is(err, frame.ErrInvalid) || use != nil {
+		if !errors.Is(err, frame.ErrInvalid) || use.Valid() {
 			t.Fatalf("foreign Host lifetime became a Use owner: %v, %v", use, err)
 		}
 	}
-	for _, use := range []*framehost.Use{firstUse, secondUse} {
+	for _, use := range []framehost.Use{firstUse, secondUse} {
 		if outcome, err := use.Close(ctx); err != nil || !outcome.Released {
 			t.Fatalf("external owner Use did not release: %+v, %v", outcome, err)
 		}
@@ -59,7 +59,7 @@ func TestHostRejectsForeignDependencyLifetime(t *testing.T) {
 	var lifetime frame.Lifetime
 	plugin := installNative(t, host, "owner", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
-		Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 			lifetime = setup.Lifetime()
 			return nil, nil
 		},

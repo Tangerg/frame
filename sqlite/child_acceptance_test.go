@@ -107,7 +107,7 @@ func openChildAcceptance(t *testing.T, path string, initialize bool) *childAccep
 			t.Fatal(err)
 		}
 	}
-	f.host, err = framehost.New(t.Context(), framehost.Config{Admission: f.admission, ReadAcceptedBinding: func(ctx context.Context, id string, _ framehost.ScopeGrant) (framehost.BindingSnapshot, error) {
+	f.host, err = framehost.New(t.Context(), framehost.Config{Authority: f.admission, ReadAcceptedBinding: func(ctx context.Context, id string, _ framehost.ScopeGrant) (framehost.BindingSnapshot, error) {
 		var data []byte
 		if err := f.store.Read(ctx, func(tx Reader) error {
 			return tx.QueryRowContext(ctx, "SELECT binding FROM child_jobs WHERE operation=? AND active=1", id).Scan(&data)
@@ -137,7 +137,7 @@ func openChildAcceptance(t *testing.T, path string, initialize bool) *childAccep
 	for _, id := range []framehost.InstallationID{"parent-provider", "child-provider"} {
 		plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte(id)), Units: []framehost.Unit{{
 			Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "run", Contract: f.contract.Ref()}}},
-			Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+			Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 				return []framehost.ExportValue{framehost.Provide("run", f.contract, func() string { f.calls.Add(1); return string(id) })}, nil
 			},
 		}}})
@@ -354,7 +354,7 @@ func TestCommittedChildSurvivesParentUseClosureWithoutAutomaticDispatch(t *testi
 	if outcome, err := parentUse.Close(t.Context()); err != nil || !outcome.Released {
 		t.Fatalf("parent Use did not finish its original close: %+v, %v", outcome, err)
 	}
-	if childUse, err := f.host.AcquireChild(t.Context(), parentUse, plan); !errors.Is(err, frame.ErrClosed) || childUse != nil {
+	if childUse, err := f.host.AcquireChild(t.Context(), parentUse, plan); !errors.Is(err, frame.ErrClosed) || childUse.Valid() {
 		t.Fatalf("closed parent dispatched a late child: %v, %v", childUse, err)
 	}
 	finishRequest := []byte("finish-after-execution")

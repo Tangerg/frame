@@ -16,7 +16,7 @@ func TestPublicationPreparationCancelsItsAdmissionWait(t *testing.T) {
 		var instance string
 		plugin := installNative(t, host, "provider", framehost.Unit{
 			Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "member", Contract: point.Ref()}}},
-			Setup: func(_ context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
+			Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 				instance = setup.InstanceID()
 				return []framehost.ExportValue{framehost.Contribute("member", point, "original", "value")}, nil
 			},

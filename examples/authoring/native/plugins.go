@@ -5,7 +5,7 @@ package native
 import (
 	"context"
 	"embed"
-	"encoding/json"
+	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"html"
@@ -42,7 +42,7 @@ type Configuration struct {
 	Template        document.DocumentRef `json:"template"`
 }
 
-func configuration(setup *framehost.Setup) (Configuration, error) {
+func configuration(setup framehost.Setup) (Configuration, error) {
 	var value Configuration
 	if err := json.Unmarshal(setup.Configuration(), &value); err != nil {
 		return value, err
@@ -57,7 +57,7 @@ func configuration(setup *framehost.Setup) (Configuration, error) {
 // Contract names and identities come from their existing document owner.
 func Plugin(contracts document.Contracts) (*framehost.Plugin, error) {
 	readOut := framehost.Export("read", contracts.Files)
-	fileUnit, err := framehost.DefineUnit(framehost.UnitSpec{ID: "files", Exports: framehost.Exports(readOut), Prepare: func(setup *framehost.Setup) error {
+	fileUnit, err := framehost.DefineUnit(framehost.UnitSpec{ID: "files", Exports: framehost.Exports(readOut), Prepare: func(setup framehost.Setup) error {
 		config, err := configuration(setup)
 		if err != nil {
 			return err
@@ -77,7 +77,7 @@ func Plugin(contracts document.Contracts) (*framehost.Plugin, error) {
 
 	filesSlot := framehost.Required("files", contracts.Files)
 	upper := framehost.Offer("uppercase", contracts.Converters)
-	converterUnit, err := framehost.DefineUnit(framehost.UnitSpec{ID: "converter", Imports: framehost.Imports(filesSlot), Exports: framehost.Exports(upper), Prepare: func(setup *framehost.Setup) error {
+	converterUnit, err := framehost.DefineUnit(framehost.UnitSpec{ID: "converter", Imports: framehost.Imports(filesSlot), Exports: framehost.Exports(upper), Prepare: func(setup framehost.Setup) error {
 		config, err := configuration(setup)
 		if err != nil {
 			return err
@@ -137,7 +137,7 @@ func Plugin(contracts document.Contracts) (*framehost.Plugin, error) {
 	}
 	nonemptyOut := framehost.Offer(nonempty.metadata.Name, contracts.Validators)
 	titleOut := framehost.Offer(title.metadata.Name, contracts.Validators)
-	validatorUnit, err := framehost.DefineUnit(framehost.UnitSpec{ID: "validation", Exports: framehost.Exports(nonemptyOut, titleOut), Prepare: func(setup *framehost.Setup) error {
+	validatorUnit, err := framehost.DefineUnit(framehost.UnitSpec{ID: "validation", Exports: framehost.Exports(nonemptyOut, titleOut), Prepare: func(setup framehost.Setup) error {
 		if err := nonemptyOut.Bind(setup, nonempty.metadata, document.Validator(nonempty.validate)); err != nil {
 			return err
 		}

@@ -24,7 +24,7 @@ func TestSetupPublicationAndReadinessCommitTogether(t *testing.T) {
 	}
 	plugin, err := Define(Definition{Revision: framevalue.Hash([]byte("preparation atomic")), Units: []Unit{{
 		Declaration: UnitDeclaration{ID: "main", Profile: NativeGo, Exports: []ExportDeclaration{{Name: "value", Contract: contract.Ref()}}},
-		Setup:       func(context.Context, *Setup) ([]ExportValue, error) { return nil, nil },
+		Setup:       func(context.Context, Setup) ([]ExportValue, error) { return nil, nil },
 	}}})
 	if err != nil {
 		t.Fatal(err)
@@ -38,8 +38,9 @@ func TestSetupPublicationAndReadinessCommitTogether(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	declared := plan.plan.(*declaredPlan)
 	host.mu.Lock()
-	instance, _, err := host.planInstanceLocked(plan.binding, plan.binding.Units[0], "", plan.bindingReads, nil, ScopeGrant{})
+	instance, _, err := host.planInstanceLocked(declared.binding, declared.binding.Units[0], "", declared.reads, nil, ScopeGrant{})
 	host.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
@@ -82,14 +83,14 @@ func TestActivationReadsOriginalProviderBeforeCancellationNotification(t *testin
 	plugin, err := Define(Definition{Revision: revision, Units: []Unit{
 		{
 			Declaration: UnitDeclaration{ID: "provider", Profile: NativeGo, Exports: []ExportDeclaration{{Name: "value", Contract: input.Ref()}}},
-			Setup: func(_ context.Context, setup *Setup) ([]ExportValue, error) {
+			Setup: func(_ context.Context, setup Setup) ([]ExportValue, error) {
 				provider = setup.instance
 				return []ExportValue{Provide("value", input, "original")}, nil
 			},
 		},
 		{
-			Declaration: UnitDeclaration{ID: "consumer", Profile: NativeGo, Imports: []ImportDeclaration{{Slot: "input", Contract: input.Ref(), Providers: []ExportRef{providerRef}}}},
-			Setup: func(_ context.Context, setup *Setup) ([]ExportValue, error) {
+			Declaration: UnitDeclaration{ID: "consumer", Profile: NativeGo, Imports: []ImportDeclaration{{Slot: "input", Contract: input.Ref()}}, Fixed: []SlotProviders{{Slot: "input", Providers: []ExportRef{providerRef}}}},
+			Setup: func(_ context.Context, setup Setup) ([]ExportValue, error) {
 				if err := setup.OnActivate(func(context.Context) error { activated.Add(1); return nil }); err != nil {
 					return nil, err
 				}

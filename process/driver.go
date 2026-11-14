@@ -76,7 +76,7 @@ type execution struct {
 	session  Connection
 	channel  *attachment
 	launch   *runner.LaunchResult
-	resource *frame.ResourceHandle
+	resource frame.ResourceHandle
 	cancel   context.CancelCauseFunc
 }
 
@@ -118,8 +118,8 @@ const (
 	contentResourceName     = "process content"
 )
 
-func (d *Driver) Prepare(ctx context.Context, setup *framehost.Setup) ([]framehost.ExportValue, error) {
-	if setup == nil || !setup.UsesAuthority(d.config.Store) {
+func (d *Driver) Prepare(ctx context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
+	if setup.Durable() != framehost.Durable(d.config.Store) {
 		return nil, framehost.ErrFenced
 	}
 	if err := d.checkUnit(setup.Unit()); err != nil {
@@ -150,9 +150,6 @@ func (d *Driver) Prepare(ctx context.Context, setup *framehost.Setup) ([]frameho
 	if err := request.Validate(); err != nil {
 		return nil, err
 	}
-	if err := d.checkExitCapacity(attempt); err != nil {
-		return nil, err
-	}
 	if err := d.config.Store.RecordAttempt(ctx, attempt); err != nil {
 		return nil, err
 	}
@@ -160,8 +157,8 @@ func (d *Driver) Prepare(ctx context.Context, setup *framehost.Setup) ([]frameho
 	stopPreparation := context.AfterFunc(ctx, func() { cancel(frame.ContextError(ctx)) })
 	defer stopPreparation()
 	e := &execution{driver: d, attempt: attempt, request: request, ready: make(chan struct{}), cancel: cancel}
-	var dependencies []*frame.ResourceHandle
-	if content != nil {
+	var dependencies []frame.ResourceHandle
+	if content.Valid() {
 		dependencies = append(dependencies, content)
 	}
 	resource, err := setup.Own(frame.Resource{Name: executionResourcePrefix + attempt.ID, Cancel: cancel, Close: e.close}, dependencies...)
@@ -200,7 +197,7 @@ func (d *Driver) checkUnit(unit framehost.UnitDeclaration) error {
 	return nil
 }
 
-func (d *Driver) program(ctx context.Context, setup *framehost.Setup) (Program, *frame.ResourceHandle, error) {
+func (d *Driver) program(ctx context.Context, setup framehost.Setup) (Program, frame.ResourceHandle, error) {
 	var program Program
 	// Preparation work keeps cleanup behind the original acquisition, including
 	// a content lease returned together with a resolution error.
@@ -211,11 +208,11 @@ func (d *Driver) program(ctx context.Context, setup *framehost.Setup) (Program, 
 		return program.ReleaseContent()
 	})
 	if err != nil {
-		return Program{}, nil, err
+		return Program{}, frame.ResourceHandle{}, err
 	}
 	program, err = d.config.Source.Program(ctx, setup.Binding())
 	if program.ReleaseContent == nil {
-		return program, nil, errors.Join(err, content.ConfirmReleased(nil))
+		return program, frame.ResourceHandle{}, errors.Join(err, content.ConfirmReleased(nil))
 	}
 	return program, content, err
 }
@@ -337,7 +334,7 @@ func (d *Driver) acknowledgeExit(ctx context.Context, attempt sqlite.Attempt, pr
 	if err := json.Unmarshal(proof.Evidence, &receipt, json.RejectUnknownMembers(true)); err != nil {
 		return errors.Join(runner.ErrUnknown, err)
 	}
-	if proof.Kind != runnerProofKind(receipt.State) || receipt != (runner.ExitReceipt{AttemptID: attempt.ID, Epoch: attempt.Epoch, RunnerID: attempt.Realm, ProofID: proof.ExitID, State: receipt.State}) || (receipt.State != runner.Exited && receipt.State != runner.NotCreated) {
+	if proof.Kind != runnerExitProofKind || receipt != (runner.ExitReceipt{AttemptID: attempt.ID, Epoch: attempt.Epoch, RunnerID: attempt.Realm, ProofID: proof.ExitID, State: receipt.State}) || (receipt.State != runner.Exited && receipt.State != runner.NotCreated) {
 		return runner.ErrUnknown
 	}
 	if err := d.config.Runner.AcknowledgeExit(ctx, receipt); err != nil {

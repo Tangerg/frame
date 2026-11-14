@@ -90,7 +90,7 @@ func TestNestedReadPanicCannotEraseOriginalDiscardObligation(t *testing.T) {
 			var closed atomic.Int32
 			fault := statementPolicyRestoreFault(after, restoreCause)
 			fault.afterClose = func() { closed.Add(1) }
-			database := &Database{databaseOwner: &databaseOwner{db: sql.OpenDB(cursorConnector{Connector: &faultConnector{driver: &modernc.Driver{}, dsn: storeDataSource(path), fault: fault}})}}
+			database := Database{databaseOwner: &databaseOwner{db: sql.OpenDB(cursorConnector{Connector: &faultConnector{driver: &modernc.Driver{}, dsn: storeDataSource(path), fault: fault}})}}
 			database.db.SetMaxOpenConns(1)
 			database.db.SetMaxIdleConns(1)
 			defer database.Close()

@@ -15,7 +15,7 @@ import (
 type UseConfig struct {
 	Owner       frame.Lifetime
 	Scope       ScopeGrant
-	Parent      *Use
+	Parent      Use
 	Realm       RealmID
 	ExecutionID string
 }
@@ -51,8 +51,8 @@ type useBorrow struct {
 	selections    map[string][]string
 	instanceHolds heldInstances
 	stops         []func() bool
-	hostResource  *frame.ResourceHandle
-	ownerResource *frame.ResourceHandle
+	hostResource  frame.ResourceHandle
+	ownerResource frame.ResourceHandle
 }
 
 const (
@@ -60,43 +60,46 @@ const (
 	useSettlementPrefix = "use settlement:"
 )
 
-func (u *Use) ID() string {
-	if u == nil || u.borrow == nil {
+// Valid reports whether the handle names an admitted borrow; the zero Use does not.
+func (u Use) Valid() bool { return u.borrow != nil }
+
+func (u Use) ID() string {
+	if u.borrow == nil {
 		return ""
 	}
 	return u.borrow.id
 }
 
-func (u *Use) Context() context.Context {
-	if u == nil || u.borrow == nil {
+func (u Use) Context() context.Context {
+	if u.borrow == nil {
 		return nil
 	}
 	return u.borrow.lifetime.Context()
 }
 
-func (u *Use) Lifetime() frame.Lifetime {
-	if u == nil || u.borrow == nil {
+func (u Use) Lifetime() frame.Lifetime {
+	if u.borrow == nil {
 		return frame.Lifetime{}
 	}
 	return u.borrow.lifetime
 }
 
-func (u *Use) Binding() BindingSnapshot {
-	if u == nil || u.borrow == nil {
+func (u Use) Binding() BindingSnapshot {
+	if u.borrow == nil {
 		return BindingSnapshot{}
 	}
 	return u.borrow.binding.Clone()
 }
 
-func (u *Use) Realm() RealmID {
-	if u == nil || u.borrow == nil {
+func (u Use) Realm() RealmID {
+	if u.borrow == nil {
 		return ""
 	}
 	return u.borrow.realm
 }
 
-func (u *Use) Sources() []ExportRef {
-	if u == nil || u.borrow == nil {
+func (u Use) Sources() []ExportRef {
+	if u.borrow == nil {
 		return nil
 	}
 	return slices.Clone(u.borrow.binding.Roots)
@@ -104,21 +107,21 @@ func (u *Use) Sources() []ExportRef {
 
 // Enter retains this Use's resources and checks its original grant before new
 // work begins, even while asynchronous retirement has not observed a fence.
-func (u *Use) Enter(ctx context.Context) (*frame.Work, error) {
-	if u == nil || u.borrow == nil {
-		return nil, frame.ErrInvalid
+func (u Use) Enter(ctx context.Context) (frame.Work, error) {
+	if u.borrow == nil {
+		return frame.Work{}, frame.ErrInvalid
 	}
 	return u.borrow.enter(ctx)
 }
 
-func (u *useBorrow) enter(ctx context.Context) (*frame.Work, error) {
+func (u *useBorrow) enter(ctx context.Context) (frame.Work, error) {
 	work, err := u.lifetime.Enter(ctx)
 	if err != nil {
-		return nil, err
+		return frame.Work{}, err
 	}
 	if err := u.validate(); err != nil {
 		work.Finish()
-		return nil, err
+		return frame.Work{}, err
 	}
 	return work, nil
 }
@@ -137,11 +140,11 @@ func (u *useBorrow) validate() error {
 
 // ValidateUse checks the original accepted permission. Withdrawal of a Point
 // member does not rewrite this Use or require durable reconstruction identity.
-func (h *hostState) ValidateUse(ctx context.Context, use *Use) error {
+func (h *hostState) ValidateUse(ctx context.Context, use Use) error {
 	if err := frame.ContextError(ctx); err != nil {
 		return err
 	}
-	if use == nil {
+	if !use.Valid() {
 		return frame.ErrInvalid
 	}
 	h.mu.Lock()
@@ -159,60 +162,57 @@ func (h *hostState) validateUseLocked(use *useBorrow) error {
 	return use.validate()
 }
 
-func (h *hostState) Acquire(ctx context.Context, plan BindingPlan, config UseConfig) (*Use, error) {
-	if framevalue.IsNil(ctx) || plan.bindingPlan == nil {
-		return nil, frame.ErrInvalid
+func (h *hostState) Acquire(ctx context.Context, plan BindingPlan, config UseConfig) (Use, error) {
+	if framevalue.IsNil(ctx) || plan.plan == nil {
+		return Use{}, frame.ErrInvalid
 	}
 	config, err := h.useConfig(config)
 	if err != nil {
-		return nil, err
+		return Use{}, err
 	}
-	return h.acquirePlan(ctx, plan.bindingPlan, config)
+	return h.acquirePlan(ctx, plan.plan, config)
 }
 
-func (h *hostState) acquirePlan(ctx context.Context, plan *bindingPlan, config UseConfig) (*Use, error) {
-	if config.Realm != plan.realm {
-		return nil, frame.ErrContractMismatch
+func (h *hostState) acquirePlan(ctx context.Context, plan admissionPlan, config UseConfig) (Use, error) {
+	if config.Realm != plan.header().realm {
+		return Use{}, frame.ErrContractMismatch
 	}
-	if plan.kind == instancePlan {
-		return h.acquirePrepared(ctx, plan, config, "")
-	}
-	return h.acquireActivated(ctx, config, "", h.plannedBinding(plan))
+	return plan.acquire(ctx, h, config)
 }
 
-func (h *hostState) AcquireChild(ctx context.Context, parent *Use, plan BindingPlan) (*Use, error) {
-	if parent == nil || parent.borrow == nil {
-		return nil, frame.ErrInvalid
+func (h *hostState) AcquireChild(ctx context.Context, parent Use, plan BindingPlan) (Use, error) {
+	if parent.borrow == nil {
+		return Use{}, frame.ErrInvalid
 	}
 	return h.Acquire(ctx, plan, UseConfig{Owner: parent.borrow.lifetime, Parent: parent})
 }
 
 // AcquireRecord restores the original owner's committed graph without rerunning
 // selection. A serialized plan snapshot alone cannot authorize this path.
-func (h *hostState) AcquireRecord(ctx context.Context, recordID string, config UseConfig) (*Use, error) {
+func (h *hostState) AcquireRecord(ctx context.Context, recordID string, config UseConfig) (Use, error) {
 	if framevalue.IsNil(ctx) || h.readAcceptedBinding == nil || !frame.ValidName(recordID) {
-		return nil, frame.ErrInvalid
+		return Use{}, frame.ErrInvalid
 	}
 	config, err := h.useConfig(config)
 	if err != nil {
-		return nil, err
+		return Use{}, err
 	}
 	return h.acquireActivated(ctx, config, recordID, h.acceptedBinding(recordID, config.Scope))
 }
 
-func (h *hostState) AcquireUnit(ctx context.Context, root UnitRef, config UseConfig) (*Use, error) {
+func (h *hostState) AcquireUnit(ctx context.Context, root UnitRef, config UseConfig) (Use, error) {
 	if framevalue.IsNil(ctx) {
-		return nil, frame.ErrInvalid
+		return Use{}, frame.ErrInvalid
 	}
 	config, err := h.useConfig(config)
 	if err != nil {
-		return nil, err
+		return Use{}, err
 	}
-	plan, err := h.PlanUnit(ctx, config.Realm, root, nil)
+	plan, err := h.plan(ctx, config.Realm, nil, nil, []UnitRef{root})
 	if err != nil {
-		return nil, err
+		return Use{}, err
 	}
-	return h.acquirePlan(ctx, plan.bindingPlan, config)
+	return h.acquirePlan(ctx, plan, config)
 }
 
 // useConfig completes a request from its parent. A child must remain inside
@@ -225,8 +225,8 @@ func (h *hostState) useConfig(config UseConfig) (UseConfig, error) {
 	if config.Owner.HasDomain() && !h.identity.Owns(config.Owner) {
 		return config, fmt.Errorf("%w: use owner belongs to another authority", frame.ErrInvalid)
 	}
-	if parent := config.Parent; parent != nil {
-		if parent.borrow == nil || parent.borrow.authority != h.identity || config.Owner != parent.borrow.lifetime {
+	if parent := config.Parent; parent.Valid() {
+		if parent.borrow.authority != h.identity || config.Owner != parent.borrow.lifetime {
 			return config, frame.ErrInvalid
 		}
 		inherited, err := h.inherit(config, parent.borrow)
@@ -234,7 +234,6 @@ func (h *hostState) useConfig(config UseConfig) (UseConfig, error) {
 			return config, err
 		}
 		config = inherited
-		config.Parent = &Use{borrow: parent.borrow}
 	}
 	if config.Realm != "" {
 		if err := config.Realm.Validate(); err != nil {
@@ -246,8 +245,8 @@ func (h *hostState) useConfig(config UseConfig) (UseConfig, error) {
 			return config, err
 		}
 	}
-	if config.Realm != "" && h.protection == nil {
-		return config, fmt.Errorf("%w: surviving execution requires protection", frame.ErrInvalid)
+	if config.Realm != "" && h.durable == nil {
+		return config, fmt.Errorf("%w: surviving execution requires a durable authority", frame.ErrInvalid)
 	}
 	return config, nil
 }
@@ -271,23 +270,23 @@ func (h *hostState) inherit(config UseConfig, parent *useBorrow) (UseConfig, err
 
 // acquireActivated prepares the graph inside the owner's work, so closing the
 // owner cancels the preparation it is waiting for.
-func (h *hostState) acquireActivated(ctx context.Context, config UseConfig, recordID string, bind activationBinding) (*Use, error) {
+func (h *hostState) acquireActivated(ctx context.Context, config UseConfig, recordID string, bind activationBinding) (Use, error) {
 	work, err := config.Owner.Enter(ctx)
 	if err != nil {
-		return nil, err
+		return Use{}, err
 	}
 	defer work.Finish()
 	if err := h.admission.ValidateScope(config.Scope); err != nil {
-		return nil, err
+		return Use{}, err
 	}
 	plan, err := h.activate(work.Context(), config.Realm, config.Scope, bind)
 	if err != nil {
-		return nil, err
+		return Use{}, err
 	}
 	return h.acquirePrepared(work.Context(), plan, config, recordID)
 }
 
-func (h *hostState) acquirePrepared(ctx context.Context, plan *bindingPlan, config UseConfig, recordID string) (_ *Use, err error) {
+func (h *hostState) acquirePrepared(ctx context.Context, plan *capturedPlan, config UseConfig, recordID string) (_ Use, err error) {
 	use := &useBorrow{
 		authority:   h.identity,
 		id:          rand.Text(),
@@ -312,7 +311,7 @@ func (h *hostState) acquirePrepared(ctx context.Context, plan *bindingPlan, conf
 	}()
 	causes := use.lifetime.ObserveCloseCauses()
 	context.AfterFunc(use.lifetime.Context(), func() { use.retireAfterClose(causes) })
-	if config.Parent != nil {
+	if config.Parent.Valid() {
 		use.parentID = config.Parent.borrow.id
 	}
 	err = h.admission.Admit(ctx, func(admitted context.Context) error {
@@ -345,10 +344,10 @@ func (h *hostState) acquirePrepared(ctx context.Context, plan *bindingPlan, conf
 		return h.admission.RecoveryError()
 	})
 	if err != nil {
-		return nil, err
+		return Use{}, err
 	}
 	published = true
-	return &Use{borrow: use}, nil
+	return Use{borrow: use}, nil
 }
 
 func (h *hostState) checkAcceptedBinding(admitted context.Context, recordID string, scope ScopeGrant, binding BindingSnapshot) error {
@@ -366,7 +365,7 @@ func (h *hostState) checkAcceptedBinding(admitted context.Context, recordID stri
 	return nil
 }
 
-func (h *hostState) attachPlanMembers(use *useBorrow, plan *bindingPlan) error {
+func (h *hostState) attachPlanMembers(use *useBorrow, plan *capturedPlan) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if err := h.validatePlanLocked(plan); err != nil {
@@ -478,7 +477,7 @@ func (h *hostState) protectUse(admitted context.Context, use *useBorrow) error {
 		instanceIDs = append(instanceIDs, hold.instance.id)
 	}
 	slices.Sort(instanceIDs)
-	approval := UseApproval{ID: use.id, ParentID: use.parentID, ExecutionID: use.executionID, Instances: instanceIDs, Realm: use.realm, Scope: use.scope.WireID(), ScopeGeneration: use.scope.Generation(), Epoch: h.epoch, Binding: use.binding.Clone()}
+	approval := UseApproval{ID: use.id, ParentID: use.parentID, ExecutionID: use.executionID, Instances: instanceIDs, Realm: use.realm, Scope: use.scope.WireID(), ScopeGeneration: use.scope.Generation(), Epoch: h.Epoch(), Binding: use.binding.Clone()}
 	if err := approval.Validate(); err != nil {
 		return err
 	}
@@ -489,7 +488,7 @@ func (h *hostState) protectUse(admitted context.Context, use *useBorrow) error {
 		}
 	}()
 	use.approvalStarted = true
-	err := h.protection.ApproveUse(admitted, approval)
+	err := h.durable.ApproveUse(admitted, approval)
 	concluded = true
 	if err != nil {
 		h.admission.RequireRecovery(err)
@@ -501,11 +500,11 @@ func (h *hostState) protectUse(admitted context.Context, use *useBorrow) error {
 // The original Use must remain reachable if approval succeeds but publication
 // fails. Both lifetimes reserve its cleanup before durable protection begins.
 func (h *hostState) reserveUse(use *useBorrow) error {
-	instances := make([]*frame.ResourceHandle, 0, len(use.instanceHolds))
+	instances := make([]frame.ResourceHandle, 0, len(use.instanceHolds))
 	for _, hold := range use.instanceHolds {
 		instances = append(instances, hold.instance.resource)
 	}
-	var ownerDependencies []*frame.ResourceHandle
+	var ownerDependencies []frame.ResourceHandle
 	if use.owner == h.lifetime {
 		ownerDependencies = instances
 	} else {
@@ -529,7 +528,7 @@ func (h *hostState) reserveUse(use *useBorrow) error {
 
 // Parent cancellation revokes permission even before its resource-close
 // callbacks run. The reservation still waits for this Use's actual settlement.
-func (u *useBorrow) reserveOwner(owner frame.Lifetime, dependencies ...*frame.ResourceHandle) (*frame.ResourceHandle, error) {
+func (u *useBorrow) reserveOwner(owner frame.Lifetime, dependencies ...frame.ResourceHandle) (frame.ResourceHandle, error) {
 	causes := u.lifetime.ObserveCloseCauses()
 	resource, err := owner.Own(frame.Resource{
 		Name:   useResourcePrefix + u.id,
@@ -540,18 +539,18 @@ func (u *useBorrow) reserveOwner(owner frame.Lifetime, dependencies ...*frame.Re
 		},
 	}, dependencies...)
 	if err != nil {
-		return nil, err
+		return frame.ResourceHandle{}, err
 	}
 	ctx := owner.Context()
 	u.stops = append(u.stops, context.AfterFunc(ctx, func() { u.lifetime.BeginClose(context.Cause(ctx)) }))
 	return resource, nil
 }
 
-func Borrow[M, V any](ctx context.Context, use *Use, selection Selection[M, V], call func(context.Context, []V) error) error {
+func Borrow[M, V any](ctx context.Context, use Use, selection Selection[M, V], call func(context.Context, []V) error) error {
 	if call == nil {
 		return frame.ErrInvalid
 	}
-	return withAccess(ctx, use, func(a *Access) error {
+	return withAccess(ctx, use, func(a Access) error {
 		members, err := selection.Members(a)
 		if err != nil {
 			return err
@@ -564,8 +563,8 @@ func Borrow[M, V any](ctx context.Context, use *Use, selection Selection[M, V], 
 	})
 }
 
-func BorrowExport[V any](ctx context.Context, use *Use, source ExportRef, call func(context.Context, V) error) error {
-	if use == nil || use.borrow == nil || call == nil {
+func BorrowExport[V any](ctx context.Context, use Use, source ExportRef, call func(context.Context, V) error) error {
+	if use.borrow == nil || call == nil {
 		return frame.ErrInvalid
 	}
 	borrow := use.borrow
@@ -594,8 +593,8 @@ func exportValue[V any](use *useBorrow, source ExportRef) (V, bool) {
 	return zero, false
 }
 
-func WithPlan(ctx context.Context, host Host, plan BindingPlan, scope ScopeGrant, call func(*Use) error) (err error) {
-	if framevalue.IsNil(ctx) || !host.Valid() || plan.bindingPlan == nil || call == nil {
+func WithPlan(ctx context.Context, host Host, plan BindingPlan, scope ScopeGrant, call func(Use) error) (err error) {
+	if framevalue.IsNil(ctx) || !host.Valid() || plan.plan == nil || call == nil {
 		return frame.ErrInvalid
 	}
 	owner := frame.NewLifetime(context.WithoutCancel(ctx))
@@ -603,7 +602,7 @@ func WithPlan(ctx context.Context, host Host, plan BindingPlan, scope ScopeGrant
 		_, closeErr := owner.Close(context.Background())
 		err = errors.Join(err, closeErr)
 	}()
-	use, err := host.Acquire(ctx, plan, UseConfig{Owner: owner, Scope: scope, Realm: plan.realm})
+	use, err := host.Acquire(ctx, plan, UseConfig{Owner: owner, Scope: scope, Realm: plan.plan.header().realm})
 	if err != nil {
 		return err
 	}

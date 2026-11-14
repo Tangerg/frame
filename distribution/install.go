@@ -25,8 +25,8 @@ type Installation struct {
 
 // Slow profile validation cannot relinquish content before the Host accepts
 // or rejects the original release.
-func (l *Lease) Install(ctx context.Context, host framehost.Host, config Installation) (record framehost.InstallationRecord, err error) {
-	if l == nil || l.claim == nil || !host.Valid() {
+func (l Lease) Install(ctx context.Context, host framehost.Host, config Installation) (record framehost.InstallationRecord, err error) {
+	if l.claim == nil || !host.Valid() {
 		return record, frame.ErrInvalid
 	}
 	claim := l.claim
@@ -62,10 +62,7 @@ func (l *Lease) Install(ctx context.Context, host framehost.Host, config Install
 }
 
 func (entry Unit) executableUnit(host framehost.Host, native func(framehost.UnitID) (framehost.SetupFunc, error)) (framehost.Unit, error) {
-	unit := framehost.Unit{Declaration: framehost.UnitDeclaration{ID: entry.ID, Profile: entry.Profile, Exports: entry.Exports}}
-	for _, slot := range entry.Imports {
-		unit.Declaration.Imports = append(unit.Declaration.Imports, framehost.ImportDeclaration{Slot: slot.Slot, Contract: slot.Contract, Optional: slot.Optional})
-	}
+	unit := framehost.Unit{Declaration: framehost.UnitDeclaration{ID: entry.ID, Profile: entry.Profile, Imports: entry.Imports, Exports: entry.Exports}}
 	if entry.Profile == framehost.NativeGo {
 		if native == nil {
 			return framehost.Unit{}, framehost.ErrUnavailable

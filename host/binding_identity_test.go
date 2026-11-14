@@ -39,17 +39,17 @@ func TestCanonicalBindingRetainsSharedProviderIdentity(t *testing.T) {
 	source := func(r framehost.InstallationRecord, name string, c framehost.ContractRef) framehost.ExportRef {
 		return framehost.ExportRef{InstallationID: r.ID, Release: r.Release, UnitID: "main", Export: name, Contract: c}
 	}
-	ar := install("a", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "a", Contract: a.Ref()}}}, Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+	ar := install("a", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "a", Contract: a.Ref()}}}, Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 		return []framehost.ExportValue{framehost.Provide("a", a, "a")}, nil
 	}})
-	zr := install("z", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "z", Contract: z.Ref()}}}, Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+	zr := install("z", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "z", Contract: z.Ref()}}}, Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 		return []framehost.ExportValue{framehost.Provide("z", z, "z")}, nil
 	}})
-	mr := install("middle", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Imports: []framehost.ImportDeclaration{{Slot: "z", Contract: z.Ref(), Providers: []framehost.ExportRef{source(zr, "z", z.Ref())}}, {Slot: "a", Contract: a.Ref(), Providers: []framehost.ExportRef{source(ar, "a", a.Ref())}}}, Exports: []framehost.ExportDeclaration{{Name: "middle", Contract: middle.Ref()}}}, Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+	mr := install("middle", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Imports: []framehost.ImportDeclaration{{Slot: "z", Contract: z.Ref()}, {Slot: "a", Contract: a.Ref()}}, Fixed: []framehost.SlotProviders{{Slot: "z", Providers: []framehost.ExportRef{source(zr, "z", z.Ref())}}, {Slot: "a", Providers: []framehost.ExportRef{source(ar, "a", a.Ref())}}}, Exports: []framehost.ExportDeclaration{{Name: "middle", Contract: middle.Ref()}}}, Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 		return []framehost.ExportValue{framehost.Provide("middle", middle, "middle")}, nil
 	}})
 	makePoint := func(id string) framehost.InstallationRecord {
-		return install(id, framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Imports: []framehost.ImportDeclaration{{Slot: "middle", Contract: middle.Ref(), Providers: []framehost.ExportRef{source(mr, "middle", middle.Ref())}}}, Exports: []framehost.ExportDeclaration{{Name: "point", Contract: point.Ref()}}}, Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		return install(id, framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Imports: []framehost.ImportDeclaration{{Slot: "middle", Contract: middle.Ref()}}, Fixed: []framehost.SlotProviders{{Slot: "middle", Providers: []framehost.ExportRef{source(mr, "middle", middle.Ref())}}}, Exports: []framehost.ExportDeclaration{{Name: "point", Contract: point.Ref()}}}, Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			return []framehost.ExportValue{framehost.Contribute("point", point, id, id)}, nil
 		}})
 	}
@@ -100,7 +100,7 @@ func TestBindingIdentitySurvivesPublicJSONRoundTrip(t *testing.T) {
 	}
 	plugin := installNative(t, host, "provider", framehost.Unit{
 		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "text", Contract: service.Ref()}}},
-		Setup: func(context.Context, *framehost.Setup) ([]framehost.ExportValue, error) {
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
 			return []framehost.ExportValue{framehost.Provide("text", service, "value")}, nil
 		},
 	})

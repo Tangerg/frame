@@ -23,24 +23,24 @@ type startClaim struct {
 	retired  <-chan struct{}
 }
 
-func (h *hostState) StartUnit(ctx context.Context, grant ScopeGrant, root UnitRef) (*RunningUnit, error) {
+func (h *hostState) StartUnit(ctx context.Context, grant ScopeGrant, root UnitRef) (RunningUnit, error) {
 	work, err := h.lifetime.Enter(ctx)
 	if err != nil {
-		return nil, err
+		return RunningUnit{}, err
 	}
 	defer work.Finish()
 	if err := h.admission.ValidateScope(grant); err != nil {
-		return nil, err
+		return RunningUnit{}, err
 	}
-	plan, err := h.PlanUnit(work.Context(), "", root, nil)
+	plan, err := h.plan(work.Context(), "", nil, nil, []UnitRef{root})
 	if err != nil {
-		return nil, err
+		return RunningUnit{}, err
 	}
-	prepared, err := h.activate(work.Context(), "", grant, h.startBinding(plan.bindingPlan, grant))
+	prepared, err := h.activate(work.Context(), "", grant, h.startBinding(plan, grant))
 	if err != nil {
-		return nil, err
+		return RunningUnit{}, err
 	}
-	var running *RunningUnit
+	var running RunningUnit
 	err = h.admission.Admit(work.Context(), func(context.Context) error {
 		if err := h.admission.ValidateScope(grant); err != nil {
 			return err
@@ -56,12 +56,12 @@ func (h *hostState) StartUnit(ctx context.Context, grant ScopeGrant, root UnitRe
 		return err
 	})
 	if err != nil {
-		return nil, err
+		return RunningUnit{}, err
 	}
 	return running, nil
 }
 
-func (h *hostState) startBinding(plan *bindingPlan, grant ScopeGrant) activationBinding {
+func (h *hostState) startBinding(plan *declaredPlan, grant ScopeGrant) activationBinding {
 	bind := h.plannedBinding(plan)
 	return func(admitted context.Context) (BindingSnapshot, []bindingRead, error) {
 		binding, reads, err := bind(admitted)
@@ -91,12 +91,12 @@ func (i *unitInstance) validateStartLocked(grant ScopeGrant) error {
 	return nil
 }
 
-func (i *unitInstance) claimStartLocked(grant ScopeGrant) (*RunningUnit, error) {
+func (i *unitInstance) claimStartLocked(grant ScopeGrant) (RunningUnit, error) {
 	if err := i.validateStartLocked(grant); err != nil {
-		return nil, err
+		return RunningUnit{}, err
 	}
 	i.starts++
-	return &RunningUnit{claim: &startClaim{id: i.id, instance: i}}, nil
+	return RunningUnit{claim: &startClaim{id: i.id, instance: i}}, nil
 }
 
 func (i *unitInstance) releaseStart() <-chan struct{} {
@@ -115,15 +115,18 @@ func (i *unitInstance) releaseStart() <-chan struct{} {
 	return i.retirement.done
 }
 
-func (r *RunningUnit) ID() string {
-	if r == nil || r.claim == nil {
+// Valid reports whether the handle names a start claim; the zero RunningUnit does not.
+func (r RunningUnit) Valid() bool { return r.claim != nil }
+
+func (r RunningUnit) ID() string {
+	if r.claim == nil {
 		return ""
 	}
 	return r.claim.id
 }
 
-func (r *RunningUnit) Stop(ctx context.Context) error {
-	if framevalue.IsNil(ctx) || r == nil || r.claim == nil {
+func (r RunningUnit) Stop(ctx context.Context) error {
+	if framevalue.IsNil(ctx) || r.claim == nil {
 		return frame.ErrInvalid
 	}
 	claim := r.claim

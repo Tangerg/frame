@@ -41,13 +41,13 @@ func ParseCapability(data []byte) (*Capability, error) {
 
 func AdmitCapability(descriptor CapabilityDescriptor) (*Capability, error) {
 	if descriptor.Protocol != CapabilityProtocol {
-		return nil, errors.New("capability: current protocol is required")
+		return nil, errors.New("frame: current protocol is required")
 	}
 	if !ValidName(descriptor.Reference) {
-		return nil, errors.New("capability: bounded reference is required")
+		return nil, errors.New("frame: bounded reference is required")
 	}
 	if len(descriptor.Methods) == 0 {
-		return nil, errors.New("capability: required methods are missing")
+		return nil, errors.New("frame: required methods are missing")
 	}
 	if len(descriptor.Methods) > MaxCapabilityMethods {
 		return nil, value.NewLimitError("capability methods", MaxCapabilityMethods)
@@ -71,7 +71,7 @@ func AdmitCapability(descriptor CapabilityDescriptor) (*Capability, error) {
 	slices.SortFunc(contract.methods, func(a, b *Method) int { return strings.Compare(a.Name(), b.Name()) })
 	for i := 1; i < len(contract.methods); i++ {
 		if contract.methods[i-1].Name() == contract.methods[i].Name() {
-			return nil, errors.New("capability: duplicate required method")
+			return nil, errors.New("frame: duplicate required method")
 		}
 	}
 	canonical, err := value.EncodeJSON(contract.IdentityModel().Descriptor())

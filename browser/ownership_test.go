@@ -122,7 +122,7 @@ func TestPrepareRefusesForeignHostBeforeSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	h, err := framehost.New(e.ctx, framehost.Config{Admission: gate, Epoch: db.Epoch(), Installations: db, ExecutionProtection: db})
+	h, err := framehost.New(e.ctx, framehost.Config{Authority: db})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -407,7 +407,7 @@ func TestReceiptLookupsShareAndRespectPendingCapacity(t *testing.T) {
 
 func TestBrowserOwnsCleanupBeforeRecordingCreation(t *testing.T) {
 	e := openConfiguredBridge(t, filepath.Join(t.TempDir(), "state.sqlite"), true, func(c *browser.BridgeConfig) {
-		c.PublicConfiguration = func(_ context.Context, s *framehost.Setup) ([]byte, error) {
+		c.PublicConfiguration = func(_ context.Context, s framehost.Setup) ([]byte, error) {
 			for {
 				_, err := s.Cleanup("test resource", func() error { return nil })
 				if errors.Is(err, frame.ErrCapacity) {

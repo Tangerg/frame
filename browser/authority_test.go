@@ -23,7 +23,7 @@ func TestBridgeRequiresTheOriginalDurableAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	host, err := framehost.New(t.Context(), framehost.Config{Admission: gate, Epoch: a.Epoch(), Installations: a, ExecutionProtection: a})
+	host, err := framehost.New(t.Context(), framehost.Config{Authority: a})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestStoreHandleReplacementCannotRetargetTheHostAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer replacement.Close()
-	host, err := framehost.New(t.Context(), framehost.Config{Admission: gate, Epoch: original.Epoch(), Installations: original, ExecutionProtection: original})
+	host, err := framehost.New(t.Context(), framehost.Config{Authority: original})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,10 +56,10 @@ func TestStoreHandleReplacementCannotRetargetTheHostAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	original = replacement
-	if host.UsesAuthority(original) {
+	if host.Durable() == framehost.Durable(original) {
 		t.Fatal("replacing a caller-owned Store retargeted the Host authority")
 	}
-	if !host.UsesAuthority(copied) {
+	if host.Durable() != framehost.Durable(copied) {
 		t.Fatal("copy no longer denotes the Host's original durable authority")
 	}
 	if _, err := browser.NewBridge(browser.BridgeConfig{Host: host, Store: copied, Source: testModules{}}); err != nil {

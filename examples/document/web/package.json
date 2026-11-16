@@ -1,7 +1,7 @@
 {
   "name": "@frame/example-document-web",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -15,6 +15,6 @@
     "test:browser": "node --test browser.test.mjs"
   },
   "dependencies": {
-    "@frame/sdk": "0.3.0"
+    "@frame/sdk": "0.4.0"
   }
 }

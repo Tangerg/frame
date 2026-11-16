@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.4.0 — 2026-11-17
+
+Upgrade guidance is in [the v0.4.0 release notes](docs/releases/v0.4.0.md).
+
 - Remove the qualification workflow pinned to Flame's former Qimu integration.
   Current Flame owns a different business protocol and an application adapter over
   `process.Protocol`; it is not a peer of the optional Qimu profile. Application

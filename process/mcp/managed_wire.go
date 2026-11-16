@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/call"
 	framevalue "github.com/Tangerg/frame/value"
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
@@ -28,7 +29,7 @@ type managedContribution struct {
 	ID         string              `json:"id"`
 	Export     string              `json:"export"`
 	Requires   []managedDependency `json:"requires"`
-	Background *Target             `json:"background,omitzero"`
+	Background *call.Target        `json:"background,omitzero"`
 }
 
 type managedParams struct {

@@ -1,4 +1,4 @@
-package mcp
+package call
 
 import (
 	"errors"
@@ -10,7 +10,7 @@ import (
 )
 
 // Target is a concrete reference interpreted by the operation's resource owner.
-// Scope is the managed method's declared target vocabulary, not a UI selection.
+// Scope names the operation's target vocabulary, not a UI selection.
 type Target struct {
 	Scope     string `json:"scope"`
 	Reference string `json:"reference"`
@@ -18,7 +18,7 @@ type Target struct {
 
 func (t Target) Validate() error {
 	if !frame.ValidName(t.Scope) || t.Reference == "" || !utf8.ValidString(t.Reference) || strings.ContainsFunc(t.Reference, unicode.IsControl) {
-		return errors.New("mcp: concrete target scope and reference are required")
+		return errors.New("call: concrete target scope and reference are required")
 	}
 	return nil
 }
@@ -37,29 +37,12 @@ type Invocation struct {
 
 func (i Invocation) Validate() error {
 	if !frame.ValidName(i.ID) || i.Parent != "" && (!frame.ValidName(i.Parent) || i.Parent == i.ID) {
-		return errors.New("mcp: invocation and distinct parent identities are required")
+		return errors.New("call: invocation and distinct parent identities are required")
 	}
 	if !frame.ValidName(string(i.Origin)) {
-		return errors.New("mcp: invocation origin must be a bounded consumer token")
+		return errors.New("call: invocation origin must be a bounded consumer token")
 	}
 	return i.Target.Validate()
 }
 
-var ErrInvocationConflict = errors.New("mcp: invocation identity conflicts with the original request")
-
-// InvocationConflictCode is the refusal every method reports for
-// ErrInvocationConflict, so no business owner restates it.
-const InvocationConflictCode = "command_conflict"
-
-// A Refusal decoded from the original backend reply is a known business outcome.
-// A locally constructed or wrapped Refusal cannot establish that remote fact.
-type Refusal struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
-
-func (r *Refusal) Error() string { return r.Message }
-
-func (r *Refusal) Is(target error) bool {
-	return target == ErrInvocationConflict && r.Code == InvocationConflictCode
-}
+var ErrConflict = errors.New("call: invocation identity conflicts with the original request")

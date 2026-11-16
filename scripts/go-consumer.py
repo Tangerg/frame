@@ -57,6 +57,7 @@ import (
   "strings"
   "testing"
   frame "{module}"
+  "{module}/call"
   framehost "{module}/host"
   "{module}/browser"
   "{module}/contractgen"
@@ -83,6 +84,15 @@ var _ func(any)bool = value.IsNil
 var _ interface{{Validate() error}} = runner.AttemptRef{{}}
 var _ interface{{Validate() error}} = runner.ExitReceipt{{}}
 var _ error = runner.ErrUnavailable
+var _ error = call.ErrConflict
+func TestCallingEvidence(t *testing.T) {{
+  original:=call.Invocation{{ID:"operation",Origin:"consumer",Target:call.Target{{Scope:"document",Reference:"document-37"}}}}
+  if err:=original.Validate();err!=nil {{t.Fatal(err)}}
+  encoded,err:=value.EncodeJSON(original);if err!=nil {{t.Fatal(err)}}
+  var decoded call.Invocation
+  if err:=value.DecodeValue(encoded.Bytes(),&decoded,"calling evidence");err!=nil {{t.Fatal(err)}}
+  if decoded!=original {{t.Fatalf("calling evidence changed: %#v",decoded)}}
+}}
 func TestContextAndValueBoundaries(t *testing.T) {{
   cause:=errors.New("original cancellation")
   ctx,cancel:=context.WithCancelCause(t.Context())

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Breaking:** Calling-owner evidence moves from `process/mcp` to the pure
+  `call` package. Replace `mcp.Invocation`, `mcp.Origin`, `mcp.Target` and
+  `mcp.ErrInvocationConflict` with `call.Invocation`, `call.Origin`, `call.Target`
+  and `call.ErrConflict`. `mcp.WithInvocation` accepts the same evidence from
+  its new owner. JSON shapes and validation are unchanged. MCP refusal decoding,
+  conflict wire codes, callback grants and transport remain in `process/mcp`.
+  Pure protocol and domain consumers no longer need that optional adapter.
+
 ## v0.3.0 — 2026-11-16
 
 Upgrade guidance and release qualification are in [the v0.3.0 release notes](docs/releases/v0.3.0.md).

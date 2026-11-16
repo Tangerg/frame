@@ -9,6 +9,7 @@ import (
 	"net/url"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/call"
 	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 	sdk "github.com/Tangerg/go-sdk/mcp"
@@ -143,8 +144,8 @@ func projectDependencies(setup framehost.Setup, imports map[string]framehost.Imp
 
 // installationTarget addresses the installation a background contribution
 // runs for, independently of any foreground Use.
-func installationTarget(setup framehost.Setup) *Target {
-	return &Target{Scope: installationTargetScope, Reference: setup.Binding().Source.InstallationID.String()}
+func installationTarget(setup framehost.Setup) *call.Target {
+	return &call.Target{Scope: installationTargetScope, Reference: setup.Binding().Source.InstallationID.String()}
 }
 
 const installationTargetScope = "installation"

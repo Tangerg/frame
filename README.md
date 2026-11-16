@@ -68,6 +68,7 @@ for the breaking changes since v0.0.1.
 | Callable contract semantics and structured resource lifetimes | Root Go package `frame` |
 | Plugin installation, contracts, selection, exact binding and admission | `host/` |
 | JSON/schema admission, Go codec models and SHA-256 identities | `value/` |
+| Pure calling-owner identity, provenance and concrete targets | `call/`; contains no execution, authorization or receipt ownership |
 | Published contract projections for Go and TypeScript | `contractgen/` |
 | Managed local execution | `process/` for admission of an attached session, `process/runner/` for child ownership, `process/mcp/` for optional MCP interoperability |
 | Browser execution and its control messages | `browser/` for the Go bridge and DTOs, `sdk/src/browser/` for the browser runtime |

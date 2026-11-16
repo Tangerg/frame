@@ -48,7 +48,13 @@ func TestFrameworkSourceTestsAndCommandsDoNotImportConsumers(t *testing.T) {
 }
 
 func TestValuesCannotImportHostOrExecutionCapabilities(t *testing.T) {
-	directory := "value"
+	for _, directory := range []string{"value", "call"} {
+		t.Run(directory, func(t *testing.T) { assertPureValues(t, directory) })
+	}
+}
+
+func assertPureValues(t *testing.T, directory string) {
+	t.Helper()
 	entries, err := os.ReadDir(directory)
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +70,7 @@ func TestValuesCannotImportHostOrExecutionCapabilities(t *testing.T) {
 		}
 		for _, imported := range file.Imports {
 			name := strings.Trim(imported.Path.Value, `"`)
-			frameworkCapability := name == modulePath || strings.HasPrefix(name, modulePath+"/") && name != modulePath+"/value"
+			frameworkCapability := strings.HasPrefix(name, modulePath+"/") && name != modulePath+"/value" || name == modulePath && directory != "call"
 			externalCapability := name == "os" || name == "io/fs" || name == "database/sql" || name == "net" || strings.HasPrefix(name, "net/") && name != "net/url" && name != "net/netip"
 			if frameworkCapability || externalCapability {
 				t.Errorf("pure value %s imports capability %s", path, name)

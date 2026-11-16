@@ -667,7 +667,8 @@ See the [MCP guide](../process/mcp/README.md) for protocol-specific requirements
 | `@frame/browser`, `@frame/node`, `@frame/react` | `@frame/sdk/browser`, `@frame/sdk/node`, `@frame/sdk/react` from one tarball |
 | SDK `acquire(owner, label, create)` and `AcquiredResource` wrappers | `owner.acquire(label, create, release)`; creators return resources directly |
 | SDK `withResource(owner, label, create, work)` | `owner.withResource(label, create, release, work)` |
-| Managed invocation, refusal and command-conflict evidence under `frame/portable` | `frame/process/mcp` owns this managed wire vocabulary |
+| Calling-owner invocation, origin, target and identity conflict | Pure `frame/call`; protocol projections and execution adapters share its values and validation |
+| Managed refusal and command-conflict wire code | Optional `frame/process/mcp` translates `call.ErrConflict` into the managed protocol |
 | `frame/cancellation` | Removed. `frame.ContextError` preserves the standard cancellation category and original owner cause across adapters |
 
 Here `frame/` stands for `github.com/Tangerg/frame/`. Native and local wire

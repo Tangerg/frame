@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	framecall "github.com/Tangerg/frame/call"
 	"log"
 	"net/http"
 	"runtime"
@@ -16,7 +17,7 @@ import (
 
 func TestReceiverRetainsRedactedHandlerInterruption(t *testing.T) {
 	cause := errors.New("private callback diagnostic")
-	refusal := &Refusal{Code: "private-code", Message: "private refusal diagnostic"}
+	refusal := &framecall.Refusal{Code: "private-code", Message: "private refusal diagnostic"}
 	for _, test := range []struct {
 		name      string
 		interrupt func()

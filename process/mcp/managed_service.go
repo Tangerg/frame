@@ -7,7 +7,7 @@ import (
 	"fmt"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/call"
+	framecall "github.com/Tangerg/frame/call"
 	framehost "github.com/Tangerg/frame/host"
 	framevalue "github.com/Tangerg/frame/value"
 	sdk "github.com/Tangerg/go-sdk/mcp"
@@ -16,14 +16,14 @@ import (
 type managedInvocationKey struct{}
 
 // WithInvocation supplies caller-owned target evidence independently of command identity.
-func WithInvocation(ctx context.Context, invocation call.Invocation) (context.Context, error) {
+func WithInvocation(ctx context.Context, invocation framecall.Invocation) (context.Context, error) {
 	if framevalue.IsNil(ctx) {
 		return nil, frame.ErrInvalid
 	}
 	if err := invocation.Validate(); err != nil {
 		return nil, err
 	}
-	if prior, exists := ctx.Value(managedInvocationKey{}).(call.Invocation); exists && prior != invocation {
+	if prior, exists := ctx.Value(managedInvocationKey{}).(framecall.Invocation); exists && prior != invocation {
 		return nil, errors.New("mcp: invocation already bound")
 	}
 	return context.WithValue(ctx, managedInvocationKey{}, invocation), nil
@@ -50,7 +50,7 @@ func (s *ManagedService) params(ctx context.Context, method *frame.Method, input
 		return nil, errors.Join(frame.ErrContractMismatch, err)
 	}
 	params := &managedParams{Protocol: managedVersion, Method: method.Name(), Contract: method.Identity().Digest(), Export: s.physical, Capability: s.contract.wire.Digest(), Input: input.Bytes()}
-	if invocation, exists := ctx.Value(managedInvocationKey{}).(call.Invocation); exists {
+	if invocation, exists := ctx.Value(managedInvocationKey{}).(framecall.Invocation); exists {
 		if method.Name() != managedReceipt && invocation.Target.Scope != method.Descriptor().Target {
 			return nil, fmt.Errorf("%w: managed invocation target differs", frame.ErrContractMismatch)
 		}

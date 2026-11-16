@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	json "encoding/json/v2"
 	"errors"
+	framecall "github.com/Tangerg/frame/call"
 	"io"
 	"math"
 	"net"
@@ -177,7 +178,7 @@ func (route callbackRoute) read(w http.ResponseWriter, req *http.Request, ref Ma
 	return params, input, http.StatusOK
 }
 
-// encodeCallbackReply admits a result or a typed Refusal within the response
+// encodeCallbackReply admits a result or a typed framecall.Refusal within the response
 // budget; any other failure cannot be reported to the plugin.
 func encodeCallbackReply(output value.JSON, failure error, limits CallbackReceiverLimits) ([]byte, bool) {
 	var reply managedResult
@@ -190,7 +191,7 @@ func encodeCallbackReply(output value.JSON, failure error, limits CallbackReceiv
 		if _, interrupted := errors.AsType[*callbackPanic](failure); interrupted {
 			return nil, false
 		}
-		refusal, known := errors.AsType[*Refusal](failure)
+		refusal, known := errors.AsType[*framecall.Refusal](failure)
 		if !known || refusal == nil || refusal.Code == "" || int64(len(refusal.Code))+int64(len(refusal.Message)) > limits.MaxResponseBytes {
 			return nil, false
 		}

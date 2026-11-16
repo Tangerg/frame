@@ -92,6 +92,8 @@ func TestCallingEvidence(t *testing.T) {{
   var decoded call.Invocation
   if err:=value.DecodeValue(encoded.Bytes(),&decoded,"calling evidence");err!=nil {{t.Fatal(err)}}
   if decoded!=original {{t.Fatalf("calling evidence changed: %#v",decoded)}}
+  refusal:=&call.Refusal{{Code:call.ConflictCode,Message:"original identity differs"}}
+  if !errors.Is(refusal,call.ErrConflict) {{t.Fatal("calling refusal lost conflict identity")}}
 }}
 func TestContextAndValueBoundaries(t *testing.T) {{
   cause:=errors.New("original cancellation")

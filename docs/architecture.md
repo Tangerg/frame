@@ -668,7 +668,7 @@ See the [MCP guide](../process/mcp/README.md) for protocol-specific requirements
 | SDK `acquire(owner, label, create)` and `AcquiredResource` wrappers | `owner.acquire(label, create, release)`; creators return resources directly |
 | SDK `withResource(owner, label, create, work)` | `owner.withResource(label, create, release, work)` |
 | Calling-owner invocation, origin, target and identity conflict | Pure `frame/call`; protocol projections and execution adapters share its values and validation |
-| Managed refusal and command-conflict wire code | Optional `frame/process/mcp` translates `call.ErrConflict` into the managed protocol |
+| Business refusal and identity-conflict code | Pure `frame/call` values; optional `frame/process/mcp` decodes the original reply and alone proves its transport outcome |
 | `frame/cancellation` | Removed. `frame.ContextError` preserves the standard cancellation category and original owner cause across adapters |
 
 Here `frame/` stands for `github.com/Tangerg/frame/`. Native and local wire

@@ -6,14 +6,14 @@ import (
 	"testing"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/call"
+	framecall "github.com/Tangerg/frame/call"
 	"github.com/Tangerg/frame/value"
 )
 
 type missingContext struct{ context.Context }
 
 func TestManagedInvocationRetainsOriginalCallingEvidence(t *testing.T) {
-	original := call.Invocation{ID: "operation", Origin: "consumer", Target: call.Target{Scope: "entry", Reference: "original"}}
+	original := framecall.Invocation{ID: "operation", Origin: "consumer", Target: framecall.Target{Scope: "entry", Reference: "original"}}
 	ctx, err := WithInvocation(t.Context(), original)
 	if err != nil {
 		t.Fatal(err)
@@ -29,9 +29,9 @@ func TestManagedInvocationRetainsOriginalCallingEvidence(t *testing.T) {
 	if _, err := WithInvocation(ctx, original); err != nil {
 		t.Fatalf("refused replacement changed original binding: %v", err)
 	}
-	for _, code := range []string{InvocationConflictCode, "independent-refusal"} {
-		failure := &Refusal{Code: code, Message: "backend refused"}
-		if errors.Is(failure, call.ErrConflict) != (code == InvocationConflictCode) {
+	for _, code := range []string{framecall.ConflictCode, "independent-refusal"} {
+		failure := &framecall.Refusal{Code: code, Message: "backend refused"}
+		if errors.Is(failure, framecall.ErrConflict) != (code == framecall.ConflictCode) {
 			t.Fatalf("refusal %q changed conflict classification", code)
 		}
 	}
@@ -56,7 +56,7 @@ func TestManagedBoundariesRejectAMissingContext(t *testing.T) {
 		call func(context.Context) error
 	}{
 		{name: "invocation evidence", call: func(ctx context.Context) error {
-			_, err := WithInvocation(ctx, call.Invocation{ID: "operation", Origin: "consumer", Target: call.Target{Scope: "entry", Reference: "original"}})
+			_, err := WithInvocation(ctx, framecall.Invocation{ID: "operation", Origin: "consumer", Target: framecall.Target{Scope: "entry", Reference: "original"}})
 			return err
 		}},
 		{name: "input validation", call: func(ctx context.Context) error {

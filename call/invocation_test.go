@@ -1,10 +1,22 @@
 package call_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/Tangerg/frame/call"
 )
+
+func TestRefusalPreservesBusinessFailure(t *testing.T) {
+	failure := &call.Refusal{Code: call.ConflictCode, Message: "original request differs"}
+	if failure.Error() != failure.Message || !errors.Is(failure, call.ErrConflict) {
+		t.Fatal("original refusal lost its message or conflict category")
+	}
+	failure.Code = "independent-refusal"
+	if errors.Is(failure, call.ErrConflict) {
+		t.Fatal("independent refusal became an invocation conflict")
+	}
+}
 
 func TestInvocationValidation(t *testing.T) {
 	valid := call.Invocation{ID: "operation", Origin: "consumer", Parent: "parent", Target: call.Target{Scope: "document", Reference: "/notes/报告.md"}}

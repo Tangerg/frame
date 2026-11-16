@@ -5,10 +5,13 @@
 - **Breaking:** Calling-owner evidence moves from `process/mcp` to the pure
   `call` package. Replace `mcp.Invocation`, `mcp.Origin`, `mcp.Target` and
   `mcp.ErrInvocationConflict` with `call.Invocation`, `call.Origin`, `call.Target`
-  and `call.ErrConflict`. `mcp.WithInvocation` accepts the same evidence from
-  its new owner. JSON shapes and validation are unchanged. MCP refusal decoding,
-  conflict wire codes, callback grants and transport remain in `process/mcp`.
-  Pure protocol and domain consumers no longer need that optional adapter.
+  and `call.ErrConflict`. Replace `mcp.Refusal` and `mcp.InvocationConflictCode`
+  with `call.Refusal` and `call.ConflictCode`. `mcp.WithInvocation` accepts the
+  same evidence from its new owner. JSON shapes and validation are unchanged;
+  generated schema definition names can change with Go package identity, so
+  rebuild contracts and their consumers together. MCP refusal decoding and
+  outcome proof, callback grants and transport remain in `process/mcp`.
+  Pure protocol, domain and delivery consumers no longer need that optional adapter.
 
 ## v0.3.0 — 2026-11-16
 

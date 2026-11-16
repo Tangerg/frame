@@ -8,7 +8,7 @@ import (
 	"fmt"
 
 	"github.com/Tangerg/frame"
-	"github.com/Tangerg/frame/call"
+	framecall "github.com/Tangerg/frame/call"
 	framevalue "github.com/Tangerg/frame/value"
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
@@ -29,7 +29,7 @@ type managedContribution struct {
 	ID         string              `json:"id"`
 	Export     string              `json:"export"`
 	Requires   []managedDependency `json:"requires"`
-	Background *call.Target        `json:"background,omitzero"`
+	Background *framecall.Target   `json:"background,omitzero"`
 }
 
 type managedParams struct {
@@ -54,7 +54,7 @@ type managedResult struct {
 // Local errors keep their causes without acquiring that authority.
 type managedReply struct {
 	value   jsontext.Value
-	refusal *Refusal
+	refusal *framecall.Refusal
 }
 
 func (r managedReply) result() (jsontext.Value, error) {
@@ -74,7 +74,7 @@ func (r *managedResult) unpack() (managedReply, error) {
 		return managedReply{}, errors.New("mcp: managed result requires one value or refusal")
 	}
 	if len(r.Failure) != 0 {
-		var failure Refusal
+		var failure framecall.Refusal
 		if err := framevalue.DecodeValue(r.Failure, &failure, "managed refusal"); err != nil || failure.Code == "" {
 			return managedReply{}, errors.Join(errors.New("mcp: invalid managed refusal"), err)
 		}

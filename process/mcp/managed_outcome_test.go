@@ -5,6 +5,7 @@ import (
 	"encoding/json/jsontext"
 	"errors"
 	"fmt"
+	framecall "github.com/Tangerg/frame/call"
 	"net"
 	"strings"
 	"sync"
@@ -78,7 +79,7 @@ func TestManagedCancellationPreservesDispatchBoundary(t *testing.T) {
 						<-ctx.Done()
 						return nil, ctx.Err()
 					})
-					local := &Refusal{Code: InvocationConflictCode, Message: "caller stopped waiting"}
+					local := &framecall.Refusal{Code: framecall.ConflictCode, Message: "caller stopped waiting"}
 					var cause error = local
 					if wrapped {
 						cause = fmt.Errorf("local operation: %w", cause)
@@ -140,8 +141,8 @@ func TestManagedValidatedReplySurvivesCancellationAfterReceipt(t *testing.T) {
 			}
 			call, cancel := context.WithCancelCause(ctx)
 			defer cancel(nil)
-			cause := &Refusal{Code: "local", Message: "cancelled after the reply arrived"}
-			remote, err := value.EncodeJSON(Refusal{Code: InvocationConflictCode, Message: "original backend refusal"})
+			cause := &framecall.Refusal{Code: "local", Message: "cancelled after the reply arrived"}
+			remote, err := value.EncodeJSON(framecall.Refusal{Code: framecall.ConflictCode, Message: "original backend refusal"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -168,8 +169,8 @@ func TestManagedValidatedReplySurvivesCancellationAfterReceipt(t *testing.T) {
 				t.Fatalf("local cancellation replaced validated remote evidence: %v", err)
 			}
 			if refused {
-				failure, ok := errors.AsType[*Refusal](err)
-				if !ok || failure.Code != InvocationConflictCode || failure.Message != "original backend refusal" {
+				failure, ok := errors.AsType[*framecall.Refusal](err)
+				if !ok || failure.Code != framecall.ConflictCode || failure.Message != "original backend refusal" {
 					t.Fatalf("validated refusal was lost: %v", err)
 				}
 			} else if err != nil || output.String() != `"accepted"` {
@@ -212,7 +213,7 @@ func TestManagedStreamConsumerCannotCreateBackendRefusal(t *testing.T) {
 					MaxResponseBytes: 1024, Released: released, Revoke: func() error { release(); return nil },
 				}, nil
 			}
-			local := &Refusal{Code: InvocationConflictCode, Message: "private consumer refusal"}
+			local := &framecall.Refusal{Code: framecall.ConflictCode, Message: "private consumer refusal"}
 			_, err = service.Stream(ctx, commandInvocation(t, "original-command", method.Name(), chunk), func(context.Context, value.JSON) error {
 				if panics {
 					panic(local)
@@ -248,11 +249,11 @@ func TestManagedStreamSeparatesReplyDeliveryAndCleanupEvidence(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				remote, err := value.EncodeJSON(Refusal{Code: "backend", Message: "original backend refusal"})
+				remote, err := value.EncodeJSON(framecall.Refusal{Code: "backend", Message: "original backend refusal"})
 				if err != nil {
 					t.Fatal(err)
 				}
-				local := &Refusal{Code: "local", Message: "local diagnostic after receipt"}
+				local := &framecall.Refusal{Code: "local", Message: "local diagnostic after receipt"}
 				call, cancel := context.WithCancelCause(ctx)
 				defer cancel(nil)
 				var receive func(context.Context, uint64, value.JSON) error
@@ -297,7 +298,7 @@ func TestManagedStreamSeparatesReplyDeliveryAndCleanupEvidence(t *testing.T) {
 					t.Fatalf("reply provenance was replaced by %s: unknown=%t error=%v", phase, unknown, err)
 				}
 				if refused {
-					if failure, ok := errors.AsType[*Refusal](err); !ok || failure.Code != "backend" {
+					if failure, ok := errors.AsType[*framecall.Refusal](err); !ok || failure.Code != "backend" {
 						t.Fatalf("known backend refusal was replaced: %v", err)
 					}
 				} else if phase == "cleanup" && output.String() != `"accepted"` {
@@ -351,7 +352,7 @@ func TestManagedReceiptRequiresAnOriginalValidatedReply(t *testing.T) {
 			if found != test.found || (err != nil) != test.failed {
 				t.Fatalf("receipt evidence: found=%t result=%s error=%v", found, output, err)
 			}
-			if _, refused := errors.AsType[*Refusal](err); refused != test.refused {
+			if _, refused := errors.AsType[*framecall.Refusal](err); refused != test.refused {
 				t.Fatalf("receipt refusal provenance changed: %v", err)
 			}
 			if found && err == nil && output.String() != `"accepted"` {

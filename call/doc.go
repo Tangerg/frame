@@ -1,3 +1,4 @@
-// Package call defines calling-owner evidence shared by protocol projections and
-// execution adapters. Evidence grants no authority and settles no business result.
+// Package call defines calling-owner evidence and refusal values shared by
+// protocol projections and execution adapters. Values grant no authority and
+// settle no business result.
 package call

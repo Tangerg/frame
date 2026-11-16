@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	framecall "github.com/Tangerg/frame/call"
 	"runtime"
 	"strings"
 	"sync"
@@ -122,7 +123,7 @@ func TestManagedConsumerPanicRetainsItsLocalCauseWithoutExposingIt(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, failure := range []error{errors.New("private consumer state"), &Refusal{Code: "private", Message: "private refusal details"}} {
+	for _, failure := range []error{errors.New("private consumer state"), &framecall.Refusal{Code: "private", Message: "private refusal details"}} {
 		t.Run(failure.Error(), func(t *testing.T) {
 			call, cancel := context.WithCancelCause(t.Context())
 			defer cancel(nil)

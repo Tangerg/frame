@@ -131,8 +131,9 @@ retirement graph without an absolute timing assertion. Graph bookkeeping is
 linear in resources plus dependency edges; cleanup callbacks still determine
 external release latency.
 
-The optional Flame suite uses the external checkout supplied to
-`scripts/check-flame-interop.mjs`. Real browser-engine checks additionally require
+Application protocol qualification belongs in its consumer; Frame's independent
+module, packed SDK and Go/Node conformance checks require no application checkout.
+Real browser-engine checks additionally require
 `FRAME_CHROME_EXECUTABLE`. The default browser workflow uses real Go/HTTP
 transports with a DOM implementation and does not substitute for browser-engine
 crash or unload evidence.

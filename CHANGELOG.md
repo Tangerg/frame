@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Remove the qualification workflow pinned to Flame's former Qimu integration.
+  Current Flame owns a different business protocol and an application adapter over
+  `process.Protocol`; it is not a peer of the optional Qimu profile. Application
+  protocol qualification stays with that owner. Frame's independent module,
+  packed SDK, generic Go/Node and MCP profile checks remain the framework gates.
+
 - **Breaking:** Calling-owner evidence moves from `process/mcp` to the pure
   `call` package. Replace `mcp.Invocation`, `mcp.Origin`, `mcp.Target` and
   `mcp.ErrInvocationConflict` with `call.Invocation`, `call.Origin`, `call.Target`

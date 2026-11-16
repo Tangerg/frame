@@ -111,14 +111,15 @@ HTTP panic logger or becomes a positive callback acknowledgment.
 
 The Qimu provider address carries installation, release and contribution. Frame also has a unit ID. The adapter rejects ambiguous projections before launch. Catalogs must map each managed dependency to its original Frame slot. Hosts must explicitly provide background and reverse-operation authorization for packages that require them. Agent tools, prompts, filesystem paths, Flame roles, browser UI components and package installation rules remain application-owned.
 
-## Reproduce independent interoperability tests
+## Validate the selected protocol
 
-Use a full Git checkout of `Tangerg/flame` at the revision pinned in [the release workflow](../../.github/workflows/flame-interop.yml). The test script builds the unmodified upstream peers in that checkout and runs Frame from its own module:
+`GOWORK=off go test -race ./process/mcp` checks the declared MCP profiles and their
+transport, callback and outcome boundaries. `make example` also exercises real
+Go/Node streaming and cancellation through Frame's neutral process protocol.
 
-```sh
-node scripts/check-flame-interop.mjs /absolute/path/to/flame
-```
-
-The corpus is derived from the published contribution declarations in that checkout. The hooks test invokes a query, dispatches a command and reads the original receipt. The trajectory renderer reads one host-authorized document range, sends Markdown through an independent stream grant, and returns the content identity of the rendered document. A third peer built against upstream Qimu checks the ordered chunk protocol. Each execution uses the real Host, SQLite store and local runner.
-
-A descriptor check establishes schema admission. Exercising a plugin's external provider, desktop components, scheduler or other product effects requires its host's permissions and integration tests.
+The Qimu managed profile is not Flame's current MCP business protocol. Flame
+owns that protocol and its `process.Protocol` adapter, including qualification of
+its public author SDK and unmodified backends. Keeping those checks with their
+consumer avoids making Frame depend on an application's schema or old checkout.
+Other application-specific protocols use the same extension boundary and keep
+their business schemas, permissions and integration tests with their owners.

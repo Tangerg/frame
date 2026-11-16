@@ -66,11 +66,10 @@ func buildPreview(ctx context.Context, store distribution.Store, contracts Contr
 		return distribution.Release{}, err
 	}
 	manifest := distribution.Manifest{
-		SchemaVersion: distribution.ManifestSchemaVersion,
-		Package:       previewPackageName,
-		Version:       previewPackageVersion,
-		Artifacts:     []distribution.Artifact{{Path: previewModulePath}, {Path: themeResourcePath}},
-		Contracts:     []framehost.ContractRef{contracts.Previews.Ref(), contracts.Theme.Ref()},
+		Package:   previewPackageName,
+		Version:   previewPackageVersion,
+		Artifacts: []distribution.Artifact{{Path: previewModulePath}, {Path: themeResourcePath}},
+		Contracts: []framehost.ContractRef{contracts.Previews.Ref(), contracts.Theme.Ref()},
 		Units: []distribution.Unit{
 			{ID: previewUnitID, Profile: framehost.BrowserJS, Exports: []framehost.ExportDeclaration{{Name: previewExportName, Contract: contracts.Previews.Ref()}}, Module: &distribution.Module{Entry: previewModulePath}},
 			{ID: themeUnitID, Profile: framehost.StaticResource, Exports: []framehost.ExportDeclaration{{Name: themeExportName, Contract: contracts.Theme.Ref()}}, Resources: []string{themeResourcePath}},

@@ -2,7 +2,6 @@ package host
 
 import (
 	"bytes"
-	"encoding/json"
 	"encoding/json/jsontext"
 	"fmt"
 	"reflect"
@@ -218,15 +217,15 @@ type nativeDescriptor struct {
 }
 
 func nativeDeclaration(name, version string, kind ContractKind, valueType, metadataType reflect.Type) (*declaration, error) {
-	descriptor, err := json.Marshal(nativeDescriptor{Name: name, Version: version, Kind: kind, Mode: NativeMode})
+	identity, err := framevalue.EncodeJSON(nativeDescriptor{Name: name, Version: version, Kind: kind, Mode: NativeMode})
 	if err != nil {
 		return nil, err
 	}
-	ref := ContractRef{Name: name, Version: version, Digest: framevalue.Hash(descriptor), Kind: kind, Mode: NativeMode}
+	ref := ContractRef{Name: name, Version: version, Digest: identity.Digest(), Kind: kind, Mode: NativeMode}
 	if err := ref.Validate(); err != nil {
 		return nil, err
 	}
-	return &declaration{contractDefinition: &contractDefinition{ref: ref, descriptor: descriptor}, goTypes: goContractTypes{value: valueType, metadata: metadataType}}, nil
+	return &declaration{contractDefinition: &contractDefinition{ref: ref, descriptor: identity.Bytes()}, goTypes: goContractTypes{value: valueType, metadata: metadataType}}, nil
 }
 
 func NewContract[T any](name, version string) (Contract[T], error) {

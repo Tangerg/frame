@@ -20,8 +20,9 @@ without another `Close` call. Later callers observe that same close result.
 Consumers close their execution owners before the Store. Platforms without the
 supported directory lock fail closed rather than claiming exclusive ownership.
 
-A release is a single-disk ZIP32 archive with absolute directory offsets and no archive comment. Its physical central directory is bounded before entries are allocated. It contains a schema-version 1 `manifest.json`, `plugin.lock.json` and
-exactly its listed artifacts. `Build` computes artifact sizes and SHA-256 digests
+A release is a single-disk ZIP32 archive with absolute directory offsets and no archive comment. Its physical central directory is bounded before entries are allocated. It contains a `manifest.json`, `plugin.lock.json` and
+exactly its listed artifacts. Both documents are decoded strictly: an unknown,
+duplicate or missing member refuses the release, so no schema version is kept. `Build` computes artifact sizes and SHA-256 digests
 from the declared source files and emits deterministic archive bytes. It does not
 invoke a compiler or include unlisted source files. The Release digest covers the
 canonical manifest and artifact inventory, excluding the digest field itself.

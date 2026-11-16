@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"maps"
 
 	"github.com/Tangerg/frame"
 	framevalue "github.com/Tangerg/frame/value"
@@ -88,94 +89,158 @@ func (h *hostState) acceptedBinding(recordID string, grant ScopeGrant) activatio
 	}
 }
 
+// Only this preparation dispatches its newly admitted instances. Reused
+// instances keep their original workers, and handoff cannot select successors.
+type bindingPreparation struct {
+	host      *hostState
+	realm     RealmID
+	binding   BindingSnapshot
+	instances map[UnitRef]*unitInstance
+	created   []*unitInstance
+}
+
 func (h *hostState) activate(ctx context.Context, realm RealmID, grant ScopeGrant, bind activationBinding) (*capturedPlan, error) {
-	var binding BindingSnapshot
-	var created []*unitInstance
-	var planned map[UnitRef]*unitInstance
+	var preparation *bindingPreparation
 	err := h.admission.Admit(ctx, func(admitted context.Context) error {
-		if grant.issued() {
-			if err := h.admission.ValidateScope(grant); err != nil {
-				return err
-			}
-		}
-		var reads []bindingRead
 		var err error
-		binding, reads, err = bind(admitted)
-		if err != nil {
-			return err
-		}
-		if grant.issued() {
-			if err := h.admission.ValidateScope(grant); err != nil {
-				return err
-			}
-		}
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		if h.lifetime.IsClosing() {
-			return frame.ErrClosed
-		}
-		planned = make(map[UnitRef]*unitInstance, len(binding.Units))
-		for _, bound := range binding.Units {
-			instance, isNew, err := h.planInstanceLocked(binding, bound, realm, reads, planned, grant)
-			if err != nil {
-				return err
-			}
-			planned[bound.Source] = instance
-			if isNew {
-				created = append(created, instance)
-			}
-		}
-		return nil
+		preparation, err = h.planPreparation(admitted, realm, grant, bind)
+		return err
 	})
 	if err != nil {
-		h.abandon(created, err)
 		return nil, err
 	}
-	for _, instance := range created {
+	return preparation.prepare(ctx)
+}
+
+func (h *hostState) planPreparation(ctx context.Context, realm RealmID, grant ScopeGrant, bind activationBinding) (prepared *bindingPreparation, err error) {
+	if err := h.admission.CheckAdmitted(ctx); err != nil {
+		return nil, err
+	}
+	if grant.Valid() {
+		if err := h.admission.ValidateScope(grant); err != nil {
+			return nil, err
+		}
+	}
+	binding, reads, err := bind(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if grant.Valid() {
+		if err := h.admission.ValidateScope(grant); err != nil {
+			return nil, err
+		}
+	}
+	preparation := &bindingPreparation{host: h, realm: realm, binding: binding, instances: make(map[UnitRef]*unitInstance, len(binding.Units))}
+	defer func() {
+		if prepared == nil {
+			if err == nil {
+				err = fmt.Errorf("%w: binding preparation planning interrupted", ErrUnavailable)
+			}
+			preparation.abandon(err)
+		}
+	}()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.lifetime.IsClosing() {
+		return nil, frame.ErrClosed
+	}
+	for _, bound := range binding.Units {
+		instance, isNew, err := h.planInstanceLocked(binding, bound, realm, reads, preparation.instances, grant)
+		if err != nil {
+			return nil, err
+		}
+		preparation.instances[bound.Source] = instance
+		if isNew {
+			preparation.created = append(preparation.created, instance)
+		}
+	}
+	return preparation, nil
+}
+
+func (p *bindingPreparation) prepare(ctx context.Context) (*capturedPlan, error) {
+	for _, instance := range p.created {
 		go instance.prepare()
 	}
-	if err := h.awaitReady(ctx, binding, planned); err != nil {
-		return nil, err
+	h := p.host
+	for _, bound := range p.binding.Units {
+		instance := p.instances[bound.Source]
+		select {
+		case <-instance.preparation.done:
+		case <-ctx.Done():
+			return nil, frame.ContextError(ctx)
+		}
+		h.mu.Lock()
+		err, current := instance.preparation.failure, instance.isCurrentLocked()
+		h.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		if !current {
+			return nil, ErrStaleBinding
+		}
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.capturePreparedLocked(binding, realm, planned)
+	return p.captureLocked()
+}
+
+func (p *bindingPreparation) claimStart(root UnitRef, grant ScopeGrant) (RunningUnit, error) {
+	h := p.host
+	h.mu.Lock()
+	instance := p.instances[root]
+	var running RunningUnit
+	var err error
+	if instance == nil {
+		err = frame.ErrInvalid
+	} else {
+		running, err = instance.claimStartLocked(grant)
+	}
+	h.mu.Unlock()
+	if err != nil {
+		p.abandon(err)
+	}
+	return running, err
+}
+
+func (p *bindingPreparation) checkUseOwner(owner frame.Lifetime) error {
+	h := p.host
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.validateUseOwnerLocked(owner, maps.Values(p.instances))
 }
 
 // Preparation hands off its original instances. Looking them up again by unit
 // would allow a successor with the same binding to replace that preparation.
-func (h *hostState) capturePreparedLocked(binding BindingSnapshot, realm RealmID, instances map[UnitRef]*unitInstance) (*capturedPlan, error) {
-	for _, bound := range binding.Units {
-		if err := instances[bound.Source].validateServingLocked(); err != nil {
+func (p *bindingPreparation) captureLocked() (*capturedPlan, error) {
+	for _, bound := range p.binding.Units {
+		if err := p.instances[bound.Source].validateServingLocked(); err != nil {
 			return nil, err
 		}
 	}
-	plan := &capturedPlan{planHeader: planHeader{owner: h.identity, realm: realm, binding: binding.Clone()}}
-	for _, source := range binding.Roots {
-		instance := instances[source.Unit()]
+	plan := &capturedPlan{planHeader: planHeader{owner: p.host.identity, realm: p.realm, binding: p.binding.Clone()}}
+	for _, source := range p.binding.Roots {
+		instance := p.instances[source.Unit()]
 		export, err := instance.exports.bound(source)
 		if err != nil {
 			return nil, err
 		}
-		plan.members = append(plan.members, export.snapshot())
+		plan.includeMember(export.snapshotIn(p.realm))
 	}
-	for _, source := range binding.UnitRoots {
-		instance := instances[source]
-		plan.unitMembers = append(plan.unitMembers, unitMember{source: source, instanceID: instance.id})
+	for _, source := range p.binding.UnitRoots {
+		instance := p.instances[source]
+		plan.includeRoot(instance.id, source)
 	}
 	return plan, nil
 }
 
-func (h *hostState) abandon(created []*unitInstance, cause error) {
+func (p *bindingPreparation) abandon(cause error) {
+	h := p.host
 	h.mu.Lock()
-	for _, instance := range created {
+	for _, instance := range p.created {
 		instance.preparation.complete(cause)
-		instance.withdrawLocked()
+		instance.beginRetireLocked()
 	}
 	h.mu.Unlock()
-	for _, instance := range created {
-		instance.beginRetire()
-	}
 }
 
 func (h *hostState) planInstanceLocked(binding BindingSnapshot, bound UnitBinding, realm RealmID, reads []bindingRead, planned map[UnitRef]*unitInstance, grant ScopeGrant) (*unitInstance, bool, error) {
@@ -196,11 +261,8 @@ func (h *hostState) planInstanceLocked(binding BindingSnapshot, bound UnitBindin
 	}
 	key := instanceKey{source: bound.Source, realm: realm}
 	if current := h.instances[key]; current != nil {
-		if current.startGrant.issued() && current.startGrant != grant {
-			return nil, false, ErrFenced
-		}
-		if current.identity != identity {
-			return nil, false, fmt.Errorf("%w: unit already has another setup binding", ErrInUse)
+		if err := current.validateReuseLocked(identity, planned, grant); err != nil {
+			return nil, false, err
 		}
 		return current, false, nil
 	}
@@ -209,6 +271,11 @@ func (h *hostState) planInstanceLocked(binding BindingSnapshot, bound UnitBindin
 	}
 	h.nextGeneration++
 	lifetime := h.newLifetime(context.WithoutCancel(h.lifetime.Context()))
+	preparation, err := newUnitPreparation(lifetime, bound.Source, reads)
+	if err != nil {
+		lifetime.BeginClose(err)
+		return nil, false, err
+	}
 	instance := &unitInstance{
 		host:          h,
 		id:            rand.Text(),
@@ -223,8 +290,10 @@ func (h *hostState) planInstanceLocked(binding BindingSnapshot, bound UnitBindin
 		configuration: bytes.Clone(installation.record.Configuration),
 		setup:         unit.Setup,
 		lifetime:      lifetime,
-		preparation:   newUnitPreparation(bound.Source, reads),
-		retirement:    newInstanceRetirement(lifetime),
+		preparation:   preparation,
+		closeReady:    make(chan struct{}),
+		retired:       make(chan struct{}),
+		closeCauses:   lifetime.ObserveCloseCauses(),
 	}
 	instance.exports = newUnitExports(&h.catalog, instance, h.limits.MaxPublicationOperations)
 	providers, err := instance.holdProvidersLocked(planned)
@@ -232,7 +301,9 @@ func (h *hostState) planInstanceLocked(binding BindingSnapshot, bound UnitBindin
 		err = h.registerInstanceLocked(instance, providers)
 	}
 	if err != nil {
+		instance.preparation.complete(err)
 		instance.releaseProvidersLocked()
+		instance.lifetime.BeginClose(err)
 		return nil, false, err
 	}
 	return instance, true, nil
@@ -255,7 +326,7 @@ func (h *hostState) overlappingInstanceLocked(key instanceKey) bool {
 func declaredExports(source UnitRef, unit UnitDeclaration) []ExportRef {
 	exports := make([]ExportRef, 0, len(unit.Exports))
 	for _, export := range unit.Exports {
-		exports = append(exports, ExportRef{InstallationID: source.InstallationID, Release: source.Release, UnitID: source.UnitID, Export: export.Name, Contract: export.Contract})
+		exports = append(exports, source.Export(export.Name, export.Contract))
 	}
 	return exports
 }
@@ -270,25 +341,4 @@ func setupBinding(graph BindingSnapshot, exports []ExportRef, unit UnitRef) (Bin
 	binding.Selection = framevalue.Digest{}
 	identity, err := binding.Identity()
 	return binding, identity, err
-}
-
-func (h *hostState) awaitReady(ctx context.Context, binding BindingSnapshot, instances map[UnitRef]*unitInstance) error {
-	for _, bound := range binding.Units {
-		instance := instances[bound.Source]
-		select {
-		case <-instance.preparation.done:
-		case <-ctx.Done():
-			return frame.ContextError(ctx)
-		}
-		h.mu.Lock()
-		err, current := instance.preparation.failure, instance.isCurrentLocked()
-		h.mu.Unlock()
-		if err != nil {
-			return err
-		}
-		if !current {
-			return ErrStaleBinding
-		}
-	}
-	return nil
 }

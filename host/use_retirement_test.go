@@ -5,19 +5,21 @@ import (
 	"errors"
 	"sync"
 	"testing"
+
+	"github.com/Tangerg/frame"
 )
 
-type settlementProgressContext struct {
+type retirementProgressContext struct {
 	context.Context
 	advance func()
 }
 
-func (ctx settlementProgressContext) Done() <-chan struct{} {
+func (ctx retirementProgressContext) Done() <-chan struct{} {
 	ctx.advance()
 	return ctx.Context.Done()
 }
 
-func TestSettlementWaitReadsConclusionBeforeObserverCancellation(t *testing.T) {
+func TestRetirementWaitReadsConclusionBeforeObserverCancellation(t *testing.T) {
 	first, second := errors.New("first settlement failure"), errors.New("second settlement failure")
 	for _, retryFails := range []bool{false, true} {
 		name := "confirmed completion"
@@ -26,19 +28,19 @@ func TestSettlementWaitReadsConclusionBeforeObserverCancellation(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			for range 128 {
-				settlement := newSettlement()
-				settlement.fail(first)
-				observed, _ := settlement.requestRetry()
+				retirement := newUseRetirement(frame.NewLifetime(t.Context()))
+				retirement.fail(first)
+				observed, _ := retirement.requestRetry()
 				parent, cancel := context.WithCancel(t.Context())
 				cancel()
-				ctx := settlementProgressContext{Context: parent, advance: sync.OnceFunc(func() {
+				ctx := retirementProgressContext{Context: parent, advance: sync.OnceFunc(func() {
 					if retryFails {
-						settlement.fail(second)
+						retirement.fail(second)
 					} else {
-						settlement.complete()
+						retirement.complete()
 					}
 				})}
-				err := settlement.await(ctx, observed)
+				err := retirement.await(ctx, observed)
 				if !retryFails && err != nil || retryFails && !errors.Is(err, second) {
 					t.Fatalf("observer cancellation replaced the original conclusion: %v", err)
 				}

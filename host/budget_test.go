@@ -184,7 +184,7 @@ func TestHostUseCapacityIncludesUnconfirmedRetirement(t *testing.T) {
 	if err := resource.ConfirmReleased(nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := use.BeginClose(frame.ErrClosed).WaitReleased(ctx); err != nil {
+	if _, err := use.Lifetime().BeginClose(frame.ErrClosed).WaitReleased(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := use.Close(ctx); err != nil {
@@ -225,7 +225,7 @@ func TestWatchCapacityRefusesNewStreamsWithoutEvictingOriginal(t *testing.T) {
 	}
 	select {
 	case change, open := <-original.Changes():
-		if !open || change.Err != nil || change.Contract != point.Ref() || change.Revision == 0 {
+		if !open || change.Contract != point.Ref() || change.Revision == 0 {
 			t.Fatalf("capacity refusal evicted the original watch: %+v, open=%v", change, open)
 		}
 	case <-ctx.Done():

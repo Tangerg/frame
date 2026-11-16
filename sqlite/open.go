@@ -85,26 +85,22 @@ func Open(ctx context.Context, config Config) (result Store, err error) {
 }
 
 func (s *storeAuthority) resolveLimits() error {
-	if s.maxRequestBytes == 0 {
-		s.maxRequestBytes = defaultMaxRequestBytes
+	var err error
+	if s.maxRequestBytes, err = frame.ResolveLimit("request bytes", s.maxRequestBytes, defaultMaxRequestBytes); err != nil {
+		return err
 	}
-	if s.maxSubmissions == 0 {
-		s.maxSubmissions = defaultMaxSubmissions
+	if s.maxSubmissions, err = frame.ResolveLimit("submissions per owner", s.maxSubmissions, defaultMaxSubmissions); err != nil {
+		return err
 	}
-	if s.maxRealmHistoryBytes == 0 {
-		s.maxRealmHistoryBytes = defaultMaxRealmHistoryBytes
-	}
-	if s.maxRequestBytes < 1 || s.maxSubmissions < 1 || s.maxRealmHistoryBytes < 1 {
-		return errors.New("sqlite: request, submission and realm history limits must be positive")
-	}
-	return nil
+	s.maxRealmHistoryBytes, err = frame.ResolveLimit("realm history bytes", s.maxRealmHistoryBytes, defaultMaxRealmHistoryBytes)
+	return err
 }
 
 // SQL may contain any comment or statement separator. Structured encoding
 // preserves the owner and statement boundaries that grant write authority.
 type ownerSchemaIdentity struct {
-	ID         string
-	Statements []string
+	ID         string   `json:"id"`
+	Statements []string `json:"statements"`
 }
 
 func (s *storeAuthority) registerOwners(owners []OwnerSchema) (framevalue.Digest, error) {

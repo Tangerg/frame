@@ -12,7 +12,7 @@ import (
 )
 
 type reservedUseProtection struct {
-	approve      func() error
+	approve      func() (framehost.CommitState, error)
 	approval     framehost.UseApproval
 	approvals    atomic.Int64
 	releaseCalls atomic.Int64
@@ -21,13 +21,13 @@ type reservedUseProtection struct {
 	releases     chan recordedUseRelease
 }
 
-func (p *reservedUseProtection) ApproveUse(_ context.Context, approval framehost.UseApproval) error {
+func (p *reservedUseProtection) ApproveUse(_ context.Context, approval framehost.UseApproval) (framehost.CommitState, error) {
 	p.approvals.Add(1)
 	p.approval = approval
 	if p.approve != nil {
 		return p.approve()
 	}
-	return nil
+	return framehost.Committed, nil
 }
 
 func (p *reservedUseProtection) SettleUse(_ context.Context, id string, proof frame.ReleaseProof) error {
@@ -61,13 +61,13 @@ func TestUnpublishedUseKeepsItsOriginalSettlement(t *testing.T) {
 				}
 				failure := errors.New("temporary use release failure")
 				protection := &reservedUseProtection{failures: 2, failure: failure, releases: make(chan recordedUseRelease, 3)}
-				protection.approve = func() error {
+				protection.approve = func() (framehost.CommitState, error) {
 					if scenario.closeHost {
 						lifetime.BeginClose(frame.ErrClosed)
 					} else {
 						owner.BeginClose(frame.ErrClosed)
 					}
-					return nil
+					return framehost.Committed, nil
 				}
 				host, err := framehost.New(t.Context(), framehost.Config{Lifetime: lifetime, Authority: protectionAuthority(protection), Limits: framehost.Limits{MaxUses: 1}})
 				if err != nil {

@@ -15,6 +15,14 @@ Each creation is protected by a durable attempt before runner dispatch. The
 actual process, handshake, setup and exports belong to the instance Lifetime.
 Failed setup, stale publication and cancellation close that same resource. A
 timeout or lost runner remains unconfirmed and retains its dependency closure.
+The instance reserves its exit resource before recording the attempt. Refused
+resource admission creates no durable history and needs no compensating release.
+`RecordAttempt` reports its original transaction's conclusion. A definite refusal
+retires that same local resource without durable settlement. A failed or
+interrupted acknowledgement retains the original execution in the driver's live
+set; its close settles the exact attempt with its non-dispatch proof. If settlement
+fails, that resource and content lease remain retained for `Reconcile`, without repeating
+approval, launch or completed protocol cleanup.
 Before recording that attempt, the driver validates and freezes the original
 launch request. Its exit evidence consists of bounded names, so every proof it
 can produce is valid, storable SQLite evidence.

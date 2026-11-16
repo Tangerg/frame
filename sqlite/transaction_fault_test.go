@@ -213,7 +213,7 @@ func TestCommitResponseLossSettlesOriginalDurableConclusion(t *testing.T) {
 		mutations++
 		return insertFaultDocument(ctx, tx, "committed")
 	}, nil)
-	if err != nil || settlement.State != framehost.CommitSucceeded || !settlement.Synchronized || !lost.Load() || disposed.Load() != 1 {
+	if err != nil || settlement.State != framehost.Committed || !settlement.Synchronized || !lost.Load() || disposed.Load() != 1 {
 		t.Fatalf("original commit reconciliation: %+v error=%v lost=%t disposed=%d", settlement, err, lost.Load(), disposed.Load())
 	}
 	if err := admission.Admit(t.Context(), func(ctx context.Context) error { return admission.CheckUnused(ctx, "converter") }); !errors.Is(err, framehost.ErrInUse) {
@@ -304,7 +304,7 @@ func TestInFlightCommitRetainsAdmissionThroughCallerCancellation(t *testing.T) {
 			}
 			unblock()
 			value := <-completed
-			if value.err != nil || value.settlement.State != framehost.CommitSucceeded || !value.settlement.Synchronized {
+			if value.err != nil || value.settlement.State != framehost.Committed || !value.settlement.Synchronized {
 				t.Fatalf("known commit lost to cancellation: %+v error=%v", value.settlement, value.err)
 			}
 			if err := admission.Admit(t.Context(), func(ctx context.Context) error { return admission.CheckUnused(ctx, "converter") }); !errors.Is(err, framehost.ErrInUse) {
@@ -360,7 +360,7 @@ func TestFailedRollbackJoinsOriginalConnectionDisposal(t *testing.T) {
 	}
 	unblock()
 	value := <-completed
-	if value.settlement.State != framehost.CommitRejected || !value.settlement.Synchronized || !errors.Is(value.err, mutationFailure) || disposed.Load() != 1 {
+	if value.settlement.State != framehost.NotCommitted || !value.settlement.Synchronized || !errors.Is(value.err, mutationFailure) || disposed.Load() != 1 {
 		t.Fatalf("original disposal did not settle rollback: %+v error=%v disposed=%d", value.settlement, value.err, disposed.Load())
 	}
 	if err := admission.Under(t.Context(), func() error { return nil }); err != nil {
@@ -475,7 +475,7 @@ func TestUnconfirmedCloseAdvancesOnlyTheOriginalConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	settlement, err = original.Settlement(t.Context(), id, request)
-	if err != nil || settlement.State != framehost.CommitRejected {
+	if err != nil || settlement.State != framehost.NotCommitted {
 		t.Fatalf("original release did not settle its exact uncommitted intent: %+v error=%v", settlement, err)
 	}
 }
@@ -526,7 +526,7 @@ func TestStoreCloseJoinsAnInFlightOriginalCommit(t *testing.T) {
 	}
 	unblock()
 	value := <-committed
-	if value.settlement.State != framehost.CommitSucceeded || value.err != nil && !errors.Is(value.err, frame.ErrClosed) {
+	if value.settlement.State != framehost.Committed || value.err != nil && !errors.Is(value.err, frame.ErrClosed) {
 		t.Fatalf("original commit result during shutdown: %+v error=%v", value.settlement, value.err)
 	}
 	if err := <-closed; err != nil {
@@ -539,7 +539,7 @@ func TestStoreCloseJoinsAnInFlightOriginalCommit(t *testing.T) {
 	defer reopened.Close()
 	original, _ := reopened.Owner("documents")
 	settlement, err := original.Settlement(t.Context(), id, request)
-	if err != nil || settlement.State != framehost.CommitSucceeded {
+	if err != nil || settlement.State != framehost.Committed {
 		t.Fatalf("shutdown changed the original durable conclusion: %+v error=%v", settlement, err)
 	}
 	assertFaultDocumentCount(t, reopened, 1)

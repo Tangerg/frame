@@ -3,12 +3,10 @@
 package runner
 
 import (
-	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/json"
-	jsonv2 "encoding/json/v2"
+	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -29,11 +27,12 @@ import (
 )
 
 var (
-	ErrUnknown  = errors.New("runner: original process ownership is unknown")
-	ErrConflict = errors.New("runner: attempt identity conflict")
-	ErrFenced   = errors.New("runner: creation domain is fenced")
-	ErrAttached = errors.New("runner: attempt already attached")
-	ErrNotFound = errors.New("runner: attempt does not exist")
+	ErrUnknown     = errors.New("runner: original process ownership is unknown")
+	ErrConflict    = errors.New("runner: attempt identity conflict")
+	ErrFenced      = errors.New("runner: creation domain is fenced")
+	ErrAttached    = errors.New("runner: attempt already attached")
+	ErrNotFound    = errors.New("runner: attempt does not exist")
+	ErrUnavailable = errors.New("runner: original process is unavailable")
 )
 
 type State string
@@ -69,36 +68,39 @@ func (result LaunchResult) NotDispatched(request LaunchRequest) bool {
 	if result.Observation != (Observation{}) || result.undispatchedRequest == nil {
 		return false
 	}
-	data, err := jsonv2.Marshal(request)
-	return err == nil && framevalue.Hash(data) == *result.undispatchedRequest
+	digest, err := invocationDigest(request)
+	return err == nil && digest == *result.undispatchedRequest
 }
 
 func notDispatched(request LaunchRequest) LaunchResult {
-	data, err := jsonv2.Marshal(request)
+	digest, err := invocationDigest(request)
 	if err != nil {
 		return LaunchResult{}
 	}
-	digest := framevalue.Hash(data)
 	return LaunchResult{undispatchedRequest: &digest}
 }
 
-type Observation struct {
-	AttemptID string `json:"attemptId"`
-	Epoch     uint64 `json:"epoch"`
-	RunnerID  string `json:"runnerId"`
-	State     State  `json:"state"`
-	PID       int    `json:"pid,omitempty"`
-	ExitCode  *int   `json:"exitCode,omitempty"`
-	ProofID   string `json:"proofId,omitempty"`
-	Reason    string `json:"reason,omitempty"`
+// invocationDigest binds a nondispatch result to this exact in-memory request,
+// including its environment. It is never persisted; requestIdentity is.
+func invocationDigest(request LaunchRequest) (framevalue.Digest, error) {
+	data, err := json.Marshal(request)
+	if err != nil {
+		return framevalue.Digest{}, err
+	}
+	return framevalue.Hash(data), nil
 }
 
-func (o Observation) Reference() AttemptRef {
-	return AttemptRef{AttemptID: o.AttemptID, RunnerID: o.RunnerID, Epoch: o.Epoch}
+type Observation struct {
+	AttemptRef
+	State    State  `json:"state"`
+	PID      int    `json:"pid,omitzero"`
+	ExitCode *int   `json:"exitCode,omitempty"`
+	ProofID  string `json:"proofId,omitempty"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 func (o Observation) validate() error {
-	if !o.Reference().valid() || o.PID < 0 {
+	if o.AttemptRef.Validate() != nil || o.PID < 0 {
 		return frame.ErrInvalid
 	}
 	switch o.State {
@@ -252,12 +254,22 @@ func (c Config) resolve() (Config, error) {
 	if c.Directory == "" {
 		return c, errors.New("runner: state directory is required")
 	}
-	c.MaxAttempts = cmp.Or(c.MaxAttempts, defaultMaxAttempts)
-	c.MaxExecutableBytes = cmp.Or(c.MaxExecutableBytes, defaultMaxExecutableBytes)
-	c.MaxControlConnections = cmp.Or(c.MaxControlConnections, defaultControlConnections)
-	c.ControlTimeout = cmp.Or(c.ControlTimeout, defaultControlTimeout)
-	if c.MaxAttempts < 1 || c.MaxExecutableBytes < 1 || c.MaxExecutableBytes == math.MaxInt64 || c.MaxControlConnections < 1 || c.ControlTimeout < 0 {
-		return c, frame.ErrCapacity
+	var err error
+	if c.MaxAttempts, err = frame.ResolveLimit("runner attempts", c.MaxAttempts, defaultMaxAttempts); err != nil {
+		return c, err
+	}
+	if c.MaxControlConnections, err = frame.ResolveLimit("runner control connections", c.MaxControlConnections, defaultControlConnections); err != nil {
+		return c, err
+	}
+	if c.MaxExecutableBytes, err = frame.ResolveLimit("runner executable bytes", c.MaxExecutableBytes, defaultMaxExecutableBytes); err != nil {
+		return c, err
+	}
+	// Snapshotting reads one byte past the limit to detect an oversized executable.
+	if c.MaxExecutableBytes == math.MaxInt64 {
+		return c, fmt.Errorf("%w: runner executable bytes limit", frame.ErrInvalid)
+	}
+	if c.ControlTimeout, err = frame.ResolveLimit("runner control timeout", c.ControlTimeout, defaultControlTimeout); err != nil {
+		return c, err
 	}
 	directory, err := filepath.Abs(c.Directory)
 	if err != nil {
@@ -311,9 +323,12 @@ func loadJournal(directory *os.Root, maxAttempts int) (journal, error) {
 // Existing processes keep their original close and wait path. It never kills a
 // PID recovered from disk, nor permits a missing old attempt to be recreated.
 func (s *Server) Fence(_ context.Context, epoch uint64) error {
+	if err := (fenceRequest{Epoch: epoch}).Validate(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed || epoch < s.journal.Epoch || epoch == 0 {
+	if s.closed || epoch < s.journal.Epoch {
 		return ErrFenced
 	}
 	if err := s.verifyDirectory(); err != nil {
@@ -359,7 +374,7 @@ func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ LaunchRes
 	if err := frame.ContextError(ctx); err != nil {
 		return notDispatched(request), err
 	}
-	observation := Observation{AttemptID: request.AttemptID, Epoch: request.Epoch, RunnerID: s.id, State: Starting}
+	observation := Observation{AttemptRef: request.AttemptRef, State: Starting}
 	full := len(s.journal.Attempts) >= s.config.MaxAttempts
 	s.journal.Attempts[request.AttemptID] = storedAttempt{Observation: observation, RequestDigest: digest}
 	if full {
@@ -454,6 +469,9 @@ func (s *Server) replayLaunch(request LaunchRequest, digest framevalue.Digest) (
 }
 
 func (s *Server) Inspect(_ context.Context, id string) (Observation, error) {
+	if err := (inspectRequest{AttemptID: id}).Validate(); err != nil {
+		return Observation{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.inspect(id)
@@ -474,6 +492,9 @@ func (s *Server) inspect(id string) (Observation, error) {
 }
 
 func (s *Server) CloseAttempt(ctx context.Context, ref AttemptRef) (Observation, error) {
+	if err := ref.Validate(); err != nil {
+		return Observation{}, err
+	}
 	if framevalue.IsNil(ctx) {
 		return Observation{}, frame.ErrInvalid
 	}
@@ -483,7 +504,7 @@ func (s *Server) CloseAttempt(ctx context.Context, ref AttemptRef) (Observation,
 		s.mu.Unlock()
 		return observation, err
 	}
-	if observation.Reference() != ref {
+	if observation.AttemptRef != ref {
 		s.mu.Unlock()
 		return Observation{}, ErrFenced
 	}
@@ -726,7 +747,7 @@ func (s *Server) verifyDirectory() error {
 }
 
 func (request LaunchRequest) Validate() error {
-	if !request.AttemptRef.valid() || !filepath.IsAbs(request.Command) || !validProgramText(request.Command) || request.ExecutableDigest.Validate() != nil || request.Configuration.Validate() != nil {
+	if request.AttemptRef.Validate() != nil || !filepath.IsAbs(request.Command) || !validProgramText(request.Command) || request.ExecutableDigest.Validate() != nil || request.Configuration.Validate() != nil {
 		return fmt.Errorf("%w: runner requires exact launch identity", frame.ErrInvalid)
 	}
 	if request.Directory != "" && (!filepath.IsAbs(request.Directory) || !validProgramText(request.Directory)) {

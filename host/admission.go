@@ -351,19 +351,6 @@ func (a *admissionState) untrusted(failure error) error {
 	return errors.Join(ErrRecoveryRequired, failure)
 }
 
-// Held projects the distinct dependencies from the same original owner reads.
-func (a *admissionState) Held(ctx context.Context, id InstallationID) ([]Dependency, error) {
-	retained, err := a.Retained(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	values := make([]Dependency, 0, len(retained))
-	for _, value := range retained {
-		values = append(values, value.Dependency)
-	}
-	return CompactDependencies(values), nil
-}
-
 // Cancellation can accompany a real storage failure. Only an error composed
 // entirely of this request's cancellation is safe to leave outside recovery.
 func onlyRequestCancellation(ctx context.Context, err error) bool {
@@ -393,11 +380,11 @@ func (a *admissionState) CheckUnused(ctx context.Context, id InstallationID) err
 	a.mu.Lock()
 	a.ownersSealed = true
 	a.mu.Unlock()
-	values, err := a.Held(ctx, id)
+	retained, err := a.Retained(ctx, id)
 	if err != nil {
 		return err
 	}
-	if len(values) != 0 {
+	if len(retained) != 0 {
 		return fmt.Errorf("%w: %s", ErrInUse, id)
 	}
 	return nil
@@ -465,25 +452,26 @@ type ScopeObservation struct {
 type ScopeGrant struct{ *scopeGeneration }
 
 func (g ScopeGrant) ID() ScopeID {
-	if !g.issued() {
+	if !g.Valid() {
 		return ""
 	}
 	return g.key.id
 }
 
 func (g ScopeGrant) Generation() uint64 {
-	if !g.issued() {
+	if !g.Valid() {
 		return 0
 	}
 	return g.number
 }
 
-func (g ScopeGrant) issued() bool { return g.scopeGeneration != nil }
+// Valid reports whether the grant names an issued generation; the zero grant does not.
+func (g ScopeGrant) Valid() bool { return g.scopeGeneration != nil }
 
 // WireID identifies the scope independently of its generation. A tenant's
 // chosen name cannot collide with the installation namespace on a remote Realm.
 func (g ScopeGrant) WireID() ScopeID {
-	if !g.issued() {
+	if !g.Valid() {
 		return ""
 	}
 	return ScopeID(g.key.namespace.wirePrefix() + framevalue.Hash([]byte(g.key.id)).String())
@@ -586,7 +574,7 @@ func (a *admissionState) Scope(id ScopeID) (ScopeObservation, bool) {
 }
 
 func (a *admissionState) ValidateScope(grant ScopeGrant) error {
-	if !grant.issued() {
+	if !grant.Valid() {
 		return ErrFenced
 	}
 	a.mu.Lock()

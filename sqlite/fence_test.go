@@ -17,7 +17,7 @@ func TestRefusedProtectionWritesDoNotFenceTheStore(t *testing.T) {
 	ref := framehost.UnitRef{InstallationID: "one", Release: value.Hash([]byte("release")), UnitID: "u"}
 	binding := framehost.BindingSnapshot{Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{ref}, Units: []framehost.UnitBinding{{Source: ref, Configuration: value.Hash(nil)}}}
 	orphan := framehost.UseApproval{ID: "orphan", ParentID: "missing", ExecutionID: "execution", Realm: "realm", Scope: "scope", ScopeGeneration: 1, Epoch: store.Epoch(), Binding: binding}
-	err := a.Admit(ctx, func(ctx context.Context) error { return store.ApproveUse(ctx, orphan) })
+	err := a.Admit(ctx, func(ctx context.Context) error { _, err := store.ApproveUse(ctx, orphan); return err })
 	if !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("use without its parent: %v", err)
 	}

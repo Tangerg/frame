@@ -2,7 +2,9 @@ import type { Readable, Writable } from "node:stream";
 import { cloneJSON, parseJSON, stringifyJSON } from "../json.js";
 import wire from "./wire.json" with { type: "json" };
 import { admitShape } from "./contract.js";
-import shapes from "./shapes.generated.json" with { type: "json" };
+import profile from "./wire-profile.generated.json" with { type: "json" };
+
+const { shapes } = profile;
 
 type FailureOptions = ErrorOptions & { outcome?: "unknown" };
 

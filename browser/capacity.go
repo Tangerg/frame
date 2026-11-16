@@ -90,10 +90,10 @@ func (b *Bridge) checkRouteCapacity(grant UseGrant, source, receiver LocalExport
 // admitted execution changes from a plan to a fence before the next poll.
 // Reservations also cover the complete reconnect request and its response.
 func (b *Bridge) reserveProjectionLocked(session *realmSession, plan LocalPlan) (int64, error) {
-	if session.cleanupOnly || b.sessions.get(RealmID(session.realm)) != session {
+	if session.sealed || b.sessions.get(RealmID(session.realm)) != session {
 		return 0, framehost.ErrFenced
 	}
-	base := Poll{Authority: b.authority, Realm: session.realm, Plans: []LocalPlan{}, Fences: []Fence{}}
+	base := Poll{Authority: b.authority, Realm: session.realm, Plans: []LocalPlan{}, Fences: []ScopeRef{}}
 	pollBytes, err := encodedSize(base)
 	if err != nil {
 		return 0, err
@@ -108,7 +108,7 @@ func (b *Bridge) reserveProjectionLocked(session *realmSession, plan LocalPlan) 
 	}
 	headerBytes := max(pollBytes, reconnectBytes, responseBytes)
 	var memberBytes int64
-	for _, member := range []any{plan, Fence{ScopeID: plan.ScopeID, ScopeGeneration: plan.ScopeGeneration}, plan.Execution, RevalidatedExecution{Execution: plan.Execution, ScopeID: plan.ScopeID, ScopeGeneration: plan.ScopeGeneration}} {
+	for _, member := range []any{plan, plan.ScopeRef, plan.Execution, RevalidatedExecution{Execution: plan.Execution, ScopeRef: plan.ScopeRef}} {
 		size, err := encodedSize(member)
 		if err != nil {
 			return 0, err
@@ -138,7 +138,7 @@ func (b *Bridge) removeExecutionLocked(entry *browserExecution) {
 // original scope, so application failures cannot make cleanup untransportable.
 func (b *Bridge) checkExitCapacity(plan LocalPlan, kind CloseScopeKind, id string, instances []string) error {
 	identity := maximumEncodedName()
-	proof := CloseProof{CloseID: identity, ProofID: identity, Authority: plan.Authority, Realm: plan.Realm, Execution: plan.Execution, ScopeID: plan.ScopeID, ScopeGeneration: plan.ScopeGeneration, ScopeKind: kind, Instances: instances, Status: frame.ResourceReleased}
+	proof := CloseProof{CloseID: identity, ProofID: identity, Authority: plan.Authority, Realm: plan.Realm, Execution: plan.Execution, ScopeRef: plan.ScopeRef, ScopeKind: kind, Instances: instances, Status: frame.ResourceReleased}
 	switch kind {
 	case UseScope:
 		proof.UseID = id

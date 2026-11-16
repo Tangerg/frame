@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 
 	framehost "github.com/Tangerg/frame/host"
@@ -105,88 +106,35 @@ func (e *Engine) Run(ctx context.Context) (Result, error) {
 	return result, err
 }
 
-func orderCompilerPasses(values []framehost.Candidate[PassMetadata, CompilerPass]) ([]framehost.Candidate[PassMetadata, CompilerPass], error) {
-	type passCandidate struct {
-		candidate framehost.Candidate[PassMetadata, CompilerPass]
-		metadata  PassMetadata
-	}
-	passes := make([]passCandidate, len(values))
-	for index, candidate := range values {
-		metadata, err := candidate.Metadata()
-		if err != nil {
-			return nil, err
-		}
-		passes[index] = passCandidate{candidate, metadata}
-	}
-	slices.SortFunc(passes, func(a, b passCandidate) int { return cmp.Compare(a.metadata.Order, b.metadata.Order) })
-	for index, pass := range passes {
-		values[index] = pass.candidate
-	}
-	return values, nil
-}
-
-func orderAnalyzers(values []framehost.Candidate[AnalyzerMetadata, Analyzer]) ([]framehost.Candidate[AnalyzerMetadata, Analyzer], error) {
-	type analyzerCandidate struct {
-		candidate framehost.Candidate[AnalyzerMetadata, Analyzer]
-		metadata  AnalyzerMetadata
-	}
-	analyzers := make([]analyzerCandidate, len(values))
-	for index, candidate := range values {
-		metadata, err := candidate.Metadata()
-		if err != nil {
-			return nil, err
-		}
-		analyzers[index] = analyzerCandidate{candidate, metadata}
-	}
-	slices.SortFunc(analyzers, func(a, b analyzerCandidate) int { return cmp.Compare(a.metadata.Name, b.metadata.Name) })
-	for index, analyzer := range analyzers {
-		values[index] = analyzer.candidate
-	}
-	return values, nil
-}
-
-func selectFormatter(values []framehost.Candidate[FormatterMetadata, Formatter]) (framehost.Candidate[FormatterMetadata, Formatter], error) {
-	type formatterCandidate struct {
-		candidate framehost.Candidate[FormatterMetadata, Formatter]
-		metadata  FormatterMetadata
-	}
-	formatters := make([]formatterCandidate, len(values))
-	for index, candidate := range values {
-		metadata, err := candidate.Metadata()
-		if err != nil {
-			return framehost.Candidate[FormatterMetadata, Formatter]{}, err
-		}
-		formatters[index] = formatterCandidate{candidate, metadata}
-	}
-	if len(formatters) == 0 {
-		return framehost.Candidate[FormatterMetadata, Formatter]{}, errors.New("buildcheck: no formatter is available")
-	}
-	selected := slices.MinFunc(formatters, func(a, b formatterCandidate) int {
-		return cmp.Or(cmp.Compare(b.metadata.Priority, a.metadata.Priority), cmp.Compare(a.metadata.Name, b.metadata.Name))
+// Each rule orders candidates by their metadata; equal metadata keeps snapshot order.
+func orderCompilerPasses(candidates []framehost.Candidate[PassMetadata, CompilerPass]) ([]framehost.Candidate[PassMetadata, CompilerPass], error) {
+	slices.SortStableFunc(candidates, func(a, b framehost.Candidate[PassMetadata, CompilerPass]) int {
+		return cmp.Compare(a.Metadata.Order, b.Metadata.Order)
 	})
-	return selected.candidate, nil
+	return candidates, nil
 }
 
-func orderWrappers(values []framehost.Candidate[AroundMetadata, Around]) ([]framehost.Candidate[AroundMetadata, Around], error) {
-	type wrapperCandidate struct {
-		candidate framehost.Candidate[AroundMetadata, Around]
-		metadata  AroundMetadata
-	}
-	wrappers := make([]wrapperCandidate, len(values))
-	for index, candidate := range values {
-		metadata, err := candidate.Metadata()
-		if err != nil {
-			return nil, err
-		}
-		wrappers[index] = wrapperCandidate{candidate, metadata}
-	}
-	slices.SortFunc(wrappers, func(a, b wrapperCandidate) int {
-		return cmp.Or(cmp.Compare(a.metadata.Order, b.metadata.Order), cmp.Compare(a.metadata.Name, b.metadata.Name))
+func orderAnalyzers(candidates []framehost.Candidate[AnalyzerMetadata, Analyzer]) ([]framehost.Candidate[AnalyzerMetadata, Analyzer], error) {
+	slices.SortStableFunc(candidates, func(a, b framehost.Candidate[AnalyzerMetadata, Analyzer]) int {
+		return cmp.Compare(a.Metadata.Name, b.Metadata.Name)
 	})
-	for index, wrapper := range wrappers {
-		values[index] = wrapper.candidate
+	return candidates, nil
+}
+
+func selectFormatter(candidates []framehost.Candidate[FormatterMetadata, Formatter]) (framehost.Candidate[FormatterMetadata, Formatter], error) {
+	if len(candidates) == 0 {
+		return framehost.Candidate[FormatterMetadata, Formatter]{}, fmt.Errorf("%w: no formatter", framehost.ErrUnavailable)
 	}
-	return values, nil
+	return slices.MinFunc(candidates, func(a, b framehost.Candidate[FormatterMetadata, Formatter]) int {
+		return cmp.Or(cmp.Compare(b.Metadata.Priority, a.Metadata.Priority), cmp.Compare(a.Metadata.Name, b.Metadata.Name))
+	}), nil
+}
+
+func orderWrappers(candidates []framehost.Candidate[AroundMetadata, Around]) ([]framehost.Candidate[AroundMetadata, Around], error) {
+	slices.SortStableFunc(candidates, func(a, b framehost.Candidate[AroundMetadata, Around]) int {
+		return cmp.Or(cmp.Compare(a.Metadata.Order, b.Metadata.Order), cmp.Compare(a.Metadata.Name, b.Metadata.Name))
+	})
+	return candidates, nil
 }
 
 func (e *Engine) Close(ctx context.Context) error { _, err := e.Host.Close(ctx); return err }

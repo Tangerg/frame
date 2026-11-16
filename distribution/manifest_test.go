@@ -13,7 +13,7 @@ func TestContractRoleIsPartOfNominalIdentity(t *testing.T) {
 	service := framehost.ContractRef{Name: "example/report", Version: "1", Digest: value.Hash([]byte("service")), Kind: framehost.ServiceKind, Mode: framehost.PortableMode}
 	point := service
 	point.Kind, point.Digest = framehost.PointKind, value.Hash([]byte("point"))
-	manifest := Manifest{SchemaVersion: 1, Package: "example.report", Version: "1", Contracts: []framehost.ContractRef{service, point}, Units: []Unit{{ID: "report", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "report", Contract: point}}}}, Contributions: []Contribution{{Unit: "report", Export: "report", Point: point, Key: "report"}}}
+	manifest := Manifest{Package: "example.report", Version: "1", Contracts: []framehost.ContractRef{service, point}, Units: []Unit{{ID: "report", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "report", Contract: point}}}}, Contributions: []Contribution{{Unit: "report", Export: "report", Point: point, Key: "report"}}}
 	if err := manifest.Validate(); err != nil {
 		t.Fatalf("service and consuming point cannot share their nominal name: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestContractRoleIsPartOfNominalIdentity(t *testing.T) {
 
 func TestExplicitNullContributionMetadataSurvivesAuthorEncoding(t *testing.T) {
 	point := framehost.ContractRef{Name: "example/actions", Version: "1", Digest: value.Hash([]byte("point")), Kind: framehost.PointKind, Mode: framehost.PortableMode}
-	manifest := Manifest{SchemaVersion: 1, Package: "example.actions", Version: "1", Artifacts: []Artifact{}, Contracts: []framehost.ContractRef{point}, Units: []Unit{{ID: "actions", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "action", Contract: point}}}}, Contributions: []Contribution{{Unit: "actions", Export: "action", Point: point, Key: "action", Metadata: []byte("null")}}}
+	manifest := Manifest{Package: "example.actions", Version: "1", Artifacts: []Artifact{}, Contracts: []framehost.ContractRef{point}, Units: []Unit{{ID: "actions", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "action", Contract: point}}}}, Contributions: []Contribution{{Unit: "actions", Export: "action", Point: point, Key: "action", Metadata: []byte("null")}}}
 	original, err := manifest.Identity()
 	if err != nil {
 		t.Fatal(err)

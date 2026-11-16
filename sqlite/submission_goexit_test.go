@@ -75,7 +75,7 @@ func TestSubmissionMutationGoexitSettlesTheOriginalRejection(t *testing.T) {
 		}, nil)
 	})
 	settled, err := owner.Settlement(t.Context(), id, request)
-	if err != nil || settled.State != framehost.CommitRejected || !settled.Synchronized {
+	if err != nil || settled.State != framehost.NotCommitted || !settled.Synchronized {
 		t.Errorf("abandoned mutation did not settle its original rejection: %+v %v", settled, err)
 	}
 	var records int
@@ -91,7 +91,7 @@ func TestSubmissionMutationGoexitSettlesTheOriginalRejection(t *testing.T) {
 		mutations++
 		return []byte("replacement evidence"), nil
 	}, nil)
-	if err != nil || settled.State != framehost.CommitRejected || mutations != 1 {
+	if err != nil || settled.State != framehost.NotCommitted || mutations != 1 {
 		t.Fatalf("original intent authorized another mutation: calls=%d settlement=%+v error=%v", mutations, settled, err)
 	}
 }
@@ -113,7 +113,7 @@ func TestSubmissionSynchronizationGoexitRetainsRecoveryBarrier(t *testing.T) {
 		})
 	})
 	settled, err := owner.Settlement(t.Context(), id, request)
-	if err != nil || settled.State != framehost.CommitSucceeded || settled.Synchronized {
+	if err != nil || settled.State != framehost.Committed || settled.Synchronized {
 		t.Fatalf("synchronization interruption changed the original commit: %+v %v", settled, err)
 	}
 	if err := admission.RecoveryError(); !errors.Is(err, framehost.ErrRecoveryRequired) {

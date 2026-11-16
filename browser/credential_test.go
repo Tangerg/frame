@@ -63,7 +63,7 @@ func TestRealmComponentsCannotAliasAnotherRealmsExecutionProof(t *testing.T) {
 		Binding: framehost.BindingSnapshot{Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{source}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil)}}},
 		Realm:   string(browser.RealmID(original)), Profile: framehost.BrowserJS, Scope: "original-scope", ScopeGeneration: 1, Generation: 1,
 	}
-	if err := e.store.RecordAttempt(e.ctx, attempt); err != nil {
+	if _, err := e.store.RecordAttempt(e.ctx, attempt); err != nil {
 		t.Fatal(err)
 	}
 	proof := browser.CloseProof{

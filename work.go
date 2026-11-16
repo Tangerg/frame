@@ -16,7 +16,7 @@ const (
 	consumerHold
 )
 
-// Work handles share the original interval, so copying a handle cannot reopen
+// Lifetime membership owns completion, so copying a handle cannot reopen
 // finished work or release another interval's capacity. The zero Work is
 // unissued: finishing it does nothing and it owns no resource.
 type Work struct {
@@ -28,14 +28,13 @@ type workInterval struct {
 	ctx      context.Context
 	cancel   context.CancelCauseFunc
 	kind     workKind
-	finished bool
 }
 
 func (l *lifetimeRecord) Enter(ctx context.Context) (Work, error) {
 	return l.enter(ctx, ownWork)
 }
 
-// hold registers a consumer that retirement drains instead of cancelling. Its
+// Hold registers a consumer that retirement drains instead of cancelling. Its
 // context ends only when the Lifetime itself begins closing.
 func (l *lifetimeRecord) Hold() (Work, error) {
 	return l.enter(context.Background(), consumerHold)
@@ -95,11 +94,10 @@ func (w Work) Finish() {
 	interval := w.interval
 	l := interval.lifetime
 	l.mu.Lock()
-	if interval.finished {
+	if _, active := l.work[interval]; !active {
 		l.mu.Unlock()
 		return
 	}
-	interval.finished = true
 	delete(l.work, interval)
 	if interval.kind == consumerHold {
 		l.holds--
@@ -117,7 +115,7 @@ func (w Work) Own(resource Resource, dependencies ...ResourceHandle) (ResourceHa
 	}
 	l := w.interval.lifetime
 	l.mu.Lock()
-	if w.interval.finished {
+	if _, active := l.work[w.interval]; !active {
 		l.mu.Unlock()
 		return ResourceHandle{}, ErrClosed
 	}

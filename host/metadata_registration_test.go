@@ -75,9 +75,9 @@ func TestPublishedWireMetadataHasNoFrozenGoTarget(t *testing.T) {
 	if err != nil || len(candidates) != 1 {
 		t.Fatalf("local binding invalidated the original snapshot: candidates=%d, error=%v", len(candidates), err)
 	}
-	first, err := candidates[0].Metadata()
-	if err != nil || first.Label == nil || *first.Label != "original" {
-		t.Fatalf("typed metadata did not decode its original wire value: %+v, %v", first, err)
+	first := candidates[0].Metadata
+	if first.Label == nil || *first.Label != "original" {
+		t.Fatalf("typed metadata did not decode its original wire value: %+v", first)
 	}
 	*first.Label = "changed"
 	wirePoint, err := framehost.BindPoint[value.JSON, string](point.Ref(), point.Descriptor())
@@ -88,8 +88,8 @@ func TestPublishedWireMetadataHasNoFrozenGoTarget(t *testing.T) {
 	if err != nil || len(wireCandidates) != 1 {
 		t.Fatalf("wire view lost the original snapshot: candidates=%d, error=%v", len(wireCandidates), err)
 	}
-	if wire, err := wireCandidates[0].Metadata(); err != nil || wire.String() != encoded.String() {
-		t.Fatalf("wire view changed the original value: %s, %v", wire.String(), err)
+	if wire := wireCandidates[0].Metadata; wire.String() != encoded.String() {
+		t.Fatalf("wire view changed the original value: %s", wire.String())
 	}
 	selection, err := framehost.Select(snapshot, point, "original", candidates...)
 	if err != nil {

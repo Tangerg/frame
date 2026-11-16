@@ -7,6 +7,15 @@ import (
 	"github.com/Tangerg/frame/value"
 )
 
+var errProtectionIntegrity = errors.New("sqlite: invalid stored execution protection")
+
+func corruptProtection(cause error) error {
+	if cause == nil {
+		return nil
+	}
+	return errors.Join(errProtectionIntegrity, cause)
+}
+
 type protectedRecord struct {
 	id             string
 	request, proof []byte
@@ -14,12 +23,12 @@ type protectedRecord struct {
 }
 
 func (r *protectedRecord) scan(row interface{ Scan(...any) error }) error {
-	var digest value.Digest
+	var digest string
 	if err := row.Scan(&r.id, &r.request, &digest, &r.state, &r.proof); err != nil {
 		return err
 	}
-	if value.Hash(r.request) != digest {
-		return errors.New("sqlite: execution protection integrity failure")
+	if value.Hash(r.request).String() != digest {
+		return corruptProtection(errors.New("sqlite: execution protection integrity failure"))
 	}
 	return nil
 }

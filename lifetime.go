@@ -38,25 +38,6 @@ type Resource struct {
 	Close  func(context.Context) (ReleaseState, error)
 }
 
-type CloseFailure struct {
-	Resource string `json:"resource"`
-	Detail   string `json:"detail"`
-}
-
-type CloseOutcome struct {
-	ID              uint64         `json:"id"`
-	Released        bool           `json:"released"`
-	Pending         []string       `json:"pending"`
-	Failures        []CloseFailure `json:"failures"`
-	OmittedFailures uint64         `json:"omittedFailures"`
-}
-
-// ReleaseProof carries only the original close identity: diagnostics cannot
-// enlarge or revoke evidence that every resource has released.
-type ReleaseProof struct {
-	CloseID uint64 `json:"closeId"`
-}
-
 // cleanupState is the progress of a resource's own Close callback. Release
 // proof is a separate fact: it may arrive before, during or after cleanup.
 type cleanupState uint8
@@ -127,6 +108,9 @@ type lifetimeRecord struct {
 // It settles once no cleanup is running, even if some release is unconfirmed.
 // Copies observe the original operation without copying its mutable progress.
 type Close struct{ *closeOperation }
+
+// Valid reports whether the handle names a retirement; the zero Close does not.
+func (c Close) Valid() bool { return c.closeOperation != nil }
 
 type closeOperation struct {
 	lifetime    *lifetimeRecord
@@ -604,63 +588,13 @@ func (h ResourceHandle) ConfirmReleased(diagnostic error) error {
 }
 
 func (l *lifetimeRecord) outcomeLocked(id uint64) CloseOutcome {
-	outcome := CloseOutcome{ID: id, Released: l.released, Failures: slices.Clone(l.failures), OmittedFailures: l.omittedFailures, Pending: []string{}}
+	outcome := CloseOutcome{ID: id, Released: l.released, ActiveWork: len(l.work), Failures: slices.Clone(l.failures), OmittedFailures: l.omittedFailures, Pending: []string{}}
 	for _, entry := range l.resources {
 		if !entry.released {
 			outcome.Pending = append(outcome.Pending, entry.resource.Name)
 		}
 	}
-	if len(l.work) > 0 {
-		outcome.Pending = append(outcome.Pending, fmt.Sprintf("%d active work items", len(l.work)))
-	}
 	return outcome
-}
-
-func (outcome CloseOutcome) Err() error {
-	failed := len(outcome.Failures) > 0 || outcome.OmittedFailures > 0
-	if !outcome.Released {
-		if failed {
-			return errors.Join(ErrUnconfirmedRelease, ErrCloseFailed)
-		}
-		return ErrUnconfirmedRelease
-	}
-	if failed {
-		return ErrCloseFailed
-	}
-	return nil
-}
-
-// A parent resource records cleanup failures, not the child's temporary lack
-// of release evidence. Late proof must be able to produce a clean final close.
-func withoutUnconfirmedState(err error) error {
-	if err == nil || err == ErrUnconfirmedRelease {
-		return nil
-	}
-	if local, ok := err.(*localCloseError); ok {
-		return &localCloseError{status: withoutUnconfirmedState(local.status), causes: local.causes}
-	}
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		var failures []error
-		for _, failure := range joined.Unwrap() {
-			if remaining := withoutUnconfirmedState(failure); remaining != nil {
-				failures = append(failures, remaining)
-			}
-		}
-		if len(failures) == 1 {
-			return failures[0]
-		}
-		return errors.Join(failures...)
-	}
-	return err
-}
-
-// releaseState concludes a resource whose release is a nested close. A pending
-// nested release is reported as unconfirmed, not as a cleanup failure.
-func (outcome CloseOutcome) ResourceState(err error) (ReleaseState, error) {
-	if outcome.Released {
-		return ResourceReleased, err
-	}
-	return ResourceUnconfirmed, withoutUnconfirmedState(err)
 }
 
 func (c *closeOperation) Outcome() CloseOutcome {

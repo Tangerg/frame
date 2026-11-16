@@ -41,20 +41,16 @@ func TestMetadataSnapshotDetachesOverlappingSliceViews(t *testing.T) {
 		t.Fatalf("metadata candidates: %v, %v", candidates, err)
 	}
 	label["label"][0] = "producer mutation"
-	firstValue, err := candidates[0].Metadata()
-	if err != nil {
-		t.Fatal(err)
-	}
-	first := firstValue.([]any)
+	first := candidates[0].Metadata.([]any)
 	if first[0].(map[string][]string)["label"][0] != "original" || first[1].([]any)[0].(map[string][]string)["label"][0] != "original" {
 		t.Fatal("snapshot retained the producer's nested references")
 	}
 	first[1].([]any)[0].(map[string][]string)["label"][0] = "consumer mutation"
-	secondValue, err := candidates[0].Metadata()
+	reread, err := framehost.Candidates(snapshot, point)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second := secondValue.([]any)
+	second := reread[0].Metadata.([]any)
 	if second[1].([]any)[0].(map[string][]string)["label"][0] != "original" {
 		t.Fatal("candidate metadata exposed its original nested references")
 	}

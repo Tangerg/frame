@@ -85,7 +85,7 @@ func TestOpenValidatesAttemptEpochBeforeRestoringWait(t *testing.T) {
 	for _, epoch := range []uint64{1, 2} {
 		t.Run(fmt.Sprint(epoch), func(t *testing.T) {
 			config := Config{Directory: t.TempDir()}
-			observation := Observation{AttemptID: "original", Epoch: epoch, RunnerID: "prior-runner", State: Running, PID: 123}
+			observation := Observation{AttemptRef: AttemptRef{AttemptID: "original", Epoch: epoch, RunnerID: "prior-runner"}, State: Running, PID: 123}
 			original, err := json.Marshal(journal{Epoch: 1, Attempts: map[string]storedAttempt{
 				observation.AttemptID: {Observation: observation, RequestDigest: value.Hash(nil)},
 			}})
@@ -114,7 +114,7 @@ func TestOpenValidatesAttemptEpochBeforeRestoringWait(t *testing.T) {
 			}
 			defer server.Close()
 			restored, err := server.Inspect(t.Context(), observation.AttemptID)
-			if err != nil || restored.Reference() != observation.Reference() || restored.State != Unknown || restored.PID != 0 || restored.ProofID != "" {
+			if err != nil || restored.AttemptRef != observation.AttemptRef || restored.State != Unknown || restored.PID != 0 || restored.ProofID != "" {
 				t.Fatalf("restored observation invented an exit or changed identity: %+v %v", restored, err)
 			}
 		})

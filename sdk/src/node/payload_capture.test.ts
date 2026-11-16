@@ -3,6 +3,7 @@ import { expect, it, onTestFinished } from "vitest";
 import { Capability, defineProcessUnit, serve, type Client } from "./index.js";
 import { Peer } from "./peer.js";
 import { PROTOCOL } from "./contract.js";
+import profile from "./wire-profile.generated.json" with { type: "json" };
 import wire from "./wire.json" with { type: "json" };
 
 const bounded = {
@@ -61,7 +62,7 @@ it("returns the output value admitted by the method boundary", async () => {
   const signal = new AbortController().signal;
   await host.request(
     wire.methods.hello,
-    { version: wire.version, maxFrameBytes: wire.maxFrameBytes },
+    { protocol: profile.protocol, maxFrameBytes: wire.maxFrameBytes },
     signal,
   );
   await host.request(wire.methods.prepare, { imports: {} }, signal);
@@ -109,7 +110,7 @@ it("sends the input value admitted by the method boundary", async () => {
   const signal = new AbortController().signal;
   await host.request(
     wire.methods.hello,
-    { version: wire.version, maxFrameBytes: wire.maxFrameBytes },
+    { protocol: profile.protocol, maxFrameBytes: wire.maxFrameBytes },
     signal,
   );
   await host.request(
@@ -198,7 +199,7 @@ it("emits the chunk value admitted by the method boundary", async () => {
   const signal = new AbortController().signal;
   await host.request(
     wire.methods.hello,
-    { version: wire.version, maxFrameBytes: wire.maxFrameBytes },
+    { protocol: profile.protocol, maxFrameBytes: wire.maxFrameBytes },
     signal,
   );
   await host.request(wire.methods.prepare, { imports: {} }, signal);

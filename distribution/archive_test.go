@@ -64,7 +64,7 @@ func TestBuildRejectsReservedNamespaceBeforePublication(t *testing.T) {
 		if err := os.WriteFile(path, []byte("artifact"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		manifest := Manifest{SchemaVersion: ManifestSchemaVersion, Package: "demo", Version: "1", Artifacts: []Artifact{{Path: name}}}
+		manifest := Manifest{Package: "demo", Version: "1", Artifacts: []Artifact{{Path: name}}}
 		var out bytes.Buffer
 		if _, err := Build(t.Context(), dir, manifest, &out); !errors.Is(err, ErrInvalid) || out.Len() != 0 {
 			t.Fatalf("%q: %v, %d bytes", name, err, out.Len())

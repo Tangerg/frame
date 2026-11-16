@@ -74,14 +74,13 @@ type PlannedUnit struct {
 }
 
 type LocalPlan struct {
-	Protocol        string        `json:"protocol"`
-	ApprovalToken   string        `json:"approvalToken"`
-	Authority       Authority     `json:"authority"`
-	Realm           Realm         `json:"realm"`
-	Execution       Execution     `json:"execution"`
-	ScopeID         string        `json:"scopeId"`
-	ScopeGeneration string        `json:"scopeGeneration"`
-	Units           []PlannedUnit `json:"units"`
+	Protocol      string    `json:"protocol"`
+	ApprovalToken string    `json:"approvalToken"`
+	Authority     Authority `json:"authority"`
+	Realm         Realm     `json:"realm"`
+	Execution     Execution `json:"execution"`
+	ScopeRef
+	Units []PlannedUnit `json:"units"`
 }
 
 type PlanAdmissionDecision string
@@ -102,7 +101,9 @@ type PlanAdmission struct {
 	Decision  PlanAdmissionDecision `json:"decision"`
 }
 
-type Fence struct {
+// ScopeRef names one scope generation. Plans, grants and proofs carry the
+// generation that admitted them; a poll lists the generations now fenced.
+type ScopeRef struct {
 	ScopeID         string `json:"scopeId"`
 	ScopeGeneration string `json:"scopeGeneration"`
 }
@@ -113,7 +114,7 @@ type Poll struct {
 	Authority Authority   `json:"authority"`
 	Realm     Realm       `json:"realm"`
 	Plans     []LocalPlan `json:"plans"`
-	Fences    []Fence     `json:"fences"`
+	Fences    []ScopeRef  `json:"fences"`
 }
 
 type ObjectRef struct {
@@ -136,16 +137,15 @@ type PreparedContribution struct {
 }
 
 type UseGrant struct {
-	OperationID     string      `json:"operationId"`
-	ParentUseID     string      `json:"parentUseId,omitempty"`
-	ID              string      `json:"id"`
-	ApprovalToken   string      `json:"approvalToken"`
-	Authority       Authority   `json:"authority"`
-	Realm           Realm       `json:"realm"`
-	Execution       Execution   `json:"execution"`
-	ScopeID         string      `json:"scopeId"`
-	ScopeGeneration string      `json:"scopeGeneration"`
-	Objects         []ObjectRef `json:"objects"`
+	OperationID   string    `json:"operationId"`
+	ParentUseID   string    `json:"parentUseId,omitempty"`
+	ID            string    `json:"id"`
+	ApprovalToken string    `json:"approvalToken"`
+	Authority     Authority `json:"authority"`
+	Realm         Realm     `json:"realm"`
+	Execution     Execution `json:"execution"`
+	ScopeRef
+	Objects []ObjectRef `json:"objects"`
 }
 
 type Candidate struct {
@@ -234,18 +234,17 @@ type RouteGrant struct {
 }
 
 type CloseProof struct {
-	CloseID         string             `json:"closeId"`
-	ProofID         string             `json:"proofId"`
-	Authority       Authority          `json:"authority"`
-	Realm           Realm              `json:"realm"`
-	Execution       Execution          `json:"execution"`
-	ScopeID         string             `json:"scopeId"`
-	ScopeGeneration string             `json:"scopeGeneration"`
-	ScopeKind       CloseScopeKind     `json:"scopeKind"`
-	UseID           string             `json:"useId,omitempty"`
-	PublicationID   string             `json:"publicationId,omitempty"`
-	Instances       []string           `json:"instances"`
-	Status          frame.ReleaseState `json:"status"`
+	CloseID   string    `json:"closeId"`
+	ProofID   string    `json:"proofId"`
+	Authority Authority `json:"authority"`
+	Realm     Realm     `json:"realm"`
+	Execution Execution `json:"execution"`
+	ScopeRef
+	ScopeKind     CloseScopeKind     `json:"scopeKind"`
+	UseID         string             `json:"useId,omitempty"`
+	PublicationID string             `json:"publicationId,omitempty"`
+	Instances     []string           `json:"instances"`
+	Status        frame.ReleaseState `json:"status"`
 }
 
 type ProofAcknowledgement struct {
@@ -276,9 +275,8 @@ type ReconnectResult struct {
 }
 
 type RevalidatedExecution struct {
-	Execution       Execution `json:"execution"`
-	ScopeID         string    `json:"scopeId"`
-	ScopeGeneration string    `json:"scopeGeneration"`
+	Execution Execution `json:"execution"`
+	ScopeRef
 }
 
 type CloseScopeKind string

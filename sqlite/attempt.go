@@ -3,6 +3,7 @@ package sqlite
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	jsonv2 "encoding/json/v2"
 	"errors"
 	"slices"
@@ -21,8 +22,8 @@ type Attempt struct {
 	Profile         framehost.Profile         `json:"profile"`
 	Parent          string                    `json:"parent,omitempty"`
 	Scope           framehost.ScopeID         `json:"scope,omitempty"`
-	ScopeGeneration uint64                    `json:"scopeGeneration,omitempty"`
-	Generation      uint64                    `json:"generation,omitempty"`
+	ScopeGeneration uint64                    `json:"scopeGeneration,omitzero"`
+	Generation      uint64                    `json:"generation,omitzero"`
 }
 
 func (a Attempt) Validate() error {
@@ -83,22 +84,26 @@ func (r AttemptRecord) ExitProven() bool {
 
 // RecordAttempt must complete before the runner or Realm can create anything.
 // Reusing its identity never authorizes a second creation or a wider binding.
-func (s *storeAuthority) RecordAttempt(ctx context.Context, attempt Attempt) error {
+// A failed acknowledgement retains the original cleanup obligation unless the
+// returned conclusion is NotCommitted; callers must not retry creation.
+func (s *storeAuthority) RecordAttempt(ctx context.Context, attempt Attempt) (framehost.CommitState, error) {
 	if err := attempt.Validate(); err != nil {
-		return err
+		return framehost.NotCommitted, err
 	}
 	if attempt.Epoch != s.epoch {
-		return framehost.ErrFenced
+		return framehost.NotCommitted, framehost.ErrFenced
 	}
 	encoded, err := jsonv2.Marshal(attempt)
 	if err != nil {
-		return err
+		return framehost.NotCommitted, err
 	}
 	if len(encoded) > s.maxRequestBytes {
-		return errors.New("sqlite: attempt exceeds its byte limit")
+		return framehost.NotCommitted, frame.ErrCapacity
 	}
-	return s.admission.Under(ctx, func() error {
-		return s.fenceUnlessRefused(s.transaction(ctx, func(tx Executor) error {
+	state := framehost.NotCommitted
+	err = s.admission.Under(ctx, func() error {
+		var err error
+		state, err = s.protectionTransaction(ctx, func(tx Executor) error {
 			return recordOnce(func() (bool, error) {
 				row, err := readProtectionRow(ctx, tx, attemptByID, attempt.ID)
 				if err != nil {
@@ -109,8 +114,10 @@ func (s *storeAuthority) RecordAttempt(ctx context.Context, attempt Attempt) err
 				}
 				return bytes.Equal(row.request, encoded), nil
 			}, func() error { return insertAttempt(ctx, tx, attempt, encoded) })
-		}))
+		})
+		return err
 	})
+	return state, err
 }
 
 func insertAttempt(ctx context.Context, tx Executor, attempt Attempt, encoded []byte) error {
@@ -148,8 +155,8 @@ func (s *storeAuthority) Attempt(ctx context.Context, id string) (AttemptRecord,
 	return readRecord(ctx, s, attemptByID, decodeAttempt, id)
 }
 
-func decodeAttempt(row protectedRecord) (AttemptRecord, error) {
-	var record AttemptRecord
+func decodeAttempt(row protectedRecord) (record AttemptRecord, err error) {
+	defer func() { err = corruptProtection(err) }()
 	state := AttemptState(row.state)
 	if err := state.validate(); err != nil {
 		return record, err
@@ -199,16 +206,33 @@ func (s *storeAuthority) ExecutionDependencies(ctx context.Context) ([]framehost
 }
 
 func (s *storeAuthority) ReleaseAttempt(ctx context.Context, id string, proof ExitProof) error {
-	return s.recordRelease(ctx, id, proof, AttemptReleased)
+	return s.recordRelease(ctx, id, proof, AttemptReleased, nil)
+}
+
+// SettleAttempt joins a completed approval whose acknowledgement may be lost.
+// The caller must own the original exit or non-dispatch evidence. Its writer
+// barrier proves absence, and the exact request prevents settling another attempt.
+func (s *storeAuthority) SettleAttempt(ctx context.Context, attempt Attempt, proof ExitProof) error {
+	if err := attempt.Validate(); err != nil {
+		return err
+	}
+	if proof.Realm != attempt.Realm {
+		return ErrConflict
+	}
+	original, err := jsonv2.Marshal(attempt)
+	if err != nil {
+		return err
+	}
+	return s.recordRelease(ctx, attempt.ID, proof, AttemptReleased, original)
 }
 
 // AcceptExit commits the original proof before its runner may reclaim capacity.
 // Recovery retains the outstanding acknowledgement across either process crashing.
 func (s *storeAuthority) AcceptExit(ctx context.Context, id string, proof ExitProof) error {
-	return s.recordRelease(ctx, id, proof, AttemptHandoff)
+	return s.recordRelease(ctx, id, proof, AttemptHandoff, nil)
 }
 
-func (s *storeAuthority) recordRelease(ctx context.Context, id string, proof ExitProof, target AttemptState) error {
+func (s *storeAuthority) recordRelease(ctx context.Context, id string, proof ExitProof, target AttemptState, original []byte) error {
 	if !proof.proves(id) {
 		return errors.New("sqlite: exact exit evidence is required")
 	}
@@ -217,10 +241,16 @@ func (s *storeAuthority) recordRelease(ctx context.Context, id string, proof Exi
 		return err
 	}
 	return s.admission.Maintenance(ctx, func() error {
-		return s.fenceUnlessRefused(s.transaction(ctx, func(tx Executor) error {
+		_, err := s.protectionTransaction(ctx, func(tx Executor) error {
 			row, err := readProtectionRow(ctx, tx, attemptByID, id)
+			if errors.Is(err, sql.ErrNoRows) && original != nil {
+				return nil
+			}
 			if err != nil {
 				return err
+			}
+			if original != nil && !bytes.Equal(row.request, original) {
+				return ErrConflict
 			}
 			record, err := decodeAttempt(row)
 			if err != nil {
@@ -241,7 +271,8 @@ func (s *storeAuthority) recordRelease(ctx context.Context, id string, proof Exi
 			}
 			_, err = tx.ExecContext(ctx, `UPDATE frame_attempts SET state=?,proof=? WHERE id=? AND state=?`, next, encoded, id, record.State)
 			return err
-		}))
+		})
+		return err
 	})
 }
 
@@ -257,7 +288,7 @@ func (s *storeAuthority) RecordExitProof(ctx context.Context, attemptID, scope, 
 	}
 	evidence = bytes.Clone(evidence)
 	return s.admission.Maintenance(ctx, func() error {
-		return s.transaction(ctx, func(tx Executor) error {
+		_, err := s.protectionTransaction(ctx, func(tx Executor) error {
 			return recordOnce(func() (bool, error) {
 				var prior []byte
 				var priorID, priorScope string
@@ -268,6 +299,7 @@ func (s *storeAuthority) RecordExitProof(ctx context.Context, attemptID, scope, 
 				return err
 			})
 		})
+		return err
 	})
 }
 

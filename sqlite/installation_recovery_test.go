@@ -70,7 +70,7 @@ func TestRecoveredInstallationEnableAdvancesOriginalAuthority(t *testing.T) {
 	if len(records) != 1 || !records[0].Enabled {
 		t.Fatalf("enable did not actually commit: %+v", records)
 	}
-	if err := host.Restore(t.Context(), records, []*framehost.Plugin{plugin}); err != nil {
+	if err := host.Restore(t.Context(), []*framehost.Plugin{plugin}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.ConfirmRestoredInstallations(t.Context()); err != nil {

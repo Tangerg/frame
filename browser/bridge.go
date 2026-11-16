@@ -1,7 +1,6 @@
 package browser
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -95,11 +94,15 @@ func NewBridge(config BridgeConfig) (*Bridge, error) {
 	if config.Remote != nil && framevalue.IsNil(config.Remote) {
 		return nil, frame.ErrInvalid
 	}
-	config.MaxRealms = cmp.Or(config.MaxRealms, defaultMaxRealms)
-	config.MaxPending = cmp.Or(config.MaxPending, defaultMaxPending)
-	config.MaxMessageBytes = cmp.Or(config.MaxMessageBytes, defaultMaxMessageBytes)
-	if config.MaxRealms < 1 || config.MaxPending < 1 || config.MaxMessageBytes < 1 {
-		return nil, frame.ErrInvalid
+	var err error
+	if config.MaxRealms, err = frame.ResolveLimit("browser realms", config.MaxRealms, defaultMaxRealms); err != nil {
+		return nil, err
+	}
+	if config.MaxPending, err = frame.ResolveLimit("browser pending executions", config.MaxPending, defaultMaxPending); err != nil {
+		return nil, err
+	}
+	if config.MaxMessageBytes, err = frame.ResolveLimit("browser message bytes", config.MaxMessageBytes, defaultMaxMessageBytes); err != nil {
+		return nil, err
 	}
 	config.Points = slices.Clone(config.Points)
 	if err := validateConfiguredPoints(config.Points); err != nil {

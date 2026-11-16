@@ -260,7 +260,8 @@ func TestRestorationChecksTheWholeScopeBudgetBeforeProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	host := testHost(t, framehost.Config{Authority: admission})
+	store := newRestorationStore()
+	host := testHost(t, framehost.Config{Authority: durableDouble{InstallationStore: store, ExecutionProtection: acceptedProtection{}, admission: admission}})
 	plugin, err := framehost.Define(framehost.Definition{
 		Revision: value.Hash([]byte("restored")),
 		Units: []framehost.Unit{{
@@ -275,7 +276,8 @@ func TestRestorationChecksTheWholeScopeBudgetBeforeProjection(t *testing.T) {
 		{ID: "first", Release: plugin.Revision(), Enabled: true},
 		{ID: "second", Release: plugin.Revision(), Enabled: true},
 	}
-	if err := host.Restore(t.Context(), records, []*framehost.Plugin{plugin}); !errors.Is(err, frame.ErrCapacity) {
+	store.setRecords(records...)
+	if err := host.Restore(t.Context(), []*framehost.Plugin{plugin}); !errors.Is(err, frame.ErrCapacity) {
 		t.Fatalf("restoration exceeded its original scope capacity: %v", err)
 	}
 	for _, record := range records {
@@ -283,10 +285,11 @@ func TestRestorationChecksTheWholeScopeBudgetBeforeProjection(t *testing.T) {
 			t.Fatalf("rejected restoration partially published %s", record.ID)
 		}
 	}
-	if err := host.Restore(t.Context(), records[1:], []*framehost.Plugin{plugin}); err != nil {
+	store.setRecords(records[1:]...)
+	if err := host.Restore(t.Context(), []*framehost.Plugin{plugin}); err != nil {
 		t.Fatalf("rejected batch consumed scope capacity: %v", err)
 	}
-	if err := host.Restore(t.Context(), records[1:], []*framehost.Plugin{plugin}); err != nil {
+	if err := host.Restore(t.Context(), []*framehost.Plugin{plugin}); err != nil {
 		t.Fatalf("same original restoration consumed another scope: %v", err)
 	}
 }

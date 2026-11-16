@@ -182,7 +182,7 @@ func (c *managedConnection) Connect(ctx context.Context, channel io.ReadWriteClo
 func (c *managedConnection) bindExports(unit framehost.UnitRef, lifetime frame.Lifetime, receipt *frame.Method) []framehost.ExportValue {
 	for i, contribution := range c.contributions {
 		published := &c.values[i]
-		source := framehost.ExportRef{InstallationID: unit.InstallationID, Release: unit.Release, UnitID: unit.UnitID, Export: published.Name, Contract: published.Contract}
+		source := unit.Export(published.Name, published.Contract)
 		published.Value = &ManagedService{
 			session: c.session, source: source, physical: contribution.Export, contract: c.catalog.exports[contribution.Export],
 			receipt: receipt, openStream: c.openStream, openCall: c.openCall, lifetime: lifetime,

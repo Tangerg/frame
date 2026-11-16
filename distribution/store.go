@@ -1,7 +1,6 @@
 package distribution
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"io/fs"
@@ -9,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/Tangerg/frame"
 	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
@@ -37,13 +37,25 @@ func DefaultLimits() Limits {
 // one limit keeps the others at their defaults.
 func (l Limits) resolve() (Limits, error) {
 	defaults := DefaultLimits()
-	l.Entries = cmp.Or(l.Entries, defaults.Entries)
-	l.ExpandedBytes = cmp.Or(l.ExpandedBytes, defaults.ExpandedBytes)
-	l.ArchiveBytes = cmp.Or(l.ArchiveBytes, defaults.ArchiveBytes)
-	l.ManifestBytes = cmp.Or(l.ManifestBytes, defaults.ManifestBytes)
-	l.CompressionRatio = cmp.Or(l.CompressionRatio, defaults.CompressionRatio)
-	if l.Entries < 1 || l.ExpandedBytes < 1 || l.ArchiveBytes < 1 || l.ManifestBytes < 1 {
-		return Limits{}, ErrCapacity
+	var err error
+	if l.Entries, err = frame.ResolveLimit("archive entries", l.Entries, defaults.Entries); err != nil {
+		return Limits{}, err
+	}
+	for _, limit := range []struct {
+		name     string
+		value    *int64
+		fallback int64
+	}{
+		{"expanded bytes", &l.ExpandedBytes, defaults.ExpandedBytes},
+		{"archive bytes", &l.ArchiveBytes, defaults.ArchiveBytes},
+		{"manifest bytes", &l.ManifestBytes, defaults.ManifestBytes},
+	} {
+		if *limit.value, err = frame.ResolveLimit(limit.name, *limit.value, limit.fallback); err != nil {
+			return Limits{}, err
+		}
+	}
+	if l.CompressionRatio, err = frame.ResolveLimit("compression ratio", l.CompressionRatio, defaults.CompressionRatio); err != nil {
+		return Limits{}, err
 	}
 	return l, nil
 }
@@ -67,6 +79,9 @@ type Config struct {
 
 // Store is a value handle; copies and issued leases retain one directory owner.
 type Store struct{ *storeAuthority }
+
+// Valid reports whether the handle names an opened store; the zero Store does not.
+func (s Store) Valid() bool { return s.storeAuthority != nil }
 
 type storeAuthority struct {
 	directory  string

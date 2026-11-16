@@ -5,7 +5,7 @@ await rm(new URL("../sdk/dist/", here), { recursive: true, force: true });
 await Promise.all(
   [
     ["process/wire.json", "wire.json"],
-    ["process/shapes.generated.json", "shapes.generated.json"],
+    ["process/wire-profile.generated.json", "wire-profile.generated.json"],
     ["contract-profile.generated.json", "profile.generated.json"],
   ].map(([source, target]) =>
     copyFile(

@@ -47,10 +47,7 @@ func TestMetadataEncodingCannotMutatePublication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	beforeMetadata, err := before[0].Metadata()
-	if err != nil {
-		t.Fatal(err)
-	}
+	beforeMetadata := before[0].Metadata
 	if beforeMetadata.Items[0] != "before" {
 		t.Fatal(beforeMetadata.Items)
 	}
@@ -73,10 +70,7 @@ func TestMetadataEncodingCannotMutatePublication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	afterMetadata, err := after[0].Metadata()
-	if err != nil {
-		t.Fatal(err)
-	}
+	afterMetadata := after[0].Metadata
 	if got := afterMetadata.Items[0]; got != "before" {
 		t.Fatalf("metadata encoder mutated the admitted publication: metadata=%s revision before=%d after=%d", got, beforeRevision, freshRevision)
 	}

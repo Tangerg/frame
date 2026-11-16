@@ -104,7 +104,7 @@ func (b *Bridge) provenAttempt(ctx context.Context, session *realmSession, proof
 		return sqlite.Attempt{}, err
 	}
 	attempt := record.Attempt
-	if isUnadmittedRecord(record) || !matchesAttempt(attempt, proof.Authority, session.realm, proof.Execution, proof.ScopeID, proof.ScopeGeneration) {
+	if isUnadmittedRecord(record) || !matchesAttempt(attempt, proof.Authority, session.realm, proof.Execution, proof.ScopeRef) {
 		return sqlite.Attempt{}, framehost.ErrStaleBinding
 	}
 	return attempt, nil
@@ -321,7 +321,7 @@ func (b *Bridge) releaseUse(ctx context.Context, record sqlite.UseRecord, attemp
 		}
 		// The proof can arrive after an initial unconfirmed close. Join that same
 		// exit's terminal evidence before asking the Use to settle durable protection.
-		if outcome, err := retained.use.BeginClose(frame.ErrClosed).WaitReleased(ctx); !outcome.Released {
+		if outcome, err := retained.use.Lifetime().BeginClose(frame.ErrClosed).WaitReleased(ctx); !outcome.Released {
 			return errors.Join(frame.ErrUnconfirmedRelease, err)
 		}
 		outcome, err := retained.use.Close(ctx)
@@ -340,7 +340,7 @@ func (b *Bridge) releaseUse(ctx context.Context, record sqlite.UseRecord, attemp
 		// do not turn confirmed release back into uncertainty.
 		return nil
 	}
-	if record.Released {
+	if record.Released() {
 		return nil
 	}
 	if attempt.Epoch == b.config.Store.Epoch() {
@@ -390,7 +390,7 @@ func (b *Bridge) releaseExecution(ctx context.Context, attempt sqlite.Attempt, p
 		return err
 	}
 	if entry != nil {
-		if err := entry.resourceHandle().ConfirmReleased(nil); err != nil {
+		if err := entry.resource.ConfirmReleased(nil); err != nil {
 			return err
 		}
 	}
@@ -450,13 +450,13 @@ func (b *Bridge) revalidate(ctx context.Context, token string, session *realmSes
 func (b *Bridge) reportedExecutions(session *realmSession, request ReconnectRequest) ([]*browserExecution, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if session.cleanupOnly || request.Authority != b.authority {
+	if session.sealed || request.Authority != b.authority {
 		return nil, false
 	}
 	entries := make([]*browserExecution, 0, len(request.Executions))
 	for _, execution := range request.Executions {
 		entry := b.executions.get(execution.ID)
-		if entry == nil || entry.plan.Execution != execution || entry.plan.Realm != session.realm || entry.isFenced() {
+		if !entry.serves(session.realm, execution) {
 			return nil, false
 		}
 		entries = append(entries, entry)
@@ -488,7 +488,7 @@ func (b *Bridge) Reconnect(ctx context.Context, token string, request ReconnectR
 		return result, nil
 	}
 	for _, entry := range entries {
-		result.Executions = append(result.Executions, RevalidatedExecution{Execution: entry.plan.Execution, ScopeID: entry.plan.ScopeID, ScopeGeneration: entry.plan.ScopeGeneration})
+		result.Executions = append(result.Executions, RevalidatedExecution{Execution: entry.plan.Execution, ScopeRef: entry.plan.ScopeRef})
 	}
 	if err := b.checkResponse(result); err != nil {
 		return ReconnectResult{}, err

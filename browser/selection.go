@@ -25,7 +25,7 @@ func (b *Bridge) Acquire(ctx context.Context, token string, request AcquireReque
 	var lease *snapshotLease
 	operation, replay, err := b.begin(ctx, request.OperationID, identity, func(operation *controlOperation) error {
 		entry, lease = b.executions.get(request.Execution.ID), b.snapshots[request.SnapshotID]
-		if session.cleanupOnly {
+		if session.sealed {
 			return errRealmSealed
 		}
 		if !entry.serves(session.realm, request.Execution) || !lease.capturedFor(session.realm) {
@@ -71,7 +71,7 @@ func (b *Bridge) Acquire(ctx context.Context, token string, request AcquireReque
 func (b *Bridge) takeLease(session *realmSession, entry *browserExecution, id string, lease *snapshotLease) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if session.cleanupOnly || entry.isFenced() || b.executions.get(entry.plan.Execution.ID) != entry || b.snapshots[id] != lease {
+	if session.sealed || entry.isFenced() || b.executions.get(entry.plan.Execution.ID) != entry || b.snapshots[id] != lease {
 		return framehost.ErrStaleBinding
 	}
 	delete(b.snapshots, id)
@@ -88,7 +88,7 @@ func (b *Bridge) useConfig(session *realmSession, entry *browserExecution, paren
 	if parentID != "" {
 		b.mu.Lock()
 		parent := b.uses[parentID]
-		valid := parent != nil && parent.grant.Realm == session.realm && parent.grant.Execution == entry.plan.Execution && parent.grant.ScopeID == entry.plan.ScopeID && parent.grant.ScopeGeneration == entry.plan.ScopeGeneration && !parent.released()
+		valid := parent != nil && parent.grant.Realm == session.realm && parent.grant.Execution == entry.plan.Execution && parent.grant.ScopeRef == entry.plan.ScopeRef && !parent.released()
 		b.mu.Unlock()
 		if !valid {
 			return framehost.UseConfig{}, framehost.ErrStaleBinding
@@ -100,19 +100,19 @@ func (b *Bridge) useConfig(session *realmSession, entry *browserExecution, paren
 }
 
 func (b *Bridge) deliverUse(ctx context.Context, session *realmSession, entry *browserExecution, use framehost.Use, operationID string, operation *controlOperation) (UseGrant, error) {
-	grant := UseGrant{OperationID: operationID, ParentUseID: operation.parentID, ID: use.ID(), ApprovalToken: b.signer.approval(use.ID()), Authority: b.authority, Realm: session.realm, Execution: entry.plan.Execution, ScopeID: entry.plan.ScopeID, ScopeGeneration: entry.plan.ScopeGeneration, Objects: []ObjectRef{}}
+	grant := UseGrant{OperationID: operationID, ParentUseID: operation.parentID, ID: use.ID(), ApprovalToken: b.signer.approval(use.ID()), Authority: b.authority, Realm: session.realm, Execution: entry.plan.Execution, ScopeRef: entry.plan.ScopeRef, Objects: []ObjectRef{}}
 	for _, source := range use.Sources() {
 		err := framehost.BorrowExport(ctx, use, source, func(_ context.Context, object Object) error {
 			grant.Objects = append(grant.Objects, object.Reference)
 			return nil
 		})
 		if err != nil {
-			use.BeginClose(err)
+			use.Lifetime().BeginClose(err)
 			return UseGrant{}, err
 		}
 	}
 	if err := b.checkRequest(validateUseMethod, grant); err != nil {
-		use.BeginClose(err)
+		use.Lifetime().BeginClose(err)
 		return UseGrant{}, err
 	}
 	instances := make([]string, 0, len(grant.Objects))
@@ -122,7 +122,7 @@ func (b *Bridge) deliverUse(ctx context.Context, session *realmSession, entry *b
 		}
 	}
 	if err := b.checkExitCapacity(entry.plan, UseScope, grant.ID, instances); err != nil {
-		use.BeginClose(err)
+		use.Lifetime().BeginClose(err)
 		return UseGrant{}, err
 	}
 	retained := &browserUse{grant: copyWire(grant), use: use}
@@ -137,15 +137,15 @@ func (b *Bridge) deliverUse(ctx context.Context, session *realmSession, entry *b
 		return frame.ResourceUnconfirmed, nil
 	}})
 	if err != nil {
-		use.BeginClose(err)
+		use.Lifetime().BeginClose(err)
 		return UseGrant{}, err
 	}
 	retained.resource = resource
 	b.mu.Lock()
-	if entry.isFenced() || session.cleanupOnly {
+	if entry.isFenced() || session.sealed {
 		b.mu.Unlock()
 		_ = resource.ConfirmReleased(nil)
-		use.BeginClose(framehost.ErrFenced)
+		use.Lifetime().BeginClose(framehost.ErrFenced)
 		return UseGrant{}, framehost.ErrFenced
 	}
 	b.uses[use.ID()] = retained

@@ -10,13 +10,13 @@ func TestShapeProjectionCannotChangeParserAdmission(t *testing.T) {
 	if _, err := parseEnvelope(raw); err != nil {
 		t.Fatal(err)
 	}
-	expected := Shapes()
-	projection := Shapes()
-	projection.Request.Required[0] = "changed"
+	expected := CurrentWireProfile()
+	projection := CurrentWireProfile()
+	projection.Shapes.Request.Required[0] = "changed"
 	if _, err := parseEnvelope(raw); err != nil {
 		t.Fatalf("projection changed live admission: %v", err)
 	}
-	if !reflect.DeepEqual(Shapes(), expected) {
+	if !reflect.DeepEqual(CurrentWireProfile(), expected) {
 		t.Fatal("projection changed subsequent shape reads")
 	}
 }

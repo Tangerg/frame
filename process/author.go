@@ -117,7 +117,7 @@ func (s *server) hello(ctx context.Context, raw jsontext.Value) (jsontext.Value,
 	if err := decodeRequest(raw, &host); err != nil {
 		return nil, err
 	}
-	if host.Version != wire.Version || host.MaxFrameBytes <= 0 {
+	if host.Protocol != protocol || host.MaxFrameBytes <= 0 {
 		return nil, mismatch()
 	}
 	if err := s.transition(ctx, newSession, described); err != nil {
@@ -127,7 +127,7 @@ func (s *server) hello(ctx context.Context, raw jsontext.Value) (jsontext.Value,
 	if err := s.peer.reduceFrame(limit); err != nil {
 		return nil, err
 	}
-	return json.Marshal(description{wire.Version, limit, string(s.unit.ID), identities(s.unit.Exports), identities(s.unit.Imports)})
+	return json.Marshal(description{protocol, limit, string(s.unit.ID), identities(s.unit.Exports), identities(s.unit.Imports)})
 }
 
 func (s *server) activateUnit(ctx context.Context, raw jsontext.Value) (jsontext.Value, error) {

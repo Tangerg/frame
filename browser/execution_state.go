@@ -14,15 +14,12 @@ type browserExecution struct {
 	attempt         sqlite.Attempt
 	setup           framehost.Setup
 	prepared        chan []framehost.ExportValue
-	registration    *attemptRegistration
+	resource        frame.ResourceHandle
+	approvalCommit  framehost.CommitState
+	approvalDone    chan struct{}
 	runtime         *runtimePreparation
-	sealed          bool
+	fenced          bool
 	projectionBytes int64
-}
-
-type attemptRegistration struct {
-	resource  frame.ResourceHandle
-	uncertain bool
 }
 
 type runtimePreparation struct {
@@ -34,29 +31,30 @@ type readyReport struct {
 	digest      value.Digest
 }
 
-func (e *browserExecution) recordAttempt(resource frame.ResourceHandle, failure error) {
-	if e.registration != nil || !resource.Valid() {
+func (e *browserExecution) reserveExit(resource frame.ResourceHandle) {
+	if e.resource.Valid() || !resource.Valid() {
 		panic("browser: invalid attempt registration")
 	}
-	e.registration = &attemptRegistration{resource: resource, uncertain: failure != nil}
-	if failure != nil {
-		e.fence()
+	e.resource = resource
+	e.approvalCommit = framehost.CommitIndeterminate
+}
+
+func (e *browserExecution) recordApproval(state framehost.CommitState) {
+	if !e.resource.Valid() || e.approvalCommit != framehost.CommitIndeterminate {
+		panic("browser: invalid approval conclusion")
+	}
+	switch state {
+	case framehost.Committed, framehost.NotCommitted:
+		e.approvalCommit = state
 	}
 }
 
-func (e *browserExecution) resourceHandle() frame.ResourceHandle {
-	if e.registration == nil {
-		return frame.ResourceHandle{}
-	}
-	return e.registration.resource
-}
-
-func (e *browserExecution) approvalUnconfirmed() bool {
-	return e.registration != nil && e.registration.uncertain
+func (e *browserExecution) approved() bool {
+	return e.resource.Valid() && e.approvalCommit == framehost.Committed
 }
 
 func (e *browserExecution) admitRuntime() bool {
-	if e.sealed || e.registration == nil || e.registration.uncertain {
+	if e.fenced || !e.approved() {
 		return false
 	}
 	if e.runtime == nil {
@@ -69,16 +67,12 @@ func (e *browserExecution) runtimeOwnsExit() bool { return e != nil && e.runtime
 
 func (e *browserExecution) hasReady() bool { return e.runtimeOwnsExit() && e.runtime.ready != nil }
 
-func (e *browserExecution) fence()         { e.sealed = true }
-func (e *browserExecution) isFenced() bool { return e.sealed }
+func (e *browserExecution) fence()         { e.fenced = true }
+func (e *browserExecution) isFenced() bool { return e.fenced }
 
 func (e *browserExecution) serves(realm Realm, execution Execution) bool {
-	return e != nil && !e.sealed && e.registration != nil && !e.registration.uncertain &&
+	return e != nil && !e.fenced && e.approved() &&
 		e.plan.Realm == realm && e.plan.Execution == execution
-}
-
-func (e *browserExecution) scopeFence() Fence {
-	return Fence{ScopeID: e.plan.ScopeID, ScopeGeneration: e.plan.ScopeGeneration}
 }
 
 func (e *browserExecution) replayReady(operationID string, digest value.Digest) (DecisionResult, bool, error) {
@@ -96,7 +90,7 @@ func (e *browserExecution) acceptReady(operationID string, digest value.Digest) 
 	if result, replay, err := e.replayReady(operationID, digest); replay {
 		return result, false, err
 	}
-	if e.sealed || !e.runtimeOwnsExit() {
+	if e.fenced || !e.runtimeOwnsExit() {
 		return rejectedDecision(problemExecutionReleased), false, nil
 	}
 	e.runtime.ready = &readyReport{operationID: operationID, digest: digest}

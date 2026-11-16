@@ -42,7 +42,7 @@ func TestInstallationRevalidatesAfterRetentionRead(t *testing.T) {
 				{name: "replace", replace: true},
 			} {
 				t.Run(boundary.name+"/"+persistence.name+"/"+operation.name, func(t *testing.T) {
-					storage := &observedInstallationStore{resultStore: resultStore{state: framehost.CommitSucceeded}}
+					storage := &observedInstallationStore{resultStore: resultStore{state: framehost.Committed}}
 					config := framehost.Config{}
 					if persistence.withStore {
 						config.Authority = installationAuthority(storage)
@@ -81,7 +81,7 @@ func TestInstallationRevalidatesAfterRetentionRead(t *testing.T) {
 					}
 					commits := storage.commits
 					err = apply(ctx)
-					if !errors.Is(err, expected) || !errors.Is(err, cause) || framehost.InstallationConclusion(err) != framehost.CommitRejected {
+					if !errors.Is(err, expected) || !errors.Is(err, cause) || framehost.InstallationConclusion(err) != framehost.NotCommitted {
 						t.Errorf("invalidated retention read authorized a commit: conclusion=%s, error=%v", framehost.InstallationConclusion(err), err)
 					}
 					if record, found := host.Installation("original"); !found || record.Release != original.Revision() {

@@ -1,7 +1,6 @@
 package document
 
 import (
-	"cmp"
 	"context"
 	json "encoding/json/v2"
 	"errors"
@@ -191,7 +190,7 @@ func (a *App) restore(ctx context.Context, directory string, trustPreview func(v
 	if preview != nil {
 		definitions = append(definitions, preview)
 	}
-	if err := a.Host.Restore(ctx, records, definitions); err != nil {
+	if err := a.Host.Restore(ctx, definitions); err != nil {
 		return err
 	}
 	if err := a.Store.ConfirmRestoredInstallations(ctx); err != nil {
@@ -273,7 +272,7 @@ func (a *App) bootstrap(ctx context.Context, directory string, plugins catalog, 
 func (a *App) Recover(ctx context.Context) error {
 	a.recoveryMu.Lock()
 	defer a.recoveryMu.Unlock()
-	if a.currentScope() != (framehost.ScopeGrant{}) {
+	if a.currentScope().Valid() {
 		return a.Host.Admission().RecoveryError()
 	}
 	dependencies, err := a.Store.ExecutionDependencies(ctx)
@@ -312,61 +311,15 @@ func (a *App) plan(ctx context.Context) (framehost.BindingPlan, error) {
 	if err != nil {
 		return framehost.BindingPlan{}, err
 	}
-	converter, err := framehost.SelectOne(snapshot, a.Contracts.Converters, "documents.markdown-priority/1", selectMarkdownConverter)
+	converter, err := framehost.SelectOne(snapshot, a.Contracts.Converters, markdownConverterRule, PreferredConverter(markdownFormat))
 	if err != nil {
 		return framehost.BindingPlan{}, err
 	}
-	validation, err := framehost.SelectMany(snapshot, a.Contracts.Validators, "documents.validation-order/1", orderValidators)
+	validation, err := framehost.SelectMany(snapshot, a.Contracts.Validators, ValidationOrderRule, OrderValidators)
 	if err != nil {
 		return framehost.BindingPlan{}, err
 	}
 	return framehost.Capture(snapshot, converter.Ref(), validation.Ref())
-}
-
-func selectMarkdownConverter(values []framehost.Candidate[ConverterMetadata, Converter]) (framehost.Candidate[ConverterMetadata, Converter], error) {
-	type converterCandidate struct {
-		candidate framehost.Candidate[ConverterMetadata, Converter]
-		metadata  ConverterMetadata
-	}
-	converters := make([]converterCandidate, 0, len(values))
-	for _, candidate := range values {
-		metadata, err := candidate.Metadata()
-		if err != nil {
-			return framehost.Candidate[ConverterMetadata, Converter]{}, err
-		}
-		if metadata.Format == markdownFormat {
-			converters = append(converters, converterCandidate{candidate, metadata})
-		}
-	}
-	if len(converters) == 0 {
-		return framehost.Candidate[ConverterMetadata, Converter]{}, framehost.ErrUnavailable
-	}
-	selected := slices.MinFunc(converters, func(left, right converterCandidate) int {
-		return cmp.Or(cmp.Compare(right.metadata.Priority, left.metadata.Priority), cmp.Compare(left.candidate.Source().InstallationID, right.candidate.Source().InstallationID))
-	})
-	return selected.candidate, nil
-}
-
-func orderValidators(values []framehost.Candidate[ValidatorMetadata, Validator]) ([]framehost.Candidate[ValidatorMetadata, Validator], error) {
-	type validatorCandidate struct {
-		candidate framehost.Candidate[ValidatorMetadata, Validator]
-		metadata  ValidatorMetadata
-	}
-	validators := make([]validatorCandidate, len(values))
-	for index, candidate := range values {
-		metadata, err := candidate.Metadata()
-		if err != nil {
-			return nil, err
-		}
-		validators[index] = validatorCandidate{candidate, metadata}
-	}
-	slices.SortFunc(validators, func(left, right validatorCandidate) int {
-		return cmp.Or(cmp.Compare(left.metadata.Order, right.metadata.Order), cmp.Compare(left.metadata.Name, right.metadata.Name))
-	})
-	for index, validator := range validators {
-		values[index] = validator.candidate
-	}
-	return values, nil
 }
 
 func (a *App) ReplaceConverter(ctx context.Context, version string) error {

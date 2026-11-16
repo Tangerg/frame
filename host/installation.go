@@ -11,17 +11,9 @@ import (
 	framevalue "github.com/Tangerg/frame/value"
 )
 
-type CommitState string
-
-const (
-	CommitSucceeded     CommitState = "committed"
-	CommitRejected      CommitState = "notCommitted"
-	CommitIndeterminate CommitState = "indeterminate"
-)
-
 // InstallationRecord is the durable projection of one installation. The
 // release digest names its declarations; their single owner is the Plugin
-// supplied again when the record is restored.
+// supplied again when the Host restores from its original authority.
 type InstallationRecord struct {
 	ID            InstallationID    `json:"id"`
 	Release       framevalue.Digest `json:"release"`
@@ -43,9 +35,10 @@ func (r InstallationRecord) equal(other InstallationRecord) bool {
 		bytes.Equal(r.Configuration, other.Configuration)
 }
 
+// InstallationChange is one admitted transition; a nil side is absence.
 type InstallationChange struct {
-	Before *InstallationRecord
-	After  *InstallationRecord
+	Before *InstallationRecord `json:"before"`
+	After  *InstallationRecord `json:"after"`
 }
 
 // InstallationStore only encodes a transition already admitted by Host. A
@@ -53,6 +46,8 @@ type InstallationChange struct {
 type InstallationStore interface {
 	CommitInstallation(context.Context, InstallationChange) (CommitState, error)
 	ConfirmInstallation(context.Context, InstallationID) error
+	// Installations reads the current committed records inside Host maintenance.
+	// It must not reenter the shared admission gate.
 	Installations(context.Context) ([]InstallationRecord, error)
 }
 
@@ -112,12 +107,12 @@ func installationFailure(id InstallationID, state CommitState, cause error) erro
 // rejection never reached storage.
 func InstallationConclusion(err error) CommitState {
 	if err == nil {
-		return CommitSucceeded
+		return Committed
 	}
 	if failure, ok := errors.AsType[*InstallationFailure](err); ok {
 		return failure.State
 	}
-	return CommitRejected
+	return NotCommitted
 }
 
 func (h *hostState) Installation(id InstallationID) (InstallationRecord, bool) {
@@ -141,7 +136,7 @@ func (h *hostState) Install(ctx context.Context, config InstallationConfig) (Ins
 		}
 		return entry, nil
 	})
-	if state != CommitSucceeded {
+	if state != Committed {
 		return InstallationRecord{}, installationFailure(config.ID, state, err)
 	}
 	return entry.record.Clone(), installationFailure(config.ID, state, err)
@@ -254,23 +249,16 @@ func (h *hostState) changeInstallation(ctx context.Context, id InstallationID, p
 
 func (h *hostState) mutateInstallation(ctx context.Context, id InstallationID, prepare func(*installed) (*installed, error)) (CommitState, error) {
 	if err := id.Validate(); err != nil {
-		return CommitRejected, err
+		return NotCommitted, err
 	}
-	state := CommitRejected
-	var retired []*unitInstance
-	// Confirmation can interrupt after withdrawal; the original retirement must still start.
-	defer func() {
-		for _, instance := range retired {
-			instance.beginRetire()
-		}
-	}()
+	state := NotCommitted
 	err := h.admitInstallation(ctx, func(admitted context.Context) error {
 		transition, err := h.planInstallationTransition(id, prepare)
 		if err != nil {
 			return err
 		}
 		if transition == nil {
-			state = CommitSucceeded
+			state = Committed
 			return nil
 		}
 		next := transition.after
@@ -286,13 +274,13 @@ func (h *hostState) mutateInstallation(ctx context.Context, id InstallationID, p
 		}
 		var commitErr error
 		state, commitErr = h.commitInstallation(admitted, transition)
-		if state != CommitSucceeded {
+		if state != Committed {
 			return commitErr
 		}
 		if err := h.projectInstallationScope(transition, commitErr); err != nil {
 			return err
 		}
-		retired = h.applyInstallationTransition(id, next)
+		h.applyInstallationTransition(id, next)
 		return errors.Join(commitErr, h.confirmInstallation(admitted, id))
 	})
 	return state, err
@@ -342,7 +330,7 @@ func (h *hostState) usesInstallationLocked(id InstallationID) bool {
 	return false
 }
 
-func (h *hostState) applyInstallationTransition(id InstallationID, next *installed) []*unitInstance {
+func (h *hostState) applyInstallationTransition(id InstallationID, next *installed) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if next == nil {
@@ -351,16 +339,11 @@ func (h *hostState) applyInstallationTransition(id InstallationID, next *install
 		h.installations[id] = next
 	}
 	h.installationTransition = nil
-	var retired []*unitInstance
 	for _, instance := range h.instances {
 		if instance.snapshot.requiresInstallation(id) {
-			retired = append(retired, instance)
+			instance.beginRetireLocked()
 		}
 	}
-	for _, instance := range retired {
-		instance.withdrawLocked()
-	}
-	return retired
 }
 
 // The close outcome must include control transactions already admitted, even
@@ -386,17 +369,17 @@ func (h *hostState) admitInstallation(ctx context.Context, apply func(context.Co
 
 func (h *hostState) commitInstallation(ctx context.Context, transition *installationTransition) (CommitState, error) {
 	if err := h.admission.CheckAdmitted(ctx); err != nil {
-		return CommitRejected, err
+		return NotCommitted, err
 	}
 	if err := h.admission.RecoveryError(); err != nil {
-		return CommitRejected, err
+		return NotCommitted, err
 	}
 	transition.admittedScope = h.admission.captureScope(installationScope(transition.id()))
 	h.mu.Lock()
 	h.installationTransition = transition
 	h.mu.Unlock()
 	if h.durable == nil {
-		return CommitSucceeded, nil
+		return Committed, nil
 	}
 	returned := false
 	defer func() {
@@ -407,16 +390,16 @@ func (h *hostState) commitInstallation(ctx context.Context, transition *installa
 	state, err := h.durable.CommitInstallation(ctx, transition.change())
 	returned = true
 	switch state {
-	case CommitSucceeded:
-		return CommitSucceeded, err
-	case CommitRejected:
+	case Committed:
+		return Committed, err
+	case NotCommitted:
 		h.mu.Lock()
 		h.installationTransition = nil
 		h.mu.Unlock()
 		if err == nil {
 			err = fmt.Errorf("%w: installation commit rejected", ErrUnavailable)
 		}
-		return CommitRejected, err
+		return NotCommitted, err
 	default:
 		h.admission.RequireRecovery(errors.Join(ErrRecoveryRequired, err))
 		return CommitIndeterminate, errors.Join(ErrRecoveryRequired, err)
@@ -472,67 +455,6 @@ func (h *hostState) validateUnitsLocked(units []UnitDeclaration) error {
 	return nil
 }
 
-// Restore projects committed installation records without starting resources or
-// reopening the global recovery barrier. The caller must also restore retained
-// business dependencies and execution protection before finishing recovery.
-func (h *hostState) Restore(ctx context.Context, records []InstallationRecord, plugins []*Plugin) error {
-	if len(records) > h.limits.MaxInstallations {
-		return fmt.Errorf("%w: installations", frame.ErrCapacity)
-	}
-	definitions := make(map[framevalue.Digest]Plugin, len(plugins))
-	for _, plugin := range plugins {
-		if plugin == nil {
-			return frame.ErrInvalid
-		}
-		captured := *plugin
-		if err := captured.revision.Validate(); err != nil {
-			return err
-		}
-		if existing, found := definitions[captured.revision]; found && !sameUnitDeclarations(existing.Units(), captured.Units()) {
-			return frame.ErrContractMismatch
-		}
-		definitions[captured.revision] = captured
-	}
-	return h.admission.Maintenance(ctx, func() error {
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		if h.lifetime.IsClosing() {
-			return frame.ErrClosed
-		}
-		if len(h.allInstances) != 0 || len(h.uses) != 0 {
-			return ErrInUse
-		}
-		restored, err := h.restoredInstallationsLocked(records, definitions)
-		if err != nil {
-			return err
-		}
-		transition := h.installationTransition
-		if transition != nil && !transition.acceptsRestoration(restored[transition.id()]) {
-			return ErrStaleBinding
-		}
-		for _, entry := range restored {
-			if !entry.record.Enabled {
-				continue
-			}
-			var admittedScope *scopeState
-			if transition != nil && transition.after != nil && transition.after.record.equal(entry.record) {
-				admittedScope = transition.admittedScope
-			}
-			if entry.scope, err = h.admission.restoreScope(installationScope(entry.record.ID), admittedScope); err != nil {
-				return err
-			}
-		}
-		for id := range h.installations {
-			if entry := restored[id]; entry == nil || !entry.record.Enabled {
-				h.admission.fenceScope(installationScope(id))
-			}
-		}
-		h.installations = restored
-		h.installationTransition = nil
-		return nil
-	})
-}
-
 func (t *installationTransition) acceptsRestoration(restored *installed) bool {
 	for _, expected := range []*installed{t.before, t.after} {
 		if restored == nil && expected == nil || restored != nil && expected != nil && restored.record.equal(expected.record) {
@@ -540,34 +462,6 @@ func (t *installationTransition) acceptsRestoration(restored *installed) bool {
 		}
 	}
 	return false
-}
-
-func (h *hostState) restoredInstallationsLocked(records []InstallationRecord, definitions map[framevalue.Digest]Plugin) (map[InstallationID]*installed, error) {
-	restored := make(map[InstallationID]*installed, len(records))
-	var scopes []scopeKey
-	for _, record := range records {
-		if err := record.ID.Validate(); err != nil {
-			return nil, err
-		}
-		plugin, found := definitions[record.Release]
-		if !found {
-			return nil, fmt.Errorf("%w: definition for retained release", ErrUnavailable)
-		}
-		if err := h.checkReleaseLocked(plugin); err != nil {
-			return nil, err
-		}
-		if restored[record.ID] != nil {
-			return nil, frame.ErrInvalid
-		}
-		if err := h.validateUnitsLocked(plugin.Units()); err != nil {
-			return nil, err
-		}
-		restored[record.ID] = &installed{record: record.Clone(), plugin: plugin}
-		if record.Enabled {
-			scopes = append(scopes, installationScope(record.ID))
-		}
-	}
-	return restored, h.admission.checkScopeCapacity(scopes...)
 }
 
 func sameUnitDeclarations(a, b []UnitDeclaration) bool {

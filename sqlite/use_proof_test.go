@@ -99,7 +99,7 @@ func TestUseReleasePersistsOriginalCloseWithoutDiagnostics(t *testing.T) {
 		t.Fatalf("diagnostics blocked durable retirement: released=%t error=%v recovery=%v", retired.Released, err, admission.RecoveryError())
 	}
 	record, err := store.Use(t.Context(), use.ID())
-	if err != nil || !record.Released || record.Proof == nil || record.Proof.Host == nil || record.Proof.Host.CloseID != outcome.ID {
+	if err != nil || !record.Released() || record.Proof == nil || record.Proof.Host == nil || record.Proof.Host.CloseID != outcome.ID {
 		t.Fatalf("durable release lost its original Close: %+v %v", record, err)
 	}
 	if err := store.SettleUse(t.Context(), use.ID(), *record.Proof.Host); err != nil {

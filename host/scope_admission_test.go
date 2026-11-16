@@ -20,9 +20,9 @@ func TestScopeFencedDuringApprovalIsRefused(t *testing.T) {
 		Setup:       func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil },
 	})
 	owner, scope := ownerAndScope(t, host)
-	protection.approve = func() error {
+	protection.approve = func() (framehost.CommitState, error) {
 		host.Admission().FenceScope(scope.ID())
-		return nil
+		return framehost.Committed, nil
 	}
 	use, err := host.AcquireUnit(t.Context(), framehost.UnitRef{InstallationID: "approval-provider", Release: plugin.Revision(), UnitID: "main"}, framehost.UseConfig{Owner: owner, Scope: scope, Realm: "realm"})
 	t.Logf("scope valid=%v, acquired use=%t, acquire error=%v", host.Admission().ValidateScope(scope), use.Valid(), err)

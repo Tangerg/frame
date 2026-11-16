@@ -194,7 +194,7 @@ func (m *submissionMutation) execute(ctx context.Context, mutate func(context.Co
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE frame_submissions SET state=?,evidence=? WHERE owner_id=? AND sequence=? AND digest=? AND state=?`, submissionCommitted, evidence, m.owner.id, m.id.Sequence, original.Digest, submissionPrepared)
 		if err == nil {
-			m.settlement.State = framehost.CommitSucceeded
+			m.settlement.State = framehost.Committed
 			m.settlement.Evidence = bytes.Clone(evidence)
 		}
 		return err
@@ -212,13 +212,13 @@ func (m *submissionMutation) resolveInterruption() {
 	if err != nil {
 		m.settlement = Settlement{ID: m.id, State: framehost.CommitIndeterminate}
 	}
-	if err == nil && original.State == framehost.CommitRejected {
+	if err == nil && original.State == framehost.NotCommitted {
 		err = m.owner.confirm(context.Background(), m.id)
 		if err == nil {
 			m.settlement.Synchronized = true
 		}
 	}
-	if err != nil || original.State == framehost.CommitSucceeded {
+	if err != nil || original.State == framehost.Committed {
 		m.owner.store.admission.RequireRecovery(errors.Join(ErrUnsettled, err))
 	}
 }
@@ -245,7 +245,7 @@ func (m *submissionMutation) resolveFailure(failure error) error {
 		return errors.Join(ErrIndeterminate, failure, err)
 	}
 	m.settlement = original
-	if original.State == framehost.CommitSucceeded {
+	if original.State == framehost.Committed {
 		return nil
 	}
 	m.settlement, err = m.owner.synchronize(original, nil, confirmOnCommit)
@@ -326,7 +326,7 @@ func (o Owner) RecoverPrepared(ctx context.Context) error {
 			if _, err := o.readSubmissions(ctx, tx); err != nil {
 				return err
 			}
-			_, err := tx.ExecContext(ctx, `UPDATE frame_submissions SET state=? WHERE owner_id=? AND state=?`, submissionRejected, o.id, submissionPrepared)
+			_, err := tx.ExecContext(ctx, `UPDATE frame_submissions SET state=? WHERE owner_id=? AND state=?`, submissionNotCommitted, o.id, submissionPrepared)
 			return err
 		})
 	})
@@ -428,7 +428,7 @@ func (o Owner) compact(ctx context.Context, through uint64) error {
 			return nil
 		}
 		var count uint64
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM frame_submissions s WHERE owner_id=? AND sequence>? AND sequence<=? AND state IN (?,?) AND NOT EXISTS(SELECT 1 FROM frame_evidence_references r WHERE r.owner_id=s.owner_id AND r.sequence=s.sequence)`, o.id, compacted, through, submissionCommittedSynchronized, submissionRejectedSynchronized).Scan(&count); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM frame_submissions s WHERE owner_id=? AND sequence>? AND sequence<=? AND state IN (?,?) AND NOT EXISTS(SELECT 1 FROM frame_evidence_references r WHERE r.owner_id=s.owner_id AND r.sequence=s.sequence)`, o.id, compacted, through, submissionCommittedSynchronized, submissionNotCommittedSynchronized).Scan(&count); err != nil {
 			return err
 		}
 		if count != through-compacted {
@@ -464,7 +464,7 @@ func (o Owner) CompactSettledUnder(ctx context.Context) error {
 func (o Owner) compactSettled(ctx context.Context) error {
 	var through uint64
 	err := o.store.transaction(ctx, func(tx Executor) error {
-		return tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT MIN(sequence)-1 FROM frame_submissions s WHERE owner_id=? AND (state NOT IN (?,?) OR EXISTS(SELECT 1 FROM frame_evidence_references r WHERE r.owner_id=s.owner_id AND r.sequence=s.sequence))),next_sequence) FROM frame_owners WHERE id=?`, o.id, submissionCommittedSynchronized, submissionRejectedSynchronized, o.id).Scan(&through)
+		return tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT MIN(sequence)-1 FROM frame_submissions s WHERE owner_id=? AND (state NOT IN (?,?) OR EXISTS(SELECT 1 FROM frame_evidence_references r WHERE r.owner_id=s.owner_id AND r.sequence=s.sequence))),next_sequence) FROM frame_owners WHERE id=?`, o.id, submissionCommittedSynchronized, submissionNotCommittedSynchronized, o.id).Scan(&through)
 	})
 	if err != nil {
 		return err
@@ -507,9 +507,9 @@ func (o Owner) settlePrepared(ctx context.Context, id SubmissionID, request []by
 		if err != nil || result.State != framehost.CommitIndeterminate {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE frame_submissions SET state=? WHERE owner_id=? AND sequence=? AND digest=? AND state=?`, submissionRejected, o.id, id.Sequence, result.Digest, submissionPrepared)
+		_, err = tx.ExecContext(ctx, `UPDATE frame_submissions SET state=? WHERE owner_id=? AND sequence=? AND digest=? AND state=?`, submissionNotCommitted, o.id, id.Sequence, result.Digest, submissionPrepared)
 		if err == nil {
-			result.State = framehost.CommitRejected
+			result.State = framehost.NotCommitted
 		}
 		return err
 	})
@@ -529,10 +529,10 @@ func (o Owner) Update(ctx context.Context, apply func(context.Context, Executor)
 		return errors.New("sqlite: business update is required")
 	}
 	return o.store.admission.Admit(ctx, func(admitted context.Context) error {
-		err := o.store.transaction(admitted, func(tx Executor) error {
+		state, err := o.store.transact(admitted, writeTransaction, func(tx Executor) error {
 			return o.withinSchema(tx, func(grant Executor) error { return apply(admitted, grant) })
-		})
-		if errors.Is(err, errCommitUnresolved) {
+		}, nil)
+		if state == framehost.CommitIndeterminate {
 			err = errors.Join(ErrIndeterminate, err)
 		}
 		if errors.Is(err, ErrIndeterminate) {

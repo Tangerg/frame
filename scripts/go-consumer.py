@@ -17,12 +17,14 @@ def git(root: Path, *arguments: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--proxy", type=Path, help="retain unpublished module distribution here")
-    parser.add_argument("--version", default="v0.0.0", help="version to verify")
+    parser.add_argument("--version", help="Go module version to verify (defaults to the committed SDK version)")
     args = parser.parse_args()
-    if not re.fullmatch(r"v0\.\d+\.\d+", args.version):
-        parser.error("expected a v0 semantic version")
     root = Path(__file__).resolve().parents[1]
     commit = git(root, "rev-parse", "HEAD")
+    if args.version is None:
+        args.version = "v" + json.loads(git(root, "show", commit + ":sdk/package.json"))["version"]
+    if not re.fullmatch(r"v0\.\d+\.\d+", args.version):
+        parser.error("expected a v0 semantic version")
     manifest = git(root, "show", commit + ":go.mod") + "\n"
     module = re.search(r"^module ([^\s]+)$", manifest, re.M).group(1)
     toolchain = re.search(r"^go ([\d.]+)$", manifest, re.M).group(1)
@@ -52,12 +54,14 @@ import (
   "errors"
   "os"
   "path/filepath"
+  "strings"
   "testing"
   frame "{module}"
   framehost "{module}/host"
   "{module}/browser"
   "{module}/contractgen"
   "{module}/distribution"
+  "{module}/process/runner"
   "{module}/sqlite"
   "{module}/value"
 )
@@ -66,11 +70,19 @@ var _ func(*browser.Bridge,context.Context,string,browser.Withdrawal)(browser.De
 var _ interface{{JSONSchemaEnum() []string}} = browser.Decision("")
 var _ func([]byte)([]value.StringEnumeration,error) = value.ProjectStringEnums
 var _ func(framehost.Host,context.Context,...framehost.ContractRef)(framehost.Snapshot,error) = framehost.Host.Snapshot
-var _ func(framehost.Host,context.Context,framehost.BindingPlan,framehost.UseConfig)(*framehost.Use,error) = framehost.Host.Acquire
+var _ func(framehost.Host,context.Context,framehost.BindingPlan,framehost.UseConfig)(framehost.Use,error) = framehost.Host.Acquire
+var _ func(framehost.Host,context.Context,[]*framehost.Plugin)error = framehost.Host.Restore
+var _ func(sqlite.Store,context.Context,framehost.UseApproval)(framehost.CommitState,error) = sqlite.Store.ApproveUse
+var _ func(sqlite.Store,context.Context,sqlite.Attempt)(framehost.CommitState,error) = sqlite.Store.RecordAttempt
+var _ func(sqlite.Store,context.Context,sqlite.Attempt,sqlite.ExitProof)error = sqlite.Store.SettleAttempt
 var _ func(*browser.Bridge,context.Context,string,string,framehost.BindingPlan,string)(browser.UseGrant,error) = (*browser.Bridge).AcquirePlan
 var _ func(frame.Lifetime,error)frame.Close = frame.Lifetime.BeginClose
+var _ func(*frame.CloseCauses,...error)error = (*frame.CloseCauses).Join
 var _ func(context.Context)error = frame.ContextError
 var _ func(any)bool = value.IsNil
+var _ interface{{Validate() error}} = runner.AttemptRef{{}}
+var _ interface{{Validate() error}} = runner.ExitReceipt{{}}
+var _ error = runner.ErrUnavailable
 func TestContextAndValueBoundaries(t *testing.T) {{
   cause:=errors.New("original cancellation")
   ctx,cancel:=context.WithCancelCause(t.Context())
@@ -105,6 +117,90 @@ func TestCloseHandles(t *testing.T) {{
   outcome,err:=original.WaitReleased(t.Context());if err!=nil||!outcome.Released {{t.Fatalf("original close lost: %#v, %v",outcome,err)}}
   proof,err:=original.ReleaseProof();if err!=nil||proof.CloseID!=outcome.ID {{t.Fatalf("original proof changed: %#v, %v",proof,err)}}
   if current:=owner.BeginClose(frame.ErrClosed).Outcome();current.ID!=outcome.ID {{t.Fatal("close handle replacement changed the original operation")}}
+}}
+func TestCloseFailureComposition(t *testing.T) {{
+  owner:=frame.NewLifetime(t.Context())
+  causes:=owner.ObserveCloseCauses()
+  original:=errors.New("original artifact cleanup failure")
+  if _,err:=owner.Own(frame.Resource{{Name:"original",Close:func(context.Context)(frame.ReleaseState,error){{return frame.ResourceReleased,original}}}});err!=nil {{t.Fatal(err)}}
+  outcome,err:=owner.Close(t.Context())
+  combined:=causes.Join(err,outcome.Err())
+  if !outcome.Released||!errors.Is(combined,original)||!errors.Is(combined,frame.ErrCloseFailed)||strings.Count(combined.Error(),original.Error())!=1 {{t.Fatalf("published close composition lost original facts: %v",combined)}}
+}}
+type reconstructionDriver struct{{ contract framehost.Contract[string] }}
+func (reconstructionDriver) Profile() framehost.Profile {{ return "consumer.realm" }}
+func (reconstructionDriver) RealmBound() bool {{ return true }}
+func (d reconstructionDriver) Prepare(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {{
+  return []framehost.ExportValue{{framehost.Provide("value", d.contract, string(setup.Realm()))}}, nil
+}}
+func TestCapturedRealmReconstruction(t *testing.T) {{
+  descriptor := []byte(`{{"protocol":"artifact-reconstruction"}}`)
+  contract, err := framehost.BindContract[string](framehost.ContractRef{{Name: "artifact.reconstruction", Version: "1", Kind: framehost.ServiceKind, Mode: framehost.PortableMode, Digest: value.Hash(descriptor)}}, descriptor)
+  if err != nil {{ t.Fatal(err) }}
+  driver := reconstructionDriver{{contract: contract}}
+  host, err := framehost.New(t.Context(), framehost.Config{{Drivers: []framehost.Driver{{driver}}}})
+  if err != nil {{ t.Fatal(err) }}
+  defer host.Close(context.Background())
+  if err := host.Register(contract); err != nil {{ t.Fatal(err) }}
+  unit := framehost.Unit{{Declaration: framehost.UnitDeclaration{{ID: "main", Profile: driver.Profile(), Exports: []framehost.ExportDeclaration{{{{Name: "value", Contract: contract.Ref()}}}}}}}}
+  plugin, err := framehost.Define(framehost.Definition{{Revision: value.Hash([]byte("artifact-reconstruction")), Units: []framehost.Unit{{unit}}}})
+  if err != nil {{ t.Fatal(err) }}
+  installed, err := host.Install(t.Context(), framehost.InstallationConfig{{ID: "original", Plugin: plugin, Enabled: true}})
+  if err != nil {{ t.Fatal(err) }}
+  if _, err := host.ActivateIn(t.Context(), "original-realm", installed.Unit("main").Export("value", contract.Ref())); err != nil {{ t.Fatal(err) }}
+  for _, realm := range []framehost.RealmID{{"original-realm", "another-realm"}} {{
+    snapshot, err := host.SnapshotIn(t.Context(), realm, contract.Ref())
+    if err != nil {{ t.Fatal(err) }}
+    members, err := snapshot.Candidates(contract.Ref())
+    if err != nil {{ t.Fatal(err) }}
+    selected, err := framehost.SelectRefs(snapshot, contract.Ref(), "original", members...)
+    if err != nil {{ t.Fatal(err) }}
+    plan, err := framehost.Capture(snapshot, selected)
+    if err != nil {{ t.Fatal(err) }}
+    _, err = plan.Snapshot()
+    if realm == "original-realm" && err != nil || realm != "original-realm" && !errors.Is(err, frame.ErrInvalid) {{ t.Fatalf("artifact lost original Realm provenance: %s, %v", realm, err) }}
+  }}
+}}
+func TestStartClaimsJoinOriginalRetirement(t *testing.T) {{
+  host, err := framehost.New(t.Context(), framehost.Config{{}})
+  if err != nil {{ t.Fatal(err) }}
+  defer host.Close(context.Background())
+  entered := make(chan struct{{}})
+  var original frame.ResourceHandle
+  unit := framehost.Unit{{
+    Declaration: framehost.UnitDeclaration{{ID: "main", Profile: framehost.NativeGo}},
+    Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {{
+      var err error
+      original, err = setup.Own(frame.Resource{{Name: "original execution", Close: func(context.Context) (frame.ReleaseState, error) {{
+        close(entered)
+        return frame.ResourceUnconfirmed, nil
+      }}}})
+      return nil, err
+    }},
+  }}
+  plugin, err := framehost.Define(framehost.Definition{{Revision: value.Hash([]byte("artifact-start-claims")), Units: []framehost.Unit{{unit}}}})
+  if err != nil {{ t.Fatal(err) }}
+  installed, err := host.Install(t.Context(), framehost.InstallationConfig{{ID: "original", Plugin: plugin, Enabled: true}})
+  if err != nil {{ t.Fatal(err) }}
+  grant, err := host.Admission().OpenScope(t.Context(), "original-owner")
+  if err != nil {{ t.Fatal(err) }}
+  first, err := host.StartUnit(t.Context(), grant, installed.Unit("main"))
+  if err != nil {{ t.Fatal(err) }}
+  defer original.ConfirmReleased(nil)
+  second, err := host.StartUnit(t.Context(), grant, installed.Unit("main"))
+  if err != nil {{ t.Fatal(err) }}
+  if err := host.RetireInstance(t.Context(), first.ID()); err != nil {{ t.Fatal(err) }}
+  <-entered
+  canceled, cancel := context.WithCancel(t.Context())
+  cancel()
+  for _, claim := range []framehost.RunningUnit{{first, second}} {{
+    if err := claim.Stop(canceled); !errors.Is(err, context.Canceled) {{ t.Errorf("pending original exit was lost: %v", err) }}
+  }}
+  if err := original.ConfirmReleased(nil); err != nil {{ t.Fatal(err) }}
+  if err := host.WaitInstanceRetired(t.Context(), first.ID()); err != nil {{ t.Fatal(err) }}
+  for _, claim := range []framehost.RunningUnit{{first, second}} {{
+    if err := claim.Stop(canceled); err != nil {{ t.Errorf("completed original exit was lost: %v", err) }}
+  }}
 }}
 func TestPortableContractAndTypedCall(t *testing.T) {{
   method,err:=frame.NewTypedMethod[string,string](frame.MethodConfig{{Name:"replace",Kind:frame.Command}})
@@ -141,7 +237,7 @@ func TestPlugin(t *testing.T) {{
   if err=host.Register(service); err!=nil {{t.Fatal(err)}}
   output := framehost.Export("title", service)
   unit, err := framehost.DefineUnit(framehost.UnitSpec{{ID:"outline",Exports:framehost.Exports(output),
-      Prepare:func(s *framehost.Setup)error{{return output.Bind(s,"Frame")}}}})
+      Prepare:func(s framehost.Setup)error{{return output.Bind(s,"Frame")}}}})
   if err != nil {{t.Fatal(err)}}
   plugin, err := framehost.Define(framehost.Definition{{Revision:value.Hash([]byte("outline-v1")), Units:[]framehost.Unit{{unit}}}})
   if err != nil {{t.Fatal(err)}}
@@ -163,12 +259,40 @@ func TestDurableAuthority(t *testing.T) {{
   if err!=nil {{t.Fatal(err)}}
   original:=store
   defer original.Close()
-  host,err:=framehost.New(t.Context(),framehost.Config{{Admission:admission,Epoch:store.Epoch(),Installations:store,ExecutionProtection:store}})
+  host,err:=framehost.New(t.Context(),framehost.Config{{Authority:store}})
   if err!=nil {{t.Fatal(err)}}
   defer host.Close(t.Context())
   store=sqlite.Store{{}}
-  if host.UsesAuthority(store)||!host.UsesAuthority(original) {{t.Fatal("caller replacement changed the original authority")}}
+  if host.Durable()==framehost.Durable(store)||host.Durable()!=framehost.Durable(original) {{t.Fatal("caller replacement changed the original authority")}}
   if _,err=original.Owner("missing");err==nil {{t.Fatal("undeclared owner admitted")}}
+}}
+func TestRestorationUsesOriginalCommittedAuthority(t *testing.T) {{
+  store,err:=sqlite.Open(t.Context(),sqlite.Config{{Path:filepath.Join(t.TempDir(),"restoration.db"),Admission:framehost.NewAdmission()}})
+  if err!=nil {{t.Fatal(err)}}
+  defer store.Close()
+  host,err:=framehost.New(t.Context(),framehost.Config{{Authority:store}})
+  if err!=nil {{t.Fatal(err)}}
+  defer host.Close(context.Background())
+  prepared:=make(chan string,1)
+  plugin,err:=framehost.Define(framehost.Definition{{Revision:value.Hash([]byte("restoration-original-authority")),Units:[]framehost.Unit{{{{
+    Declaration:framehost.UnitDeclaration{{ID:"main",Profile:framehost.NativeGo}},
+    Setup:func(_ context.Context,setup framehost.Setup)([]framehost.ExportValue,error){{
+      prepared<-string(setup.Configuration())
+      return nil,nil
+    }},
+  }}}}}})
+  if err!=nil {{t.Fatal(err)}}
+  installed,err:=host.Install(t.Context(),framehost.InstallationConfig{{ID:"worker",Plugin:plugin,Configuration:[]byte("original"),Enabled:true}})
+  if err!=nil {{t.Fatal(err)}}
+  previous,err:=store.Installations(t.Context())
+  if err!=nil {{t.Fatal(err)}}
+  if err=host.Replace(t.Context(),installed.ID,plugin,[]byte("committed update"));err!=nil {{t.Fatal(err)}}
+  if len(previous)!=1||string(previous[0].Configuration)!="original" {{t.Fatal("previous read did not retain the old configuration")}}
+  if err=host.Restore(t.Context(),[]*framehost.Plugin{{plugin}});err!=nil {{t.Fatal(err)}}
+  if _,err=host.ActivateUnit(t.Context(),"",installed.Unit("main"));err!=nil {{t.Fatal(err)}}
+  if got:=<-prepared;got!="committed update" {{t.Fatalf("restoration executed superseded configuration: %q",got)}}
+  current,found:=host.Installation(installed.ID)
+  if !found||string(current.Configuration)!="committed update" {{t.Fatalf("restoration advanced a competing record: %+v",current)}}
 }}
 func TestDistributionAuthority(t *testing.T) {{
   store,err:=distribution.Open(distribution.Config{{
@@ -197,7 +321,7 @@ func TestPreparedMetadata(t *testing.T) {{
   if err!=nil {{t.Fatal(err)}}
   plugin,err:=framehost.Define(framehost.Definition{{Revision:value.Hash([]byte("metadata")),Units:[]framehost.Unit{{{{
     Declaration:framehost.UnitDeclaration{{ID:"main",Profile:framehost.NativeGo,Exports:[]framehost.ExportDeclaration{{{{Name:"entry",Contract:point.Ref()}}}}}},
-    Setup:func(context.Context,*framehost.Setup)([]framehost.ExportValue,error){{
+    Setup:func(context.Context,framehost.Setup)([]framehost.ExportValue,error){{
       return []framehost.ExportValue{{{{Name:"entry",Contract:point.Ref(),Metadata:metadata,Value:"callable"}}}},nil
     }},
   }}}}}})

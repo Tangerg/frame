@@ -209,6 +209,16 @@ Runtime owner. The Host settles an unadmitted plan with its original
 still requires its execution owner's proof. A bounded browser scheduler can
 defer plans without acquiring cleanup duties for work it has not admitted.
 
+The original execution enters the local cleanup set before attempt persistence.
+`Poll` exposes it only after the transaction confirms approval; local retention
+does not authorize Runtime creation. Resource close, Realm sealing and admission
+cleanup all join the same approval completion barrier, including panic and
+Goexit. A definite refusal releases the local reservation directly. An uncertain
+approval settles the original complete request through `SettleAttempt`, without
+a separate lookup that guesses which stored request wins. The execution retains
+its original resource and commit conclusion directly, without a registration
+wrapper or an error-derived uncertainty flag.
+
 MaxRealms bounds resident Realms and MaxPending bounds active operations. A single
 Snapshot occupies one lease slot regardless of its Point count; complete request
 and response byte limits bound that capture's payload. On

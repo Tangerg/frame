@@ -3,6 +3,7 @@ package host_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -11,19 +12,62 @@ import (
 	framehost "github.com/Tangerg/frame/host"
 )
 
+func TestWithPlanRetainsEarlyRetirementFailures(t *testing.T) {
+	for _, returnCloseError := range []bool{false, true} {
+		name := "scope owns cleanup failure"
+		if returnCloseError {
+			name = "callback returns same failure"
+		}
+		t.Run(name, func(t *testing.T) {
+			host, err := framehost.New(t.Context(), framehost.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if outcome, err := host.Close(testContext(t)); !outcome.Released || err != nil && !errors.Is(err, frame.ErrCloseFailed) {
+					t.Errorf("Host did not retire original resources: outcome=%+v error=%v", outcome, err)
+				}
+			})
+			plugin := installNative(t, host, "worker", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo}, Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) { return nil, nil }})
+			plan, err := host.PlanUnit(t.Context(), "", framehost.UnitRef{InstallationID: "worker", Release: plugin.Revision(), UnitID: "main"}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			grant, err := host.Admission().OpenScope(t.Context(), "scope-owner")
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := errors.New("original scoped cleanup failure")
+			err = framehost.WithPlan(t.Context(), host, plan, grant, func(use framehost.Use) error {
+				if _, err := use.Lifetime().Own(frame.Resource{Name: "original scoped resource", Close: func(context.Context) (frame.ReleaseState, error) { return frame.ResourceReleased, original }}); err != nil {
+					return err
+				}
+				_, closeErr := use.Close(t.Context())
+				if returnCloseError {
+					return closeErr
+				}
+				return nil
+			})
+			if !errors.Is(err, original) || !errors.Is(err, frame.ErrCloseFailed) || strings.Count(err.Error(), original.Error()) != 1 {
+				t.Fatalf("scoped ownership lost or duplicated an early retirement failure: %v", err)
+			}
+		})
+	}
+}
+
 type recordedUseRelease struct {
 	id    string
 	proof frame.ReleaseProof
 }
 
 type useRetirementProtection struct {
-	approve      func() error
+	approve      func() (framehost.CommitState, error)
 	approval     framehost.UseApproval
 	releases     chan recordedUseRelease
 	releaseCalls atomic.Int64
 }
 
-func (p *useRetirementProtection) ApproveUse(_ context.Context, approval framehost.UseApproval) error {
+func (p *useRetirementProtection) ApproveUse(_ context.Context, approval framehost.UseApproval) (framehost.CommitState, error) {
 	p.approval = approval
 	return p.approve()
 }
@@ -150,16 +194,16 @@ func TestUseOwnerCancellationSettlesOnceAcrossAdmission(t *testing.T) {
 			defer cancel()
 			owner := frame.NewLifetime(parent)
 			protection := &useRetirementProtection{releases: make(chan recordedUseRelease, 1)}
-			protection.approve = func() error {
+			protection.approve = func() (framehost.CommitState, error) {
 				if !duringAdmission {
-					return nil
+					return framehost.Committed, nil
 				}
 				cancel()
 				select {
 				case <-owner.Context().Done():
-					return nil
+					return framehost.Committed, nil
 				case <-ctx.Done():
-					return ctx.Err()
+					return framehost.CommitIndeterminate, ctx.Err()
 				}
 			}
 			host := testHost(t, framehost.Config{Authority: protectionAuthority(protection)})
@@ -199,9 +243,6 @@ func TestUseOwnerCancellationSettlesOnceAcrossAdmission(t *testing.T) {
 				case <-use.Context().Done():
 				case <-ctx.Done():
 					t.Fatal("owner cancellation did not close its Use")
-				}
-				if use.BeginClose(frame.ErrClosed) != use.Lifetime().BeginClose(frame.ErrClosed) {
-					t.Fatal("close entry points created another operation")
 				}
 				outcome, err = use.WaitRetired(ctx)
 				if err != nil || !outcome.Released {
@@ -365,7 +406,7 @@ func TestInstallationScopeFenceKeepsOriginalFailedSettlement(t *testing.T) {
 		if protection.releaseCalls.Load() != 1 || cleanups.Load() != 0 || !errors.Is(host.Admission().RecoveryError(), failure) {
 			t.Fatalf("failed settlement retried or released its provider: calls=%d cleanups=%d", protection.releaseCalls.Load(), cleanups.Load())
 		}
-		original, err := use.BeginClose(frame.ErrClosed).WaitReleased(ctx)
+		original, err := use.Lifetime().BeginClose(frame.ErrClosed).WaitReleased(ctx)
 		if !original.Released || err != nil {
 			t.Fatalf("scope exit lost its physical proof: %+v, %v", original, err)
 		}
@@ -468,7 +509,7 @@ func TestUseRetiresAfterOriginalAuthorityCancellation(t *testing.T) {
 				if scenario.settleFails && (cleanups.Load() != 0 || !errors.Is(host.Admission().RecoveryError(), protection.failure)) {
 					t.Fatal("failed original settlement released its held execution")
 				}
-				original, err := use.BeginClose(frame.ErrClosed).WaitReleased(ctx)
+				original, err := use.Lifetime().BeginClose(frame.ErrClosed).WaitReleased(ctx)
 				if !original.Released || err != nil {
 					t.Fatalf("original Use resource exit: %+v, %v", original, err)
 				}

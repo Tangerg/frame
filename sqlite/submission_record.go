@@ -21,7 +21,7 @@ type submissionRecord struct {
 
 func (r submissionRecord) settlement(id SubmissionID) (Settlement, error) {
 	state, err := r.state.settlement()
-	if r.sequence == 0 || len(r.request) == 0 || r.digest != value.Hash(r.request) || state != framehost.CommitSucceeded && r.evidence != nil {
+	if r.sequence == 0 || len(r.request) == 0 || r.digest != value.Hash(r.request) || state != framehost.Committed && r.evidence != nil {
 		err = errors.Join(err, ErrIndeterminate, errors.New("sqlite: invalid stored submission evidence"))
 	}
 	if err != nil {

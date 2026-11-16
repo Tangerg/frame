@@ -17,7 +17,7 @@ func TestLocalExitPreservesMaximumLengthAttemptIdentity(t *testing.T) {
 	binding := framehost.BindingSnapshot{Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{ref}, Units: []framehost.UnitBinding{{Source: ref, Configuration: value.Hash(nil)}}}
 	attempt := Attempt{ID: strings.Repeat("<", frame.MaxNameBytes), Epoch: store.Epoch(), Source: ref, Binding: binding, Realm: "runner", Profile: framehost.LocalProcess}
 	proof := attempt.LocalExit("not-started", `{"started":false}`)
-	if err := store.RecordAttempt(t.Context(), attempt); err != nil {
+	if _, err := store.RecordAttempt(t.Context(), attempt); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.ReleaseAttempt(context.Background(), attempt.ID, proof); err != nil {
@@ -34,7 +34,7 @@ func TestExitEvidenceIsBoundedByTheProofNotTheRequestBudget(t *testing.T) {
 	ref := framehost.UnitRef{InstallationID: "provider", Release: value.Hash(nil), UnitID: "main"}
 	binding := framehost.BindingSnapshot{UnitRoots: []framehost.UnitRef{ref}, Units: []framehost.UnitBinding{{Source: ref, Configuration: value.Hash(nil)}}}
 	attempt := Attempt{ID: "bounded", Epoch: store.Epoch(), Source: ref, Binding: binding, Realm: "runner", Profile: framehost.LocalProcess}
-	if err := store.RecordAttempt(t.Context(), attempt); err != nil {
+	if _, err := store.RecordAttempt(t.Context(), attempt); err != nil {
 		t.Fatal(err)
 	}
 	oversized := attempt.LocalExit("not-started", strings.Repeat("x", MaxExitEvidenceBytes+1))

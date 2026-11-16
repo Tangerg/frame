@@ -140,11 +140,11 @@ func checkPortableMetadata[M any](t *testing.T, document string, mutate ...func(
 	}
 	read := func() M {
 		t.Helper()
-		metadata, err := candidates[0].Metadata()
+		fresh, err := framehost.Candidates(snapshot, point)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return metadata
+		return fresh[0].Metadata
 	}
 	check(read())
 	for _, change := range mutate {

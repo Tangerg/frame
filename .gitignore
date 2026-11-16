@@ -7,4 +7,4 @@ coverage/
 .idea/
 /sdk/src/node/wire.json
 /sdk/src/node/profile.generated.json
-/sdk/src/node/shapes.generated.json
+/sdk/src/node/wire-profile.generated.json

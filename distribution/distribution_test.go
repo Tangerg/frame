@@ -25,7 +25,7 @@ func packageFixture(t *testing.T) (string, Manifest, []byte, Lock) {
 	if err := os.WriteFile(filepath.Join(directory, "theme.css"), []byte("body { color: blue; }\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	manifest := Manifest{SchemaVersion: 1, Package: "test.theme", Version: "1.0.0", Artifacts: []Artifact{{Path: "theme.css"}}, Units: []Unit{{ID: "theme", Profile: "static-resource", Resources: []string{"theme.css"}}}}
+	manifest := Manifest{Package: "test.theme", Version: "1.0.0", Artifacts: []Artifact{{Path: "theme.css"}}, Units: []Unit{{ID: "theme", Profile: "static-resource", Resources: []string{"theme.css"}}}}
 	var archive bytes.Buffer
 	lock, err := Build(context.Background(), directory, manifest, &archive)
 	if err != nil {
@@ -365,7 +365,7 @@ func TestCachedByteDriftAndManifestAliasesAreRefused(t *testing.T) {
 }
 
 func TestManifestDuplicateKeysAndWrongLockAreRefused(t *testing.T) {
-	if _, err := ParseManifest([]byte(`{"schemaVersion":1,"schemaVersion":1,"package":"p","version":"1","artifacts":[],"units":[]}`)); err == nil {
+	if _, err := ParseManifest([]byte(`{"package":"p","package":"p","version":"1","artifacts":[],"units":[]}`)); err == nil {
 		t.Fatal("duplicate member accepted")
 	}
 	_, _, data, _ := packageFixture(t)

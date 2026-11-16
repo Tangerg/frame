@@ -215,14 +215,6 @@ function matchesWireExportRef(value: unknown): value is ExportRef {
     (matchesWireContractRef(value["contract"]));
 }
 
-function matchesWireFence(value: unknown): value is Fence {
-  return wireObject(value, ["scopeId", "scopeGeneration"]) &&
-    Object.hasOwn(value, "scopeId") &&
-    (typeof value["scopeId"] === "string") &&
-    Object.hasOwn(value, "scopeGeneration") &&
-    (typeof value["scopeGeneration"] === "string");
-}
-
 function matchesWireHTTPProblem(value: unknown): value is HTTPProblem {
   return wireObject(value, ["code", "message"]) &&
     Object.hasOwn(value, "code") &&
@@ -352,7 +344,7 @@ function matchesWirePoll(value: unknown): value is Poll {
     Object.hasOwn(value, "plans") &&
     (wireArray(value["plans"], (item: unknown) => matchesWireLocalPlan(item))) &&
     Object.hasOwn(value, "fences") &&
-    (wireArray(value["fences"], (item: unknown) => matchesWireFence(item)));
+    (wireArray(value["fences"], (item: unknown) => matchesWireScopeRef(item)));
 }
 
 function matchesWirePreparedContribution(value: unknown): value is PreparedContribution {
@@ -499,6 +491,14 @@ function matchesWireRouteGrant(value: unknown): value is RouteGrant {
     (matchesWireLocalExport(value["receiver"]));
 }
 
+function matchesWireScopeRef(value: unknown): value is ScopeRef {
+  return wireObject(value, ["scopeId", "scopeGeneration"]) &&
+    Object.hasOwn(value, "scopeId") &&
+    (typeof value["scopeId"] === "string") &&
+    Object.hasOwn(value, "scopeGeneration") &&
+    (typeof value["scopeGeneration"] === "string");
+}
+
 function matchesWireSelection(value: unknown): value is Selection {
   return wireObject(value, ["point", "candidates", "rule"]) &&
     Object.hasOwn(value, "point") &&
@@ -588,7 +588,6 @@ export interface ProtocolValues {
   readonly Execution: Execution;
   readonly ExportDeclaration: ExportDeclaration;
   readonly ExportRef: ExportRef;
-  readonly Fence: Fence;
   readonly HTTPProblem: HTTPProblem;
   readonly Import: Import;
   readonly ImportKind: ImportKind;
@@ -617,6 +616,7 @@ export interface ProtocolValues {
   readonly RemoteImport: RemoteImport;
   readonly RevalidatedExecution: RevalidatedExecution;
   readonly RouteGrant: RouteGrant;
+  readonly ScopeRef: ScopeRef;
   readonly Selection: Selection;
   readonly Snapshot: Snapshot;
   readonly SnapshotRequest: SnapshotRequest;
@@ -642,7 +642,6 @@ const protocolValues = {
   ["Execution"]: matchesWireExecution,
   ["ExportDeclaration"]: matchesWireExportDeclaration,
   ["ExportRef"]: matchesWireExportRef,
-  ["Fence"]: matchesWireFence,
   ["HTTPProblem"]: matchesWireHTTPProblem,
   ["Import"]: matchesWireImport,
   ["ImportKind"]: matchesWireImportKind,
@@ -671,6 +670,7 @@ const protocolValues = {
   ["RemoteImport"]: matchesWireRemoteImport,
   ["RevalidatedExecution"]: matchesWireRevalidatedExecution,
   ["RouteGrant"]: matchesWireRouteGrant,
+  ["ScopeRef"]: matchesWireScopeRef,
   ["Selection"]: matchesWireSelection,
   ["Snapshot"]: matchesWireSnapshot,
   ["SnapshotRequest"]: matchesWireSnapshotRequest,
@@ -802,11 +802,6 @@ export interface ExportRef {
   readonly contract: ContractRef;
 }
 
-export interface Fence {
-  readonly scopeId: string;
-  readonly scopeGeneration: string;
-}
-
 export interface HTTPProblem {
   readonly code: string;
   readonly message: string;
@@ -889,7 +884,7 @@ export interface Poll {
   readonly authority: Authority;
   readonly realm: Realm;
   readonly plans: readonly LocalPlan[];
-  readonly fences: readonly Fence[];
+  readonly fences: readonly ScopeRef[];
 }
 
 export interface PreparedContribution {
@@ -977,6 +972,11 @@ export interface RouteGrant {
   readonly use: UseGrant;
   readonly source: LocalExport;
   readonly receiver: LocalExport;
+}
+
+export interface ScopeRef {
+  readonly scopeId: string;
+  readonly scopeGeneration: string;
 }
 
 export interface Selection {

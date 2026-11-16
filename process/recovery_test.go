@@ -147,7 +147,7 @@ func recordAttempt(t *testing.T, store sqlite.Store, identity runner.Identity) s
 	root := framehost.ExportRef{InstallationID: "original", Release: value.Hash([]byte("release")), UnitID: "backend", Export: "echo", Contract: contract}
 	binding := framehost.BindingSnapshot{Roots: []framehost.ExportRef{root}, Units: []framehost.UnitBinding{{Source: root.Unit(), Configuration: value.Hash([]byte(`{}`)), Imports: []framehost.ImportBinding{}}}}
 	attempt := sqlite.Attempt{ID: "approved-before-crash", Epoch: store.Epoch(), Source: root.Unit(), Binding: binding, Realm: identity.ID, Profile: framehost.LocalProcess}
-	if err := store.RecordAttempt(t.Context(), attempt); err != nil {
+	if _, err := store.RecordAttempt(t.Context(), attempt); err != nil {
 		t.Fatal(err)
 	}
 	return attempt

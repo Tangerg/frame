@@ -7,8 +7,6 @@ import (
 	"net"
 	"sync"
 	"time"
-
-	"github.com/Tangerg/frame"
 )
 
 type attachment struct {
@@ -42,7 +40,7 @@ func (a *attachment) bindStream(connection net.Conn) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.closed {
-		return frame.ErrClosed
+		return ErrUnavailable
 	}
 	if a.stream != nil {
 		return ErrAttached

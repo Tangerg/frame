@@ -58,15 +58,17 @@ func TestMetadataReadReportsOriginalCodecFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	metadataDecodeUnavailable.Store(true)
 	t.Cleanup(func() { metadataDecodeUnavailable.Store(false) })
-	candidates, err := framehost.Candidates(snapshot, point)
-	if err != nil {
-		t.Fatalf("listing candidates invoked a codec: %v", err)
-	}
-	if _, err := candidates[0].Metadata(); !errors.Is(err, errMetadataDecode) {
+	metadataDecodeUnavailable.Store(true)
+	if _, err := framehost.Candidates(snapshot, point); !errors.Is(err, errMetadataDecode) {
 		t.Fatalf("metadata read lost its decoder error: %v", err)
 	}
+	metadataDecodeUnavailable.Store(false)
+	candidates, err := framehost.Candidates(snapshot, point)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadataDecodeUnavailable.Store(true)
 	refs, err := snapshot.Candidates(point.Ref())
 	if err != nil {
 		t.Fatal(err)

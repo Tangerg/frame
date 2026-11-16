@@ -30,7 +30,7 @@ func TestPublicationProofReplayCompletesLocalRetirement(t *testing.T) {
 		Scope: "scope", ScopeGeneration: 1, Generation: 1, Source: source,
 		Binding: framehost.BindingSnapshot{Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{source}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil)}}},
 	}
-	if err := store.RecordAttempt(ctx, attempt); err != nil {
+	if _, err := store.RecordAttempt(ctx, attempt); err != nil {
 		t.Fatal(err)
 	}
 	publication := &controlOperation{execution: attempt.ID, controlRequestIdentity: controlRequestIdentity{Kind: publishOperation, Realm: realm}}

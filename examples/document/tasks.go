@@ -217,7 +217,7 @@ func (a *App) Queue(ctx context.Context, id, path string) (Task, sqlite.Submissi
 		return Task{}, sqlite.SubmissionID{}, err
 	}
 	settlement, err := a.CommitTask(ctx, prepared)
-	if err != nil || settlement.State != framehost.CommitSucceeded {
+	if err != nil || settlement.State != framehost.Committed {
 		if original, observed := a.Task(ctx, id); observed == nil && original.Definition.Source.Path == path {
 			return original, original.Submission, nil
 		}

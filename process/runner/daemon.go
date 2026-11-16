@@ -57,8 +57,11 @@ func NewDaemon(config DaemonConfig) (*Daemon, error) {
 	return &Daemon{config: config, client: client, ready: make(chan struct{}), closeRequests: make(chan chan error), closeDone: make(chan struct{})}, nil
 }
 
-func (d *Daemon) connect(ctx context.Context) error {
+func (d *Daemon) connect(ctx context.Context, request controlRequest) error {
 	if err := frame.ContextError(ctx); err != nil {
+		return err
+	}
+	if err := request.Validate(); err != nil {
 		return err
 	}
 	d.mu.Lock()
@@ -125,51 +128,51 @@ func (d *Daemon) start(ctx context.Context) error {
 }
 
 func (d *Daemon) Identity(ctx context.Context) (Identity, error) {
-	if err := d.connect(ctx); err != nil {
+	if err := d.connect(ctx, identityRequest{}); err != nil {
 		return Identity{}, err
 	}
 	return d.client.Identity(ctx)
 }
 func (d *Daemon) Fence(ctx context.Context, epoch uint64) error {
-	if err := d.connect(ctx); err != nil {
+	if err := d.connect(ctx, fenceRequest{Epoch: epoch}); err != nil {
 		return err
 	}
 	return d.client.Fence(ctx, epoch)
 }
 func (d *Daemon) Launch(ctx context.Context, request LaunchRequest) (LaunchResult, error) {
-	if err := d.connect(ctx); err != nil {
+	if err := d.connect(ctx, launchControlRequest{request}); err != nil {
 		return notDispatched(request), err
 	}
 	return d.client.Launch(ctx, request)
 }
 func (d *Daemon) Attach(ctx context.Context, ref AttemptRef) (io.ReadWriteCloser, error) {
-	if err := d.connect(ctx); err != nil {
+	if err := d.connect(ctx, attachControlRequest{ref}); err != nil {
 		return nil, err
 	}
 	return d.client.Attach(ctx, ref)
 }
 func (d *Daemon) Inspect(ctx context.Context, id string) (Observation, error) {
-	if err := d.connect(ctx); err != nil {
+	if err := d.connect(ctx, inspectRequest{AttemptID: id}); err != nil {
 		return Observation{}, err
 	}
 	return d.client.Inspect(ctx, id)
 }
 func (d *Daemon) CloseAttempt(ctx context.Context, ref AttemptRef) (Observation, error) {
-	if err := d.connect(ctx); err != nil {
+	if err := d.connect(ctx, closeRequest{ref}); err != nil {
 		return Observation{}, err
 	}
 	return d.client.CloseAttempt(ctx, ref)
 }
 
 func (d *Daemon) AcknowledgeExit(ctx context.Context, receipt ExitReceipt) error {
-	if err := d.connect(ctx); err != nil {
+	if err := d.connect(ctx, acknowledgeExitRequest{receipt}); err != nil {
 		return err
 	}
 	return d.client.AcknowledgeExit(ctx, receipt)
 }
 
 func (d *Daemon) ProveAbsent(ctx context.Context, request AttemptRef) (AbsenceProof, error) {
-	if err := d.connect(ctx); err != nil {
+	if err := d.connect(ctx, proveAbsentRequest{request}); err != nil {
 		return AbsenceProof{}, err
 	}
 	return d.client.ProveAbsent(ctx, request)

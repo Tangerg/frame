@@ -185,15 +185,11 @@ func TestPointReadSetMetadataAndWithdrawal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view, err := candidates[0].Metadata(); err != nil || view["label"] != "first" {
+	if candidates[0].Metadata["label"] != "first" {
 		t.Fatal("metadata aliased setup")
 	}
-	copy, err := candidates[0].Metadata()
-	if err != nil {
-		t.Fatal(err)
-	}
-	copy["label"] = "consumer mutation"
-	if view, err := candidates[0].Metadata(); err != nil || view["label"] != "first" {
+	candidates[0].Metadata["label"] = "consumer mutation"
+	if fresh, err := framehost.Candidates(snapshot, point); err != nil || fresh[0].Metadata["label"] != "first" {
 		t.Fatal("candidate exposes mutable metadata")
 	}
 	selection, err := framehost.Select(snapshot, point, "first@1", candidates[0])
@@ -373,7 +369,7 @@ func TestPortablePointHasIndependentMetadataAndValueIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view, err := candidates[0].Metadata(); err != nil || view.Priority != 2 {
+	if candidates[0].Metadata.Priority != 2 {
 		t.Fatal("portable metadata not decoded through original schema")
 	}
 	if _, err := host.PrepareMetadata(point.Ref(), []byte(`{"priority":"2"}`)); err == nil {
@@ -426,7 +422,7 @@ func (s *pausedInstallationStore) CommitInstallation(context.Context, framehost.
 		close(s.entered)
 		<-s.resume
 	}
-	return framehost.CommitSucceeded, nil
+	return framehost.Committed, nil
 }
 func (*pausedInstallationStore) ConfirmInstallation(context.Context, framehost.InstallationID) error {
 	return nil

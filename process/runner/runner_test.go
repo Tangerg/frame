@@ -545,7 +545,7 @@ func TestFailedStartRequiresDurableExitBeforePublishingProof(t *testing.T) {
 	}
 	s.mu.Lock()
 	s.journal.Attempts[r.AttemptID] = storedAttempt{
-		Observation:   Observation{AttemptID: r.AttemptID, Epoch: r.Epoch, RunnerID: r.RunnerID, State: Starting},
+		Observation:   Observation{AttemptRef: AttemptRef{AttemptID: r.AttemptID, Epoch: r.Epoch, RunnerID: r.RunnerID}, State: Starting},
 		RequestDigest: digest,
 	}
 	err = s.persist()
@@ -595,7 +595,7 @@ func TestOnlyAcceptedExitReleasesCapacityAndPreventsReplay(t *testing.T) {
 	if _, err := c.Launch(ctx, next); !errors.Is(err, frame.ErrCapacity) {
 		t.Fatalf("unclaimed exit lost protection: %v", err)
 	}
-	receipt := ExitReceipt{AttemptID: o.AttemptID, Epoch: o.Epoch, RunnerID: o.RunnerID, ProofID: o.ProofID, State: o.State}
+	receipt := ExitReceipt{AttemptRef: AttemptRef{AttemptID: o.AttemptID, Epoch: o.Epoch, RunnerID: o.RunnerID}, ProofID: o.ProofID, State: o.State}
 	wrong := receipt
 	wrong.ProofID += "other"
 	if err := c.AcknowledgeExit(ctx, wrong); !errors.Is(err, ErrConflict) {
@@ -656,7 +656,7 @@ func TestHandedOffIdentitySurvivesRunnerRestartAndNewEpoch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	receipt := ExitReceipt{AttemptID: exit.AttemptID, Epoch: exit.Epoch, RunnerID: exit.RunnerID, ProofID: exit.ProofID, State: exit.State}
+	receipt := ExitReceipt{AttemptRef: AttemptRef{AttemptID: exit.AttemptID, Epoch: exit.Epoch, RunnerID: exit.RunnerID}, ProofID: exit.ProofID, State: exit.State}
 	if err := first.AcknowledgeExit(ctx, receipt); err != nil {
 		t.Fatal(err)
 	}

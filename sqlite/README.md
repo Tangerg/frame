@@ -117,7 +117,7 @@ These obligations also survive `runtime.Goexit`: an entered mutation settles its
 original rolled-back intent before admission returns, and an interrupted
 post-commit synchronization keeps admission fenced until the owner restores it.
 
-`framehost.CommitSucceeded` and `framehost.CommitRejected` are terminal. Repeating the same identity returns its
+`framehost.Committed` and `framehost.NotCommitted` are terminal. Repeating the same identity returns its
 original conclusion; changing its request is a conflict. Context cancellation is
 checked before COMMIT. Cleanup responsibility starts before BEGIN or an authorizer
 change is attempted, since a failed acknowledgement does not prove that the
@@ -178,8 +178,19 @@ below the compaction watermark remains an ordinary caller error.
 synchronization. `Confirm` records synchronization but does not clear the Host's
 recovery barrier. The composition root calls `Admission.Recover` after restoring
 all necessary owners and execution scopes; recovery does not replay mutations.
+`Host.Restore(ctx, plugins)` reads committed installations from this same Store
+under Host maintenance. `RecoverInstallations` may supply records for resolving
+release definitions; passing a record copy back into Host is not a recovery
+operation. `ConfirmRestoredInstallations` follows successful Host restoration
+before the composition root clears the shared recovery barrier.
 
 ## Evidence retention
+
+Protection writes have no submission journal. Their original transaction fences
+admission when COMMIT is unknown; unconfirmed connection disposal and corrupt
+stored evidence also require recovery. A confirmed rollback after cancellation
+or a statement failure leaves the Store writable for the business owner's
+terminal receipt. An error category alone cannot establish commit uncertainty.
 
 `RetainEvidence` pins detailed evidence for an explicit recovery holder.
 `ReleaseEvidence` removes that holder monotonically. `Compact` advances only over a
@@ -201,6 +212,15 @@ public submission whose original request the caller has not proved.
 epoch before first creation. A short-lived child uses its own attempt and exact
 binding; it cannot silently enlarge an earlier approval. Repeated recording must
 match the original identity and bytes.
+It returns `(host.CommitState, error)` from the original transaction. A capacity
+refusal reports `NotCommitted` and creates no execution-protection obligation.
+The execution driver reserves its original exit owner before this call begins.
+For an uncertain acknowledgement, `SettleAttempt` accepts that original complete
+Attempt and verified exit or non-dispatch proof after the write has ended. Its
+writer transaction either settles the same request or conclusively observes
+absence. A different request or proof conflicts; settlement never creates an
+absent attempt. `ReleaseAttempt` and `AcceptExit` still require an existing
+record and preserve the original proof and outstanding runner acknowledgement.
 
 The encoded request remains the original approval; the SQL identity is only its
 lookup projection. Replay, delegated admission, reconstruction and settlement all
@@ -232,8 +252,18 @@ not independently reopen recovery. Native in-memory Hosts do not need this packa
 Host Use settlement persists the original `frame.ReleaseProof`, projected by its
 confirmed `Close`. Cleanup diagnostics remain on that Lifetime; they cannot grow
 the durable release record or originate another release transition. `ApproveUse`
-checks capacity for that fixed terminal representation before accepting the Use.
-`SettleUse` runs after the original approval callback has ended, including when its
+returns the original transaction's `CommitState` separately from its diagnostic.
+Validation, capacity refusal and an acknowledged rollback return `NotCommitted`;
+the Host need not settle an approval that this call could not create. A successful
+COMMIT remains `Committed` even when later cleanup reports an error. A failed
+COMMIT with no acknowledged rollback remains `CommitIndeterminate`.
+Storage-integrity and connection-release failures still fence the Store; they
+are distinct from whether this approval committed. Submission owners reconcile
+their own durable journals instead of treating a physical transaction's unknown
+outcome as the business operation's final conclusion.
+
+`SettleUse` runs for committed or unresolved approvals after the original
+approval callback has ended, including when its
 commit acknowledgement was lost. Its write transaction either persists the
 original release proof or confirms that the approval did not commit. An absent
 row is conclusive only behind that transaction's writer barrier. An unconfirmed

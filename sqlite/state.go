@@ -6,14 +6,16 @@ import (
 	framehost "github.com/Tangerg/frame/host"
 )
 
+// submissionState is this store's own stored spelling. settlement projects it
+// onto the Host's CommitState; neither vocabulary is derived from the other.
 type submissionState string
 
 const (
-	submissionPrepared              submissionState = "prepared"
-	submissionCommitted             submissionState = submissionState(framehost.CommitSucceeded)
-	submissionRejected              submissionState = submissionState(framehost.CommitRejected)
-	submissionCommittedSynchronized submissionState = "committed_synchronized"
-	submissionRejectedSynchronized  submissionState = "not_committed_synchronized"
+	submissionPrepared                 submissionState = "prepared"
+	submissionCommitted                submissionState = "committed"
+	submissionNotCommitted             submissionState = "not_committed"
+	submissionCommittedSynchronized    submissionState = "committed_synchronized"
+	submissionNotCommittedSynchronized submissionState = "not_committed_synchronized"
 )
 
 // Prepared is durable intent, not a terminal business conclusion. Unknown
@@ -23,24 +25,24 @@ func (s submissionState) settlement() (framehost.CommitState, error) {
 	case submissionPrepared:
 		return framehost.CommitIndeterminate, nil
 	case submissionCommitted, submissionCommittedSynchronized:
-		return framehost.CommitSucceeded, nil
-	case submissionRejected, submissionRejectedSynchronized:
-		return framehost.CommitRejected, nil
+		return framehost.Committed, nil
+	case submissionNotCommitted, submissionNotCommittedSynchronized:
+		return framehost.NotCommitted, nil
 	default:
 		return framehost.CommitIndeterminate, errors.Join(ErrIndeterminate, errors.New("sqlite: invalid stored submission state"))
 	}
 }
 
 func (s submissionState) synchronized() bool {
-	return s == submissionCommittedSynchronized || s == submissionRejectedSynchronized
+	return s == submissionCommittedSynchronized || s == submissionNotCommittedSynchronized
 }
 
 func (s submissionState) confirm() (submissionState, error) {
 	switch s {
 	case submissionCommitted, submissionCommittedSynchronized:
 		return submissionCommittedSynchronized, nil
-	case submissionRejected, submissionRejectedSynchronized:
-		return submissionRejectedSynchronized, nil
+	case submissionNotCommitted, submissionNotCommittedSynchronized:
+		return submissionNotCommittedSynchronized, nil
 	case submissionPrepared:
 		return s, ErrUnsettled
 	default:

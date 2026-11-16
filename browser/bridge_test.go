@@ -328,7 +328,7 @@ func TestBridgeExactPlanCaptureUseAndProof(t *testing.T) {
 		t.Fatalf("second exit replaced original: %v", err)
 	}
 	uses, err = e.store.Uses(e.ctx)
-	if err != nil || !uses[0].Released {
+	if err != nil || !uses[0].Released() {
 		t.Fatalf("Use ACK preceded durable release: %+v %v", uses, err)
 	}
 }
@@ -348,10 +348,10 @@ func TestExecutionProofSettlesUnknownGrantOnlyInOriginalExecution(t *testing.T) 
 		t.Fatal(err)
 	}
 	for _, use := range uses {
-		if use.Approval.ID == lostGrant.ID && !use.Released {
+		if use.Approval.ID == lostGrant.ID && !use.Released() {
 			t.Fatal("unknown ACK Use leaked after original execution exit")
 		}
-		if use.Approval.ID == liveGrant.ID && use.Released {
+		if use.Approval.ID == liveGrant.ID && use.Released() {
 			t.Fatal("another execution's Use was released")
 		}
 	}
@@ -422,7 +422,7 @@ func TestParentUseProofClosesUnknownChildGrantWithoutClosingExecution(t *testing
 		t.Fatal(err)
 	}
 	for _, use := range uses {
-		if (use.Approval.ID == child.ID || use.Approval.ID == parent.ID) && !use.Released {
+		if (use.Approval.ID == child.ID || use.Approval.ID == parent.ID) && !use.Released() {
 			t.Fatalf("delegated child closure leaked: %+v", use)
 		}
 	}
@@ -517,7 +517,7 @@ func TestExecutionExitCoversAcceptedPublicationWithoutSeparateWithdrawal(t *test
 		t.Fatalf("execution exit was acknowledged before its attempt released: %+v %v", attempts, err)
 	}
 	uses, err := e.store.Uses(e.ctx)
-	if err != nil || len(uses) != 1 || !uses[0].Released {
+	if err != nil || len(uses) != 1 || !uses[0].Released() {
 		t.Fatalf("execution exit was acknowledged before its Use released: %+v %v", uses, err)
 	}
 	snapshot, err := e.bridge.Snapshot(e.ctx, e.credentials.Token, snapshotRequest(e.first.Ref().Name))

@@ -2,7 +2,6 @@ package runner
 
 import (
 	"context"
-	json "encoding/json/v2"
 	"errors"
 	"os"
 	"path/filepath"
@@ -15,29 +14,30 @@ import (
 // The Host persists this original exit identity before acknowledging it, because
 // acknowledgement returns the runner's outstanding-attempt capacity.
 type ExitReceipt struct {
-	AttemptID string `json:"attemptId"`
-	Epoch     uint64 `json:"epoch"`
-	RunnerID  string `json:"runnerId"`
-	ProofID   string `json:"proofId"`
-	State     State  `json:"state"`
+	AttemptRef
+	ProofID string `json:"proofId"`
+	State   State  `json:"state"`
 }
 
 func (o Observation) ExitReceipt() (ExitReceipt, error) {
 	if err := o.validate(); err != nil {
 		return ExitReceipt{}, errors.Join(ErrUnknown, err)
 	}
-	receipt := ExitReceipt{AttemptID: o.AttemptID, Epoch: o.Epoch, RunnerID: o.RunnerID, ProofID: o.ProofID, State: o.State}
-	if !receipt.valid() {
-		return ExitReceipt{}, ErrUnknown
+	receipt := ExitReceipt{AttemptRef: o.AttemptRef, ProofID: o.ProofID, State: o.State}
+	if err := receipt.Validate(); err != nil {
+		return ExitReceipt{}, errors.Join(ErrUnknown, err)
 	}
 	return receipt, nil
 }
 
-func (receipt ExitReceipt) valid() bool {
-	return (receipt.State == Exited || receipt.State == NotCreated) && frame.ValidName(receipt.AttemptID) && receipt.Epoch != 0 && frame.ValidName(receipt.RunnerID) && frame.ValidName(receipt.ProofID)
+func (receipt ExitReceipt) Validate() error {
+	if (receipt.State != Exited && receipt.State != NotCreated) || receipt.AttemptRef.Validate() != nil || !frame.ValidName(receipt.ProofID) {
+		return frame.ErrInvalid
+	}
+	return nil
 }
 func (receipt ExitReceipt) matches(o Observation) bool {
-	return o.AttemptID == receipt.AttemptID && o.State == receipt.State && o.Epoch == receipt.Epoch && o.RunnerID == receipt.RunnerID && o.ProofID == receipt.ProofID
+	return o.AttemptRef == receipt.AttemptRef && o.State == receipt.State && o.ProofID == receipt.ProofID
 }
 
 const receiptDirectory = "exit-receipts"
@@ -62,7 +62,7 @@ func (s *Server) readReceipt(id string) (storedAttempt, bool, error) {
 		return storedAttempt{}, false, err
 	}
 	var item storedAttempt
-	if err := json.Unmarshal(data, &item, json.RejectUnknownMembers(true)); err != nil {
+	if err := value.DecodeValue(data, &item, "runner exit receipt"); err != nil {
 		return storedAttempt{}, false, err
 	}
 	if _, err := item.Observation.ExitReceipt(); err != nil || item.Observation.AttemptID != id || item.RequestDigest.Validate() != nil {
@@ -80,7 +80,7 @@ func (s *Server) restoreReceipts() error {
 		if !found {
 			continue
 		}
-		if receipt.RequestDigest != outstanding.RequestDigest || receipt.Observation.Reference() != outstanding.Observation.Reference() {
+		if receipt.RequestDigest != outstanding.RequestDigest || receipt.Observation.AttemptRef != outstanding.Observation.AttemptRef {
 			return ErrConflict
 		}
 		if outstanding.Observation.State == Exited {
@@ -100,8 +100,8 @@ func (s *Server) restoreReceipts() error {
 // Its compact disk receipt retains only the original request digest and terminal
 // observation. Attempt IDs remain single-use across epochs and runner restarts.
 func (s *Server) AcknowledgeExit(ctx context.Context, receipt ExitReceipt) error {
-	if !receipt.valid() {
-		return frame.ErrInvalid
+	if err := receipt.Validate(); err != nil {
+		return err
 	}
 	if err := frame.ContextError(ctx); err != nil {
 		return err

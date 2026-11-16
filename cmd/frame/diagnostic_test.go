@@ -47,11 +47,10 @@ func TestArchiveOutputFailurePreservesOperationalCause(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest := distribution.Manifest{
-		SchemaVersion: distribution.ManifestSchemaVersion,
-		Package:       "theme",
-		Version:       "1",
-		Artifacts:     []distribution.Artifact{{Path: "theme.css"}},
-		Units:         []distribution.Unit{{ID: "theme", Profile: framehost.StaticResource, Resources: []string{"theme.css"}}},
+		Package:   "theme",
+		Version:   "1",
+		Artifacts: []distribution.Artifact{{Path: "theme.css"}},
+		Units:     []distribution.Unit{{ID: "theme", Profile: framehost.StaticResource, Resources: []string{"theme.css"}}},
 	}
 	data, err := json.Marshal(manifest)
 	if err != nil {

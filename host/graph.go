@@ -57,7 +57,7 @@ func (h *hostState) candidatesLocked(contract ContractRef) []ExportRef {
 			source := installation.record.Unit(unit.Declaration.ID)
 			for _, export := range unit.Declaration.Exports {
 				if export.Contract == contract {
-					result = append(result, ExportRef{InstallationID: source.InstallationID, Release: source.Release, UnitID: source.UnitID, Export: export.Name, Contract: contract})
+					result = append(result, source.Export(export.Name, contract))
 				}
 			}
 		}

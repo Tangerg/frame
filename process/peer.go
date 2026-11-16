@@ -38,13 +38,23 @@ func (p *Problem) valid() bool {
 	}
 }
 
-type envelope struct {
-	ID     string         `json:"id,omitzero"`
-	Method string         `json:"method,omitzero"`
-	Params jsontext.Value `json:"params,omitzero"`
-	Result jsontext.Value `json:"result,omitzero"`
-	Error  *Problem       `json:"error,omitzero"`
+// answer is one admitted reply to an outbound request: a result or a failure.
+type answer interface {
+	requestID() string
+	read(result any) error
 }
+
+func (m resultMessage) requestID() string  { return m.ID }
+func (m failureMessage) requestID() string { return m.ID }
+
+func (m resultMessage) read(result any) error {
+	if err := framevalue.DecodeValue(m.Result, result, "process reply"); err != nil {
+		return fmt.Errorf("%w: invalid reply: %w", frame.ErrOutcomeUnknown, err)
+	}
+	return nil
+}
+
+func (m failureMessage) read(any) error { return new(m.Error) }
 
 type cancelParams struct {
 	ID string `json:"id"`
@@ -65,7 +75,7 @@ type peer struct {
 	maxFrame  int
 	next      uint64
 	lastIn    uint64
-	pending   map[string]chan envelope
+	pending   map[string]chan answer
 	running   map[string]context.CancelFunc
 	workers   sync.WaitGroup
 	once      sync.Once
@@ -77,7 +87,7 @@ func newPeer(channel io.ReadWriteCloser, maxFrame int, handle dispatch) *peer {
 	// Both call directions share this budget; writeLoop holds its active frame outside the queue.
 	return &peer{transport: channel, handle: handle, ctx: ctx, stop: stop, done: make(chan struct{}), readDone: make(chan struct{}), writeDone: make(chan struct{}), joined: make(chan struct{}),
 		out: make(chan []byte, callQueueCapacity+replyQueueCapacity), maxFrame: maxFrame,
-		pending: make(map[string]chan envelope), running: make(map[string]context.CancelFunc)}
+		pending: make(map[string]chan answer), running: make(map[string]context.CancelFunc)}
 }
 
 func (p *peer) start() {
@@ -105,8 +115,10 @@ func (p *peer) reduceFrame(size int) error {
 	return nil
 }
 
-func (p *peer) sendLocked(msg envelope) error {
-	data, err := json.Marshal(msg)
+// sendLocked writes one message variant: requestMessage, cancelMessage,
+// resultMessage or failureMessage.
+func (p *peer) sendLocked(message any) error {
+	data, err := json.Marshal(message)
 	if err != nil {
 		return err
 	}
@@ -201,12 +213,12 @@ type (
 	incomingCancel struct{ target string }
 	incomingReply  struct {
 		number uint64
-		reply  envelope
+		answer answer
 	}
 )
 
 // parseEnvelope identifies a message by exactly the members it carries; a
-// member sent as null is present, which decoding into envelope would hide.
+// member sent as null is present, which decoding into a variant would hide.
 func parseEnvelope(raw []byte) (incoming, error) {
 	var fields rawEnvelope
 	if err := json.Unmarshal(raw, &fields, json.RejectUnknownMembers(true)); err != nil {
@@ -220,7 +232,7 @@ func parseEnvelope(raw []byte) (incoming, error) {
 		return fields.cancellation()
 	case shapes.Result.Admits(present):
 		id, number, err := fields.identity()
-		return incomingReply{number: number, reply: envelope{ID: id, Result: fields.Result}}, err
+		return incomingReply{number: number, answer: resultMessage{ID: id, Result: fields.Result}}, err
 	case shapes.Failure.Admits(present):
 		return fields.failure()
 	default:
@@ -272,7 +284,7 @@ func (r rawEnvelope) failure() (incoming, error) {
 	if r.Error.Kind() != '{' || framevalue.DecodeValue(r.Error, &problem, "error") != nil || !problem.valid() {
 		return nil, errInvalidEnvelope
 	}
-	return incomingReply{number: number, reply: envelope{ID: id, Error: &problem}}, nil
+	return incomingReply{number: number, answer: failureMessage{ID: id, Error: problem}}, nil
 }
 
 func (r rawEnvelope) identity() (string, uint64, error) {
@@ -308,12 +320,13 @@ func (r incomingReply) deliverTo(p *peer) error {
 	if r.number > p.next {
 		return errors.New("process: response precedes its request")
 	}
-	reply := p.pending[r.reply.ID]
+	id := r.answer.requestID()
+	reply := p.pending[id]
 	if reply == nil {
 		return errors.New("process: duplicate or unknown response")
 	}
-	delete(p.pending, r.reply.ID)
-	reply <- r.reply
+	delete(p.pending, id)
+	reply <- r.answer
 	return nil
 }
 
@@ -326,7 +339,7 @@ func (r incomingRequest) deliverTo(p *peer) error {
 	}
 	p.lastIn = r.number
 	if len(p.running) >= wire.MaxInFlight {
-		return p.sendLocked(envelope{ID: r.id, Error: &Problem{wire.Errors.Capacity, "too many active calls"}})
+		return p.sendLocked(failureMessage{ID: r.id, Error: Problem{wire.Errors.Capacity, "too many active calls"}})
 	}
 	ctx, cancel := context.WithCancel(p.ctx)
 	p.running[r.id] = cancel
@@ -338,7 +351,7 @@ func (r incomingRequest) deliverTo(p *peer) error {
 func (p *peer) respond(ctx context.Context, cancel context.CancelFunc, request incomingRequest) {
 	defer p.workers.Done()
 	defer cancel()
-	reply := envelope{ID: request.id, Error: unknownProblem()}
+	var reply any = failureMessage{ID: request.id, Error: unknownProblem()}
 	// Handler and diagnostic methods may panic or call Goexit. Only a fully
 	// classified reply replaces the default; completion invokes neither again.
 	defer func() {
@@ -353,25 +366,25 @@ func (p *peer) respond(ctx context.Context, cancel context.CancelFunc, request i
 	}()
 	result, err := p.handle(ctx, request.method, request.params)
 	if err != nil {
-		reply = envelope{ID: request.id, Error: responseProblem(err)}
+		reply = failureMessage{ID: request.id, Error: responseProblem(err)}
 		return
 	}
-	reply = envelope{ID: request.id, Result: result}
+	reply = resultMessage{ID: request.id, Result: result}
 }
 
-func unknownProblem() *Problem {
-	return &Problem{wire.Errors.Unknown, "operation did not return a confirmed result"}
+func unknownProblem() Problem {
+	return Problem{wire.Errors.Unknown, "operation did not return a confirmed result"}
 }
 
-func responseProblem(err error) *Problem {
+func responseProblem(err error) Problem {
 	if errors.Is(err, context.Canceled) && !errors.Is(err, errConsumerPanic) {
-		return &Problem{wire.Errors.Cancelled, "request cancelled"}
+		return Problem{wire.Errors.Cancelled, "request cancelled"}
 	}
 	if errors.Is(err, frame.ErrOutcomeUnknown) {
 		return unknownProblem()
 	}
 	if established, ok := errors.AsType[*Problem](err); ok && established != nil && established.valid() {
-		return new(*established)
+		return *established
 	}
 	return unknownProblem()
 }
@@ -391,7 +404,7 @@ func (p *peer) request(ctx context.Context, method string, params, result any) e
 	if err != nil {
 		return err
 	}
-	reply := make(chan envelope, 1)
+	reply := make(chan answer, 1)
 	p.mu.Lock()
 	if err := ctx.Err(); err != nil {
 		p.mu.Unlock()
@@ -404,7 +417,7 @@ func (p *peer) request(ctx context.Context, method string, params, result any) e
 	p.next++
 	id := strconv.FormatUint(p.next, 10)
 	p.pending[id] = reply
-	err = p.sendLocked(envelope{ID: id, Method: method, Params: data})
+	err = p.sendLocked(requestMessage{ID: id, Method: method, Params: data})
 	if err != nil {
 		delete(p.pending, id)
 	}
@@ -413,13 +426,13 @@ func (p *peer) request(ctx context.Context, method string, params, result any) e
 		return err
 	}
 	select {
-	case answer := <-reply:
-		return readAnswer(answer, result)
+	case answered := <-reply:
+		return answered.read(result)
 	case <-p.done:
 		// A valid reply delivered before EOF still owns this call's result.
 		select {
-		case answer := <-reply:
-			return readAnswer(answer, result)
+		case answered := <-reply:
+			return answered.read(result)
 		default:
 		}
 		p.mu.Lock()
@@ -430,28 +443,18 @@ func (p *peer) request(ctx context.Context, method string, params, result any) e
 		p.mu.Lock()
 		if _, active := p.pending[id]; !active {
 			p.mu.Unlock()
-			return readAnswer(<-reply, result)
+			return (<-reply).read(result)
 		}
 		// Keep the slot until an actual reply or disconnection. Abandoned
 		// operations cannot multiply the remote workload beyond our bound.
 		data, _ := json.Marshal(cancelParams{id})
-		err := p.sendLocked(envelope{Method: wire.Methods.Cancel, Params: data})
+		err := p.sendLocked(cancelMessage{Method: wire.Methods.Cancel, Params: data})
 		p.mu.Unlock()
 		if err != nil {
 			p.end(err)
 		}
 		return errors.Join(frame.ErrOutcomeUnknown, frame.ContextError(ctx))
 	}
-}
-
-func readAnswer(reply envelope, result any) error {
-	if reply.Error != nil {
-		return reply.Error
-	}
-	if err := framevalue.DecodeValue(reply.Result, result, "process reply"); err != nil {
-		return fmt.Errorf("%w: invalid reply: %w", frame.ErrOutcomeUnknown, err)
-	}
-	return nil
 }
 
 func (p *peer) acknowledge(ctx context.Context, method string, params any) error {

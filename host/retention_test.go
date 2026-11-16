@@ -129,7 +129,7 @@ func TestTerminalUseDoesNotRetainHostOrNativeObject(t *testing.T) {
 	runtime.KeepAlive(use)
 }
 
-func stoppedRunningUnit(t *testing.T) (RunningUnit, weak.Pointer[hostState], weak.Pointer[retainedHostPayload]) {
+func retiredRunningUnit(t *testing.T, stop bool) (RunningUnit, weak.Pointer[hostState], weak.Pointer[retainedHostPayload]) {
 	t.Helper()
 	host, err := New(context.Background(), Config{})
 	if err != nil {
@@ -162,17 +162,22 @@ func stoppedRunningUnit(t *testing.T) (RunningUnit, weak.Pointer[hostState], wea
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := running.Stop(t.Context()); err != nil {
-		t.Fatal(err)
+	if stop {
+		if err := running.Stop(t.Context()); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if outcome, err := host.Close(t.Context()); err != nil || !outcome.Released {
 		t.Fatalf("host close: %+v, %v", outcome, err)
+	}
+	if err := host.WaitInstanceRetired(t.Context(), running.ID()); err != nil {
+		t.Fatal(err)
 	}
 	return running, weak.Make(host.hostState), weak.Make(value)
 }
 
 func TestStoppedRunningUnitDoesNotRetainHostOrPlugin(t *testing.T) {
-	running, host, value := stoppedRunningUnit(t)
+	running, host, value := retiredRunningUnit(t, true)
 	id := running.ID()
 	awaitOwnerCollected(t, host)
 	awaitOwnerCollected(t, value)
@@ -181,6 +186,19 @@ func TestStoppedRunningUnitDoesNotRetainHostOrPlugin(t *testing.T) {
 	}
 	if id == "" || running.ID() != id {
 		t.Fatal("stopped handle lost its original instance identity")
+	}
+	runtime.KeepAlive(running)
+}
+
+func TestHostRetiredStartClaimDoesNotRetainHostOrPlugin(t *testing.T) {
+	running, host, value := retiredRunningUnit(t, false)
+	awaitOwnerCollected(t, host)
+	awaitOwnerCollected(t, value)
+	if err := running.Stop(t.Context()); err != nil {
+		t.Fatalf("terminal claim lost its original retirement: %v", err)
+	}
+	if running.ID() == "" {
+		t.Fatal("retired claim lost its original instance identity")
 	}
 	runtime.KeepAlive(running)
 }

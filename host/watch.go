@@ -12,7 +12,6 @@ import (
 type Change struct {
 	Contract ContractRef
 	Revision uint64
-	Err      error
 }
 
 // Copies of a Watch share one subscription; closing any handle releases that
@@ -25,14 +24,19 @@ type catalogWatch struct {
 	host      atomic.Pointer[hostState]
 	contracts []ContractRef
 	changes   chan Change
-	stop      func() bool
-	resource  frame.ResourceHandle
+	// reason is written once before ended and changes close, so a reader that
+	// observes the closed stream also observes why it ended.
+	reason   error
+	ended    chan struct{}
+	stop     func() bool
+	resource frame.ResourceHandle
 }
 
 const watchResourceName = "contract watch"
 
 // Watch atomically registers observation and captures its initial view. A gap
-// ends this stream with ErrResyncRequired; it never silently drops a revision.
+// closes the stream and Err reports ErrResyncRequired; no revision is dropped
+// silently.
 func (h *hostState) Watch(ctx context.Context, points ...ContractRef) (Snapshot, Watch, error) {
 	var snapshot Snapshot
 	var watch *catalogWatch
@@ -50,13 +54,13 @@ func (h *hostState) Watch(ctx context.Context, points ...ContractRef) (Snapshot,
 		if err != nil {
 			return err
 		}
-		watch = &catalogWatch{contracts: slices.Clone(points), changes: make(chan Change, h.limits.WatchBuffer)}
+		watch = &catalogWatch{contracts: slices.Clone(points), changes: make(chan Change, h.limits.WatchBuffer), ended: make(chan struct{})}
 		watch.host.Store(h)
 		resource, err := h.lifetime.Own(frame.Resource{
 			Name:   watchResourceName,
-			Cancel: func(error) { watch.close(frame.ErrClosed) },
+			Cancel: watch.close,
 			Close: func(context.Context) (frame.ReleaseState, error) {
-				watch.close(frame.ErrClosed)
+				watch.close(context.Cause(h.lifetime.Context()))
 				return frame.ResourceReleased, nil
 			},
 		})
@@ -99,6 +103,21 @@ func (w Watch) Close() {
 	}
 }
 
+// Err reports why a closed stream ended: ErrResyncRequired after a missed
+// revision, the Host's close cause, or nil when its consumer closed it. It is
+// nil while the stream is open.
+func (w Watch) Err() error {
+	if w.subscription == nil {
+		return frame.ErrInvalid
+	}
+	select {
+	case <-w.subscription.ended:
+		return w.subscription.reason
+	default:
+		return nil
+	}
+}
+
 func (w *catalogWatch) close(err error) {
 	host := w.host.Load()
 	if host == nil {
@@ -118,8 +137,7 @@ func (w *catalogWatch) deliverLocked(change Change) {
 	}
 }
 
-// closeLocked replaces undelivered changes with err, so the terminal reason
-// always fits the buffer.
+// closeLocked keeps changes already delivered; the reason follows them.
 func (w *catalogWatch) closeLocked(err error) {
 	host := w.host.Load()
 	if host == nil {
@@ -132,22 +150,9 @@ func (w *catalogWatch) closeLocked(err error) {
 		w.stop = nil
 	}
 	w.contracts = nil
-	if err != nil {
-		w.discardBuffered()
-		w.changes <- Change{Err: err}
-	}
+	w.reason = err
+	close(w.ended)
 	close(w.changes)
 	_ = w.resource.ConfirmReleased(nil)
 	w.resource = frame.ResourceHandle{}
-}
-
-// discardBuffered never blocks: the receiver may drain concurrently.
-func (w *catalogWatch) discardBuffered() {
-	for {
-		select {
-		case <-w.changes:
-		default:
-			return
-		}
-	}
 }

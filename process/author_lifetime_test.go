@@ -33,7 +33,7 @@ func TestServeRetirementJoinsPreparationBeforeResourceCleanup(t *testing.T) {
 		host.start()
 		defer host.end(context.Canceled)
 		var description description
-		if err := host.request(context.Background(), wire.Methods.Hello, hello{wire.Version, wire.MaxFrameBytes}, &description); err != nil {
+		if err := host.request(context.Background(), wire.Methods.Hello, hello{protocol, wire.MaxFrameBytes}, &description); err != nil {
 			t.Fatal(err)
 		}
 		prepared := make(chan error, 1)

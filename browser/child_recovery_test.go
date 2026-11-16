@@ -119,11 +119,10 @@ func TestChildDependencyOutsideStartAttemptSurvivesHostProcessCrash(t *testing.T
 			t.Error(err)
 		}
 	})
-	records, err := e.store.RecoverInstallations(e.ctx)
-	if err != nil {
+	if _, err := e.store.RecoverInstallations(e.ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.host.Restore(e.ctx, records, []*framehost.Plugin{e.plugin}); err != nil {
+	if err := e.host.Restore(e.ctx, []*framehost.Plugin{e.plugin}); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.store.ConfirmRestoredInstallations(e.ctx); err != nil {
@@ -159,7 +158,7 @@ func TestChildDependencyOutsideStartAttemptSurvivesHostProcessCrash(t *testing.T
 	uses := readUses()
 	for _, provider := range fixture.Providers {
 		child, exists := uses[provider.Grant.ID]
-		if !exists || child.Released || child.Approval.ParentID != fixture.Parent.Grant.ID || child.Approval.ExecutionID != fixture.Parent.Plan.Execution.ID {
+		if !exists || child.Released() || child.Approval.ParentID != fixture.Parent.Grant.ID || child.Approval.ExecutionID != fixture.Parent.Plan.Execution.ID {
 			t.Fatalf("crash lost the original delegated child owner: %+v", child)
 		}
 		dependencies := child.Approval.Binding.Dependencies()
@@ -221,7 +220,7 @@ func TestChildDependencyOutsideStartAttemptSurvivesHostProcessCrash(t *testing.T
 	}
 	prove(useProof(fixture.Parent.Plan, first.Grant))
 	uses = readUses()
-	if !uses[first.Grant.ID].Released || uses[second.Grant.ID].Released || uses[fixture.Parent.Grant.ID].Released || uses[fixture.Unrelated.Grant.ID].Released {
+	if !uses[first.Grant.ID].Released() || uses[second.Grant.ID].Released() || uses[fixture.Parent.Grant.ID].Released() || uses[fixture.Unrelated.Grant.ID].Released() {
 		t.Fatalf("child proof released another owner: %+v", uses)
 	}
 	prove(executionProof(first.Plan))
@@ -230,7 +229,7 @@ func TestChildDependencyOutsideStartAttemptSurvivesHostProcessCrash(t *testing.T
 	prove(parentProof)
 	prove(parentProof) // Lost acknowledgement reuses the same original evidence.
 	uses = readUses()
-	if !uses[fixture.Parent.Grant.ID].Released || !uses[second.Grant.ID].Released || uses[fixture.Unrelated.Grant.ID].Released {
+	if !uses[fixture.Parent.Grant.ID].Released() || !uses[second.Grant.ID].Released() || uses[fixture.Unrelated.Grant.ID].Released() {
 		t.Fatalf("parent proof failed to settle exactly its delegated closure: %+v", uses)
 	}
 	attempts, err = e.store.Attempts(e.ctx)

@@ -61,7 +61,7 @@ func TestInstallToolArchive(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var archive bytes.Buffer
-			manifest := distribution.Manifest{SchemaVersion: distribution.ManifestSchemaVersion, Package: "tools", Version: "1", Artifacts: []distribution.Artifact{{Path: "backend", Executable: true}}, Units: []distribution.Unit{{ID: "tools", Profile: ToolsProfile, Variants: tc.variants}}}
+			manifest := distribution.Manifest{Package: "tools", Version: "1", Artifacts: []distribution.Artifact{{Path: "backend", Executable: true}}, Units: []distribution.Unit{{ID: "tools", Profile: ToolsProfile, Variants: tc.variants}}}
 			if _, err := distribution.Build(ctx, root, manifest, &archive); err != nil {
 				t.Fatal(err)
 			}

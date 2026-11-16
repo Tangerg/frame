@@ -3,11 +3,14 @@
 package document
 
 import (
+	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"slices"
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/browser"
@@ -130,4 +133,36 @@ func loadDocument(ctx context.Context, root *os.Root, path string) (Document, er
 		return Document{}, err
 	}
 	return Document{Ref: DocumentRef{Path: path, Revision: value.Hash(data)}, Text: string(data)}, nil
+}
+
+// Selection rules name the consumer policies a capture applies. A rule name
+// identifies exactly one ordering, so a changed policy needs a new name.
+const (
+	markdownConverterRule = "documents.markdown-priority/1"
+	ValidationOrderRule   = "documents.validation-order/1"
+)
+
+// PreferredConverter selects the highest-priority converter for format. Equal
+// priorities keep snapshot order, which is the catalog's stable source order.
+func PreferredConverter(format string) func([]framehost.Candidate[ConverterMetadata, Converter]) (framehost.Candidate[ConverterMetadata, Converter], error) {
+	return func(candidates []framehost.Candidate[ConverterMetadata, Converter]) (framehost.Candidate[ConverterMetadata, Converter], error) {
+		matching := slices.DeleteFunc(candidates, func(candidate framehost.Candidate[ConverterMetadata, Converter]) bool {
+			return candidate.Metadata.Format != format
+		})
+		if len(matching) == 0 {
+			return framehost.Candidate[ConverterMetadata, Converter]{}, fmt.Errorf("%w: no %s converter", framehost.ErrUnavailable, format)
+		}
+		return slices.MinFunc(matching, func(a, b framehost.Candidate[ConverterMetadata, Converter]) int {
+			return cmp.Compare(b.Metadata.Priority, a.Metadata.Priority)
+		}), nil
+	}
+}
+
+// OrderValidators runs validators by declared order, then name. Equal metadata
+// keeps snapshot order.
+func OrderValidators(candidates []framehost.Candidate[ValidatorMetadata, Validator]) ([]framehost.Candidate[ValidatorMetadata, Validator], error) {
+	slices.SortStableFunc(candidates, func(a, b framehost.Candidate[ValidatorMetadata, Validator]) int {
+		return cmp.Or(cmp.Compare(a.Metadata.Order, b.Metadata.Order), cmp.Compare(a.Metadata.Name, b.Metadata.Name))
+	})
+	return candidates, nil
 }

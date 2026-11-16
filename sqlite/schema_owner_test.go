@@ -49,7 +49,7 @@ func TestBusinessOwnerCannotEraseExecutionProtection(t *testing.T) {
 	}
 	source := framehost.UnitRef{InstallationID: "provider", Release: value.Hash(nil), UnitID: "main"}
 	binding := framehost.BindingSnapshot{Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{source}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil)}}}
-	if err := store.RecordAttempt(t.Context(), sqlite.Attempt{ID: "running", Epoch: store.Epoch(), Source: source, Binding: binding, Realm: "realm", Profile: framehost.LocalProcess}); err != nil {
+	if _, err := store.RecordAttempt(t.Context(), sqlite.Attempt{ID: "running", Epoch: store.Epoch(), Source: source, Binding: binding, Realm: "realm", Profile: framehost.LocalProcess}); err != nil {
 		t.Fatal(err)
 	}
 	err = owner.Update(t.Context(), func(ctx context.Context, tx sqlite.Executor) error {
@@ -89,7 +89,7 @@ func TestBusinessOwnerCannotReopenSettledSubmission(t *testing.T) {
 	})
 	requireSchemaDenied(t, err)
 	settlement, err := owner.Commit(t.Context(), id, request, mutate, nil)
-	if err != nil || settlement.State != framehost.CommitSucceeded || runs != 1 {
+	if err != nil || settlement.State != framehost.Committed || runs != 1 {
 		t.Fatalf("original conclusion changed: settlement=%+v runs=%d error=%v", settlement, runs, err)
 	}
 }

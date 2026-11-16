@@ -59,7 +59,7 @@ func (b *Bridge) AdmitPlan(ctx context.Context, token string, plan LocalPlan) (P
 	admitted := entry.runtimeOwnsExit()
 	// The pending Runtime owner already exists. A failed currentness check
 	// must retain that owner instead of racing a Host non-admission proof.
-	cleanup := session.cleanupOnly || !entry.admitRuntime()
+	cleanup := session.sealed || !entry.admitRuntime()
 	b.mu.Unlock()
 	if cleanup {
 		return b.admitForCleanup(ctx, entry, admitted, plan, result)
@@ -92,7 +92,7 @@ func (b *Bridge) admitCurrent(ctx context.Context, session *realmSession, entry 
 		return b.recordedPlanAdmission(ctx, plan, result)
 	}
 	b.mu.Lock()
-	live := b.executions.get(plan.Execution.ID) == entry && !entry.isFenced() && !session.cleanupOnly
+	live := b.executions.get(plan.Execution.ID) == entry && !entry.isFenced() && !session.sealed
 	b.mu.Unlock()
 	if !live {
 		return b.recordedPlanAdmission(ctx, plan, result)
@@ -109,7 +109,7 @@ func (b *Bridge) recordedPlanAdmission(ctx context.Context, plan LocalPlan, resu
 	if err != nil {
 		return PlanAdmission{}, err
 	}
-	if !matchesAttempt(record.Attempt, plan.Authority, plan.Realm, plan.Execution, plan.ScopeID, plan.ScopeGeneration) {
+	if !matchesAttempt(record.Attempt, plan.Authority, plan.Realm, plan.Execution, plan.ScopeRef) {
 		return PlanAdmission{}, framehost.ErrStaleBinding
 	}
 	switch {
@@ -123,9 +123,13 @@ func (b *Bridge) recordedPlanAdmission(ctx context.Context, plan LocalPlan, resu
 	return result, nil
 }
 
-func matchesAttempt(attempt sqlite.Attempt, authority Authority, realm Realm, execution Execution, scopeID, scopeGeneration string) bool {
+func matchesAttempt(attempt sqlite.Attempt, authority Authority, realm Realm, execution Execution, scope ScopeRef) bool {
 	return attempt.Profile == framehost.BrowserJS && attempt.ID == execution.ID &&
 		attempt.Realm == string(RealmID(realm)) && authority.Epoch == strconv.FormatUint(attempt.Epoch, 10) &&
-		execution.Generation == strconv.FormatUint(attempt.Generation, 10) && scopeID == string(attempt.Scope) &&
-		scopeGeneration == strconv.FormatUint(attempt.ScopeGeneration, 10)
+		execution.Generation == strconv.FormatUint(attempt.Generation, 10) && scope == attemptScope(attempt)
+}
+
+// attemptScope projects the recorded scope generation onto its wire spelling.
+func attemptScope(attempt sqlite.Attempt) ScopeRef {
+	return ScopeRef{ScopeID: string(attempt.Scope), ScopeGeneration: strconv.FormatUint(attempt.ScopeGeneration, 10)}
 }

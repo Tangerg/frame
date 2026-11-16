@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
+	"errors"
 	"io"
 	"path/filepath"
 	"strings"
@@ -69,7 +70,7 @@ func (r *exitCapacityRunner) Inspect(context.Context, string) (runner.Observatio
 func (r *exitCapacityRunner) CloseAttempt(_ context.Context, ref runner.AttemptRef) (runner.Observation, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.observation.Reference() != ref {
+	if r.observation.AttemptRef != ref {
 		return runner.Observation{}, runner.ErrUnknown
 	}
 	r.observation.State = runner.Exited
@@ -81,7 +82,7 @@ func (r *exitCapacityRunner) CloseAttempt(_ context.Context, ref runner.AttemptR
 func (r *exitCapacityRunner) AcknowledgeExit(_ context.Context, receipt runner.ExitReceipt) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.observation.State != runner.Exited || r.observation.Reference() != (runner.AttemptRef{AttemptID: receipt.AttemptID, Epoch: receipt.Epoch, RunnerID: receipt.RunnerID}) || r.observation.ProofID != receipt.ProofID {
+	if r.observation.State != runner.Exited || r.observation.AttemptRef != (runner.AttemptRef{AttemptID: receipt.AttemptID, Epoch: receipt.Epoch, RunnerID: receipt.RunnerID}) || r.observation.ProofID != receipt.ProofID {
 		return runner.ErrUnknown
 	}
 	r.acknowledged = append(r.acknowledged, receipt)
@@ -133,6 +134,30 @@ func exitCapacityHost(t *testing.T, requestBytes int, authority *exitCapacityRun
 		t.Fatal(err)
 	}
 	return host, store, framehost.UnitRef{InstallationID: "provider", Release: plugin.Revision(), UnitID: "main"}
+}
+
+func TestRefusedAttemptRetiresWithoutDispatchOrRecovery(t *testing.T) {
+	const requestBytes = 256
+	authority := &exitCapacityRunner{identity: runner.Identity{ID: "original-runner"}}
+	host, store, unit := exitCapacityHost(t, requestBytes, authority)
+	if _, err := host.ActivateUnit(t.Context(), "application", unit); !errors.Is(err, frame.ErrCapacity) {
+		t.Fatalf("oversized attempt was not refused: %v", err)
+	}
+	if outcome, err := host.Close(t.Context()); !outcome.Released || err != nil {
+		t.Fatalf("refused preparation kept its original instance: %+v, %v", outcome, err)
+	}
+	if err := host.Admission().RecoveryError(); err != nil {
+		t.Fatalf("definite refusal fenced healthy admission: %v", err)
+	}
+	records, err := store.Attempts(t.Context())
+	if err != nil || len(records) != 0 {
+		t.Fatalf("definite refusal gained durable protection: %+v, %v", records, err)
+	}
+	authority.mu.Lock()
+	defer authority.mu.Unlock()
+	if authority.launches != 0 {
+		t.Errorf("refused preparation dispatched %d creations", authority.launches)
+	}
 }
 
 func TestProcessExitProofIsIndependentOfTheRequestBudget(t *testing.T) {

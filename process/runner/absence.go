@@ -2,7 +2,7 @@ package runner
 
 import (
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/value"
@@ -17,21 +17,21 @@ type AttemptRef struct {
 	RunnerID  string `json:"runnerId"`
 }
 
-func (r AttemptRef) valid() bool {
-	return frame.ValidName(r.AttemptID) && frame.ValidName(r.RunnerID) && r.Epoch != 0
+func (r AttemptRef) Validate() error {
+	if !frame.ValidName(r.AttemptID) || !frame.ValidName(r.RunnerID) || r.Epoch == 0 {
+		return frame.ErrInvalid
+	}
+	return nil
 }
 
 type AbsenceProof struct {
-	AttemptID  string `json:"attemptId"`
-	Epoch      uint64 `json:"epoch"`
-	RunnerID   string `json:"runnerId"`
+	AttemptRef
 	FenceEpoch uint64 `json:"fenceEpoch"`
 	ProofID    string `json:"proofId"`
 }
 
 func (p AbsenceProof) Validate(request AttemptRef) error {
-	if !request.valid() ||
-		p.AttemptID != request.AttemptID || p.Epoch != request.Epoch || p.RunnerID != request.RunnerID || p.FenceEpoch <= p.Epoch {
+	if request.Validate() != nil || p.AttemptRef != request || p.FenceEpoch <= p.Epoch {
 		return ErrUnknown
 	}
 	expected, err := absentProof(request, p.FenceEpoch)
@@ -48,8 +48,8 @@ func (s *Server) ProveAbsent(ctx context.Context, request AttemptRef) (AbsencePr
 	if err := frame.ContextError(ctx); err != nil {
 		return AbsenceProof{}, err
 	}
-	if !request.valid() {
-		return AbsenceProof{}, frame.ErrInvalid
+	if err := request.Validate(); err != nil {
+		return AbsenceProof{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -71,5 +71,5 @@ func absentProof(request AttemptRef, fenceEpoch uint64) (AbsenceProof, error) {
 	if err != nil {
 		return AbsenceProof{}, err
 	}
-	return AbsenceProof{AttemptID: request.AttemptID, Epoch: request.Epoch, RunnerID: request.RunnerID, FenceEpoch: fenceEpoch, ProofID: value.Hash(encoded).String()}, nil
+	return AbsenceProof{AttemptRef: request, FenceEpoch: fenceEpoch, ProofID: value.Hash(encoded).String()}, nil
 }

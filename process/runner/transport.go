@@ -170,6 +170,9 @@ func (s *Server) attachStream(ref AttemptRef, connection net.Conn) (*attachment,
 }
 
 func (s *Server) attachableProcess(ref AttemptRef) (*process, error) {
+	if err := ref.Validate(); err != nil {
+		return nil, err
+	}
 	if s.closed {
 		return nil, frame.ErrClosed
 	}
@@ -180,15 +183,21 @@ func (s *Server) attachableProcess(ref AttemptRef) (*process, error) {
 	if !exists {
 		return nil, ErrNotFound
 	}
-	if item.Observation.Reference() != ref {
+	if item.Observation.AttemptRef != ref {
 		return nil, ErrFenced
 	}
 	if item.Observation.State == Unknown {
 		return nil, ErrUnknown
 	}
+	if item.Observation.State == Exited || item.Observation.State == NotCreated {
+		return nil, ErrUnavailable
+	}
 	live := s.processes[ref.AttemptID]
-	if live == nil || live.closeState != processOpen {
-		return nil, frame.ErrClosed
+	if live == nil || live.closeState == processWaitUnconfirmed {
+		return nil, ErrUnknown
+	}
+	if live.closeState != processOpen {
+		return nil, ErrUnavailable
 	}
 	return live, nil
 }
@@ -243,9 +252,6 @@ func (c *Client) Fence(ctx context.Context, epoch uint64) error {
 	return err
 }
 func (c *Client) Launch(ctx context.Context, request LaunchRequest) (LaunchResult, error) {
-	if err := request.Validate(); err != nil {
-		return notDispatched(request), err
-	}
 	response, dispatch, err := c.request(ctx, launchControlRequest{request})
 	if dispatch == controlNotDispatched {
 		return notDispatched(request), err
@@ -368,12 +374,16 @@ func (c *Client) Attach(ctx context.Context, ref AttemptRef) (result io.ReadWrit
 }
 
 func (c *Client) openAttachmentConnection(ctx context.Context, request controlRequest) (net.Conn, *bufio.Reader, error) {
+	data, err := encodeRequest(request)
+	if err != nil {
+		return nil, nil, err
+	}
 	connection, err := c.dial(ctx)
 	if err != nil {
 		return nil, nil, errors.Join(err, frame.ContextError(ctx))
 	}
 	stop := context.AfterFunc(ctx, func() { _ = connection.Close() })
-	if err := writeRequest(connection, request); err != nil {
+	if err := writeControl(connection, data); err != nil {
 		stop()
 		_ = connection.Close()
 		return nil, nil, errors.Join(err, frame.ContextError(ctx))
@@ -411,14 +421,6 @@ func readLine(reader *bufio.Reader) ([]byte, error) {
 	}
 }
 
-func writeRequest(writer io.Writer, request controlRequest) error {
-	data, err := encodeRequest(request)
-	if err != nil {
-		return err
-	}
-	return writeControl(writer, data)
-}
-
 func writeControl(writer io.Writer, data []byte) error {
 	n, err := writer.Write(data)
 	if err == nil && n != len(data) {
@@ -434,7 +436,7 @@ var controlErrors = []struct {
 	err  error
 }{
 	{"unknown", ErrUnknown}, {"conflict", ErrConflict}, {"fenced", ErrFenced}, {"attached", ErrAttached},
-	{"not_found", ErrNotFound}, {"closed", frame.ErrClosed}, {"capacity", frame.ErrCapacity}, {"invalid", frame.ErrInvalid},
+	{"not_found", ErrNotFound}, {"unavailable", ErrUnavailable}, {"closed", frame.ErrClosed}, {"capacity", frame.ErrCapacity}, {"invalid", frame.ErrInvalid},
 }
 
 func errorCode(err error) string {

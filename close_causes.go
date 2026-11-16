@@ -29,6 +29,25 @@ type closeCauseReport struct {
 	causes []*closeCause
 }
 
+func (e *closeCauseReport) merge(other *closeCauseReport) *closeCauseReport {
+	if e == nil {
+		return other
+	}
+	if other == nil || other == e {
+		return e
+	}
+	causes := slices.Clone(e.causes)
+	for _, original := range other.causes {
+		if !slices.Contains(causes, original) {
+			causes = append(causes, original)
+		}
+	}
+	if len(causes) == len(e.causes) {
+		return e
+	}
+	return &closeCauseReport{causes: causes}
+}
+
 func (e *closeCauseReport) Error() string { return errors.Join(e.Unwrap()...).Error() }
 func (e *closeCauseReport) Unwrap() []error {
 	causes := make([]error, len(e.causes))
@@ -39,16 +58,31 @@ func (e *closeCauseReport) Unwrap() []error {
 }
 
 type localCloseError struct {
-	status error
-	causes *closeCauseReport
+	status     closeStatus
+	additional []error
+	causes     *closeCauseReport
 }
 
-func (e *localCloseError) Error() string { return errors.Join(e.status, e.causes).Error() }
-func (e *localCloseError) Unwrap() []error {
-	if e.status == nil {
-		return []error{e.causes}
+func newLocalCloseError(status closeStatus, additional []error, causes *closeCauseReport) error {
+	if causes == nil && len(additional) == 0 {
+		return status.err()
 	}
-	return []error{e.status, e.causes}
+	if causes == nil && status == 0 && len(additional) == 1 {
+		return additional[0]
+	}
+	return &localCloseError{status: status, additional: additional, causes: causes}
+}
+
+func (e *localCloseError) Error() string { return errors.Join(e.Unwrap()...).Error() }
+func (e *localCloseError) Unwrap() []error {
+	var causes []error
+	if status := e.status.err(); status != nil {
+		causes = append(causes, status)
+	}
+	if e.causes != nil {
+		causes = append(causes, e.causes)
+	}
+	return append(causes, e.additional...)
 }
 
 // ObserveCloseCauses must precede the failures of interest. It shares the live
@@ -96,18 +130,31 @@ func (c *CloseCauses) Err() error {
 	return nil
 }
 
-func (c *CloseCauses) Join(status error) error {
+// Join preserves original failure identities across close compositions. A
+// conclusion or an already observed failure cannot become another occurrence.
+func (c *CloseCauses) Join(observed ...error) error {
 	if c == nil {
-		return errors.Join(ErrInvalid, status)
+		return errors.Join(append([]error{ErrInvalid}, observed...)...)
 	}
-	report := c.snapshot()
-	if report == nil {
-		return status
+	var status closeStatus
+	var additional []error
+	causes := c.snapshot()
+	for _, err := range observed {
+		switch original := err.(type) {
+		case nil:
+		case closeConclusion:
+			status |= original.status
+		case *localCloseError:
+			status |= original.status
+			additional = append(additional, original.additional...)
+			causes = causes.merge(original.causes)
+		case *closeCauseReport:
+			causes = causes.merge(original)
+		default:
+			additional = append(additional, err)
+		}
 	}
-	if existing, ok := status.(*localCloseError); ok && existing.causes == report {
-		return existing
-	}
-	return &localCloseError{status: status, causes: report}
+	return newLocalCloseError(status, additional, causes)
 }
 
 // Parent callbacks and release proofs can observe the same child failure. Copy
@@ -116,16 +163,16 @@ func (c *CloseCauses) record(resource string, cause error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var inherited *closeCauseReport
+	var additional []error
 	switch original := cause.(type) {
 	case *localCloseError:
 		inherited = original.causes
-		cause = original.status
-		if cause == ErrCloseFailed || cause == ErrUnconfirmedRelease {
-			cause = nil
-		}
+		additional = original.additional
 	case *closeCauseReport:
 		inherited = original
-		cause = nil
+	case closeConclusion:
+	default:
+		additional = []error{cause}
 	}
 	if inherited != nil {
 		for _, original := range inherited.causes {
@@ -135,8 +182,8 @@ func (c *CloseCauses) record(resource string, cause error) {
 			}
 		}
 	}
-	if cause != nil {
-		c.causes = append(c.causes, &closeCause{resource: resource, cause: cause})
+	for _, failure := range additional {
+		c.causes = append(c.causes, &closeCause{resource: resource, cause: failure})
 		c.report = nil
 	}
 }

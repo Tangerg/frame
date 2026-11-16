@@ -20,7 +20,7 @@ func TestInvalidUseIdentityIsRejectedBeforePreparation(t *testing.T) {
 		{"execution", "realm", "invalid execution"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			protection := &useRetirementProtection{approve: func() error { return nil }, releases: make(chan recordedUseRelease, 1)}
+			protection := &useRetirementProtection{approve: func() (framehost.CommitState, error) { return framehost.Committed, nil }, releases: make(chan recordedUseRelease, 1)}
 			host := testHost(t, framehost.Config{Authority: protectionAuthority(protection)})
 			var prepared atomic.Int32
 			plugin := installNative(t, host, "provider", framehost.Unit{
@@ -158,13 +158,13 @@ func TestUseGrantRechecksRuntimeAfterApproval(t *testing.T) {
 					return nil, nil
 				},
 			})
-			protection.approve = func() error {
+			protection.approve = func() (framehost.CommitState, error) {
 				cancelled := instanceLifetime
 				if providerCancels {
 					cancelled = providerLifetime
 				}
 				cancelled.Cancel(errors.New("original runtime stopped during approval"))
-				return nil
+				return framehost.Committed, nil
 			}
 			owner, scope := ownerAndScope(t, host)
 			use, err := host.AcquireUnit(ctx, framehost.UnitRef{InstallationID: "consumer", Release: consumer.Revision(), UnitID: "main"}, framehost.UseConfig{Owner: owner, Scope: scope, Realm: "approval"})

@@ -72,21 +72,21 @@ func TestSubmissionAtomicBindingAndStableConclusion(t *testing.T) {
 		_, err := tx.ExecContext(ctx, `INSERT INTO documents VALUES('a','converter',?,1)`, value.Hash([]byte("release")))
 		return []byte("document:a"), err
 	}, nil)
-	if err != nil || settlement.State != framehost.CommitSucceeded || !settlement.Synchronized {
+	if err != nil || settlement.State != framehost.Committed || !settlement.Synchronized {
 		t.Fatalf("commit: %+v %v", settlement, err)
 	}
 	if err := admission.Under(ctx, func() error { return admission.CheckUnused(ctx, "converter") }); !errors.Is(err, framehost.ErrInUse) {
 		t.Fatalf("binding was not visible: %v", err)
 	}
 	replayed, err := owner.Commit(ctx, id, request, func(context.Context, Executor) ([]byte, error) { mutations++; return nil, nil }, nil)
-	if err != nil || replayed.State != framehost.CommitSucceeded || mutations != 1 {
+	if err != nil || replayed.State != framehost.Committed || mutations != 1 {
 		t.Fatalf("repeated mutation: %+v %v count=%d", replayed, err, mutations)
 	}
 	if _, err := owner.Commit(ctx, id, []byte("changed"), func(context.Context, Executor) ([]byte, error) { t.Fatal("conflict executed"); return nil, nil }, nil); !errors.Is(err, ErrConflict) {
 		t.Fatalf("conflict: %v", err)
 	}
 	// The business owner can release its reference without erasing its earlier
-	// admission evidence. The conclusion remains framehost.CommitSucceeded after completion.
+	// admission evidence. The conclusion remains framehost.Committed after completion.
 	finish, err := owner.Prepare(ctx, []byte("finish"))
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +102,7 @@ func TestSubmissionAtomicBindingAndStableConclusion(t *testing.T) {
 		t.Fatal(err)
 	}
 	settlement, err = owner.Settlement(ctx, id, request)
-	if err != nil || settlement.State != framehost.CommitSucceeded {
+	if err != nil || settlement.State != framehost.Committed {
 		t.Fatalf("history followed current references: %+v %v", settlement, err)
 	}
 	var count int
@@ -124,7 +124,7 @@ func TestCanceledMutationSettlesBeforeAdmissionReopens(t *testing.T) {
 		cancel()
 		return nil, err
 	}, nil)
-	if !errors.Is(err, context.Canceled) || settlement.State != framehost.CommitRejected {
+	if !errors.Is(err, context.Canceled) || settlement.State != framehost.NotCommitted {
 		t.Fatalf("canceled settlement: %+v %v", settlement, err)
 	}
 	var count int
@@ -137,7 +137,7 @@ func TestCanceledMutationSettlesBeforeAdmissionReopens(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = owner.Commit(context.Background(), id, request, func(context.Context, Executor) ([]byte, error) {
-		t.Fatal("terminal framehost.CommitRejected was replayed")
+		t.Fatal("terminal framehost.NotCommitted was replayed")
 		return nil, nil
 	}, nil)
 	if err != nil {
@@ -206,7 +206,7 @@ func TestSynchronizedFailureKeepsRecoveryBarrier(t *testing.T) {
 	}
 	failed := errors.New("local authority unavailable")
 	settlement, err := owner.Commit(ctx, id, []byte("sync"), func(context.Context, Executor) ([]byte, error) { return []byte("accepted"), nil }, func(Settlement) error { return failed })
-	if !errors.Is(err, failed) || settlement.State != framehost.CommitSucceeded {
+	if !errors.Is(err, failed) || settlement.State != framehost.Committed {
 		t.Fatalf("known commit lost: %+v %v", settlement, err)
 	}
 	if _, err := owner.Prepare(ctx, []byte("new")); !errors.Is(err, framehost.ErrRecoveryRequired) {
@@ -343,9 +343,9 @@ func TestCrashSettlementUsesOriginalIntent(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := framehost.CommitRejected
+			want := framehost.NotCommitted
 			if phase == "after-commit" {
-				want = framehost.CommitSucceeded
+				want = framehost.Committed
 			}
 			if settlement.State != want {
 				t.Fatalf("settlement %s, want %s", settlement.State, want)
@@ -356,7 +356,7 @@ func TestCrashSettlementUsesOriginalIntent(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if (count == 1) != (want == framehost.CommitSucceeded) {
+			if (count == 1) != (want == framehost.Committed) {
 				t.Fatalf("mutation and evidence diverged: %d %s", count, settlement.State)
 			}
 		})
@@ -405,7 +405,7 @@ func TestExecutionProtectionOutlivesBusinessAndEpoch(t *testing.T) {
 	source := framehost.UnitRef{InstallationID: "converter", Release: value.Hash([]byte("release")), UnitID: "backend"}
 	binding := framehost.BindingSnapshot{Roots: []framehost.ExportRef{{InstallationID: source.InstallationID, Release: source.Release, UnitID: source.UnitID, Export: "convert", Contract: contract.Ref()}}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil), Imports: []framehost.ImportBinding{}}}}
 	attempt := Attempt{ID: "attempt-1", Epoch: store.Epoch(), Source: source, Binding: binding, Realm: "runner-1", Profile: "local-process"}
-	if err := store.RecordAttempt(context.Background(), attempt); err != nil {
+	if _, err := store.RecordAttempt(context.Background(), attempt); err != nil {
 		t.Fatal(err)
 	}
 	if err := admission.CheckUnused(context.Background(), "converter"); err != nil {
@@ -416,7 +416,7 @@ func TestExecutionProtectionOutlivesBusinessAndEpoch(t *testing.T) {
 		t.Fatalf("execution protection: %v %v", dependencies, err)
 	}
 	attempt.Binding.Selection = value.Hash([]byte("changed"))
-	if err := store.RecordAttempt(context.Background(), attempt); !errors.Is(err, ErrConflict) {
+	if _, err := store.RecordAttempt(context.Background(), attempt); !errors.Is(err, ErrConflict) {
 		t.Fatalf("widened execution: %v", err)
 	}
 	admission.RequireRecovery(errors.New("host restarted"))
@@ -473,22 +473,22 @@ func TestProtectionQueriesExcludeProvenHistory(t *testing.T) {
 	ref := framehost.UnitRef{InstallationID: "one", Release: value.Hash([]byte("release")), UnitID: "u"}
 	binding := framehost.BindingSnapshot{Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{ref}, Units: []framehost.UnitBinding{{Source: ref, Configuration: value.Hash(nil)}}}
 	active := Attempt{ID: "active", Epoch: store.Epoch(), Source: ref, Binding: binding, Realm: "runner", Profile: framehost.LocalProcess}
-	if err := store.RecordAttempt(ctx, active); err != nil {
+	if _, err := store.RecordAttempt(ctx, active); err != nil {
 		t.Fatal(err)
 	}
 	approval := framehost.UseApproval{ID: "use", ExecutionID: active.ID, Realm: "realm", Scope: "scope", ScopeGeneration: 1, Epoch: store.Epoch(), Binding: binding}
-	if err := a.Admit(ctx, func(ctx context.Context) error { return store.ApproveUse(ctx, approval) }); err != nil {
+	if err := a.Admit(ctx, func(ctx context.Context) error { _, err := store.ApproveUse(ctx, approval); return err }); err != nil {
 		t.Fatal(err)
 	}
 	historical := active
 	historical.ID = "closed-execution"
-	if err := store.RecordAttempt(ctx, historical); err != nil {
+	if _, err := store.RecordAttempt(ctx, historical); err != nil {
 		t.Fatal(err)
 	}
 	historicalApproval := approval
 	historicalApproval.ID = "closed-use"
 	historicalApproval.ExecutionID = historical.ID
-	if err := a.Admit(ctx, func(ctx context.Context) error { return store.ApproveUse(ctx, historicalApproval) }); err != nil {
+	if err := a.Admit(ctx, func(ctx context.Context) error { _, err := store.ApproveUse(ctx, historicalApproval); return err }); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.ReleaseAttempt(ctx, historical.ID, historical.LocalExit("not-started", "original execution never started")); err != nil {

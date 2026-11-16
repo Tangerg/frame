@@ -29,6 +29,7 @@ const (
 	titleValidationOrder                   = 20
 	uppercaseConverterPriority             = 50
 	textFormat                             = "text"
+	textConverterRule                      = "authoring.text-priority/1"
 	contentSlot                            = "{{content}}"
 	templateFileMode           fs.FileMode = 0o600
 )

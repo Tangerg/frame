@@ -136,7 +136,8 @@ func TestProtocolDiscriminatorsCannotBeForgedWithNull(t *testing.T) {
 	}
 	valid, err := parseEnvelope([]byte(`{"id":"1","result":null}`))
 	reply, ok := valid.(incomingReply)
-	if err != nil || !ok || string(reply.reply.Result) != "null" {
+	result, isResult := reply.answer.(resultMessage)
+	if err != nil || !ok || !isResult || string(result.Result) != "null" {
 		t.Fatalf("legitimate null lost: %#v %v", valid, err)
 	}
 	if _, err := parseEnvelope([]byte(`{"id":"1","error":{"code":"unclassified","message":"forged"}}`)); err == nil {

@@ -99,7 +99,7 @@ type SchemaKeyword struct {
 	Children   SchemaChildren   `json:"children,omitempty"`
 	Edge       SchemaEdge       `json:"edge,omitempty"`
 	Value      SchemaValueShape `json:"value,omitempty"`
-	Annotation bool             `json:"annotation,omitempty"`
+	Annotation bool             `json:"annotation,omitzero"`
 }
 
 type SchemaProfile struct {

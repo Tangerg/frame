@@ -137,10 +137,9 @@ func TestBrowserMetadataSurvivesGoTypeRegistrationAfterPublication(t *testing.T)
 			t.Fatalf("typed projection cannot read the original publication: %+v %v", candidates, err)
 		}
 		for _, candidate := range candidates {
-			metadata, err := candidate.Metadata()
 			label, present := labels[candidate.Source().Export]
-			if err != nil || !present || metadata.Label != label {
-				t.Fatalf("metadata changed with Go registration: %+v %v", metadata, err)
+			if !present || candidate.Metadata.Label != label {
+				t.Fatalf("metadata changed with Go registration: %+v", candidate.Metadata)
 			}
 		}
 	}

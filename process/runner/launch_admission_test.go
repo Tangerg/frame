@@ -22,7 +22,7 @@ func TestExecutableLimitRejectsOverflowBeforeCreatingAuthority(t *testing.T) {
 	if server != nil {
 		_ = server.Close()
 	}
-	if !errors.Is(err, frame.ErrCapacity) {
+	if !errors.Is(err, frame.ErrInvalid) {
 		t.Fatalf("executable limit can overflow its bounded reader: %v", err)
 	}
 	if _, err := os.Stat(directory); !errors.Is(err, os.ErrNotExist) {
@@ -80,7 +80,11 @@ func TestLaunchRejectsUnrepresentableProgramBeforeReservation(t *testing.T) {
 func TestControlRequestPreservesProgramTextOrRejectsBeforeWriting(t *testing.T) {
 	for _, input := range []struct{ name, text string }{{"invalid-utf8", "\xff"}, {"replacement-rune", "replacement \ufffd"}, {"non-BMP", "unicode \U0001d11e"}} {
 		t.Run(input.name, func(t *testing.T) {
-			request := launchControlRequest{LaunchRequest{Args: []string{input.text}, ExecutableDigest: value.Hash(nil), Configuration: value.Hash(nil)}}
+			request := launchControlRequest{LaunchRequest{
+				AttemptRef: AttemptRef{AttemptID: "attempt", Epoch: 1, RunnerID: "runner"},
+				Command:    "/approved/program", Args: []string{input.text}, Env: []string{},
+				ExecutableDigest: value.Hash(nil), Configuration: value.Hash(nil),
+			}}
 			var output bytes.Buffer
 			err := writeRequest(&output, request)
 			if input.name == "invalid-utf8" {
@@ -142,7 +146,7 @@ func TestControlLaunchPreservesExactEnvironmentWithoutSocketTransport(t *testing
 				t.Fatal(err)
 			}
 			response, err := decodeResponse(raw, methodLaunch)
-			if err != nil || response == nil || response.(Observation).Reference() != request.AttemptRef {
+			if err != nil || response == nil || response.(Observation).AttemptRef != request.AttemptRef {
 				t.Fatalf("control launch changed the original attempt: %+v, %v", response, err)
 			}
 			<-served

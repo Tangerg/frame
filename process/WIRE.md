@@ -1,6 +1,8 @@
 # Local process protocol
 
-`wire.json` owns the protocol revision, limits, methods and stable error codes.
+`wire.json` owns the limits, methods and stable error codes. `wire-profile.generated.json`
+projects every message shape and the protocol identity: a digest of `wire.json` and those
+shapes. Peers compare it at hello, so changing either owner refuses an older peer.
 A frame is one UTF-8 JSON object followed by LF. The negotiated byte bound includes LF;
 payloads must contain no unescaped newlines. Both endpoints independently issue increasing,
 canonical positive decimal string IDs. Commands, attempts and business operations retain
@@ -44,7 +46,7 @@ cancellation racing after admission retains the original unknown-outcome rules.
 
 | Direction | Method | Request | Success |
 | --- | --- | --- | --- |
-| Host → child | hello | version, maxFrameBytes | version, unit, maxFrameBytes, imports and exports (name → contract digest) |
+| Host → child | hello | protocol, maxFrameBytes | protocol, unit, maxFrameBytes, imports and exports (name → contract digest) |
 | Host → child | prepare | imports: slot → ordered array of {handle,source} | true |
 | Host → child | activate | empty object | true |
 | Either | call | handle, member, input; commands require commandID; streaming calls include a stream token | final value |

@@ -29,7 +29,7 @@ func TestControlRequestsHaveClosedOperationParameters(t *testing.T) {
 		}}, []string{"attemptId", "epoch", "runnerId", "command", "executableDigest", "env", "configuration"}},
 		{closeRequest{ref}, []string{"attemptId", "epoch", "runnerId"}},
 		{proveAbsentRequest{ref}, []string{"attemptId", "epoch", "runnerId"}},
-		{acknowledgeExitRequest{ExitReceipt{AttemptID: ref.AttemptID, Epoch: ref.Epoch, RunnerID: ref.RunnerID, ProofID: "proof", State: NotCreated}}, []string{"attemptId", "epoch", "runnerId", "proofId", "state"}},
+		{acknowledgeExitRequest{ExitReceipt{AttemptRef: AttemptRef{AttemptID: ref.AttemptID, Epoch: ref.Epoch, RunnerID: ref.RunnerID}, ProofID: "proof", State: NotCreated}}, []string{"attemptId", "epoch", "runnerId", "proofId", "state"}},
 		{attachControlRequest{ref}, []string{"attemptId", "epoch", "runnerId"}},
 		{attachStreamRequest{ref}, []string{"attemptId", "epoch", "runnerId"}},
 	}
@@ -106,7 +106,7 @@ func TestControlResponseEvidenceRequiresEveryNonNullMember(t *testing.T) {
 	}{
 		{methodIdentity, Identity{ID: "runner", Epoch: 1, Fenced: false}, []string{"id", "epoch", "fenced"}},
 		{methodProveAbsent, proof, []string{"attemptId", "epoch", "runnerId", "fenceEpoch", "proofId"}},
-		{methodInspect, Observation{AttemptID: "attempt", Epoch: 1, RunnerID: "runner", State: NotCreated, ProofID: "proof"}, []string{"attemptId", "epoch", "runnerId", "state", "proofId"}},
+		{methodInspect, Observation{AttemptRef: AttemptRef{AttemptID: "attempt", Epoch: 1, RunnerID: "runner"}, State: NotCreated, ProofID: "proof"}, []string{"attemptId", "epoch", "runnerId", "state", "proofId"}},
 	} {
 		data, err := json.Marshal(test.result)
 		if err != nil {

@@ -246,9 +246,8 @@ func TestRetainedDependenciesIdentifyTheirOriginalOwners(t *testing.T) {
 	if err != nil || !slices.Equal(fresh, expected[1:]) {
 		t.Fatalf("diagnostics did not read current original records behind recovery: %+v, %v", fresh, err)
 	}
-	held, err := admission.Held(t.Context(), "original")
-	if err != nil || !slices.Equal(held, []framehost.Dependency{dependency}) {
-		t.Fatalf("destructive commands observed a different retention source: %+v, %v", held, err)
+	if err := admission.CheckUnused(t.Context(), "original"); !errors.Is(err, framehost.ErrInUse) {
+		t.Fatalf("destructive commands observed a different retention source: %v", err)
 	}
 	if documents.reads != 3 || tasks.reads != 3 {
 		t.Fatalf("retention reads were cached or duplicated: documents=%d tasks=%d", documents.reads, tasks.reads)
@@ -344,7 +343,8 @@ func TestInstallationRestorationPreservesScopeRevocation(t *testing.T) {
 	for _, change := range []string{"fence", "disable", "remove"} {
 		t.Run(change, func(t *testing.T) {
 			ctx := testContext(t)
-			host := testHost(t, framehost.Config{})
+			store := newRestorationStore()
+			host := testHost(t, framehost.Config{Authority: installationAuthority(store)})
 			var grant framehost.ScopeGrant
 			plugin := installNative(t, host, "original", framehost.Unit{
 				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
@@ -381,7 +381,8 @@ func TestInstallationRestorationPreservesScopeRevocation(t *testing.T) {
 			case "remove":
 				records = nil
 			}
-			if err := host.Restore(ctx, records, []*framehost.Plugin{plugin}); err != nil {
+			store.setRecords(records...)
+			if err := host.Restore(ctx, []*framehost.Plugin{plugin}); err != nil {
 				t.Fatal(err)
 			}
 			if err := host.Admission().ValidateScope(grant); !errors.Is(err, framehost.ErrFenced) {
@@ -390,7 +391,7 @@ func TestInstallationRestorationPreservesScopeRevocation(t *testing.T) {
 			if _, err := host.Close(ctx); err != nil {
 				t.Fatal(err)
 			}
-			if err := host.Restore(ctx, records, []*framehost.Plugin{plugin}); !errors.Is(err, frame.ErrClosed) {
+			if err := host.Restore(ctx, []*framehost.Plugin{plugin}); !errors.Is(err, frame.ErrClosed) {
 				t.Fatalf("closed host accepted restoration: %v", err)
 			}
 		})

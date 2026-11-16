@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 )
 
 type txKey struct{ database *databaseOwner }
@@ -96,12 +97,12 @@ func (d *databaseOwner) runIndependentTx(ctx context.Context, mode transactionMo
 	}
 	// Unlike Store submissions, standalone transactions have no owned journal
 	// to reconcile. Fence before releasing a connection with an unknown commit.
-	err := d.transact(ctx, mode, func(executor Executor) error {
+	state, err := d.transact(ctx, mode, func(executor Executor) error {
 		access := executor.(*transactionAccess)
 		scoped := context.WithValue(ctx, txKey{database: d}, transaction{tx: access, readOnly: mode == readTransaction})
 		return fn(scoped)
 	}, d.requireRecovery)
-	if errors.Is(err, errCommitUnresolved) {
+	if state == framehost.CommitIndeterminate {
 		d.startClose()
 		return errors.Join(ErrIndeterminate, err)
 	}

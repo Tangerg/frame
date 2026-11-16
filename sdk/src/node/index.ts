@@ -15,7 +15,7 @@ import {
   type CallContext,
 } from "./contract.js";
 import { Peer, ProcessError } from "./peer.js";
-import shapes from "./shapes.generated.json" with { type: "json" };
+import profile from "./wire-profile.generated.json" with { type: "json" };
 import wire from "./wire.json" with { type: "json" };
 
 export {
@@ -203,6 +203,7 @@ class StreamCall {
   }
 }
 
+const { shapes } = profile;
 const digestPattern = new RegExp(DIGEST_PATTERN);
 
 function digest(value: unknown): value is string {
@@ -402,7 +403,7 @@ class Instance<I extends Imports, E extends Exports> {
     this.#expect("new");
     admitShape(params, shapes.hello);
     if (
-      params.version !== wire.version ||
+      params.protocol !== profile.protocol ||
       !Number.isSafeInteger(params.maxFrameBytes) ||
       (params.maxFrameBytes as number) < 1
     )
@@ -417,7 +418,7 @@ class Instance<I extends Imports, E extends Exports> {
     this.peer.limit(maxFrameBytes);
     this.#phase = "described";
     return {
-      version: wire.version,
+      protocol: profile.protocol,
       unit: this.unit.id,
       maxFrameBytes,
       imports: Object.fromEntries(

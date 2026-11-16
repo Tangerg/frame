@@ -4,8 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 
 	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
+	sqlitedriver "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // The connection stays exclusively owned until COMMIT or rollback has settled.
@@ -38,15 +42,16 @@ func (m transactionMode) beginStatement() string {
 // A failed BEGIN acknowledgement cannot prove whether a transaction exists.
 // Disposing its original connection settles either case without inventing a
 // rollback failure. Later phases retain their rollback and commit evidence.
-func (s *databaseOwner) settleFailedTransaction(connection *sql.Conn, scope *connectionScope, phase transactionPhase, err error, unresolvedCommit func(error)) (bool, error) {
+func (s *databaseOwner) settleFailedTransaction(connection *sql.Conn, scope *connectionScope, phase transactionPhase, err error, unresolvedCommit func(error)) (bool, framehost.CommitState, error) {
+	state := framehost.NotCommitted
 	var rollbackErr error
 	if phase != transactionBeginning {
 		_, rollbackErr = connection.ExecContext(context.Background(), `ROLLBACK`)
 		if rollbackErr == nil && scope.failure() == nil {
-			return true, err
+			return true, state, err
 		}
 		if rollbackErr != nil && phase == transactionCommitting {
-			err = errors.Join(err, errCommitUnresolved)
+			state = framehost.CommitIndeterminate
 			if unresolvedCommit != nil {
 				unresolvedCommit(errors.Join(err, rollbackErr))
 			}
@@ -58,23 +63,31 @@ func (s *databaseOwner) settleFailedTransaction(connection *sql.Conn, scope *con
 		s.retainUnconfirmedConnection(connection, errors.Join(rollbackErr, closeErr))
 		err = errors.Join(err, ErrIndeterminate, closeErr)
 	}
-	return returnable, errors.Join(err, rollbackErr)
+	return returnable, state, errors.Join(err, rollbackErr)
 }
 
 func (s *databaseOwner) transaction(ctx context.Context, apply func(Executor) error) error {
-	return s.transact(ctx, writeTransaction, apply, nil)
+	_, err := s.transact(ctx, writeTransaction, apply, nil)
+	return err
 }
-func (s *databaseOwner) transact(ctx context.Context, mode transactionMode, apply func(Executor) error, unresolvedCommit func(error)) (err error) {
+
+func (s *databaseOwner) transact(ctx context.Context, mode transactionMode, apply func(Executor) error, unresolvedCommit func(error)) (state framehost.CommitState, err error) {
+	state = framehost.NotCommitted
 	if err := frame.ContextError(ctx); err != nil {
-		return err
+		return state, err
 	}
 	if err := s.admitTransaction(); err != nil {
-		return err
+		return state, err
 	}
 	defer s.transactions.Done()
+	defer func() {
+		if databaseCorrupt(err) {
+			s.requireRecovery(err)
+		}
+	}()
 	connection, err := s.db.Conn(ctx)
 	if err != nil {
-		return err
+		return state, err
 	}
 	returnConnection := true
 	defer func() {
@@ -88,7 +101,7 @@ func (s *databaseOwner) transact(ctx context.Context, mode transactionMode, appl
 	// A queued transaction may have been admitted before the original failed.
 	// Normal Close joins that work; an unconfirmed outcome refuses its callback.
 	if err := s.transactionFailure(); err != nil {
-		return err
+		return state, err
 	}
 	phase := transactionBeginning
 	scope := newConnectionScope(connection, connection)
@@ -96,7 +109,7 @@ func (s *databaseOwner) transact(ctx context.Context, mode transactionMode, appl
 		recovered := recover()
 		scope.seal()
 		if phase != transactionSettled {
-			returnConnection, err = s.settleFailedTransaction(connection, scope, phase, err, unresolvedCommit)
+			returnConnection, state, err = s.settleFailedTransaction(connection, scope, phase, err, unresolvedCommit)
 			err = scope.include(errors.Join(err, frame.ContextError(ctx)))
 		}
 		if recovered != nil {
@@ -109,11 +122,11 @@ func (s *databaseOwner) transact(ctx context.Context, mode transactionMode, appl
 	// A failed acknowledgement can follow a successful BEGIN. This owner must
 	// settle or close that same connection before it can return to the pool.
 	if err := beginTransaction(ctx, connection, mode); err != nil {
-		return errors.Join(err, frame.ContextError(ctx))
+		return state, errors.Join(err, frame.ContextError(ctx))
 	}
 	phase = transactionActive
 	if err := scope.enter(); err != nil {
-		return err
+		return state, err
 	}
 	access := newTransactionAccess(scope)
 	body := func() error { return access.run(func() error { return apply(access) }) }
@@ -125,15 +138,37 @@ func (s *databaseOwner) transact(ctx context.Context, mode transactionMode, appl
 	scope.seal()
 	err = scope.include(errors.Join(err, frame.ContextError(ctx)))
 	if err != nil {
-		return err
+		return state, err
 	}
 	if err = frame.ContextError(ctx); err != nil {
-		return err
+		return state, err
 	}
 	phase = transactionCommitting
 	if _, err = connection.ExecContext(context.Background(), `COMMIT`); err != nil {
-		return err
+		return state, err
 	}
 	phase = transactionSettled
-	return nil
+	return framehost.Committed, nil
+}
+
+func databaseCorrupt(err error) bool {
+	switch failure := err.(type) {
+	case interface{ Unwrap() []error }:
+		return slices.ContainsFunc(failure.Unwrap(), databaseCorrupt)
+	case interface{ Unwrap() error }:
+		return databaseCorrupt(failure.Unwrap())
+	}
+	failure, ok := errors.AsType[*sqlitedriver.Error](err)
+	if !ok {
+		return false
+	}
+	if failure.Code() == sqlite3.SQLITE_IOERR_CORRUPTFS {
+		return true
+	}
+	switch failure.Code() & primaryResultMask {
+	case sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB:
+		return true
+	default:
+		return false
+	}
 }

@@ -284,7 +284,7 @@ func TestEventDeliveryReadsOriginalParticipantCancellation(t *testing.T) {
 				if scenario.sourceEnds {
 					participant = sender
 				}
-				participant.BeginClose(cause)
+				participant.Lifetime().BeginClose(cause)
 				return callbackFailure
 			})
 			if calls != 1 || !errors.Is(err, context.Canceled) || !errors.Is(err, cause) || callbackFailure != nil && !errors.Is(err, callbackFailure) {

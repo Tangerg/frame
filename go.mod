@@ -1,6 +1,6 @@
 module github.com/Tangerg/frame
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/Tangerg/go-sdk v1.9.0-scope.1

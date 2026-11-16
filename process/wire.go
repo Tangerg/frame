@@ -2,7 +2,8 @@ package process
 
 import (
 	_ "embed"
-	json "encoding/json/v2"
+
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 //go:embed wire.json
@@ -11,7 +12,6 @@ var document []byte
 // wireSpecification is the Go projection of wire.json, the one document Go and
 // the Node SDK both read for protocol names and limits.
 type wireSpecification struct {
-	Version       int `json:"version"`
 	MaxFrameBytes int `json:"maxFrameBytes"`
 	MaxInFlight   int `json:"maxInFlight"`
 	Methods       struct {
@@ -35,7 +35,7 @@ type wireSpecification struct {
 
 var wire = func() wireSpecification {
 	var spec wireSpecification
-	if err := json.Unmarshal(document, &spec, json.RejectUnknownMembers(true)); err != nil {
+	if err := framevalue.DecodeValue(document, &spec, "wire"); err != nil {
 		panic(err)
 	}
 	return spec

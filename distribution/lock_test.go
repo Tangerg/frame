@@ -27,7 +27,7 @@ func TestParseLockValidatesItsOriginalInventory(t *testing.T) {
 		{name: "duplicate contract", contracts: []framehost.ContractRef{contract.Ref(), contract.Ref()}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			lock := Lock{SchemaVersion: LockSchemaVersion, Package: "lock.package", Release: digest, Artifacts: test.artifacts, Contracts: test.contracts}
+			lock := Lock{Package: "lock.package", Release: digest, Artifacts: test.artifacts, Contracts: test.contracts}
 			encoded, err := json.Marshal(lock)
 			if err != nil {
 				t.Fatal(err)

@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"errors"
 	"fmt"
 	"slices"
@@ -83,32 +82,34 @@ func (b *Bridge) Prepare(ctx context.Context, setup framehost.Setup) ([]framehos
 		}
 	}()
 	attempt := sqlite.Attempt{ID: setup.InstanceID(), Epoch: setup.Epoch(), Source: setup.Binding().Source, Binding: setup.Snapshot(), Realm: string(RealmID(session.realm)), Profile: framehost.BrowserJS, Scope: setup.ScopeGrant().WireID(), ScopeGeneration: setup.ScopeGrant().Generation(), Generation: setup.Generation()}
-	entry := &browserExecution{plan: plan, attempt: attempt, setup: setup, prepared: make(chan []framehost.ExportValue, 1), projectionBytes: projectionBytes}
-	registered := make(chan struct{})
+	entry := &browserExecution{plan: plan, attempt: attempt, setup: setup, prepared: make(chan []framehost.ExportValue, 1), approvalDone: make(chan struct{}), projectionBytes: projectionBytes}
 	resource, err := setup.Own(frame.Resource{Name: executionResourcePrefix + attempt.ID, Cancel: func(error) { b.fence(entry) }, Close: func(wait context.Context) (frame.ReleaseState, error) {
-		select {
-		case <-registered:
-			return b.closeExecution(wait, entry)
-		case <-wait.Done():
-			return frame.ResourceUnconfirmed, context.Cause(wait)
-		}
+		return b.closeExecution(wait, entry)
 	}})
 	if err != nil {
 		return nil, err
 	}
-	// Reserve cleanup first: every possibly committed approval keeps a local
-	// non-delivery witness, including failures while the database commits.
-	approvalErr := b.config.Store.RecordAttempt(ctx, attempt)
 	b.mu.Lock()
-	entry.recordAttempt(resource, approvalErr)
+	entry.reserveExit(resource)
 	reserved = false
 	b.executions.commit(plan.Execution.ID, entry)
 	projectionHeld = false
-	if session.cleanupOnly || ctx.Err() != nil {
-		entry.fence()
-	}
+	b.mu.Unlock()
+	// The original entry owns non-delivery before storage can commit. This
+	// barrier also opens on panic or Goexit, so retirement cannot lose its owner.
+	approvalErr := func() error {
+		defer close(entry.approvalDone)
+		state, err := b.config.Store.RecordAttempt(ctx, attempt)
+		b.mu.Lock()
+		entry.recordApproval(state)
+		if err != nil || state != framehost.Committed || session.sealed || ctx.Err() != nil {
+			entry.fence()
+		}
+		b.mu.Unlock()
+		return err
+	}()
+	b.mu.Lock()
 	revoked := entry.isFenced()
-	close(registered)
 	b.mu.Unlock()
 	if revoked {
 		_, err := b.closeExecution(context.WithoutCancel(ctx), entry)
@@ -131,7 +132,7 @@ func (b *Bridge) reservePreparation(setup framehost.Setup) (*realmSession, error
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	session := b.sessions.get(setup.Realm())
-	if session == nil || session.cleanupOnly {
+	if session == nil || session.sealed {
 		return nil, framehost.ErrFenced
 	}
 	return session, b.executions.reserve()
@@ -144,14 +145,13 @@ func (b *Bridge) localPlan(ctx context.Context, realm Realm, setup framehost.Set
 	}
 	grant := setup.ScopeGrant()
 	return LocalPlan{
-		Protocol:        Protocol,
-		ApprovalToken:   rand.Text(),
-		Authority:       b.authority,
-		Realm:           realm,
-		Execution:       Execution{ID: setup.InstanceID(), Generation: strconv.FormatUint(setup.Generation(), 10)},
-		ScopeID:         string(grant.WireID()),
-		ScopeGeneration: strconv.FormatUint(grant.Generation(), 10),
-		Units:           []PlannedUnit{unit},
+		Protocol:      Protocol,
+		ApprovalToken: rand.Text(),
+		Authority:     b.authority,
+		Realm:         realm,
+		Execution:     Execution{ID: setup.InstanceID(), Generation: strconv.FormatUint(setup.Generation(), 10)},
+		ScopeRef:      ScopeRef{ScopeID: string(grant.WireID()), ScopeGeneration: strconv.FormatUint(grant.Generation(), 10)},
+		Units:         []PlannedUnit{unit},
 	}, nil
 }
 
@@ -239,17 +239,11 @@ func (b *Bridge) plannedImport(ctx context.Context, setup framehost.Setup, decla
 
 func (b *Bridge) releaseUnadmitted(ctx context.Context, entry *browserExecution) error {
 	attempt := entry.attempt
-	if entry.approvalUnconfirmed() {
-		original, err := b.config.Store.Attempt(ctx, attempt.ID)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if !sameWire(original.Attempt, attempt) {
-			return nil
-		}
+	switch entry.approvalCommit {
+	case framehost.NotCommitted:
+		return nil
+	case framehost.CommitIndeterminate:
+		return b.config.Store.SettleAttempt(ctx, attempt, unadmittedExitProof(attempt))
 	}
 	return b.config.Store.ReleaseAttempt(ctx, attempt.ID, unadmittedExitProof(attempt))
 }
@@ -258,8 +252,17 @@ func (b *Bridge) releaseUnadmitted(ctx context.Context, entry *browserExecution)
 // execution stays unconfirmed until the Runtime proves its exit.
 func (b *Bridge) closeExecution(ctx context.Context, entry *browserExecution) (frame.ReleaseState, error) {
 	b.fence(entry)
+	select {
+	case <-entry.approvalDone:
+	case <-ctx.Done():
+		select {
+		case <-entry.approvalDone:
+		default:
+			return frame.ResourceUnconfirmed, frame.ContextError(ctx)
+		}
+	}
 	b.mu.Lock()
-	admitted, owned := entry.runtimeOwnsExit(), entry.resourceHandle()
+	admitted, owned := entry.runtimeOwnsExit(), entry.resource
 	registered := b.executions.get(entry.attempt.ID) == entry
 	b.mu.Unlock()
 	switch {
@@ -299,18 +302,18 @@ func (b *Bridge) Poll(ctx context.Context, token string) (Poll, error) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	result := Poll{Authority: b.authority, Realm: session.realm, Plans: []LocalPlan{}, Fences: []Fence{}}
-	fences := make(map[Fence]bool)
+	result := Poll{Authority: b.authority, Realm: session.realm, Plans: []LocalPlan{}, Fences: []ScopeRef{}}
+	fences := make(map[ScopeRef]bool)
 	for _, entry := range b.executions.all() {
 		if entry.plan.Realm == session.realm && entry.isFenced() && entry.runtimeOwnsExit() {
-			fences[entry.scopeFence()] = true
+			fences[entry.plan.ScopeRef] = true
 		}
 	}
 	for _, entry := range b.executions.all() {
-		if fences[entry.scopeFence()] || session.cleanupOnly {
+		if fences[entry.plan.ScopeRef] || session.sealed {
 			continue
 		}
-		if entry.plan.Realm == session.realm && !entry.isFenced() && !entry.hasReady() {
+		if entry.plan.Realm == session.realm && !entry.isFenced() && entry.approved() && !entry.hasReady() {
 			result.Plans = append(result.Plans, copyWire(entry.plan))
 		}
 	}
@@ -318,7 +321,7 @@ func (b *Bridge) Poll(ctx context.Context, token string) (Poll, error) {
 		result.Fences = append(result.Fences, fence)
 	}
 	slices.SortFunc(result.Plans, func(a, b LocalPlan) int { return cmp.Compare(a.Execution.ID, b.Execution.ID) })
-	slices.SortFunc(result.Fences, func(a, b Fence) int {
+	slices.SortFunc(result.Fences, func(a, b ScopeRef) int {
 		return cmp.Or(cmp.Compare(a.ScopeID, b.ScopeID), cmp.Compare(a.ScopeGeneration, b.ScopeGeneration))
 	})
 	if err := b.checkResponse(result); err != nil {
@@ -365,7 +368,7 @@ func (b *Bridge) Ready(ctx context.Context, token string, report ReadyReport) (D
 		b.mu.Unlock()
 		return result, err
 	}
-	if session.cleanupOnly || !entry.runtimeOwnsExit() || !entry.serves(session.realm, report.Execution) {
+	if session.sealed || !entry.runtimeOwnsExit() || !entry.serves(session.realm, report.Execution) {
 		b.mu.Unlock()
 		return rejectedDecision(problemExecutionUnavailable), nil
 	}
@@ -385,7 +388,7 @@ func (b *Bridge) Ready(ctx context.Context, token string, report ReadyReport) (D
 	if result, replay, err := entry.replayReady(report.OperationID, digest); replay {
 		return result, err
 	}
-	if session.cleanupOnly {
+	if session.sealed {
 		return rejectedDecision(problemExecutionReleased), nil
 	}
 	result, accepted, err := entry.acceptReady(report.OperationID, digest)

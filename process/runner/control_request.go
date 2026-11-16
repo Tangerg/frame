@@ -8,7 +8,10 @@ import (
 	"github.com/Tangerg/frame"
 )
 
-type controlRequest interface{ method() controlMethod }
+type controlRequest interface {
+	method() controlMethod
+	Validate() error
+}
 
 type controlRequestWire struct {
 	Operation controlMethod  `json:"operation"`
@@ -39,6 +42,22 @@ func (acknowledgeExitRequest) method() controlMethod { return methodAcknowledgeE
 func (attachControlRequest) method() controlMethod   { return methodAttachControl }
 func (attachStreamRequest) method() controlMethod    { return methodAttachStream }
 
+func (identityRequest) Validate() error { return nil }
+
+func (r fenceRequest) Validate() error {
+	if r.Epoch == 0 {
+		return frame.ErrInvalid
+	}
+	return nil
+}
+
+func (r inspectRequest) Validate() error {
+	if !frame.ValidName(r.AttemptID) {
+		return frame.ErrInvalid
+	}
+	return nil
+}
+
 func readRequest(reader *bufio.Reader) (controlRequest, error) {
 	line, err := readLine(reader)
 	if err != nil {
@@ -50,29 +69,43 @@ func readRequest(reader *bufio.Reader) (controlRequest, error) {
 	}
 	switch wire.Operation {
 	case methodIdentity:
-		return decodeControlValue[identityRequest](wire.Params)
+		return decodeRequest[identityRequest](wire.Params)
 	case methodFence:
-		return decodeControlValue[fenceRequest](wire.Params)
+		return decodeRequest[fenceRequest](wire.Params)
 	case methodInspect:
-		return decodeControlValue[inspectRequest](wire.Params)
+		return decodeRequest[inspectRequest](wire.Params)
 	case methodLaunch:
-		return decodeControlValue[launchControlRequest](wire.Params)
+		return decodeRequest[launchControlRequest](wire.Params)
 	case methodClose:
-		return decodeControlValue[closeRequest](wire.Params)
+		return decodeRequest[closeRequest](wire.Params)
 	case methodProveAbsent:
-		return decodeControlValue[proveAbsentRequest](wire.Params)
+		return decodeRequest[proveAbsentRequest](wire.Params)
 	case methodAcknowledgeExit:
-		return decodeControlValue[acknowledgeExitRequest](wire.Params)
+		return decodeRequest[acknowledgeExitRequest](wire.Params)
 	case methodAttachControl:
-		return decodeControlValue[attachControlRequest](wire.Params)
+		return decodeRequest[attachControlRequest](wire.Params)
 	case methodAttachStream:
-		return decodeControlValue[attachStreamRequest](wire.Params)
+		return decodeRequest[attachStreamRequest](wire.Params)
 	default:
 		return nil, frame.ErrInvalid
 	}
 }
 
+func decodeRequest[T controlRequest](data []byte) (controlRequest, error) {
+	request, err := decodeControlValue[T](data)
+	if err == nil {
+		err = request.Validate()
+	}
+	if err != nil {
+		return nil, err
+	}
+	return request, nil
+}
+
 func encodeRequest(request controlRequest) ([]byte, error) {
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
 	params, err := json.Marshal(request)
 	if err != nil {
 		return nil, err

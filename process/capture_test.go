@@ -42,7 +42,7 @@ func TestServeRetainsTheCapabilityItDescribed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	var actual description
-	if err := client.request(ctx, wire.Methods.Hello, hello{wire.Version, wire.MaxFrameBytes}, &actual); err != nil {
+	if err := client.request(ctx, wire.Methods.Hello, hello{protocol, wire.MaxFrameBytes}, &actual); err != nil {
 		t.Fatal(err)
 	}
 	if actual.Exports["reader"] != admitted.Identity().Digest().String() {

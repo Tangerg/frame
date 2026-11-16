@@ -75,6 +75,17 @@ plan. Acquisition cannot replace them by looking up a successor, even if its
 setup graph has the same durable identity. A new acquisition may prepare a new
 instance plan from an accepted business binding; an in-flight handoff retains
 its original instances.
+`host/plan.go` owns both admission forms. A captured plan's one instance-root set
+is shared by validation and borrowing, including exportless units and several
+publications of one instance. The original holds own the reachable execution
+graph. Catalog checks decide visibility; acquisition does not rebuild roots or
+rehash declaration projections to choose those executions again.
+
+Portable membership may be borrowed across Realms without becoming reconstructible
+in the borrower's Realm. `BindingPlan.Snapshot` requires the original setup slot
+and a held provider graph that can be realized in the capture's Realm. This check
+includes Realm-bound providers behind shared instances. A mismatch is rejected
+before a business record can retain routing that would restore another execution.
 
 Use settlement follows explicit pending, failed, retrying and complete states.
 Only a failed attempt observed by an explicit close may be retried. An immutable
@@ -114,6 +125,61 @@ Preparation owns its pending candidate evidence. Its completion transition
 drops that evidence together with the result, whether publication succeeds,
 preparation fails or graph planning abandons the instance. Ready instances keep
 their exact provider holds instead of continuing to validate discovery candidates.
+`host/preparation.go` also owns the original preparation Work. Graph admission
+reserves it before issuing start claims. The same completion ends the interval,
+so dispatch needs no later capacity admission and refused planning cannot strand
+an entered interval.
+
+Instance withdrawal removes its original current membership and exports and
+dispatches its retirement worker in one Host commit. That membership transition
+authorizes exactly one worker; a separate once flag, pending retirement list or
+later repair defer would create another retirement owner. Every origin uses the
+same transition, including abandoned graph planning and committed installation
+changes. Storage confirmation cannot delay an accepted retirement. The worker
+still drains consumers and joins original physical exit before releasing provider
+holds; dispatch never waits for cleanup while holding the Host lock. A late
+request on the old instance cannot remove or retire its successor.
+
+A binding preparation owns graph admission, its newly created workers and the
+exact instances handed off after readiness. Failed planning concludes its own
+unstarted instances before releasing admission. Reuse belongs to each original
+instance: its authority, setup identity and physical provider holds must agree
+with the proposed preparation. Logical binding equality cannot substitute a
+different Realm's provider beneath a shared consumer. The refusal precedes new
+Setup and preserves existing borrows; explicitly retire the shared consumers
+before realizing the graph in another Realm. `StartUnit` reserves its original
+start claim in that same admission, before any new setup callback executes.
+Pending and returned claims belong to the original instance's actual claim set.
+Each composes an original instance hold, so the Lifetime's Work capacity bounds
+claims as well as other retention. There is no parallel start counter. A failed
+handoff relinquishes only its claim; the final claim withdraws that instance and
+starts its existing retirement. This includes canceled waits without fencing the
+scope or abandoning another waiter's preparation. Cancellation does not prove
+physical exit: an unconfirmed original Lifetime still prevents a successor, and
+late proof completes the original retirement without repeating cleanup.
+Authoritative withdrawal ends every outstanding claim before waiting for
+consumers. Claim completion runs outside Host.mu because another Stop may already
+be entering that lock. Every outstanding claim then joins the original retirement,
+and terminal handles drop Host and implementation references even without a
+caller-initiated Stop. A previously relinquished non-final claim remains complete;
+later retirement cannot reopen it.
+The same binding preparation checks Use ownership against its original instance
+graph before dispatch. A cycle known at admission is rejected without running
+plugin setup. Use handoff rechecks the same policy against current ownership,
+including borrows admitted by preparation itself; no cached validation result
+can authorize a later cycle.
+
+Execution preparation reserves its instance-owned exit resource before attempt
+persistence can write. A resource-capacity refusal therefore creates no durable
+attempt or compensating release. Process and browser owners retain that original
+cleanup record across failed or interrupted acknowledgements. Retirement joins
+the original preparation before reading its commit conclusion; `NotCommitted`
+has no durable release obligation. An uncertain write uses `SettleAttempt` with
+the complete original request and verified non-dispatch evidence. Its writer
+barrier settles that same approval or proves absence, without replacing another
+request or retrying creation. Browser cleanup retention precedes persistence,
+while `Poll` delivery requires confirmed approval. The execution itself owns
+these transitions; a separate registration object and uncertainty flag are absent.
 
 Use retirement commits hold release and Host-index removal together before
 forwarding diagnostics, which may reenter admission. Instance registration and
@@ -244,6 +310,16 @@ whose `Enabled` field is true cannot reopen an older fenced grant by itself.
 Clearing the global recovery barrier before this restoration does not authorize
 another installation mutation to replace the unresolved transition.
 
+`Host.Restore(ctx, plugins)` obtains committed installation records from its
+original durable authority inside the same maintenance admission as projection.
+Application-held records are read models for loading definitions, never a second
+installation writer. No commit can interleave between this read and projection.
+All original instances and Uses must have retired with exit proof before the
+read begins. Restoration registers original Host Work, reads outside the Host
+mutex, and rechecks closing and cancellation before projection. Host close joins
+the actual read; a canceled wait cannot authorize a late restoration. A volatile
+Host has no durable installation state to restore.
+
 ## Execution boundaries
 
 A durable Host has one `Authority`: the SQLite Store. It owns the admission gate, the creation epoch, installation persistence and execution protection, so the Host derives all four from that value instead of receiving copies that could disagree. An `Admission` alone is a volatile authority. The process driver and browser bridge write to their configured Store and refuse a Setup or Host whose `Durable()` is another one. An ordinary scope named like an installation cannot fence the Host's internal installation scope. Validate an authorized grant before starting any unit and revalidate after preparation.
@@ -278,7 +354,7 @@ contract or a newly registered local projection requires fresh preparation.
 Portable Point constructors reject unsupported metadata projection types before
 they can create an unusable typed binding.
 
-`StartUnit` claims only an instance prepared under the same original scope grant.
+`StartUnit` reserves only an instance preparing under the same original scope grant.
 An existing installation-scoped root is refused before another preparation can
 begin; retire it explicitly before starting that root under a different authority.
 Installation-scoped providers remain shareable by consumers with independent
@@ -329,10 +405,12 @@ immutable JSON value. Candidate and selected-member reads decode fresh Go
 projections through the requested metadata type's codec; the publication does
 not retain a second decoding target. Registering a local Go binding after a
 remote publication cannot change that publication or invalidate an earlier
-snapshot's wire value. Listing candidates does not execute a metadata codec.
-`Candidate.Metadata()` returns `(M, error)` because decoding can fail. Selection
-policies read each candidate once, propagate any error, then compare the detached
-metadata. Native metadata stays a detached native snapshot; encoding a candidate
+snapshot's wire value. `Candidates` decodes each member's metadata once into
+`Candidate.Metadata` and reports a codec failure instead of a partial list, so a
+selection policy compares data rather than decoding inside its comparator.
+Untyped `CandidateRef` listing executes no metadata codec. Each read decodes
+afresh, so a policy that reorders or edits its candidates cannot change another
+read. Native metadata stays a detached native snapshot; encoding a candidate
 uses another detached value, so a custom marshaler cannot mutate the publication.
 
 ## Restoring accepted work
@@ -401,8 +479,8 @@ The live execution path admits the original plan. A durable host can configure R
 
 ## Local causes and terminal close reports
 
-`Lifetime.BeginClose` and `Use.BeginClose` return `Close` value handles. The
-Lifetime alone advances its private close operation. Copies observe current
+`Lifetime.BeginClose` returns a `Close` value handle. The Lifetime alone
+advances its private close operation. Copies observe current
 cleanup counters and late proof; replacing a caller's handle cannot reset the
 operation or its identity. An unissued Close cannot wait for or prove release.
 
@@ -426,6 +504,8 @@ copying or replacing a caller's handle cannot create a second close transition
 or change the subscription retained by the catalog and Lifetime.
 
 Closing a Use's original Lifetime also starts that Use's original retirement.
+Physical exit is requested through `Use.Lifetime().BeginClose`; `Use.Close`
+also joins durable settlement. The Use exposes no second physical-close entry.
 `Use.WaitRetired` joins actual release, durable settlement and removal of Host
 references regardless of which close entry point was used. Admission publishes
 or refuses the Use before retirement reads its acquired holds.
@@ -445,13 +525,19 @@ export validation rejects duplicate names across both inputs before activation
 or publication.
 
 Before durable approval, the Use reserves capacity in both its owner and the
-Host's existing resource graph. Once approval starts, that Use remains there
-even when an error, panic or Goexit hides the commit outcome or owner closure
-prevents publishing its user handle. `ExecutionProtection.SettleUse` resolves
-the original approval: it must durably release the approved Use or prove that
-the original approval cannot commit. Its failure retains the same settlement,
-approval identity and provider holds. The previous `ReleaseUse` method is removed;
-an adapter must implement this stronger reconciliation contract.
+Host's existing resource graph. `ExecutionProtection.ApproveUse` reports the
+original `CommitState` separately from its error. `NotCommitted` requires no
+durable settlement, so a definite refusal neither requires proving absence by a
+second transaction nor fences healthy admission. `Committed` retains the original
+settlement even when a diagnostic or owner closure prevents publication. An
+indeterminate or invalid result retains that obligation and requires recovery.
+`ExecutionProtection.SettleUse` must durably release the approved Use or prove
+that the original approval cannot commit. Its failure retains the same
+settlement, approval identity and provider holds; it never retries approval.
+The persistence owner reports transaction evidence directly rather than encoding
+an unknown commit in a private error that callers must reinterpret. Business
+submission journals still own their logical conclusions, including replay of an
+already committed identity and reconciliation after a lost response.
 
 That initialization barrier also closes when admission unwinds through a
 panic. An interrupted durable approval requires recovery because its commit
@@ -491,6 +577,12 @@ continues to reject new execution and binding admission.
 labels; only handles identify resources. `Close.Wait` and `Close.WaitReleased`
 report stable `ErrCloseFailed` and `ErrUnconfirmedRelease` categories from that
 evidence. They do not reconstruct original error chains from diagnostic text.
+The conclusion is a closed projection of released and failed facts. Its error
+categories are matched with `errors.Is`; that projection is never recorded as a
+new original failure. `close_outcome.go` owns evidence and its translation to a
+parent resource, while `lifetime.go` owns the actual execution and proof.
+`ResourceState` translates Frame's known conclusion without inspecting an opaque
+error's unwrap tree or erasing that error's original identity.
 
 Late release proof can unlock provider cleanup after the original Close first
 reported pending resources. A later `Close.Wait` joins cleanup now ready or
@@ -515,6 +607,13 @@ bounded terminal diagnostics do not replace its inspectable identity.
 Formatting those diagnostics is joined separately because an Error method may
 itself call Goexit. An interrupted projection cannot change the original cleanup
 conclusion or discard a ResourceHandle's release proof.
+Use retirement retains its one original observation through durable settlement
+and reference release; a retry after physical exit cannot create an empty
+replacement observation. It drops that retention at full retirement. A scoped
+`WithPlan` owner starts observing before its callback can close a child. Multiple
+close results compose with `CloseCauses.Join(errors...)`: conclusions, inherited
+failure identities and additional errors stay distinct, so parent confirmation
+cannot duplicate an original fault after a settlement retry.
 
 The caller owns this opt-in retention of original errors and any objects they
 reference. Lifetime retains the capability weakly and terminal handles retain

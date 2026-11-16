@@ -13,7 +13,8 @@ func TestInstallationRetainsItsCapturedPlugin(t *testing.T) {
 	for _, operation := range []string{"install", "update", "replace", "restore"} {
 		t.Run(operation, func(t *testing.T) {
 			ctx := t.Context()
-			host, err := framehost.New(ctx, framehost.Config{})
+			store := newRestorationStore()
+			host, err := framehost.New(ctx, framehost.Config{Authority: installationAuthority(store)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -59,7 +60,8 @@ func TestInstallationRetainsItsCapturedPlugin(t *testing.T) {
 					}
 				}
 			case "restore":
-				err = host.Restore(ctx, []framehost.InstallationRecord{expected}, []*framehost.Plugin{original})
+				store.setRecords(expected)
+				err = host.Restore(ctx, []*framehost.Plugin{original})
 			}
 			if err != nil {
 				t.Fatal(err)

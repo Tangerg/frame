@@ -3,7 +3,6 @@ package host
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -237,33 +236,25 @@ func (h *hostState) Close(ctx context.Context) (frame.CloseOutcome, error) {
 		return frame.CloseOutcome{}, frame.ErrInvalid
 	}
 	type releaseRetry struct {
-		settlement *settlement
-		observed   *settlementFailure
+		retirement *useRetirement
+		observed   *releaseFailure
 	}
 	var retries []releaseRetry
 	causes := h.lifetime.ObserveCloseCauses()
 	h.mu.Lock()
 	for _, use := range h.uses {
-		if observed, pending := use.settlement.requestRetry(); pending {
-			retries = append(retries, releaseRetry{settlement: use.settlement, observed: observed})
+		if observed, pending := use.retirement.requestRetry(); pending {
+			retries = append(retries, releaseRetry{retirement: use.retirement, observed: observed})
 		}
 	}
 	h.mu.Unlock()
 	operation := h.lifetime.BeginClose(frame.ErrClosed)
-	h.mu.Lock()
-	for _, instance := range h.allInstances {
-		instance.withdrawLocked()
-	}
-	for watch := range h.catalog.watches {
-		watch.closeLocked(frame.ErrClosed)
-	}
-	h.mu.Unlock()
-	var releaseErr error
+	var observed []error
 	for _, retry := range retries {
-		releaseErr = errors.Join(releaseErr, retry.settlement.await(ctx, retry.observed))
+		observed = append(observed, retry.retirement.await(ctx, retry.observed))
 	}
 	outcome, err := operation.Wait(ctx)
-	return outcome, causes.Join(errors.Join(err, releaseErr))
+	return outcome, causes.Join(append(observed, err)...)
 }
 
 func (h Host) Valid() bool { return h.hostState != nil }

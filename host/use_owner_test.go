@@ -5,11 +5,114 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Tangerg/frame"
 	framehost "github.com/Tangerg/frame/host"
 )
+
+func TestUseOwnershipCycleIsRefusedBeforePreparation(t *testing.T) {
+	ctx := testContext(t)
+	host := testHost(t, framehost.Config{})
+	service, err := framehost.NewContract[string]("owner.preparation", "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Register(service); err != nil {
+		t.Fatal(err)
+	}
+	var providerOwner frame.Lifetime
+	provider := installNative(t, host, "provider", framehost.Unit{
+		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "service", Contract: service.Ref()}}},
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
+			providerOwner = setup.Lifetime()
+			return []framehost.ExportValue{framehost.Provide("service", service, "original")}, nil
+		},
+	})
+	providerSource := source("provider", provider, "main", "service", service.Ref())
+	if _, err := host.Activate(ctx, providerSource); err != nil {
+		t.Fatal(err)
+	}
+	var preparations atomic.Int32
+	consumer := installNative(t, host, "consumer", framehost.Unit{
+		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Imports: []framehost.ImportDeclaration{{Slot: "service", Contract: service.Ref()}}, Fixed: []framehost.SlotProviders{{Slot: "service", Providers: []framehost.ExportRef{providerSource}}}},
+		Setup: func(context.Context, framehost.Setup) ([]framehost.ExportValue, error) {
+			preparations.Add(1)
+			return nil, nil
+		},
+	})
+	root := framehost.UnitRef{InstallationID: "consumer", Release: consumer.Revision(), UnitID: "main"}
+	owner, scope := ownerAndScope(t, host)
+	use, err := host.AcquireUnit(ctx, root, framehost.UseConfig{Owner: providerOwner, Scope: scope})
+	if use.Valid() || !errors.Is(err, framehost.ErrDependencyCycle) {
+		t.Fatalf("invalid ownership was not refused: valid=%v, error=%v", use.Valid(), err)
+	}
+	if preparations.Load() != 0 {
+		t.Fatalf("refused ownership executed consumer preparation %d times", preparations.Load())
+	}
+	if err := host.WaitRetired(ctx, "consumer"); err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := host.AcquireUnit(ctx, root, framehost.UseConfig{Owner: owner, Scope: scope})
+	if err != nil {
+		t.Fatalf("refused preparation retained its original binding: %v", err)
+	}
+	if preparations.Load() != 1 {
+		t.Errorf("valid ownership did not prepare exactly once: %d", preparations.Load())
+	}
+	if outcome, err := accepted.Close(ctx); !outcome.Released || err != nil {
+		t.Fatalf("valid borrow did not retire: %+v, %v", outcome, err)
+	}
+}
+
+func TestUseOwnershipIsRecheckedAfterPreparation(t *testing.T) {
+	ctx := testContext(t)
+	host := testHost(t, framehost.Config{})
+	var originalOwner frame.Lifetime
+	ownerPlugin := installNative(t, host, "owner", framehost.Unit{
+		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
+		Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
+			originalOwner = setup.Lifetime()
+			return nil, nil
+		},
+	})
+	ownerRoot := framehost.UnitRef{InstallationID: "owner", Release: ownerPlugin.Revision(), UnitID: "main"}
+	if _, err := host.ActivateUnit(ctx, "", ownerRoot); err != nil {
+		t.Fatal(err)
+	}
+	_, scope := ownerAndScope(t, host)
+	var reverse framehost.Use
+	t.Cleanup(func() {
+		if reverse.Valid() {
+			if outcome, err := reverse.Close(ctx); !outcome.Released || err != nil {
+				t.Errorf("original reverse use did not retire: %+v, %v", outcome, err)
+			}
+		}
+	})
+	consumer := installNative(t, host, "consumer", framehost.Unit{
+		Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
+		Setup: func(ctx context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
+			var err error
+			reverse, err = host.AcquireUnit(ctx, ownerRoot, framehost.UseConfig{Owner: setup.Lifetime(), Scope: scope})
+			return nil, err
+		},
+	})
+	root := framehost.UnitRef{InstallationID: "consumer", Release: consumer.Revision(), UnitID: "main"}
+	use, err := host.AcquireUnit(ctx, root, framehost.UseConfig{Owner: originalOwner, Scope: scope})
+	if use.Valid() || !errors.Is(err, framehost.ErrDependencyCycle) {
+		t.Fatalf("preparation introduced an accepted ownership cycle: valid=%v, error=%v", use.Valid(), err)
+	}
+	if !reverse.Valid() {
+		t.Fatal("preparation did not create its original reverse ownership")
+	}
+	if err := host.ValidateUse(ctx, reverse); err != nil {
+		t.Fatalf("refused handoff rewrote another accepted borrow: %v", err)
+	}
+	if err := host.Admission().RecoveryError(); err != nil {
+		t.Fatalf("refused cyclic ownership fenced unrelated work: %v", err)
+	}
+}
 
 type retirementReentryError struct {
 	use     framehost.Use

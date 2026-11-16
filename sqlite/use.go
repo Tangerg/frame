@@ -14,24 +14,24 @@ import (
 
 var _ framehost.ExecutionProtection = Store{}
 
-func (s *storeAuthority) ApproveUse(ctx context.Context, approval framehost.UseApproval) error {
+func (s *storeAuthority) ApproveUse(ctx context.Context, approval framehost.UseApproval) (framehost.CommitState, error) {
 	if err := s.admission.CheckAdmitted(ctx); err != nil {
-		return err
+		return framehost.NotCommitted, err
 	}
 	if err := approval.Validate(); err != nil {
-		return err
+		return framehost.NotCommitted, err
 	}
 	if approval.Epoch != s.epoch {
-		return framehost.ErrFenced
+		return framehost.NotCommitted, framehost.ErrFenced
 	}
 	encoded, err := jsonv2.Marshal(approval)
 	if err != nil {
-		return err
+		return framehost.NotCommitted, err
 	}
 	if len(encoded) > s.maxRequestBytes {
-		return frame.ErrCapacity
+		return framehost.NotCommitted, frame.ErrCapacity
 	}
-	return s.fenceUnlessRefused(s.transaction(ctx, func(tx Executor) error {
+	return s.protectionTransaction(ctx, func(tx Executor) error {
 		return recordOnce(func() (bool, error) {
 			row, err := readProtectionRow(ctx, tx, useByID, approval.ID)
 			if err != nil {
@@ -42,7 +42,7 @@ func (s *storeAuthority) ApproveUse(ctx context.Context, approval framehost.UseA
 			}
 			return bytes.Equal(row.request, encoded), nil
 		}, func() error { return insertUse(ctx, tx, approval, encoded) })
-	}))
+	})
 }
 
 func insertUse(ctx context.Context, tx Executor, approval framehost.UseApproval, encoded []byte) error {
@@ -55,7 +55,7 @@ func insertUse(ctx context.Context, tx Executor, approval framehost.UseApproval,
 		if err != nil {
 			return err
 		}
-		if parent.Released {
+		if parent.Released() {
 			return frame.ErrClosed
 		}
 	}
@@ -63,11 +63,14 @@ func insertUse(ctx context.Context, tx Executor, approval framehost.UseApproval,
 	return err
 }
 
+// UseRecord is one stored approval. Its release proof is present exactly when
+// the approval has been released.
 type UseRecord struct {
 	Approval framehost.UseApproval
-	Released bool
 	Proof    *UseProof
 }
+
+func (r UseRecord) Released() bool { return r.Proof != nil }
 
 type UseProof struct {
 	Host  *frame.ReleaseProof `json:"host,omitempty"`
@@ -97,8 +100,8 @@ func (s *storeAuthority) ExecutionUses(ctx context.Context, id string) ([]UseRec
 	return readRecords(ctx, s, useRecords+` WHERE execution_id=? ORDER BY id`, decodeUse, id)
 }
 
-func decodeUse(row protectedRecord) (UseRecord, error) {
-	var record UseRecord
+func decodeUse(row protectedRecord) (record UseRecord, err error) {
+	defer func() { err = corruptProtection(err) }()
 	state := useState(row.state)
 	if err := state.validate(); err != nil {
 		return record, err
@@ -112,19 +115,20 @@ func decodeUse(row protectedRecord) (UseRecord, error) {
 	if record.Approval.ID != row.id {
 		return record, errors.New("sqlite: execution use identity mismatch")
 	}
-	record.Released = state == useReleased
-	if !record.Released {
+	if state == useApproved {
 		if len(row.proof) != 0 {
 			return record, errors.New("sqlite: approved use has release proof")
 		}
 		return record, nil
 	}
-	if err := jsonv2.Unmarshal(row.proof, &record.Proof, jsonv2.RejectUnknownMembers(true)); err != nil {
+	var proof UseProof
+	if err := jsonv2.Unmarshal(row.proof, &proof, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return record, err
 	}
-	if !record.Proof.proves(record.Approval) {
+	if !proof.proves(record.Approval) {
 		return record, errors.New("sqlite: released use lacks proof")
 	}
+	record.Proof = &proof
 	return record, nil
 }
 
@@ -137,7 +141,7 @@ func (s *storeAuthority) SettleUse(ctx context.Context, id string, proof frame.R
 		return err
 	}
 	return s.admission.Maintenance(ctx, func() error {
-		return s.fenceUnlessRefused(s.transaction(ctx, func(tx Executor) error {
+		_, err := s.protectionTransaction(ctx, func(tx Executor) error {
 			row, err := readProtectionRow(ctx, tx, useByID, id)
 			// The original approval has finished, and this write transaction
 			// excludes every earlier writer. Absence is therefore conclusive.
@@ -151,7 +155,7 @@ func (s *storeAuthority) SettleUse(ctx context.Context, id string, proof frame.R
 			if err != nil {
 				return err
 			}
-			if record.Released {
+			if record.Released() {
 				if !bytes.Equal(row.proof, encoded) {
 					return ErrConflict
 				}
@@ -159,7 +163,8 @@ func (s *storeAuthority) SettleUse(ctx context.Context, id string, proof frame.R
 			}
 			_, err = tx.ExecContext(ctx, `UPDATE frame_use_approvals SET state=?,proof=? WHERE id=?`, useReleased, encoded, id)
 			return err
-		}))
+		})
+		return err
 	})
 }
 
@@ -175,7 +180,7 @@ func (s *storeAuthority) ReleaseRealmUse(ctx context.Context, id string, realm f
 		return err
 	}
 	return s.admission.Maintenance(ctx, func() error {
-		return s.fenceUnlessRefused(s.transaction(ctx, func(tx Executor) error {
+		_, err := s.protectionTransaction(ctx, func(tx Executor) error {
 			row, err := readProtectionRow(ctx, tx, useByID, id)
 			if err != nil {
 				return err
@@ -188,7 +193,7 @@ func (s *storeAuthority) ReleaseRealmUse(ctx context.Context, id string, realm f
 			if approval.Realm != realm || approval.ExecutionID != executionID || approval.Epoch >= s.epoch {
 				return ErrConflict
 			}
-			if record.Released {
+			if record.Released() {
 				if !bytes.Equal(row.proof, encoded) {
 					return ErrConflict
 				}
@@ -196,6 +201,7 @@ func (s *storeAuthority) ReleaseRealmUse(ctx context.Context, id string, realm f
 			}
 			_, err = tx.ExecContext(ctx, `UPDATE frame_use_approvals SET state=?,proof=? WHERE id=?`, useReleased, encoded, id)
 			return err
-		}))
+		})
+		return err
 	})
 }

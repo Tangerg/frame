@@ -1,5 +1,13 @@
 package host
 
+type CommitState string
+
+const (
+	Committed           CommitState = "committed"
+	NotCommitted        CommitState = "notCommitted"
+	CommitIndeterminate CommitState = "indeterminate"
+)
+
 // Authority supplies the admission gate a Host enters. An Admission alone is a
 // volatile authority: nothing it admits outlives the process.
 type Authority interface {

@@ -38,7 +38,7 @@ func (b *Bridge) AcquirePlan(ctx context.Context, token, operationID string, pla
 	}
 	identity := controlRequestIdentity{Kind: acquirePlanOperation, Realm: session.realm, Digest: digest}
 	operation, replay, err := b.begin(ctx, operationID, identity, func(operation *controlOperation) error {
-		if session.cleanupOnly {
+		if session.sealed {
 			return errRealmSealed
 		}
 		operation.parentID = parentUseID
@@ -97,7 +97,7 @@ func (b *Bridge) planExecution(session *realmSession, binding framehost.BindingS
 			return nil, err
 		}
 	}
-	if entry == nil || entry.isFenced() || session.cleanupOnly {
+	if entry == nil || entry.isFenced() || session.sealed {
 		return nil, framehost.ErrStaleBinding
 	}
 	operation.execution = entry.plan.Execution.ID

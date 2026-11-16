@@ -33,7 +33,9 @@ func protectionAuthority(protection framehost.ExecutionProtection) framehost.Dur
 
 type acceptedProtection struct{}
 
-func (acceptedProtection) ApproveUse(context.Context, framehost.UseApproval) error { return nil }
+func (acceptedProtection) ApproveUse(context.Context, framehost.UseApproval) (framehost.CommitState, error) {
+	return framehost.Committed, nil
+}
 func (acceptedProtection) SettleUse(context.Context, string, frame.ReleaseProof) error {
 	return nil
 }
@@ -41,7 +43,7 @@ func (acceptedProtection) SettleUse(context.Context, string, frame.ReleaseProof)
 type acceptedInstallations struct{}
 
 func (acceptedInstallations) CommitInstallation(context.Context, framehost.InstallationChange) (framehost.CommitState, error) {
-	return framehost.CommitSucceeded, nil
+	return framehost.Committed, nil
 }
 func (acceptedInstallations) ConfirmInstallation(context.Context, framehost.InstallationID) error {
 	return nil
@@ -131,7 +133,7 @@ func TestInstallationReportsTheOriginalCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, state := range []framehost.CommitState{framehost.CommitRejected, framehost.CommitIndeterminate, framehost.CommitSucceeded} {
+	for _, state := range []framehost.CommitState{framehost.NotCommitted, framehost.CommitIndeterminate, framehost.Committed} {
 		t.Run(string(state), func(t *testing.T) {
 			host, err := framehost.New(t.Context(), framehost.Config{Authority: installationAuthority(resultStore{state, errors.New("confirmation unavailable")})})
 			if err != nil {
@@ -141,7 +143,7 @@ func TestInstallationReportsTheOriginalCommit(t *testing.T) {
 			if err == nil || framehost.InstallationConclusion(err) != state {
 				t.Fatalf("state %s: %v", state, err)
 			}
-			if (record.ID != "") != (state == framehost.CommitSucceeded) {
+			if (record.ID != "") != (state == framehost.Committed) {
 				t.Fatal("only committed records may be returned")
 			}
 		})

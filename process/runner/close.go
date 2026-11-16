@@ -80,7 +80,7 @@ func (s *Server) advanceClose() error {
 	s.mu.Lock()
 	refs := make([]AttemptRef, 0, len(s.processes))
 	for id := range s.processes {
-		refs = append(refs, s.journal.Attempts[id].Observation.Reference())
+		refs = append(refs, s.journal.Attempts[id].Observation.AttemptRef)
 	}
 	s.mu.Unlock()
 	var closeErr error

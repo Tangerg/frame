@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"iter"
 	"slices"
 
 	"github.com/Tangerg/frame"
@@ -29,18 +30,18 @@ type Use struct {
 
 // Copies retain the original borrow; only its retirement clears held objects.
 type useBorrow struct {
-	authority       *frame.LifetimeDomain
-	id              string
-	parentID        string
-	executionID     string
-	realm           RealmID
-	binding         BindingSnapshot
-	lifetime        frame.Lifetime
-	approvalStarted bool
+	authority      *frame.LifetimeDomain
+	id             string
+	parentID       string
+	executionID    string
+	realm          RealmID
+	binding        BindingSnapshot
+	lifetime       frame.Lifetime
+	approvalCommit CommitState
 	// initialized is closed once admission has published or refused the Use;
 	// retirement reads no admission-written field before then.
 	initialized chan struct{}
-	settlement  *settlement
+	retirement  *useRetirement
 
 	// Host.mu guards the fields below. Retirement clears them only after the
 	// Use's Lifetime has released, so work inside the Use may read them.
@@ -57,7 +58,7 @@ type useBorrow struct {
 
 const (
 	useResourcePrefix   = "use:"
-	useSettlementPrefix = "use settlement:"
+	useRetirementPrefix = "use retirement:"
 )
 
 // Valid reports whether the handle names an admitted borrow; the zero Use does not.
@@ -163,7 +164,7 @@ func (h *hostState) validateUseLocked(use *useBorrow) error {
 }
 
 func (h *hostState) Acquire(ctx context.Context, plan BindingPlan, config UseConfig) (Use, error) {
-	if framevalue.IsNil(ctx) || plan.plan == nil {
+	if framevalue.IsNil(ctx) || !plan.Valid() {
 		return Use{}, frame.ErrInvalid
 	}
 	config, err := h.useConfig(config)
@@ -257,7 +258,7 @@ func (h *hostState) inherit(config UseConfig, parent *useBorrow) (UseConfig, err
 	if h.lifetime.IsClosing() || h.uses[parent.id] != parent || parent.lifetime.IsClosing() {
 		return config, frame.ErrClosed
 	}
-	if !config.Scope.issued() {
+	if !config.Scope.Valid() {
 		config.Scope = parent.scope
 	}
 	config.Realm = cmp.Or(config.Realm, parent.realm)
@@ -279,7 +280,23 @@ func (h *hostState) acquireActivated(ctx context.Context, config UseConfig, reco
 	if err := h.admission.ValidateScope(config.Scope); err != nil {
 		return Use{}, err
 	}
-	plan, err := h.activate(work.Context(), config.Realm, config.Scope, bind)
+	var preparation *bindingPreparation
+	err = h.admission.Admit(work.Context(), func(admitted context.Context) error {
+		var err error
+		preparation, err = h.planPreparation(admitted, config.Realm, config.Scope, bind)
+		if err != nil {
+			return err
+		}
+		if err := preparation.checkUseOwner(config.Owner); err != nil {
+			preparation.abandon(err)
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return Use{}, err
+	}
+	plan, err := preparation.prepare(work.Context())
 	if err != nil {
 		return Use{}, err
 	}
@@ -287,20 +304,22 @@ func (h *hostState) acquireActivated(ctx context.Context, config UseConfig, reco
 }
 
 func (h *hostState) acquirePrepared(ctx context.Context, plan *capturedPlan, config UseConfig, recordID string) (_ Use, err error) {
+	lifetime := h.newLifetime(context.WithoutCancel(ctx))
 	use := &useBorrow{
-		authority:   h.identity,
-		id:          rand.Text(),
-		executionID: config.ExecutionID,
-		scope:       config.Scope,
-		realm:       config.Realm,
-		binding:     plan.binding.Clone(),
-		lifetime:    h.newLifetime(context.WithoutCancel(ctx)),
-		owner:       config.Owner,
-		initialized: make(chan struct{}),
-		settlement:  newSettlement(),
-		host:        h,
-		members:     make(map[string]*publication),
-		selections:  make(map[string][]string),
+		authority:      h.identity,
+		id:             rand.Text(),
+		executionID:    config.ExecutionID,
+		scope:          config.Scope,
+		realm:          config.Realm,
+		binding:        plan.binding.Clone(),
+		lifetime:       lifetime,
+		owner:          config.Owner,
+		initialized:    make(chan struct{}),
+		retirement:     newUseRetirement(lifetime),
+		approvalCommit: NotCommitted,
+		host:           h,
+		members:        make(map[string]*publication),
+		selections:     make(map[string][]string),
 	}
 	published := false
 	defer func() {
@@ -309,8 +328,7 @@ func (h *hostState) acquirePrepared(ctx context.Context, plan *capturedPlan, con
 			use.lifetime.BeginClose(err)
 		}
 	}()
-	causes := use.lifetime.ObserveCloseCauses()
-	context.AfterFunc(use.lifetime.Context(), func() { use.retireAfterClose(causes) })
+	context.AfterFunc(use.lifetime.Context(), use.retireAfterClose)
 	if config.Parent.Valid() {
 		use.parentID = config.Parent.borrow.id
 	}
@@ -374,23 +392,14 @@ func (h *hostState) attachPlanMembers(use *useBorrow, plan *capturedPlan) error 
 	if len(h.uses) >= h.limits.MaxUses {
 		return fmt.Errorf("%w: active uses", frame.ErrCapacity)
 	}
-	attached := make(map[*unitInstance]bool)
-	var instances []*unitInstance
-	attach := func(instance *unitInstance) {
-		if !attached[instance] {
-			attached[instance] = true
-			instances = append(instances, instance)
-		}
-	}
 	for _, member := range plan.members {
-		actual := h.catalog.member(member.source.Contract, member.id)
-		use.members[member.id] = actual
-		attach(actual.instance)
+		use.members[member.id] = h.catalog.member(member.source.Contract, member.id)
 	}
-	for _, member := range plan.unitMembers {
-		attach(h.allInstances[member.instanceID])
+	instances := make([]*unitInstance, 0, len(plan.roots))
+	for id := range plan.roots {
+		instances = append(instances, h.allInstances[id])
 	}
-	if err := h.validateUseOwnerLocked(use.owner, instances); err != nil {
+	if err := h.validateUseOwnerLocked(use.owner, slices.Values(instances)); err != nil {
 		return err
 	}
 	for _, selection := range plan.selections {
@@ -401,24 +410,15 @@ func (h *hostState) attachPlanMembers(use *useBorrow, plan *capturedPlan) error 
 		use.selections[selection.id] = ids
 	}
 	for _, instance := range instances {
-		if err := use.holdLocked(instance, plan.binding); err != nil {
+		if err := use.holdLocked(instance); err != nil {
 			return err
 		}
 	}
 	return use.validate()
 }
 
-// A captured instance must keep its original setup graph; an export name
-// cannot authorize a different provider binding.
-func (u *useBorrow) holdLocked(instance *unitInstance, graph BindingSnapshot) error {
-	_, identity, err := setupBinding(graph, instance.snapshot.Roots, instance.binding.Source)
-	if err != nil {
-		return errors.Join(ErrStaleBinding, err)
-	}
-	if identity != instance.identity {
-		return fmt.Errorf("%w: unit acquired another setup binding", ErrStaleBinding)
-	}
-	if instance.startGrant.issued() && instance.startGrant != u.scope {
+func (u *useBorrow) holdLocked(instance *unitInstance) error {
+	if instance.startGrant.Valid() && instance.startGrant != u.scope {
 		return ErrFenced
 	}
 	hold, err := instance.hold()
@@ -432,7 +432,7 @@ func (u *useBorrow) holdLocked(instance *unitInstance, graph BindingSnapshot) er
 
 // Ownership and held-provider edges come from the original resources. A second
 // dependency ledger could disagree after a Use closes or changes admission.
-func (h *hostState) validateUseOwnerLocked(owner frame.Lifetime, instances []*unitInstance) error {
+func (h *hostState) validateUseOwnerLocked(owner frame.Lifetime, instances iter.Seq[*unitInstance]) error {
 	dependencies := make(map[frame.LifetimeID][]frame.LifetimeID)
 	for _, instance := range h.allInstances {
 		for _, hold := range instance.providerHolds {
@@ -446,8 +446,8 @@ func (h *hostState) validateUseOwnerLocked(owner frame.Lifetime, instances []*un
 			dependencies[use.lifetime.Identity()] = append(dependencies[use.lifetime.Identity()], hold.instance.lifetime.Identity())
 		}
 	}
-	pending := make([]frame.LifetimeID, 0, len(instances))
-	for _, instance := range instances {
+	var pending []frame.LifetimeID
+	for instance := range instances {
 		pending = append(pending, instance.lifetime.Identity())
 	}
 	visited := make(map[frame.LifetimeID]bool)
@@ -487,14 +487,24 @@ func (h *hostState) protectUse(admitted context.Context, use *useBorrow) error {
 			h.admission.RequireRecovery(fmt.Errorf("%w: use approval interrupted", ErrRecoveryRequired))
 		}
 	}()
-	use.approvalStarted = true
-	err := h.durable.ApproveUse(admitted, approval)
+	use.approvalCommit = CommitIndeterminate
+	state, err := h.durable.ApproveUse(admitted, approval)
 	concluded = true
-	if err != nil {
+	switch state {
+	case Committed:
+		use.approvalCommit = Committed
+		return err
+	case NotCommitted:
+		use.approvalCommit = NotCommitted
+		if err == nil {
+			err = fmt.Errorf("%w: use approval refused", ErrUnavailable)
+		}
+		return err
+	default:
+		err = errors.Join(ErrRecoveryRequired, err)
 		h.admission.RequireRecovery(err)
 		return err
 	}
-	return nil
 }
 
 // The original Use must remain reachable if approval succeeds but publication
@@ -529,12 +539,12 @@ func (h *hostState) reserveUse(use *useBorrow) error {
 // Parent cancellation revokes permission even before its resource-close
 // callbacks run. The reservation still waits for this Use's actual settlement.
 func (u *useBorrow) reserveOwner(owner frame.Lifetime, dependencies ...frame.ResourceHandle) (frame.ResourceHandle, error) {
-	causes := u.lifetime.ObserveCloseCauses()
+	causes := u.retirement.observeCauses()
 	resource, err := owner.Own(frame.Resource{
 		Name:   useResourcePrefix + u.id,
 		Cancel: func(cause error) { u.lifetime.BeginClose(cause) },
 		Close: func(ctx context.Context) (frame.ReleaseState, error) {
-			outcome, err := u.close(ctx, u.settlement.observe())
+			outcome, err := u.close(ctx, u.retirement.observeFailure())
 			return outcome.ResourceState(causes.Join(err))
 		},
 	}, dependencies...)
@@ -594,13 +604,14 @@ func exportValue[V any](use *useBorrow, source ExportRef) (V, bool) {
 }
 
 func WithPlan(ctx context.Context, host Host, plan BindingPlan, scope ScopeGrant, call func(Use) error) (err error) {
-	if framevalue.IsNil(ctx) || !host.Valid() || plan.plan == nil || call == nil {
+	if framevalue.IsNil(ctx) || !host.Valid() || !plan.Valid() || call == nil {
 		return frame.ErrInvalid
 	}
 	owner := frame.NewLifetime(context.WithoutCancel(ctx))
+	causes := owner.ObserveCloseCauses()
 	defer func() {
 		_, closeErr := owner.Close(context.Background())
-		err = errors.Join(err, closeErr)
+		err = causes.Join(err, closeErr)
 	}()
 	use, err := host.Acquire(ctx, plan, UseConfig{Owner: owner, Scope: scope, Realm: plan.plan.header().realm})
 	if err != nil {

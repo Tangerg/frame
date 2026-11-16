@@ -3,7 +3,8 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"log"
 	"os"
 	"path/filepath"
@@ -31,11 +32,11 @@ func generate(root string) error {
 		return err
 	}
 	profile := frame.CurrentPortableProfile()
-	encodedProfile, err := json.MarshalIndent(profile, "", "  ")
+	encodedProfile, err := json.Marshal(profile, json.Deterministic(true), jsontext.WithIndent("  "))
 	if err != nil {
 		return err
 	}
-	encodedShapes, err := json.MarshalIndent(process.Shapes(), "", "  ")
+	encodedWire, err := json.Marshal(process.CurrentWireProfile(), json.Deterministic(true), jsontext.WithIndent("  "))
 	if err != nil {
 		return err
 	}
@@ -45,7 +46,7 @@ func generate(root string) error {
 	}{
 		{"sdk/src/protocol.generated.ts", types.Bytes()},
 		{"contract-profile.generated.json", append(encodedProfile, '\n')},
-		{"process/shapes.generated.json", append(encodedShapes, '\n')},
+		{"process/wire-profile.generated.json", append(encodedWire, '\n')},
 	}
 	for _, projection := range projections {
 		if err := localfile.WriteGenerated(filepath.Join(root, projection.path), projection.body); err != nil {

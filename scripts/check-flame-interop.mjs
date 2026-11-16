@@ -1,13 +1,20 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  readdir,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 if (process.argv.length !== 3)
   throw new Error("usage: check-flame-interop.mjs path/to/flame-checkout");
-const flame = resolve(process.argv[2]);
+const flame = await realpath(resolve(process.argv[2]));
 const frame = fileURLToPath(new URL("../", import.meta.url));
 const fixtures = join(frame, "process/mcp/testdata");
 const work = await mkdtemp(join(tmpdir(), "frame-flame-"));

@@ -38,6 +38,42 @@ func TestReturnedGrantCannotChangeAdmission(t *testing.T) {
 	}
 }
 
+func TestRefusedPreparationRetainsNoRuntimeOrRealmObligation(t *testing.T) {
+	e := openBridgeEnvironment(t, sqlite.Config{Path: filepath.Join(t.TempDir(), "state.sqlite"), MaxRequestBytes: 512}, true, func(config *browser.BridgeConfig) {
+		config.MaxRealms = 1
+		config.MaxPending = 1
+	})
+	credentials, err := e.bridge.OpenRealm(e.ctx, "original", "0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.credentials = credentials
+	if _, err := e.host.Install(e.ctx, framehost.InstallationConfig{ID: "refused", Plugin: e.plugin, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	root := framehost.ExportRef{InstallationID: "refused", Release: e.plugin.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
+	if _, err := e.host.ActivateIn(e.ctx, browser.RealmID(credentials.Realm), root); !errors.Is(err, frame.ErrCapacity) {
+		t.Fatalf("oversized preparation was not refused: %v", err)
+	}
+	if err := e.host.Admission().RecoveryError(); err != nil {
+		t.Fatalf("refused preparation fenced healthy admission: %v", err)
+	}
+	poll, err := e.bridge.Poll(e.ctx, credentials.Token)
+	if err != nil || len(poll.Plans) != 0 || len(poll.Fences) != 0 {
+		t.Fatalf("refused preparation transferred a Runtime obligation: %+v, %v", poll, err)
+	}
+	if err := e.bridge.SealRealm(e.ctx, credentials.Token); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.bridge.OpenRealm(e.ctx, "next", "1123456789abcdef0123456789abcdef"); err != nil {
+		t.Fatalf("refused preparation retained Realm capacity: %v", err)
+	}
+	records, err := e.store.Attempts(e.ctx)
+	if err != nil || len(records) != 0 {
+		t.Fatalf("refused preparation gained durable protection: %+v, %v", records, err)
+	}
+}
+
 func TestSealedEmptyRealmReturnsLiveCapacity(t *testing.T) {
 	e := openBridge(t, filepath.Join(t.TempDir(), "state.sqlite"), true)
 	b, err := browser.NewBridge(browser.BridgeConfig{Host: e.host, Store: e.store, Source: testModules{}, MaxRealms: 1})
@@ -86,14 +122,14 @@ func TestApplicationUseRetainsItsRetiringProviderUntilExecutionProof(t *testing.
 		t.Fatal(err)
 	}
 	retained, err := e.store.Use(e.ctx, grant.ID)
-	if err != nil || retained.Released {
+	if err != nil || retained.Released() {
 		t.Fatalf("provider retirement substituted for the application's exit: %+v %v", retained, err)
 	}
 	if ack, err := e.bridge.Prove(e.ctx, e.credentials.Token, executionProof(plan)); err != nil || !ack.Recorded {
 		t.Fatalf("original execution proof did not close its application Uses: %+v %v", ack, err)
 	}
 	retained, err = e.store.Use(e.ctx, grant.ID)
-	if err != nil || !retained.Released {
+	if err != nil || !retained.Released() {
 		t.Fatalf("proven execution retained its application Use: %+v %v", retained, err)
 	}
 }

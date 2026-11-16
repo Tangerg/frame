@@ -25,6 +25,69 @@ type settlementRunner struct {
 	calls  atomic.Int32
 }
 
+const capacityProfile framehost.Profile = "test-resource-capacity"
+
+type capacityProtocol struct{ cleanupProtocol }
+
+func (capacityProtocol) Profile() framehost.Profile { return capacityProfile }
+
+type capacityPreparation struct{ driver *process.Driver }
+
+func (capacityPreparation) Profile() framehost.Profile { return capacityProfile }
+
+func (p capacityPreparation) Prepare(ctx context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
+	var last frame.ResourceHandle
+	for {
+		resource, err := setup.Own(frame.Resource{Name: "reserved preparation", Close: func(context.Context) (frame.ReleaseState, error) { return frame.ResourceReleased, nil }})
+		if errors.Is(err, frame.ErrCapacity) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		last = resource
+	}
+	if err := last.ConfirmReleased(nil); err != nil {
+		return nil, err
+	}
+	return p.driver.Prepare(ctx, setup)
+}
+
+func TestPreparationReservesExitBeforeDurableCreation(t *testing.T) {
+	e := newSettlementEnvironment(t)
+	driver, err := process.New(process.Config{Runner: e.runner, Store: e.store, Source: e.source, CloseTimeout: time.Second, MaxFrameBytes: 4096, Protocol: capacityProtocol{cleanupProtocol{connection: &cleanupConnection{}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.host.RegisterDriver(capacityPreparation{driver}); err != nil {
+		t.Fatal(err)
+	}
+	plugin, err := framehost.Define(framehost.Definition{Revision: value.Hash([]byte("capacity preparation")), Units: []framehost.Unit{{Declaration: framehost.UnitDeclaration{ID: "main", Profile: capacityProfile}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed, err := e.host.Install(t.Context(), framehost.InstallationConfig{ID: "capacity-provider", Plugin: plugin, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.host.ActivateUnit(t.Context(), "", installed.Unit("main")); !errors.Is(err, frame.ErrCapacity) {
+		t.Fatalf("preparation did not reach the original resource limit: %v", err)
+	}
+	if outcome, err := e.host.Close(t.Context()); !outcome.Released || err != nil {
+		t.Fatalf("refused preparation did not retire: %+v, %v", outcome, err)
+	}
+	records, err := e.store.Attempts(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Errorf("preparation without an exit reservation wrote compensating attempt records: %+v", records)
+	}
+	if e.runner.calls.Load() != 0 || e.contentReleased.Load() != 1 {
+		t.Errorf("refused preparation dispatched or lost content ownership: launches=%d, content releases=%d", e.runner.calls.Load(), e.contentReleased.Load())
+	}
+}
+
 func (r *settlementRunner) Launch(ctx context.Context, request runner.LaunchRequest) (runner.LaunchResult, error) {
 	r.calls.Add(1)
 	if r.launch != nil {

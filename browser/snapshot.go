@@ -100,7 +100,7 @@ func (b *Bridge) Snapshot(ctx context.Context, token string, request SnapshotReq
 	// discard the capture before it is published.
 	pending := &snapshotLease{realm: session.realm}
 	operation, replay, err := b.begin(ctx, request.OperationID, identity, func(*controlOperation) error {
-		if session.cleanupOnly {
+		if session.sealed {
 			return errRealmSealed
 		}
 		if len(b.snapshots) >= b.config.MaxPending {
@@ -137,7 +137,7 @@ func (b *Bridge) Snapshot(ctx context.Context, token string, request SnapshotReq
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if session.cleanupOnly || b.snapshots[request.OperationID] != pending {
+	if session.sealed || b.snapshots[request.OperationID] != pending {
 		return Snapshot{}, framehost.ErrFenced
 	}
 	b.snapshots[request.OperationID] = lease

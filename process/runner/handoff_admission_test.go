@@ -25,7 +25,7 @@ func TestExitReceiptRequiresAnAdmittedTerminalObservation(t *testing.T) {
 		{name: "running-with-proof", state: Running, pid: 42},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			observation := Observation{AttemptID: ref.AttemptID, Epoch: ref.Epoch, RunnerID: ref.RunnerID, State: test.state, PID: test.pid, ExitCode: test.exitCode, ProofID: "original-proof"}
+			observation := Observation{AttemptRef: AttemptRef{AttemptID: ref.AttemptID, Epoch: ref.Epoch, RunnerID: ref.RunnerID}, State: test.state, PID: test.pid, ExitCode: test.exitCode, ProofID: "original-proof"}
 			receipt, err := observation.ExitReceipt()
 			if test.valid {
 				if err != nil || !receipt.matches(observation) || receipt.State != test.state {

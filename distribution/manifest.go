@@ -3,9 +3,7 @@
 package distribution
 
 import (
-	"bytes"
-	"encoding/json"
-	jsonv2 "encoding/json/v2"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -21,9 +19,6 @@ import (
 const ManifestName = "manifest.json"
 const LockName = "plugin.lock.json"
 
-const ManifestSchemaVersion = 1
-const LockSchemaVersion = 1
-
 var (
 	ErrInvalid   = errors.New("distribution: invalid release")
 	ErrIntegrity = errors.New("distribution: content integrity failure")
@@ -35,7 +30,7 @@ type Artifact struct {
 	Path       string            `json:"path"`
 	Digest     framevalue.Digest `json:"digest"`
 	Size       int64             `json:"size"`
-	Executable bool              `json:"executable,omitempty"`
+	Executable bool              `json:"executable,omitzero"`
 }
 
 type RuntimeReference struct {
@@ -85,14 +80,13 @@ type Contribution struct {
 	Export   string                `json:"export"`
 	Point    framehost.ContractRef `json:"point"`
 	Key      string                `json:"key"`
-	Metadata json.RawMessage       `json:"metadata,omitzero"`
+	Metadata jsontext.Value        `json:"metadata,omitzero"`
 }
 
 type Manifest struct {
-	SchemaVersion int                     `json:"schemaVersion"`
 	Package       string                  `json:"package"`
 	Version       string                  `json:"version"`
-	Release       framevalue.Digest       `json:"release,omitempty"`
+	Release       framevalue.Digest       `json:"release,omitzero"`
 	Artifacts     []Artifact              `json:"artifacts"`
 	Contracts     []framehost.ContractRef `json:"contracts,omitempty"`
 	Units         []Unit                  `json:"units"`
@@ -106,17 +100,16 @@ type LockedRelease struct {
 }
 
 type Lock struct {
-	SchemaVersion int                     `json:"schemaVersion"`
-	Package       string                  `json:"package"`
-	Release       framevalue.Digest       `json:"release"`
-	Artifacts     []Artifact              `json:"artifacts"`
-	Contracts     []framehost.ContractRef `json:"contracts,omitempty"`
-	Dependencies  []LockedRelease         `json:"dependencies,omitempty"`
+	Package      string                  `json:"package"`
+	Release      framevalue.Digest       `json:"release"`
+	Artifacts    []Artifact              `json:"artifacts"`
+	Contracts    []framehost.ContractRef `json:"contracts,omitempty"`
+	Dependencies []LockedRelease         `json:"dependencies,omitempty"`
 }
 
 func ParseManifest(data []byte) (Manifest, error) {
 	var manifest Manifest
-	if err := jsonv2.Unmarshal(data, &manifest, jsonv2.RejectUnknownMembers(true)); err != nil {
+	if err := framevalue.DecodeValue(data, &manifest, "manifest"); err != nil {
 		return manifest, errors.Join(ErrInvalid, err)
 	}
 	return manifest, manifest.Validate()
@@ -124,14 +117,14 @@ func ParseManifest(data []byte) (Manifest, error) {
 
 func ParseLock(data []byte) (Lock, error) {
 	var lock Lock
-	if err := jsonv2.Unmarshal(data, &lock, jsonv2.RejectUnknownMembers(true)); err != nil {
+	if err := framevalue.DecodeValue(data, &lock, "lock"); err != nil {
 		return lock, errors.Join(ErrInvalid, err)
 	}
 	return lock, lock.Validate()
 }
 
 func (l Lock) Validate() error {
-	if l.SchemaVersion != LockSchemaVersion || !frame.ValidName(l.Package) || l.Release.Validate() != nil {
+	if !frame.ValidName(l.Package) || l.Release.Validate() != nil {
 		return ErrInvalid
 	}
 	if err := validateDependencies(l.Dependencies); err != nil {
@@ -160,8 +153,6 @@ func validateDependencies(dependencies []LockedRelease) error {
 
 func (m Manifest) Validate() error {
 	switch {
-	case m.SchemaVersion != ManifestSchemaVersion:
-		return fmt.Errorf("%w: schema version %d", ErrInvalid, m.SchemaVersion)
 	case !frame.ValidName(m.Package):
 		return fmt.Errorf("%w: package name %q", ErrInvalid, m.Package)
 	case !frame.ValidName(m.Version):
@@ -430,13 +421,8 @@ func (m Manifest) Canonical() ([]byte, error) {
 		return nil, err
 	}
 	m.Release = framevalue.Digest{}
-	m.Artifacts = slices.Clone(m.Artifacts)
-	slices.SortFunc(m.Artifacts, func(a, b Artifact) int { return strings.Compare(a.Path, b.Path) })
-	encoded, err := json.Marshal(m)
-	if err != nil {
-		return nil, err
-	}
-	canonical, err := framevalue.ParseJSON(encoded)
+	m.Artifacts = sortedArtifacts(m.Artifacts)
+	canonical, err := framevalue.EncodeJSON(m)
 	if err != nil {
 		return nil, err
 	}
@@ -456,24 +442,26 @@ func (m Manifest) Lock() (Lock, error) {
 	if err != nil {
 		return Lock{}, err
 	}
-	lock := Lock{SchemaVersion: LockSchemaVersion, Package: m.Package, Release: digest, Artifacts: slices.Clone(m.Artifacts), Contracts: slices.Clone(m.Contracts), Dependencies: slices.Clone(m.Dependencies)}
-	slices.SortFunc(lock.Artifacts, func(a, b Artifact) int { return strings.Compare(a.Path, b.Path) })
-	return lock, nil
+	return Lock{Package: m.Package, Release: digest, Artifacts: sortedArtifacts(m.Artifacts), Contracts: slices.Clone(m.Contracts), Dependencies: slices.Clone(m.Dependencies)}, nil
 }
 
+// Verify compares the lock with the one the manifest derives. Artifacts are a
+// set; contracts and dependencies keep their declared order.
 func (l Lock) Verify(m Manifest) error {
 	expected, err := m.Lock()
 	if err != nil {
 		return err
 	}
-	l.Artifacts = slices.Clone(l.Artifacts)
-	slices.SortFunc(l.Artifacts, func(a, b Artifact) int { return strings.Compare(a.Path, b.Path) })
-	a, _ := json.Marshal(expected)
-	b, _ := json.Marshal(l)
-	if !bytes.Equal(a, b) {
+	if l.Package != expected.Package || l.Release != expected.Release ||
+		!slices.Equal(sortedArtifacts(l.Artifacts), expected.Artifacts) ||
+		!slices.Equal(l.Contracts, expected.Contracts) || !slices.Equal(l.Dependencies, expected.Dependencies) {
 		return errors.Join(ErrIntegrity, errors.New("lock does not describe the release"))
 	}
 	return nil
+}
+
+func sortedArtifacts(artifacts []Artifact) []Artifact {
+	return slices.SortedFunc(slices.Values(artifacts), func(a, b Artifact) int { return strings.Compare(a.Path, b.Path) })
 }
 
 func validRuntime(value RuntimeReference) bool {

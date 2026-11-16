@@ -28,9 +28,9 @@ const (
 // controlRequestIdentity is what a repeated operation ID must match: the same
 // kind of request, from the same Realm, with the same canonical content.
 type controlRequestIdentity struct {
-	Kind   operationKind
-	Realm  Realm
-	Digest value.Digest
+	Kind   operationKind `json:"kind"`
+	Realm  Realm         `json:"realm"`
+	Digest value.Digest  `json:"digest"`
 }
 
 // The immutable business result and the original receipt reservation have

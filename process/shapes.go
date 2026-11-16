@@ -69,9 +69,33 @@ type WireShapes struct {
 	Cancelled   framevalue.Shape `json:"cancelled"`
 }
 
-var shapes = Shapes()
+// WireProfile is the projection the Node SDK reads to speak this protocol.
+// Protocol identifies the exact conversation, the wire document's names and
+// limits together with every message shape. Peers compare it at hello, so a
+// change to either owner refuses an older peer without a maintained version.
+type WireProfile struct {
+	Protocol framevalue.Digest `json:"protocol"`
+	Shapes   WireShapes        `json:"shapes"`
+}
 
-func Shapes() WireShapes {
+var (
+	shapes   = wireShapes()
+	protocol = func() framevalue.Digest {
+		identity, err := framevalue.EncodeJSON(struct {
+			Wire   wireSpecification `json:"wire"`
+			Shapes WireShapes        `json:"shapes"`
+		}{wire, shapes})
+		if err != nil {
+			panic(err)
+		}
+		return identity.Digest()
+	}()
+)
+
+// CurrentWireProfile returns a fresh projection; changing it cannot change admission.
+func CurrentWireProfile() WireProfile { return WireProfile{Protocol: protocol, Shapes: wireShapes()} }
+
+func wireShapes() WireShapes {
 	return WireShapes{
 		Request:     framevalue.ShapeOf(reflect.TypeFor[requestMessage]()),
 		Cancel:      framevalue.ShapeOf(reflect.TypeFor[cancelMessage]()),

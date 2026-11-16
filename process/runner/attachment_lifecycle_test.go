@@ -226,7 +226,7 @@ func TestAttachmentControlRetiresBeforeStreamConnects(t *testing.T) {
 			defer stop()
 			waitAttachment(t, joined, done)
 			waitAttachment(t, joined, live.done)
-			if _, _, _, err := openAttachmentPipe(t, server, joined, methodAttachStream, request.AttemptRef); !errors.Is(err, frame.ErrClosed) {
+			if _, _, _, err := openAttachmentPipe(t, server, joined, methodAttachStream, request.AttemptRef); !errors.Is(err, ErrUnavailable) {
 				t.Fatalf("late stream revived a closed attachment: %v", err)
 			}
 			assertPipeReleased(t, pipe)

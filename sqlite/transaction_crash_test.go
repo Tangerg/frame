@@ -101,7 +101,7 @@ func TestUnconfirmedDisposalRetainsAuthorityUntilOriginalProcessExit(t *testing.
 		t.Fatal("child did not report its original issued intent")
 	}
 	settlement, err := owner.Settlement(t.Context(), cut.IDs[0], []byte("unconfirmed-disposal"))
-	if err != nil || settlement.State != framehost.CommitRejected {
+	if err != nil || settlement.State != framehost.NotCommitted {
 		t.Fatalf("original connection committed after process exit: %+v error=%v", settlement, err)
 	}
 	assertFaultDocumentCount(t, store, 0)
@@ -146,7 +146,7 @@ func TestPrepareAcknowledgementCrashRecoversAllocatedOriginalIntent(t *testing.T
 	}
 	id := pending[0].ID
 	settlement, err := owner.Settlement(t.Context(), id, []byte("prepare-committed"))
-	if err != nil || settlement.State != framehost.CommitRejected {
+	if err != nil || settlement.State != framehost.NotCommitted {
 		t.Fatalf("undispatched allocation was not settled from its original evidence: %+v error=%v", settlement, err)
 	}
 	if err := owner.Confirm(t.Context(), id); err != nil {
@@ -202,7 +202,7 @@ func TestCompactionCrashKeepsWatermarkAndEvidenceAtomic(t *testing.T) {
 					if !errors.Is(err, ErrEvidenceExpired) {
 						t.Fatalf("committed watermark retained/recreated expired evidence: %+v error=%v", settlement, err)
 					}
-				} else if err != nil || settlement.State != framehost.CommitSucceeded || !settlement.Synchronized {
+				} else if err != nil || settlement.State != framehost.Committed || !settlement.Synchronized {
 					t.Fatalf("uncommitted compaction lost original evidence: %+v error=%v", settlement, err)
 				}
 				_, err = owner.Commit(t.Context(), id, request, func(context.Context, Executor) ([]byte, error) {

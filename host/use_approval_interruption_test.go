@@ -12,6 +12,83 @@ import (
 	framehost "github.com/Tangerg/frame/host"
 )
 
+func TestUseApprovalConclusionOwnsSettlement(t *testing.T) {
+	diagnostic := errors.New("original approval diagnostic")
+	for _, scenario := range []struct {
+		name       string
+		state      framehost.CommitState
+		err        error
+		published  bool
+		settles    int64
+		recovery   bool
+		acquireErr error
+	}{
+		{name: "refused", state: framehost.NotCommitted, err: frame.ErrCapacity, acquireErr: frame.ErrCapacity},
+		{name: "refused without diagnostic", state: framehost.NotCommitted, acquireErr: framehost.ErrUnavailable},
+		{name: "committed", state: framehost.Committed, published: true, settles: 1},
+		{name: "committed with diagnostic", state: framehost.Committed, err: diagnostic, acquireErr: diagnostic, settles: 1},
+		{name: "indeterminate", state: framehost.CommitIndeterminate, err: diagnostic, acquireErr: diagnostic, settles: 1, recovery: true},
+		{name: "indeterminate without diagnostic", state: framehost.CommitIndeterminate, acquireErr: framehost.ErrRecoveryRequired, settles: 1, recovery: true},
+		{name: "invalid conclusion", acquireErr: framehost.ErrRecoveryRequired, settles: 1, recovery: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			protection := &reservedUseProtection{
+				releases: make(chan recordedUseRelease, 1),
+				approve:  func() (framehost.CommitState, error) { return scenario.state, scenario.err },
+			}
+			host := testHost(t, framehost.Config{Authority: protectionAuthority(protection), Limits: framehost.Limits{MaxUses: 1}})
+			var cleanups atomic.Int64
+			plugin := installNative(t, host, "provider", framehost.Unit{
+				Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo},
+				Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
+					_, err := setup.Cleanup("original provider", func() error { cleanups.Add(1); return nil })
+					return nil, err
+				},
+			})
+			owner, scope := ownerAndScope(t, host)
+			root := framehost.UnitRef{InstallationID: "provider", Release: plugin.Revision(), UnitID: "main"}
+			use, err := host.AcquireUnit(testContext(t), root, framehost.UseConfig{Owner: owner, Scope: scope, Realm: "realm"})
+			if use.Valid() != scenario.published || !errors.Is(err, scenario.acquireErr) {
+				t.Fatalf("approval conclusion: published=%v, error=%v", use.Valid(), err)
+			}
+			if outcome, err := owner.Close(testContext(t)); !outcome.Released || err != nil {
+				t.Fatalf("original owner did not retire: %+v, %v", outcome, err)
+			}
+			if calls := protection.releaseCalls.Load(); calls != scenario.settles {
+				t.Fatalf("settlements=%d, want %d", calls, scenario.settles)
+			}
+			if scenario.settles != 0 {
+				release := <-protection.releases
+				if release.id != protection.approval.ID || release.proof.CloseID == 0 {
+					t.Errorf("settlement lost its original identity or proof: %+v", release)
+				}
+			}
+			if recovery := host.Admission().RecoveryError(); errors.Is(recovery, framehost.ErrRecoveryRequired) != scenario.recovery {
+				t.Fatalf("recovery=%v, want fenced=%v", recovery, scenario.recovery)
+			}
+			if protection.approvals.Load() != 1 || cleanups.Load() != 0 {
+				t.Fatalf("approval repeated or shared instance retired: approvals=%d, cleanups=%d", protection.approvals.Load(), cleanups.Load())
+			}
+			if !scenario.recovery {
+				localOwner, scope := ownerAndScope(t, host)
+				local, err := host.AcquireUnit(testContext(t), root, framehost.UseConfig{Owner: localOwner, Scope: scope})
+				if err != nil {
+					t.Fatalf("concluded approval blocked subsequent admission: %v", err)
+				}
+				if outcome, err := local.Close(testContext(t)); !outcome.Released || err != nil {
+					t.Fatalf("subsequent borrow did not retire: %+v, %v", outcome, err)
+				}
+			}
+			if outcome, err := host.Close(testContext(t)); !outcome.Released || err != nil {
+				t.Fatalf("original provider did not retire: %+v, %v", outcome, err)
+			}
+			if cleanups.Load() != 1 {
+				t.Errorf("original instance cleanup ran %d times", cleanups.Load())
+			}
+		})
+	}
+}
+
 func TestInterruptedUseApprovalKeepsOriginalSettlement(t *testing.T) {
 	for _, interruption := range []string{"error", "panic", "goexit"} {
 		t.Run(interruption, func(t *testing.T) {
@@ -22,14 +99,14 @@ func TestInterruptedUseApprovalKeepsOriginalSettlement(t *testing.T) {
 					failures: 2,
 					failure:  settlementFailure,
 					releases: make(chan recordedUseRelease, 3),
-					approve: func() error {
+					approve: func() (framehost.CommitState, error) {
 						switch interruption {
 						case "panic":
 							panic(approvalFailure)
 						case "goexit":
 							runtime.Goexit()
 						}
-						return approvalFailure
+						return framehost.CommitIndeterminate, approvalFailure
 					},
 				}
 				host, err := framehost.New(t.Context(), framehost.Config{Authority: protectionAuthority(protection)})

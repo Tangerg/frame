@@ -11,7 +11,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	jsonv2 "encoding/json/v2"
 	"errors"
 	"flag"
 	"fmt"
@@ -141,7 +140,7 @@ func readAuthor(packagePath, modulePath string) (author, error) {
 		return author{}, err
 	}
 	var manifest AuthorPackage
-	if err := jsonv2.Unmarshal(declaration, &manifest, jsonv2.RejectUnknownMembers(true)); err != nil {
+	if err := value.DecodeValue(declaration, &manifest, "declaration"); err != nil {
 		return author{}, fmt.Errorf("authorhost: declaration: %w", err)
 	}
 	// This trusted fixture reads immutable bytes before starting execution. It

@@ -56,7 +56,7 @@ func TestNativeEventRouteIsOwnedByUsesAndCallbackCanReenter(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer work.Finish()
-	use.BeginClose(frame.ErrClosed)
+	use.Lifetime().BeginClose(frame.ErrClosed)
 	if err := host.ValidateEventRoute(ctx, route); !errors.Is(err, frame.ErrClosed) {
 		t.Errorf("route validation outlived its original use admission: %v", err)
 	}
@@ -93,12 +93,10 @@ func TestWatchOverflowRequiresResnapshot(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	change, open := <-watch.Changes()
-	if !open || !errors.Is(change.Err, framehost.ErrResyncRequired) {
-		t.Fatalf("revision gap silently dropped: %+v", change)
+	for range watch.Changes() {
 	}
-	if _, open := <-watch.Changes(); open {
-		t.Fatal("overflowed watch stayed open")
+	if err := watch.Err(); !errors.Is(err, framehost.ErrResyncRequired) {
+		t.Fatalf("revision gap silently dropped: %v", err)
 	}
 	watch.Close()
 }

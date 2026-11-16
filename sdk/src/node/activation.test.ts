@@ -4,6 +4,7 @@ import { Capability, defineProcessUnit, serve } from "./index.js";
 import { Peer } from "./peer.js";
 import { PROTOCOL, type Handlers } from "./contract.js";
 import type { Lifetime } from "../lifetime.js";
+import profile from "./wire-profile.generated.json" with { type: "json" };
 import wire from "./wire.json" with { type: "json" };
 
 const readings = new Capability({
@@ -47,7 +48,7 @@ async function preparedUnit(
   const signal = new AbortController().signal;
   await host.request(
     wire.methods.hello,
-    { version: wire.version, maxFrameBytes: wire.maxFrameBytes },
+    { protocol: profile.protocol, maxFrameBytes: wire.maxFrameBytes },
     signal,
   );
   await host.request(wire.methods.prepare, { imports: {} }, signal);

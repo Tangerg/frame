@@ -23,7 +23,7 @@ func TestNestedReleaseRetainsItsFinalSealWhenTheStoreReopens(t *testing.T) {
 		{path: "bin/tools/render", content: []byte("#!/bin/sh\nexit 0\n"), executable: true},
 	}
 	source := t.TempDir()
-	manifest := Manifest{SchemaVersion: 1, Package: "test.theme", Version: "1.0.0"}
+	manifest := Manifest{Package: "test.theme", Version: "1.0.0"}
 	unit := Unit{ID: "theme", Profile: "static-resource"}
 	for _, file := range files {
 		path := filepath.Join(source, filepath.FromSlash(file.path))

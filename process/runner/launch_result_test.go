@@ -58,7 +58,7 @@ func TestCapacityRefusalHasAnOriginalDurableReceiptWithoutAnActiveSlot(t *testin
 	}
 	<-done
 	original, ok := response.(Observation)
-	if !ok || original.State != NotCreated || original.Reference() != request.AttemptRef || original.ProofID == "" {
+	if !ok || original.State != NotCreated || original.AttemptRef != request.AttemptRef || original.ProofID == "" {
 		t.Fatalf("missing original non-creation proof: %+v", response)
 	}
 	if len(server.journal.Attempts) != 1 || len(server.terminalObservations) != 0 {
@@ -200,7 +200,7 @@ func TestDurableNonCreationReceiptSurvivesAnInterruptedJournalProjection(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	server.journal.Attempts[request.AttemptID] = storedAttempt{Observation: Observation{AttemptID: request.AttemptID, Epoch: request.Epoch, RunnerID: request.RunnerID, State: Starting}, RequestDigest: digest}
+	server.journal.Attempts[request.AttemptID] = storedAttempt{Observation: Observation{AttemptRef: AttemptRef{AttemptID: request.AttemptID, Epoch: request.Epoch, RunnerID: request.RunnerID}, State: Starting}, RequestDigest: digest}
 	if err := server.persist(); err != nil {
 		t.Fatal(err)
 	}

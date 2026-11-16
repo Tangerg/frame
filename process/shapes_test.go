@@ -1,7 +1,7 @@
 package process_test
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"os"
 	"reflect"
 	"testing"
@@ -9,16 +9,16 @@ import (
 	"github.com/Tangerg/frame/process"
 )
 
-func TestGeneratedWireShapesMatchOwners(t *testing.T) {
-	data, err := os.ReadFile("shapes.generated.json")
+func TestGeneratedWireProfileMatchesOwners(t *testing.T) {
+	data, err := os.ReadFile("wire-profile.generated.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var generated process.WireShapes
-	if err := json.Unmarshal(data, &generated); err != nil {
+	var generated process.WireProfile
+	if err := json.Unmarshal(data, &generated, json.RejectUnknownMembers(true)); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(generated, process.Shapes()) {
-		t.Fatal("wire shapes projection is stale; run go generate ./scripts")
+	if !reflect.DeepEqual(generated, process.CurrentWireProfile()) {
+		t.Fatal("wire profile projection is stale; run go generate ./scripts")
 	}
 }

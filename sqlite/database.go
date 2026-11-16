@@ -26,7 +26,7 @@ func (d Database) Close() error {
 }
 
 func (s Store) Close() error {
-	if s.storeAuthority == nil {
+	if !s.Valid() {
 		return nil
 	}
 	return s.databaseOwner.close()

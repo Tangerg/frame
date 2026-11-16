@@ -10,13 +10,17 @@ import (
 	"github.com/Tangerg/frame/value"
 )
 
-func protectedAttempt(t *testing.T, store Store) Attempt {
-	t.Helper()
+func testAttempt(store Store) Attempt {
 	source := framehost.UnitRef{InstallationID: "provider", Release: value.Hash(nil), UnitID: "main"}
 	binding := framehost.BindingSnapshot{Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{source}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil)}}}
-	attempt := Attempt{ID: "execution", Epoch: store.Epoch(), Source: source, Binding: binding, Realm: "realm", Profile: framehost.LocalProcess}
-	if err := store.RecordAttempt(t.Context(), attempt); err != nil {
-		t.Fatal(err)
+	return Attempt{ID: "execution", Epoch: store.Epoch(), Source: source, Binding: binding, Realm: "realm", Profile: framehost.LocalProcess}
+}
+
+func protectedAttempt(t *testing.T, store Store) Attempt {
+	t.Helper()
+	attempt := testAttempt(store)
+	if state, err := store.RecordAttempt(t.Context(), attempt); state != framehost.Committed || err != nil {
+		t.Fatalf("original attempt approval: %s, %v", state, err)
 	}
 	return attempt
 }
@@ -24,7 +28,7 @@ func protectedAttempt(t *testing.T, store Store) Attempt {
 func protectedUse(t *testing.T, store Store, attempt Attempt) framehost.UseApproval {
 	t.Helper()
 	approval := framehost.UseApproval{ID: "use", ExecutionID: attempt.ID, Realm: framehost.RealmID(attempt.Realm), Scope: "scope", ScopeGeneration: 1, Epoch: store.Epoch(), Binding: attempt.Binding}
-	if err := store.admission.Admit(t.Context(), func(ctx context.Context) error { return store.ApproveUse(ctx, approval) }); err != nil {
+	if err := store.admission.Admit(t.Context(), func(ctx context.Context) error { _, err := store.ApproveUse(ctx, approval); return err }); err != nil {
 		t.Fatal(err)
 	}
 	return approval
@@ -95,7 +99,7 @@ func TestProtectionApprovalValidatesOriginalRecord(t *testing.T) {
 				if operation == "child attempt" {
 					attempt.Parent, attempt.ID = attempt.ID, "child-execution"
 				}
-				approve = func() error { return store.RecordAttempt(t.Context(), attempt) }
+				approve = func() error { _, err := store.RecordAttempt(t.Context(), attempt); return err }
 			case "repeat use", "child use":
 				approval := protectedUse(t, store, attempt)
 				id = approval.ID
@@ -104,7 +108,7 @@ func TestProtectionApprovalValidatesOriginalRecord(t *testing.T) {
 					approval.ParentID, approval.ID = approval.ID, "child-use"
 				}
 				approve = func() error {
-					return admission.Admit(t.Context(), func(ctx context.Context) error { return store.ApproveUse(ctx, approval) })
+					return admission.Admit(t.Context(), func(ctx context.Context) error { _, err := store.ApproveUse(ctx, approval); return err })
 				}
 			}
 			if _, err := store.db.ExecContext(t.Context(), corrupt, value.Hash([]byte("corrupted request")), id); err != nil {

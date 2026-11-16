@@ -16,11 +16,11 @@ import (
 )
 
 type hello struct {
-	Version       int `json:"version"`
-	MaxFrameBytes int `json:"maxFrameBytes"`
+	Protocol      framevalue.Digest `json:"protocol"`
+	MaxFrameBytes int               `json:"maxFrameBytes"`
 }
 type description struct {
-	Version       int               `json:"version"`
+	Protocol      framevalue.Digest `json:"protocol"`
 	MaxFrameBytes int               `json:"maxFrameBytes"`
 	Unit          string            `json:"unit"`
 	Exports       map[string]string `json:"exports"`
@@ -92,7 +92,7 @@ func (localProtocol) Prepare(setup framehost.Setup, metadata ExportMetadata, max
 	s.peer = newPeer(nil, maximum, s.dispatch)
 	s.grants = map[string]binding{}
 	s.lifetime = setup.Lifetime()
-	expected := description{Version: wire.Version, MaxFrameBytes: maximum, Unit: string(setup.Unit().ID), Exports: map[string]string{}, Imports: map[string]string{}}
+	expected := description{Protocol: protocol, MaxFrameBytes: maximum, Unit: string(setup.Unit().ID), Exports: map[string]string{}, Imports: map[string]string{}}
 	prepared := preparation{Imports: map[string][]offered{}}
 	values := make([]framehost.ExportValue, 0, len(setup.Unit().Exports))
 	for _, export := range setup.Unit().Exports {
@@ -143,10 +143,10 @@ func (a *assembly) Connect(ctx context.Context, ch io.ReadWriteCloser) ([]frameh
 	s.peer.transport = ch
 	s.peer.start()
 	var actual description
-	if err := s.peer.request(ctx, wire.Methods.Hello, hello{wire.Version, expected.MaxFrameBytes}, &actual); err != nil {
+	if err := s.peer.request(ctx, wire.Methods.Hello, hello{protocol, expected.MaxFrameBytes}, &actual); err != nil {
 		return nil, err
 	}
-	if actual.Version != expected.Version || actual.Unit != expected.Unit || actual.Exports == nil || actual.Imports == nil || !maps.Equal(actual.Exports, expected.Exports) || !maps.Equal(actual.Imports, expected.Imports) {
+	if actual.Protocol != expected.Protocol || actual.Unit != expected.Unit || actual.Exports == nil || actual.Imports == nil || !maps.Equal(actual.Exports, expected.Exports) || !maps.Equal(actual.Imports, expected.Imports) {
 		return nil, fmt.Errorf("%w: process handshake differs from declared unit", frame.ErrContractMismatch)
 	}
 	if err := s.peer.reduceFrame(actual.MaxFrameBytes); err != nil {

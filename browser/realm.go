@@ -29,13 +29,13 @@ type realmOpening struct {
 	failure     error
 }
 
-// realmSession is a resident Realm. Once cleanupOnly, it starts no new work
+// realmSession is a resident Realm. Once sealed, it starts no new work
 // and only drains the executions it already admitted.
 type realmSession struct {
 	realm       Realm
 	application frame.Lifetime
 
-	cleanupOnly     bool
+	sealed          bool
 	projectionBytes int64
 }
 
@@ -146,7 +146,7 @@ func (b *Bridge) liveSession(token string) (*realmSession, error) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if session.cleanupOnly {
+	if session.sealed {
 		return nil, errRealmSealed
 	}
 	return session, nil
@@ -165,7 +165,7 @@ func (b *Bridge) anySession(token string) (*realmSession, error) {
 	if session := b.sessions.get(RealmID(realm)); session != nil {
 		return session, nil
 	}
-	return &realmSession{realm: realm, cleanupOnly: true}, nil
+	return &realmSession{realm: realm, sealed: true}, nil
 }
 
 // SealRealm revokes new creation and public admission in this exact Realm.
@@ -208,11 +208,11 @@ func (b *Bridge) SealRealm(ctx context.Context, token string) error {
 func (b *Bridge) sealed(session *realmSession) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return session.cleanupOnly
+	return session.sealed
 }
 
 func (b *Bridge) sealSessionLocked(session *realmSession) {
-	session.cleanupOnly = true
+	session.sealed = true
 	for id, snapshot := range b.snapshots {
 		if snapshot.realm == session.realm {
 			delete(b.snapshots, id)
@@ -224,7 +224,7 @@ func (b *Bridge) sealSessionLocked(session *realmSession) {
 func (b *Bridge) reapRealmLocked(realm Realm) {
 	id := RealmID(realm)
 	session := b.sessions.get(id)
-	if session == nil || !session.cleanupOnly || session.projectionBytes != 0 {
+	if session == nil || !session.sealed || session.projectionBytes != 0 {
 		return
 	}
 	for _, entry := range b.executions.all() {

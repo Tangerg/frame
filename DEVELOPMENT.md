@@ -1,9 +1,10 @@
 # Development
 
-Use the version in go.mod with GOWORK=off and golangci-lint v2.14.0, the version CI installs. Use Node 24+ with npm and the checked-in lockfile. Install and build from the repository root. The managed local runner and exclusive file-store profiles require a supported Unix filesystem and local sockets.
+Use the minimum Go toolchain in go.mod with GOWORK=off. `make tools` installs the pinned linter and vulnerability scanner used by CI. Use Node 24+ with npm and the checked-in lockfile. Install and build from the repository root. The managed local runner and exclusive file-store profiles require a supported Unix filesystem and local sockets.
 
 ```sh
 npm ci
+make tools
 make check
 make example
 ```
@@ -17,11 +18,16 @@ without opening application state.
 
 To release, verify both binaries and the single SDK tarball, then choose a new release version for the Go module and npm SDK. Publish an annotated Go tag and a GitHub Release containing the SDK tarball, design proposal and SHA-256 checksums. The maintainer controls names, credentials, license and publisher policy. Protocol versions and domain contract identities are independent of npm or Go module versions. Publishing is a separate, explicit operation.
 
-Run `make hooks` to enable local whitespace and conventional commit checks. Go formatting, vet, races and npm lint, formatting, types, tests and packed-package consumption are checked independently in CI.
+The SDK manifest owns the coordinated release candidate version. The independent
+Go consumer derives its default from that same committed manifest, and tag CI
+checks that the Go tag matches it. The workspace lockfile projects package
+versions and dependency ranges; refresh it with npm after changing a manifest.
+
+Run `make hooks` to enable local whitespace and conventional commit checks. Go formatting, vet, races, known vulnerabilities and npm lint, formatting, types, tests and packed-package consumption are checked independently in CI. `make security` runs the vulnerability gate separately with the selected Go toolchain.
 
 `scripts/check-browser-workflows.sh` builds the Go hosts and runs the browser author and document workflows against real local servers. Set `FRAME_CHROME_EXECUTABLE` to a Chromium executable to include real browser crash and reconnect scenarios. `go test -tags frame_interop -count=1 ./conformance` runs the two-way streaming and cancellation exercise after the SDK has been built.
 
-For a committed tree, `python3 scripts/go-consumer.py --version v0.2.0` creates a temporary standard Go module proxy and compiles a separate consumer without a replace or workspace link. It also copies the native author implementation into that consumer's own module to verify that the recommended source uses only public dependencies. All five commands are installed from that module artifact with their documented executable names; the buildcheck and document generator run outside the checkout. `--proxy <directory>` retains the module for local distribution. Verify a public release separately through the public Go module proxy.
+For a committed tree, `python3 scripts/go-consumer.py --version v0.3.0` creates a temporary standard Go module proxy and compiles a separate consumer without a replace or workspace link. It also copies the native author implementation into that consumer's own module to verify that the recommended source uses only public dependencies. All five commands are installed from that module artifact with their documented executable names; the buildcheck and document generator run outside the checkout. `--proxy <directory>` retains the module for local distribution. Verify a public release separately through the public Go module proxy.
 
 To exercise published Flame contracts and unmodified plugin binaries, run
 `node scripts/check-flame-interop.mjs /absolute/path/to/flame` from Frame. This

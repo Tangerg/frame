@@ -4,20 +4,34 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"io"
 	"net"
 	"strings"
 	"testing"
 
 	"github.com/Tangerg/frame"
+	"github.com/Tangerg/frame/value"
 )
 
+func writeRequest(writer io.Writer, request controlRequest) error {
+	data, err := encodeRequest(request)
+	if err != nil {
+		return err
+	}
+	return writeControl(writer, data)
+}
+
 func TestControlRequestLimitIncludesLineFeed(t *testing.T) {
-	req := inspectRequest{AttemptID: "x"}
+	req := launchControlRequest{LaunchRequest{
+		AttemptRef: AttemptRef{AttemptID: "attempt", Epoch: 1, RunnerID: "runner"},
+		Command:    "/approved/program", ExecutableDigest: value.Hash(nil), Configuration: value.Hash(nil),
+		Args: []string{""}, Env: []string{},
+	}}
 	encoded, err := encodeRequest(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.AttemptID += strings.Repeat("x", maxControlBytes-len(encoded))
+	req.Args[0] += strings.Repeat("x", maxControlBytes-len(encoded))
 	var wire bytes.Buffer
 	if err = writeRequest(&wire, req); err != nil {
 		t.Fatal(err)
@@ -26,7 +40,7 @@ func TestControlRequestLimitIncludesLineFeed(t *testing.T) {
 	if err != nil || len(got) != maxControlBytes {
 		t.Fatalf("accepted wire size %d: %v", len(got), err)
 	}
-	req.AttemptID += "x"
+	req.Args[0] += "x"
 	if err = writeRequest(&wire, req); !errors.Is(err, frame.ErrCapacity) || wire.Len() != 0 {
 		t.Fatalf("oversized request sent: %d, %v", wire.Len(), err)
 	}

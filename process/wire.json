@@ -1,5 +1,4 @@
 {
-  "version": 2,
   "maxFrameBytes": 1048576,
   "maxInFlight": 128,
   "methods": {

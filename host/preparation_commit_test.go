@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	framevalue "github.com/Tangerg/frame/value"
 )
@@ -63,59 +64,80 @@ func TestSetupPublicationAndReadinessCommitTogether(t *testing.T) {
 	}
 }
 
-func TestActivationReadsOriginalProviderBeforeCancellationNotification(t *testing.T) {
-	host, err := New(t.Context(), Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer host.Close(context.Background())
-	input, err := NewContract[string]("preparation.provider", "1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := host.Register(input); err != nil {
-		t.Fatal(err)
-	}
-	revision := framevalue.Hash([]byte("original provider cancellation"))
-	providerRef := ExportRef{InstallationID: "graph", Release: revision, UnitID: "provider", Export: "value", Contract: input.Ref()}
-	var provider *unitInstance
-	var activated atomic.Int32
-	plugin, err := Define(Definition{Revision: revision, Units: []Unit{
-		{
-			Declaration: UnitDeclaration{ID: "provider", Profile: NativeGo, Exports: []ExportDeclaration{{Name: "value", Contract: input.Ref()}}},
-			Setup: func(_ context.Context, setup Setup) ([]ExportValue, error) {
-				provider = setup.instance
-				return []ExportValue{Provide("value", input, "original")}, nil
-			},
-		},
-		{
-			Declaration: UnitDeclaration{ID: "consumer", Profile: NativeGo, Imports: []ImportDeclaration{{Slot: "input", Contract: input.Ref()}}, Fixed: []SlotProviders{{Slot: "input", Providers: []ExportRef{providerRef}}}},
-			Setup: func(_ context.Context, setup Setup) ([]ExportValue, error) {
-				if err := setup.OnActivate(func(context.Context) error { activated.Add(1); return nil }); err != nil {
-					return nil, err
-				}
-				// Delay only the notification; the original cancellation is already a fact.
-				host.mu.Lock()
-				for _, stop := range provider.stops {
-					if !stop() {
+func TestActivationReadsOriginalProviderCancellation(t *testing.T) {
+	for _, notification := range []string{"queued", "delivered"} {
+		t.Run(notification, func(t *testing.T) {
+			host, err := New(t.Context(), Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer host.Close(context.Background())
+			input, err := NewContract[string]("preparation.provider", "1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := host.Register(input); err != nil {
+				t.Fatal(err)
+			}
+			revision := framevalue.Hash([]byte("original provider cancellation"))
+			providerRef := ExportRef{InstallationID: "graph", Release: revision, UnitID: "provider", Export: "value", Contract: input.Ref()}
+			var provider *unitInstance
+			var activated atomic.Int32
+			plugin, err := Define(Definition{Revision: revision, Units: []Unit{
+				{
+					Declaration: UnitDeclaration{ID: "provider", Profile: NativeGo, Exports: []ExportDeclaration{{Name: "value", Contract: input.Ref()}}},
+					Setup: func(_ context.Context, setup Setup) ([]ExportValue, error) {
+						provider = setup.instance
+						return []ExportValue{Provide("value", input, "original")}, nil
+					},
+				},
+				{
+					Declaration: UnitDeclaration{ID: "consumer", Profile: NativeGo, Imports: []ImportDeclaration{{Slot: "input", Contract: input.Ref()}}, Fixed: []SlotProviders{{Slot: "input", Providers: []ExportRef{providerRef}}}},
+					Setup: func(_ context.Context, setup Setup) ([]ExportValue, error) {
+						if err := setup.OnActivate(func(context.Context) error { activated.Add(1); return nil }); err != nil {
+							return nil, err
+						}
+						// Either notification order must preserve the same binding failure.
+						host.mu.Lock()
+						for _, stop := range provider.stops {
+							if !stop() {
+								host.mu.Unlock()
+								return nil, errors.New("provider notification ran before cancellation")
+							}
+						}
+						if notification == "queued" {
+							for _, stop := range setup.instance.stops {
+								if !stop() {
+									host.mu.Unlock()
+									return nil, errors.New("consumer notification ran before cancellation")
+								}
+							}
+						}
+						provider.lifetime.Cancel(errors.New("original provider stopped"))
 						host.mu.Unlock()
-						return nil, errors.New("provider notification ran before cancellation")
-					}
-				}
-				provider.lifetime.Cancel(errors.New("original provider stopped"))
-				host.mu.Unlock()
-				return nil, nil
-			},
-		},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	record, err := host.Install(t.Context(), InstallationConfig{ID: "graph", Plugin: plugin, Enabled: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := host.ActivateUnit(t.Context(), "", record.Unit("consumer")); !errors.Is(err, ErrStaleBinding) || activated.Load() != 0 {
-		t.Fatalf("original provider cancellation did not fence activation: activations=%d error=%v", activated.Load(), err)
+						if notification == "delivered" {
+							wait, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+							defer cancel()
+							select {
+							case <-setup.Context().Done():
+							case <-wait.Done():
+								return nil, context.Cause(wait)
+							}
+						}
+						return nil, nil
+					},
+				},
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, err := host.Install(t.Context(), InstallationConfig{ID: "graph", Plugin: plugin, Enabled: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := host.ActivateUnit(t.Context(), "", record.Unit("consumer")); !errors.Is(err, ErrStaleBinding) || activated.Load() != 0 {
+				t.Fatalf("original provider cancellation did not fence activation: activations=%d error=%v", activated.Load(), err)
+			}
+		})
 	}
 }

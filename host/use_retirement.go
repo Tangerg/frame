@@ -2,135 +2,143 @@ package host
 
 import (
 	"context"
-	"errors"
 	"sync"
 
 	"github.com/Tangerg/frame"
 	framevalue "github.com/Tangerg/frame/value"
 )
 
-type settlementState uint8
+type retirementState uint8
 
 const (
-	settlementPending settlementState = iota
-	settlementFailed
-	settlementRetrying
-	settlementComplete
+	retirementPending retirementState = iota
+	retirementFailed
+	retirementRetrying
+	retirementComplete
 )
 
-type settlementFailure struct {
+// Retry authority belongs to this failed attempt, not to its notification.
+type releaseFailure struct {
 	cause error
 	retry chan struct{}
 }
 
-// Only the settlement advances release. Channels notify observers; an observed
-// failure identity authorizes one retry without authorizing a later failure.
-type settlement struct {
+// Retirement retains original causes until both physical exit and settlement
+// complete. Lifetime alone may already have discarded its weak observation.
+type useRetirement struct {
 	mu      sync.Mutex
-	state   settlementState
-	failure *settlementFailure
+	state   retirementState
+	failure *releaseFailure
 	changed chan struct{}
+	causes  *frame.CloseCauses
 	done    chan struct{}
 }
 
-func newSettlement() *settlement {
-	return &settlement{changed: make(chan struct{}), done: make(chan struct{})}
+func newUseRetirement(lifetime frame.Lifetime) *useRetirement {
+	return &useRetirement{changed: make(chan struct{}), done: make(chan struct{}), causes: lifetime.ObserveCloseCauses()}
 }
 
-func (s *settlement) observe() *settlementFailure {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.failure
+func (r *useRetirement) observeCauses() *frame.CloseCauses {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.causes == nil {
+		return new(frame.CloseCauses)
+	}
+	return r.causes
 }
 
-func (s *settlement) fail(err error) <-chan struct{} {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err == nil || s.state != settlementPending && s.state != settlementRetrying {
+func (r *useRetirement) observeFailure() *releaseFailure {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.failure
+}
+
+func (r *useRetirement) fail(err error) <-chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err == nil || r.state != retirementPending && r.state != retirementRetrying {
 		panic("host: invalid release settlement failure")
 	}
-	s.failure = &settlementFailure{cause: err, retry: make(chan struct{})}
-	s.state = settlementFailed
-	close(s.changed)
-	s.changed = make(chan struct{})
-	return s.failure.retry
+	r.failure = &releaseFailure{cause: err, retry: make(chan struct{})}
+	r.state = retirementFailed
+	close(r.changed)
+	r.changed = make(chan struct{})
+	return r.failure.retry
 }
 
-func (s *settlement) complete() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.state != settlementPending && s.state != settlementRetrying {
-		panic("host: invalid release settlement completion")
+func (r *useRetirement) complete() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.state != retirementPending && r.state != retirementRetrying {
+		panic("host: invalid use retirement completion")
 	}
-	s.state = settlementComplete
-	s.failure = nil
-	close(s.done)
-	close(s.changed)
+	r.state = retirementComplete
+	r.failure = nil
+	r.causes = nil
+	close(r.done)
+	close(r.changed)
 }
 
-func (s *settlement) requestRetry() (*settlementFailure, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.state == settlementFailed {
-		s.state = settlementRetrying
-		close(s.failure.retry)
+func (r *useRetirement) requestRetry() (*releaseFailure, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.state == retirementFailed {
+		r.state = retirementRetrying
+		close(r.failure.retry)
 	}
-	return s.failure, s.state == settlementRetrying
+	return r.failure, r.state == retirementRetrying
 }
 
-func (s *settlement) await(ctx context.Context, observed *settlementFailure) error {
+func (r *useRetirement) await(ctx context.Context, observed *releaseFailure) error {
 	var canceled error
-	s.mu.Lock()
+	r.mu.Lock()
 	for {
-		switch s.state {
-		case settlementComplete:
-			s.mu.Unlock()
+		switch r.state {
+		case retirementComplete:
+			r.mu.Unlock()
 			return nil
-		case settlementFailed, settlementRetrying:
-			if s.state == settlementFailed || s.failure != observed {
-				err := s.failure.cause
-				s.mu.Unlock()
+		case retirementFailed, retirementRetrying:
+			if r.state == retirementFailed || r.failure != observed {
+				err := r.failure.cause
+				r.mu.Unlock()
 				return err
 			}
 		}
 		if canceled != nil {
-			s.mu.Unlock()
+			r.mu.Unlock()
 			return canceled
 		}
-		changed := s.changed
-		s.mu.Unlock()
+		changed := r.changed
+		r.mu.Unlock()
 		select {
 		case <-changed:
 		case <-ctx.Done():
 			canceled = frame.ContextError(ctx)
 		}
-		s.mu.Lock()
+		r.mu.Lock()
 	}
 }
 
-func (u *useBorrow) retireAfterClose(causes *frame.CloseCauses) {
+func (u *useBorrow) retireAfterClose() {
 	<-u.initialized
+	causes := u.retirement.observeCauses()
 	operation := u.lifetime.BeginClose(frame.ErrClosed)
 	// This join cannot be cancelled; cleanup diagnostics cannot invalidate its proof.
 	outcome, _ := operation.WaitReleased(context.Background())
 	proof, _ := operation.ReleaseProof()
 	u.settleRelease(proof)
 	u.retire(causes.Join(outcome.Err()))
-	u.settlement.complete()
-}
-
-func (u Use) BeginClose(cause error) frame.Close {
-	if u.borrow == nil {
-		return frame.Close{}
-	}
-	return u.borrow.lifetime.BeginClose(cause)
+	u.retirement.complete()
 }
 
 // settleRelease durably releases a protected Use. A failed attempt fences new
 // admission and only an explicit Use or Host close can request another attempt.
 func (u *useBorrow) settleRelease(proof frame.ReleaseProof) {
 	h := u.host
-	for u.approvalStarted {
+	if u.approvalCommit == NotCommitted {
+		return
+	}
+	for {
 		err := frame.InvokeCallback("use settlement", func() error {
 			return h.durable.SettleUse(context.Background(), u.id, proof)
 		})
@@ -138,7 +146,7 @@ func (u *useBorrow) settleRelease(proof frame.ReleaseProof) {
 			return
 		}
 		h.admission.RequireRecovery(err)
-		retry := u.settlement.fail(err)
+		retry := u.retirement.fail(err)
 		<-retry
 	}
 }
@@ -181,23 +189,22 @@ func (u Use) Close(ctx context.Context) (frame.CloseOutcome, error) {
 		return frame.CloseOutcome{}, frame.ErrInvalid
 	}
 	borrow := u.borrow
-	observed, _ := borrow.settlement.requestRetry()
+	observed, _ := borrow.retirement.requestRetry()
 	return borrow.close(ctx, observed)
 }
 
-func (u *useBorrow) close(ctx context.Context, observed *settlementFailure) (frame.CloseOutcome, error) {
-	causes := u.lifetime.ObserveCloseCauses()
+func (u *useBorrow) close(ctx context.Context, observed *releaseFailure) (frame.CloseOutcome, error) {
+	causes := u.retirement.observeCauses()
 	outcome, err := u.lifetime.BeginClose(frame.ErrClosed).Wait(ctx)
-	err = causes.Join(err)
 	if !outcome.Released {
-		return outcome, err
+		return outcome, causes.Join(err)
 	}
-	if settleErr := u.settlement.await(ctx, observed); settleErr != nil {
+	if settleErr := u.retirement.await(ctx, observed); settleErr != nil {
 		outcome.Released = false
-		outcome.Pending = append(outcome.Pending, useSettlementPrefix+u.id)
-		return outcome, errors.Join(err, settleErr)
+		outcome.Pending = append(outcome.Pending, useRetirementPrefix+u.id)
+		return outcome, causes.Join(err, settleErr)
 	}
-	return outcome, err
+	return outcome, causes.Join(err)
 }
 
 // WaitRetired joins the original exit, including stable execution-protection
@@ -207,7 +214,7 @@ func (u Use) WaitRetired(ctx context.Context) (frame.CloseOutcome, error) {
 		return frame.CloseOutcome{}, frame.ErrInvalid
 	}
 	borrow := u.borrow
-	if err := awaitRetired(ctx, borrow.settlement.done); err != nil {
+	if err := awaitRetired(ctx, borrow.retirement.done); err != nil {
 		return frame.CloseOutcome{}, err
 	}
 	outcome, _ := borrow.lifetime.CloseOutcome()

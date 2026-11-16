@@ -18,7 +18,6 @@ import (
 var (
 	ErrConflict          = errors.New("sqlite: submission identity conflict")
 	ErrEvidenceExpired   = errors.New("sqlite: settlement evidence expired")
-	errCommitUnresolved  = errors.New("sqlite: original commit requires reconciliation")
 	ErrIndeterminate     = errors.New("sqlite: submission settlement is indeterminate")
 	ErrUnsettled         = errors.New("sqlite: submission is not settled and synchronized")
 	ErrUnknownSubmission = errors.New("sqlite: submission was not issued by this owner")
@@ -74,6 +73,9 @@ type Config struct {
 // authority rather than a caller-owned variable that can later be rebound.
 type Store struct{ *storeAuthority }
 
+// Valid reports whether the handle names an opened store; the zero Store does not.
+func (s Store) Valid() bool { return s.storeAuthority != nil }
+
 // Issued capabilities retain this authority, never a caller-owned Store handle.
 type storeAuthority struct {
 	*databaseOwner
@@ -100,12 +102,12 @@ type Owner struct {
 const schema = `
 CREATE TABLE frame_meta (singleton INTEGER PRIMARY KEY CHECK(singleton=1),store_id TEXT NOT NULL,schema_digest TEXT NOT NULL,epoch INTEGER NOT NULL CHECK(epoch>0));
 CREATE TABLE frame_owners (id TEXT PRIMARY KEY,next_sequence INTEGER NOT NULL DEFAULT 0,compacted_through INTEGER NOT NULL DEFAULT 0 CHECK(compacted_through<=next_sequence));
-CREATE TABLE frame_submissions (owner_id TEXT NOT NULL REFERENCES frame_owners(id),sequence INTEGER NOT NULL,digest TEXT NOT NULL,request BLOB NOT NULL,state TEXT NOT NULL CHECK(state IN ('` + string(submissionPrepared) + `','` + string(submissionCommitted) + `','` + string(submissionRejected) + `','` + string(submissionCommittedSynchronized) + `','` + string(submissionRejectedSynchronized) + `')),evidence BLOB,CHECK(state IN ('` + string(submissionCommitted) + `','` + string(submissionCommittedSynchronized) + `') OR evidence IS NULL),PRIMARY KEY(owner_id,sequence));
+CREATE TABLE frame_submissions (owner_id TEXT NOT NULL REFERENCES frame_owners(id),sequence INTEGER NOT NULL,digest TEXT NOT NULL,request BLOB NOT NULL,state TEXT NOT NULL CHECK(state IN ('` + string(submissionPrepared) + `','` + string(submissionCommitted) + `','` + string(submissionNotCommitted) + `','` + string(submissionCommittedSynchronized) + `','` + string(submissionNotCommittedSynchronized) + `')),evidence BLOB,CHECK(state IN ('` + string(submissionCommitted) + `','` + string(submissionCommittedSynchronized) + `') OR evidence IS NULL),PRIMARY KEY(owner_id,sequence));
 CREATE TABLE frame_evidence_references (owner_id TEXT NOT NULL,sequence INTEGER NOT NULL,holder TEXT NOT NULL,PRIMARY KEY(owner_id,sequence,holder),FOREIGN KEY(owner_id,sequence) REFERENCES frame_submissions(owner_id,sequence));
 CREATE TABLE frame_attempts (id TEXT PRIMARY KEY,request BLOB NOT NULL,request_digest TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('` + string(AttemptApproved) + `','` + string(AttemptHandoff) + `','` + string(AttemptReleased) + `')),proof BLOB);
 CREATE INDEX frame_attempts_by_state ON frame_attempts(state,id);
 CREATE TABLE frame_installations (id TEXT PRIMARY KEY,record BLOB NOT NULL);
-CREATE TABLE frame_use_approvals (id TEXT PRIMARY KEY,request BLOB NOT NULL,execution_id TEXT GENERATED ALWAYS AS (json_extract(CAST(request AS TEXT),'$.ExecutionID')) VIRTUAL,request_digest TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('` + string(useApproved) + `','` + string(useReleased) + `')),proof BLOB);
+CREATE TABLE frame_use_approvals (id TEXT PRIMARY KEY,request BLOB NOT NULL,execution_id TEXT GENERATED ALWAYS AS (json_extract(CAST(request AS TEXT),'$.executionId')) VIRTUAL,request_digest TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('` + string(useApproved) + `','` + string(useReleased) + `')),proof BLOB);
 CREATE INDEX frame_use_approvals_by_state ON frame_use_approvals(state,id);
 CREATE INDEX frame_uses_by_execution ON frame_use_approvals(execution_id,id);
 CREATE TABLE frame_realms (id TEXT NOT NULL,epoch TEXT NOT NULL,operation_id TEXT NOT NULL UNIQUE,resume_verifier TEXT NOT NULL,history_bytes INTEGER GENERATED ALWAYS AS (length(CAST(id AS BLOB))+length(CAST(epoch AS BLOB))+length(CAST(operation_id AS BLOB))+length(CAST(resume_verifier AS BLOB))) VIRTUAL,PRIMARY KEY(id,epoch));
@@ -157,14 +159,14 @@ func readSchemaShape(ctx context.Context, executor interface {
 }
 
 func (s Store) ID() string {
-	if s.storeAuthority == nil {
+	if !s.Valid() {
 		return ""
 	}
 	return s.id
 }
 
 func (s Store) Epoch() uint64 {
-	if s.storeAuthority == nil {
+	if !s.Valid() {
 		return 0
 	}
 	return s.epoch
@@ -198,20 +200,10 @@ func (o Owner) Held(ctx context.Context, installation framehost.InstallationID) 
 	return dependencies, err
 }
 
-// fenceUnlessRefused requires recovery after a protection write fails for any
-// reason other than a known refusal: the Store can no longer vouch for the
-// durable state that write meant to change.
-func (s *storeAuthority) fenceUnlessRefused(err error) error {
-	if err != nil && !errors.Is(err, ErrConflict) && !errors.Is(err, frame.ErrClosed) && !errors.Is(err, sql.ErrNoRows) {
-		s.admission.RequireRecovery(err)
-	}
-	return err
-}
-
 // Admission is the gate every Store transaction enters. A Host composed with
 // this Store as its Durable admits through the same gate.
 func (s Store) Admission() framehost.Admission {
-	if s.storeAuthority == nil {
+	if !s.Valid() {
 		return framehost.Admission{}
 	}
 	return s.admission
@@ -223,5 +215,6 @@ func (s *storeAuthority) Read(ctx context.Context, query func(Reader) error) err
 	if query == nil {
 		return errors.New("sqlite: query is required")
 	}
-	return s.transact(ctx, readTransaction, func(tx Executor) error { return query(readAccess{access: tx}) }, nil)
+	_, err := s.transact(ctx, readTransaction, func(tx Executor) error { return query(readAccess{access: tx}) }, nil)
+	return err
 }

@@ -31,7 +31,7 @@ func (b *Bridge) Publish(ctx context.Context, token string, request PublicationR
 	identity := controlRequestIdentity{Kind: publishOperation, Realm: session.realm, Digest: digest}
 	operation, replay, err := b.begin(ctx, request.OperationID, identity, func(operation *controlOperation) error {
 		entry := b.executions.get(request.Execution.ID)
-		if session.cleanupOnly || !entry.serves(session.realm, request.Execution) || !entry.hasReady() {
+		if session.sealed || !entry.serves(session.realm, request.Execution) || !entry.hasReady() {
 			return framehost.ErrUnavailable
 		}
 		if !request.Object.membershipOf(entry.plan.Units[0]) {

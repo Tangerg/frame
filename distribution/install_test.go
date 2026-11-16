@@ -33,7 +33,7 @@ func TestExternalProfileArchiveNeedsItsHostDriver(t *testing.T) {
 		t.Fatal(err)
 	}
 	driver := new(analyzerDriver)
-	manifest := Manifest{SchemaVersion: ManifestSchemaVersion, Package: "example", Version: "1", Artifacts: []Artifact{{Path: "rules.txt"}}, Units: []Unit{{ID: "check", Profile: driver.Profile(), Resources: []string{"rules.txt"}}}}
+	manifest := Manifest{Package: "example", Version: "1", Artifacts: []Artifact{{Path: "rules.txt"}}, Units: []Unit{{ID: "check", Profile: driver.Profile(), Resources: []string{"rules.txt"}}}}
 	var buf bytes.Buffer
 	if _, err := Build(ctx, root, manifest, &buf); err != nil {
 		t.Fatal(err)

@@ -7,16 +7,18 @@ import (
 	"github.com/Tangerg/frame"
 )
 
+// UseApproval is the durable record of one surviving execution's Use. Its
+// member names are a storage contract: a store may index them.
 type UseApproval struct {
-	ID              string
-	ParentID        string
-	ExecutionID     string
-	Instances       []string
-	Realm           RealmID
-	Scope           ScopeID
-	ScopeGeneration uint64
-	Epoch           uint64
-	Binding         BindingSnapshot
+	ID              string          `json:"id"`
+	ParentID        string          `json:"parentId,omitzero"`
+	ExecutionID     string          `json:"executionId,omitzero"`
+	Instances       []string        `json:"instances"`
+	Realm           RealmID         `json:"realm"`
+	Scope           ScopeID         `json:"scope"`
+	ScopeGeneration uint64          `json:"scopeGeneration"`
+	Epoch           uint64          `json:"epoch"`
+	Binding         BindingSnapshot `json:"binding"`
 }
 
 func (a UseApproval) Validate() error {
@@ -59,12 +61,13 @@ func (a UseApproval) Validate() error {
 }
 
 // ExecutionProtection persists an approved range before a surviving execution
-// domain receives it. Once approval starts, SettleUse must either durably release
-// that original approval or prove that it cannot commit. Missing or failed
-// acknowledgements never prove non-commit. SettleUse runs only after ApproveUse
-// has returned or its goroutine has exited; neither method may leave a detached
-// writer that can later contradict its settlement.
+// domain receives it. ApproveUse reports the original commit conclusion; only
+// NotCommitted proves that no approval can commit later. A committed approval or
+// an indeterminate response requires SettleUse after physical exit. SettleUse must
+// either release that original approval or prove it cannot commit. It runs only
+// after ApproveUse has returned or its goroutine has exited; neither method may
+// leave a detached writer that can later contradict its settlement.
 type ExecutionProtection interface {
-	ApproveUse(context.Context, UseApproval) error
+	ApproveUse(context.Context, UseApproval) (CommitState, error)
 	SettleUse(context.Context, string, frame.ReleaseProof) error
 }

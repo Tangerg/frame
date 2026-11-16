@@ -3,7 +3,7 @@ import { defineUnit, type Lifetime, type Unit } from "../index.js";
 import {
   PROTOCOL,
   type CloseProof,
-  type Fence,
+  type ScopeRef,
   type LocalPlan,
   type Poll,
 } from "../protocol.generated.js";
@@ -43,7 +43,7 @@ function plan(id: string): LocalPlan {
 }
 
 function fixture(units: readonly Unit[], preparationCapacity = 2) {
-  const pending: { plans: LocalPlan[]; fences: Fence[] } = {
+  const pending: { plans: LocalPlan[]; fences: ScopeRef[] } = {
     plans: units.map((unit) => plan(unit.id)),
     fences: [],
   };

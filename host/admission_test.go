@@ -43,7 +43,7 @@ func TestUnavailableUseOwnerFencesAdmissionUntilRecovered(t *testing.T) {
 		t.Fatalf("new admission escaped the required owner: %v", err)
 	}
 	restore := func() error {
-		_, err := host.Admission().Held(ctx, "retained")
+		_, err := host.Admission().Retained(ctx, "retained")
 		return err
 	}
 	if err := host.Admission().Recover(ctx, restore); !errors.Is(err, unavailable) {
@@ -80,7 +80,7 @@ func TestInvalidUseOwnerProjectionRequiresRecovery(t *testing.T) {
 			if err := admission.RegisterUseOwner(owner); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := admission.Held(t.Context(), "original"); !errors.Is(err, frame.ErrInvalid) || !errors.Is(err, framehost.ErrRecoveryRequired) {
+			if _, err := admission.Retained(t.Context(), "original"); !errors.Is(err, frame.ErrInvalid) || !errors.Is(err, framehost.ErrRecoveryRequired) {
 				t.Fatalf("invalid required owner projection was accepted: %v", err)
 			}
 			if err := admission.RecoveryError(); !errors.Is(err, framehost.ErrRecoveryRequired) {
@@ -115,7 +115,7 @@ func TestUseOwnerCancellationDoesNotHideConcurrentFailure(t *testing.T) {
 			if err := admission.RegisterUseOwner(owner); err != nil {
 				t.Fatal(err)
 			}
-			_, err := admission.Held(ctx, "original")
+			_, err := admission.Retained(ctx, "original")
 			if !errors.Is(err, context.Canceled) || !errors.Is(err, requestCause) {
 				t.Fatalf("request cancellation was lost: %v", err)
 			}

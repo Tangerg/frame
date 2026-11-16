@@ -40,7 +40,7 @@ type UnitRef struct {
 }
 
 func (r UnitRef) Validate() error {
-	if err := (Dependency{InstallationID: r.InstallationID, Release: r.Release}).Validate(); err != nil {
+	if err := r.Dependency().Validate(); err != nil {
 		return err
 	}
 	return r.UnitID.Validate()
@@ -50,6 +50,11 @@ func (r UnitRef) String() string { return r.InstallationID.String() + "/" + r.Un
 
 func (r UnitRef) Dependency() Dependency {
 	return Dependency{InstallationID: r.InstallationID, Release: r.Release}
+}
+
+// Export names one export of this exact unit release.
+func (r UnitRef) Export(name string, contract ContractRef) ExportRef {
+	return ExportRef{InstallationID: r.InstallationID, Release: r.Release, UnitID: r.UnitID, Export: name, Contract: contract}
 }
 
 type ExportRef struct {
@@ -303,7 +308,7 @@ type BindingSnapshot struct {
 // The original owner must still validate it under admission before a new use.
 func ParseBinding(data []byte) (BindingSnapshot, error) {
 	var binding BindingSnapshot
-	if err := json.Unmarshal(data, &binding, json.RejectUnknownMembers(true)); err != nil {
+	if err := framevalue.DecodeValue(data, &binding, "binding"); err != nil {
 		return BindingSnapshot{}, err
 	}
 	if err := binding.Validate(); err != nil {

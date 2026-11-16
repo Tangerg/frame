@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/Tangerg/frame"
 )
 
 func TestOpenDefaultsEachUnsetLimitIndependently(t *testing.T) {
@@ -25,7 +27,7 @@ func TestOpenDefaultsEachUnsetLimitIndependently(t *testing.T) {
 	}
 	config = ownerConfig(t.TempDir())
 	config.Limits = Limits{ArchiveBytes: -1}
-	if _, err := Open(config); !errors.Is(err, ErrCapacity) {
+	if _, err := Open(config); !errors.Is(err, frame.ErrInvalid) {
 		t.Fatalf("negative limit admitted: %v", err)
 	}
 }

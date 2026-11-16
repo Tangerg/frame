@@ -5,6 +5,13 @@ It does not select providers, manage installations, keep a second dependency gra
 or decide plugin business results. The Host records an exact durable StartAttempt
 before calling Launch.
 
+Attachment checks the original attempt's runner identity and epoch before its
+availability. `ErrUnavailable` means that exact child has exited, was not created,
+or is no longer accepting an attachment. `frame.ErrClosed` means the runner
+itself is closing. `ErrUnknown` retains a missing exit conclusion; none of these
+errors substitutes for the original exit receipt. Control replies preserve these
+categories, including the `unavailable` code, on both attachment channels.
+
 Build `./cmd/frame-runner` and start it with an absolute private `--directory`
 and `--socket` within that directory. The original directory inode is locked to
 prevent concurrent runner owners. There is no separately replaceable lock file.
@@ -48,7 +55,7 @@ Each private control request has an `operation` and a required `params` object.
 The selected operation alone determines the parameter type. Missing, null or
 foreign fields are rejected before dispatch; responses require complete typed
 evidence, including an explicit `fenced` boolean in every identity. The client
-and runner must use this same protocol revision.
+and runner must come from the same release; the control protocol carries no version.
 The client API is `NewClient`, `Identity`, `Fence`, `Launch`, `Attach`, `Inspect`,
 `CloseAttempt`, `AcknowledgeExit` and `ProveAbsent`. `Identity` identifies the actual runner incarnation. Record that
 identity as the execution Realm, and verify the returned running observation before
@@ -131,9 +138,15 @@ A crash between handoff and confirmation is reconciled by repeating that exact
 acknowledgement against the original state directory.
 This journal format and the corresponding private Host schema require fresh state.
 Only an absent journal creates an initial empty record. Existing journals must
-carry their version, epoch and complete attempts object, with valid observations
+carry their epoch and complete attempts object, with valid observations
 no newer than the retained epoch. Missing or null fields are rejected before
 restoration or persistence; a malformed file is not repaired into an empty history.
+
+Each control request composes its original values' validation before encoding,
+decoding or daemon startup. Invalid identities cannot initiate a connection or
+create an authority. `AttemptRef` owns attempt identity constraints; `ExitReceipt`
+owns terminal receipt validity. The process driver checks only the receipt's
+association with its original durable attempt, without defining terminal states.
 The private control response is one result variant admitted against the requested
 operation: acknowledgment, identity, observation or absence proof. Acknowledgments
 carry explicit `true`; null, missing results and results for another operation

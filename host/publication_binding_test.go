@@ -132,7 +132,8 @@ func TestDynamicPublicationCannotReplaceDeclaredSetup(t *testing.T) {
 			}
 			admission := framehost.NewAdmission()
 			restored := testHost(t, framehost.Config{
-				Authority: admission, UseOwners: []framehost.UseOwner{business},
+				Authority: durableDouble{InstallationStore: newRestorationStore(records...), ExecutionProtection: acceptedProtection{}, admission: admission},
+				UseOwners: []framehost.UseOwner{business},
 				ReadAcceptedBinding: func(admitted context.Context, id string, scope framehost.ScopeGrant) (framehost.BindingSnapshot, error) {
 					if err := admission.CheckAdmitted(admitted); err != nil {
 						return framehost.BindingSnapshot{}, err
@@ -146,7 +147,7 @@ func TestDynamicPublicationCannotReplaceDeclaredSetup(t *testing.T) {
 			if err := restored.Register(point, service); err != nil {
 				t.Fatal(err)
 			}
-			if err := restored.Restore(ctx, records, plugins); err != nil {
+			if err := restored.Restore(ctx, plugins); err != nil {
 				t.Fatal(err)
 			}
 			newOwner, newScope := ownerAndScope(t, restored)

@@ -328,7 +328,7 @@ func TestBridgeSnapshotClosePreservesAcquiredUseAndReplay(t *testing.T) {
 		}
 	}
 	uses, err := e.store.Uses(e.ctx)
-	if err != nil || len(uses) != 1 || !uses[0].Released {
+	if err != nil || len(uses) != 1 || !uses[0].Released() {
 		t.Fatalf("original Use protection was not released: %+v %v", uses, err)
 	}
 }
@@ -404,7 +404,7 @@ func TestBridgeSnapshotCloseAndAcquireHaveOneAdmissionWinner(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, use := range uses {
-		if !use.Released {
+		if !use.Released() {
 			t.Fatal("snapshot race lost its original release proof")
 		}
 	}
@@ -487,7 +487,7 @@ func TestBridgeRealmSealingRetainsAcquiredUseUntilOriginalProof(t *testing.T) {
 		t.Fatal(err)
 	}
 	uses, err := e.store.Uses(e.ctx)
-	if err != nil || len(uses) != 1 || uses[0].Released {
+	if err != nil || len(uses) != 1 || uses[0].Released() {
 		t.Fatalf("Realm sealing replaced the original release proof: %+v %v", uses, err)
 	}
 	proof := useProof(plan, grant)
@@ -498,7 +498,7 @@ func TestBridgeRealmSealingRetainsAcquiredUseUntilOriginalProof(t *testing.T) {
 		}
 	}
 	uses, err = e.store.Uses(e.ctx)
-	if err != nil || len(uses) != 1 || !uses[0].Released {
+	if err != nil || len(uses) != 1 || !uses[0].Released() {
 		t.Fatalf("original proof did not release the acquired Use: %+v %v", uses, err)
 	}
 }

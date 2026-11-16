@@ -16,28 +16,28 @@ var _ framehost.InstallationStore = Store{}
 
 func (s *storeAuthority) CommitInstallation(ctx context.Context, change framehost.InstallationChange) (state framehost.CommitState, err error) {
 	if err := s.admission.CheckAdmitted(ctx); err != nil {
-		return framehost.CommitRejected, err
+		return framehost.NotCommitted, err
 	}
 	id, err := changedInstallation(change)
 	if err != nil {
-		return framehost.CommitRejected, err
+		return framehost.NotCommitted, err
 	}
 	request, err := jsonv2.Marshal(change)
 	if err != nil {
-		return framehost.CommitRejected, err
+		return framehost.NotCommitted, err
 	}
 	submission, err := s.control.prepare(ctx, request)
 	if err != nil {
 		if errors.Is(err, ErrIndeterminate) {
 			return framehost.CommitIndeterminate, err
 		}
-		return framehost.CommitRejected, err
+		return framehost.NotCommitted, err
 	}
 	commit := installationCommit{owner: s.control, id: submission, request: request}
 	defer func() {
 		cause := recover()
 		var cleanupErr error
-		if state != framehost.CommitSucceeded {
+		if state != framehost.Committed {
 			state, cleanupErr = commit.conclude(context.WithoutCancel(ctx))
 			err = errors.Join(err, cleanupErr)
 		}
@@ -64,15 +64,15 @@ type installationCommit struct {
 
 func (c installationCommit) conclude(ctx context.Context) (framehost.CommitState, error) {
 	settlement, err := c.owner.settlePrepared(ctx, c.id, c.request)
-	if err != nil || settlement.State != framehost.CommitRejected {
+	if err != nil || settlement.State != framehost.NotCommitted {
 		err = errors.Join(ErrIndeterminate, ErrUnsettled, err)
 		c.owner.store.admission.RequireRecovery(err)
 		return framehost.CommitIndeterminate, err
 	}
 	if _, err := c.owner.synchronize(settlement, nil, confirmOnCommit); err != nil {
-		return framehost.CommitRejected, err
+		return framehost.NotCommitted, err
 	}
-	return framehost.CommitRejected, c.owner.compactSettled(ctx)
+	return framehost.NotCommitted, c.owner.compactSettled(ctx)
 }
 
 func changedInstallation(change framehost.InstallationChange) (framehost.InstallationID, error) {
@@ -216,8 +216,9 @@ func (s *storeAuthority) Installations(ctx context.Context) (records []framehost
 }
 
 // RecoverInstallations settles old control intents after exclusive ownership is
-// acquired. The Host must then restore the returned records, confirm them and
-// restore every other owner before it clears RecoveryRequired.
+// acquired. Returned records help load release definitions; Host restoration
+// rereads this authority under maintenance. Confirm that projection and restore
+// every other owner before clearing RecoveryRequired.
 func (s *storeAuthority) RecoverInstallations(ctx context.Context) ([]framehost.InstallationRecord, error) {
 	if err := s.control.RecoverPrepared(ctx); err != nil {
 		return nil, err

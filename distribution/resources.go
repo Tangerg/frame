@@ -29,8 +29,11 @@ const contentResourceName = "static content"
 
 type ResourceDriver struct{ store *storeAuthority }
 
+// Valid reports whether the driver names a store; the zero ResourceDriver does not.
+func (d ResourceDriver) Valid() bool { return d.store != nil }
+
 func NewResourceDriver(store Store) (ResourceDriver, error) {
-	if store.storeAuthority == nil {
+	if !store.Valid() {
 		return ResourceDriver{}, frame.ErrInvalid
 	}
 	return ResourceDriver{store: store.storeAuthority}, nil

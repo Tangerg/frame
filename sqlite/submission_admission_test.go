@@ -39,7 +39,7 @@ func TestJointSubmissionRequiresTheOriginalLiveAdmission(t *testing.T) {
 			_, err := tx.ExecContext(ctx, `INSERT INTO documents VALUES('joint','converter',?,1)`, value.Hash([]byte("release")))
 			return []byte("joint"), err
 		}, nil)
-		if err == nil && (settlement.State != framehost.CommitSucceeded || !settlement.Synchronized) {
+		if err == nil && (settlement.State != framehost.Committed || !settlement.Synchronized) {
 			t.Fatalf("joint settlement = %+v", settlement)
 		}
 		return err
@@ -144,7 +144,7 @@ func TestOnlyTheMatchedRequestCanSettleOrSynchronize(t *testing.T) {
 	checkedReplay()
 	applied := false
 	state, err := owner.Commit(t.Context(), id, request, func(context.Context, Executor) ([]byte, error) { applied = true; return []byte("evidence"), nil }, nil)
-	if err != nil || !applied || state.State != framehost.CommitSucceeded {
+	if err != nil || !applied || state.State != framehost.Committed {
 		t.Fatalf("original submission did not execute: %+v %v", state, err)
 	}
 	checkedReplay()
@@ -171,7 +171,7 @@ func TestPostcommitPanicFencesAdmissionUntilTheOwnerRestores(t *testing.T) {
 		_, _ = owner.Commit(t.Context(), id, req, func(context.Context, Executor) ([]byte, error) { return []byte("original"), nil }, func(Settlement) error { panic(failure) })
 	}()
 	pending, err := owner.Settlement(t.Context(), id, req)
-	if err != nil || pending.State != framehost.CommitSucceeded || pending.Synchronized || string(pending.Evidence) != "original" {
+	if err != nil || pending.State != framehost.Committed || pending.Synchronized || string(pending.Evidence) != "original" {
 		t.Fatalf("lost the real commit: %+v, %v", pending, err)
 	}
 	if _, err := owner.Prepare(t.Context(), []byte("next")); !errors.Is(err, framehost.ErrRecoveryRequired) {
@@ -289,7 +289,7 @@ func TestInterruptedInstallationProjectionReleasesReceiptBeforeHostRecovery(t *t
 				if err != nil || len(records) != 0 {
 					t.Fatalf("recovery changed the original rollback: records=%v error=%v", records, err)
 				}
-				if err := host.Restore(t.Context(), records, nil); err != nil {
+				if err := host.Restore(t.Context(), nil); err != nil {
 					t.Fatal(err)
 				}
 				if err := store.ConfirmRestoredInstallations(t.Context()); err != nil {

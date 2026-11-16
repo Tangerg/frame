@@ -217,7 +217,7 @@ func checkPublisherPolicy(path string, digest value.Digest, limits distribution.
 		return err
 	}
 	var policy publisherPolicy
-	if err = json.Unmarshal(data, &policy, json.RejectUnknownMembers(true)); err != nil {
+	if err = value.DecodeValue(data, &policy, "publisher policy"); err != nil {
 		return errors.Join(frame.ErrInvalid, err)
 	}
 	if !slices.Contains(policy.Archives, digest) {

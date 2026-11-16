@@ -34,7 +34,7 @@ func (s protectionSnapshot) dependencies() []framehost.Dependency {
 		}
 	}
 	for _, record := range s.uses {
-		if !record.Released {
+		if !record.Released() {
 			dependencies = append(dependencies, record.Approval.Binding.Dependencies()...)
 		}
 	}
@@ -43,5 +43,5 @@ func (s protectionSnapshot) dependencies() []framehost.Dependency {
 
 func (s protectionSnapshot) requiresRecovery() bool {
 	return slices.ContainsFunc(s.attempts, func(record AttemptRecord) bool { return record.State.pending() }) ||
-		slices.ContainsFunc(s.uses, func(record UseRecord) bool { return !record.Released })
+		slices.ContainsFunc(s.uses, func(record UseRecord) bool { return !record.Released() })
 }

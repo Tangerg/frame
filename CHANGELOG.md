@@ -2,6 +2,168 @@
 
 ## Unreleased
 
+## v0.3.0 — 2026-11-16
+
+Upgrade guidance and release qualification are in [the v0.3.0 release notes](docs/releases/v0.3.0.md).
+
+- Require Go 1.27.4 or newer, including CI and external consumers. This removes
+  the Go 1.27.3 standard-library exposure to GO-2026-6859. `make check` includes
+  the pinned `govulncheck` gate; `make tools` installs the verification tools.
+
+- Protection transactions now derive recovery from original commit, rollback,
+  connection-release and stored-integrity evidence. A confirmed rollback after
+  cancellation or statement failure leaves admission writable, so the business
+  owner can persist its terminal receipt. Unknown commits, unconfirmed disposal
+  and corrupt protection records still fence admission. Remove the outer
+  error-based `fenceUnlessRefused` policy.
+- Runner attachment reports `runner.ErrUnavailable` for an exited or uncreated
+  original child and for an attachment being retired; only runner shutdown
+  reports `frame.ErrClosed`. Unknown exit remains `runner.ErrUnknown`, and exact
+  runner identity and epoch checks precede process-state classification. The
+  runner control protocol carries the new `unavailable` error category.
+
+- **Breaking:** `Host.Restore(ctx, plugins)` reads the Host's original durable
+  authority inside the same maintenance admission as projection. Remove the
+  caller-supplied installation records: an earlier read can no longer overwrite
+  a later commit or execute superseded configuration. Volatile Hosts have no
+  installation restoration authority. Restoration joins the Host's original Work
+  lifecycle, so close waits for the actual read and refuses late projection.
+
+- **Breaking:** Instances now own their actual start claims, each composed with
+  an original instance hold. Remove the independent start counter. Authoritative
+  retirement ends outstanding claims before draining consumers; every such
+  `RunningUnit.Stop` joins that original retirement, including late proof, and
+  terminal handles no longer retain Host or plugin objects without a manual Stop.
+  Start claims share the instance's existing Work capacity and can return
+  `ErrCapacity`. Preparation reserves its own original Work before claims can
+  consume capacity; its one conclusion releases the interval on publication,
+  failure or abandoned planning. `host/preparation.go` owns that complete flow.
+
+- **Breaking:** A captured portable member can still be borrowed across Realms,
+  but `BindingPlan.Snapshot` now refuses recovery evidence if its original held
+  provider graph belongs to another Realm. Declaration routing alone cannot
+  reconstruct that execution. Recreate any such previously retained business
+  bindings from a capture in their original Realm. Captured plans now own one
+  exact instance-root set for validation and borrowing; acquisition no longer
+  rebuilds that set from publications and unit roots or rehashes declarations as
+  a substitute for original instance identity.
+
+- **Breaking:** `CloseCauses.Join` accepts separate variadic errors and preserves
+  original failure identities when composing close results. Match
+  `CloseOutcome.Err()` categories with `errors.Is`; its concrete conclusion no
+  longer masquerades as another original failure. `ResourceState` projects only
+  Frame's own conclusion and preserves opaque errors without unwrapping them.
+  Remove recursive error-tree stripping. Use retirement now owns its original
+  cause observation through physical exit, durable settlement and reference
+  release, then drops it for terminal handles. Settlement retries and `WithPlan`
+  retain early cleanup errors without duplicating them in parent observations.
+
+- Host instance withdrawal now dispatches its original retirement worker in the
+  same commit as membership and export removal. Current membership alone owns
+  that transition; remove the separate `retireOnce` flag, caller retirement lists
+  and deferred startup repair. Binding refusal, preparation failure, final start
+  relinquishment, explicit retirement and installation changes share that path.
+  A slow or interrupted installation confirmation cannot strand withdrawn Ready
+  or preparing instances. Accepted Uses still drain and unconfirmed execution
+  still requires its original exit proof before a successor can prepare.
+
+- **Breaking:** Host refuses reuse of a consumer whose original provider holds
+  differ from the physical graph being prepared, even when the logical binding
+  identity is equal. This prevents preparation in another Realm from starting
+  replacement providers while handing off the original shared consumer. The
+  refusal happens before new Setup, preserves accepted borrows and permits a
+  fresh realization after the shared consumers retire. Binding preparation owns
+  exact-instance capture; declaration plans validate themselves without a Host
+  forwarding method.
+
+- Host start claims now span binding admission, instance preparation and handoff.
+  A canceled or failed start relinquishes its original claim; the final claim
+  retires that same instance instead of leaving an unclaimed Ready startup.
+  Concurrent waiters retain independent claims, and unconfirmed exit still blocks
+  a successor until the original Lifetime proves release. Binding preparation owns
+  its original instance set and planning cleanup; remove the `startBinding`
+  decorator and the second lookup that created a claim only after readiness.
+- Reject known Use ownership cycles before dispatching instance preparation.
+  Recheck that same ownership policy at handoff, so borrows created during Setup
+  cannot introduce a cycle after the original check. A refused graph concludes
+  only its newly admitted instances and leaves accepted borrows intact.
+
+- **Breaking:** `sqlite.Store.RecordAttempt` returns `(host.CommitState, error)`.
+  Process and browser preparations reserve their original exit owners before
+  writing protection. Failed resource admission no longer writes a compensating
+  attempt; definite refusal retires locally. Unknown acknowledgements keep the
+  same cleanup record and settle through `SettleAttempt` with the exact original
+  request and non-dispatch proof. Browser retirement joins that original write,
+  including interruption, and Poll exposes only confirmed approvals. Remove the
+  browser registration wrapper and its error-derived uncertainty flag.
+
+- **Breaking:** `host.ExecutionProtection.ApproveUse` and `sqlite.Store.ApproveUse`
+  return `(host.CommitState, error)`. The original transaction owns that conclusion.
+  Definite refusal skips durable Use settlement and leaves healthy admission open;
+  committed or unknown approvals retain their original release obligation even
+  when acquisition fails. SQLite consumers use transaction conclusions directly
+  while submission journals retain authority over their logical settlements.
+
+- **Breaking:** remove `host.Use.BeginClose`. Use `Use.Close` to join physical
+  exit and durable settlement, or `Use.Lifetime().BeginClose` for physical exit
+  evidence alone. Work completion follows original interval membership; instance
+  retirement joins its Lifetime's close without caching another operation.
+  Remove the `instanceRetirement` state carrier; the instance owns that lifecycle.
+- Host shutdown uses the original child resource graph for instance retirement
+  and Watch termination, preserving the original cancellation cause even when
+  a close observer cancels before child cancellation runs.
+
+- **Breaking:** `host.Candidate` carries its decoded `Metadata` field;
+  `Candidates` decodes each member once and reports a codec failure, and the
+  `Metadata()` method is removed. Selection rules compare data directly. The
+  document example owns `PreferredConverter`, `OrderValidators` and
+  `ValidationOrderRule`, which the native authoring example reuses.
+- **Breaking:** `frame.ResolveLimit` is generic over `frame.Bound`, and every
+  configured limit in distribution, SQLite, browser and the runner resolves
+  through it. A negative limit reports `frame.ErrInvalid` everywhere.
+- **Breaking:** `host.ParseBinding`, `distribution.ParseManifest`,
+  `ParseLock`, runner receipts, the stdio wire document and CLI inputs decode
+  through `value.DecodeValue`, so a missing required member is refused like an
+  unknown one.
+- **Breaking:** `browser.Fence` is renamed `browser.ScopeRef` and is embedded
+  in `LocalPlan`, `UseGrant`, `CloseProof` and `RevalidatedExecution`; the
+  wire members are unchanged.
+- **Breaking:** rename `host.CommitSucceeded` and `host.CommitRejected` to
+  `host.Committed` and `host.NotCommitted`, matching their spellings.
+  `host.InstallationChange` has explicit `before` and `after` members.
+- Browser control receipts and SQLite owner schema identities use explicit
+  JSON members instead of Go field names.
+
+- **Breaking:** the remaining handles report their unissued zero value with
+  `Valid`: `frame.Close`, `host.ScopeGrant` (replacing the private `issued`),
+  `host.Snapshot`, `host.BindingPlan`, `sqlite.Store`, `distribution.Store` and
+  `distribution.ResourceDriver`. `process.New` refuses a zero Store instead of
+  inferring one from a zero epoch.
+- **Breaking:** `host.Change` carries only a contract revision. A closed Watch
+  reports why it ended with `Watch.Err`; changes already delivered stay readable.
+- **Breaking:** remove `host.Admission.Held`; `Retained` is the one read of
+  business-owner dependencies. Add `host.UnitRef.Export`.
+- **Breaking:** `frame.CloseOutcome.Pending` names only resources; the new
+  `ActiveWork` counts unfinished work intervals.
+- **Breaking:** release manifests and locks drop `schemaVersion`; strict
+  decoding refuses any other shape. Manifest identity, locks and the archive
+  documents use the value encoder, and `Lock.Verify` compares fields instead of
+  encodings.
+- **Breaking:** the stdio hello exchanges a derived `protocol` digest of
+  `wire.json` and every message shape instead of a hand-maintained `version`.
+  `process.CurrentWireProfile` replaces `process.Shapes`, and the SDK reads
+  `wire-profile.generated.json`.
+- **Breaking:** `runner.Observation`, `ExitReceipt` and `AbsenceProof` embed
+  `runner.AttemptRef`; `Observation.Reference` is removed. Invalid runner limits
+  report `frame.ErrInvalid`. The journal and identities use one JSON encoder.
+- **Breaking:** `host.UseApproval` has explicit JSON members, and SQLite indexes
+  the execution identity through them. Stored submission states use SQLite's
+  own snake_case spellings. `sqlite.UseRecord.Released` is a method derived
+  from its proof.
+- Optional scalar members use `omitzero`, so JSON v2 omits a zero PID,
+  generation or annotation flag as intended. Native contract identities use the
+  canonical value encoder.
+
 - **Breaking:** a Host has one `host.Config.Authority`. An `Admission` is a
   volatile authority; a `host.Durable` such as `sqlite.Store` also owns the
   creation epoch, installation persistence and execution protection, and the

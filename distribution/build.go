@@ -3,13 +3,13 @@ package distribution
 import (
 	"archive/zip"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"errors"
 	"io"
 	"maps"
 	"os"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/Tangerg/frame"
@@ -25,7 +25,7 @@ func Build(ctx context.Context, source string, manifest Manifest, output io.Writ
 	}
 	defer input.Close()
 	limits := DefaultLimits()
-	manifest.Artifacts = slices.SortedFunc(slices.Values(manifest.Artifacts), func(a, b Artifact) int { return strings.Compare(a.Path, b.Path) })
+	manifest.Artifacts = sortedArtifacts(manifest.Artifacts)
 	contents := releaseContents{files: make(map[string][]byte, len(manifest.Artifacts)+2), limits: limits}
 	if err := contents.readArtifacts(ctx, input, manifest.Artifacts); err != nil {
 		return Lock{}, err
@@ -73,7 +73,7 @@ func (c *releaseContents) readArtifacts(ctx context.Context, input *os.Root, art
 }
 
 func (c *releaseContents) addMetadata(name string, document any) error {
-	data, err := json.MarshalIndent(document, "", "  ")
+	data, err := json.Marshal(document, jsontext.WithIndent("  "))
 	if err != nil {
 		return err
 	}

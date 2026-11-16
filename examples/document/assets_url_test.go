@@ -41,7 +41,7 @@ func TestModuleArtifactURLsPreserveLiteralFileNames(t *testing.T) {
 		}
 	})
 	source := t.TempDir()
-	manifest := distribution.Manifest{SchemaVersion: distribution.ManifestSchemaVersion, Package: "test.module-url", Version: "1"}
+	manifest := distribution.Manifest{Package: "test.module-url", Version: "1"}
 	for _, name := range []string{"preview#hash.js", "preview%20literal.js", "preview%escape.js"} {
 		if err := os.WriteFile(filepath.Join(source, name), []byte(name), 0600); err != nil {
 			t.Fatal(err)

@@ -13,6 +13,7 @@ import {
 import { PROTOCOL, exactFields, type ServiceContract } from "./contract.js";
 import { Peer } from "./peer.js";
 import { PORTABLE_LIMITS } from "./limits.js";
+import profile from "./wire-profile.generated.json" with { type: "json" };
 import wire from "./wire.json" with { type: "json" };
 
 const numbers = new Capability({
@@ -158,7 +159,7 @@ describe("local process author", () => {
     const request = (method: string, params: unknown) =>
       send({ id: String(++id), method, params });
     const next = async () => JSON.parse((await responses.next()).value!);
-    request("hello", { version: wire.version, maxFrameBytes: 8192 });
+    request("hello", { protocol: profile.protocol, maxFrameBytes: 8192 });
     expect(await next()).toMatchObject({
       id: "1",
       result: { exports: { numbers: numbers.identity }, unit: "counter" },
@@ -329,7 +330,7 @@ async function connectUnit<
   await host.request(
     wire.methods.hello,
     {
-      version: wire.version,
+      protocol: profile.protocol,
       maxFrameBytes: wire.maxFrameBytes,
     },
     new AbortController().signal,

@@ -229,8 +229,22 @@ func (u *unitExports) withdraw() {
 	}
 }
 
-func (p *publication) snapshot() snapshotMember {
-	return snapshotMember{id: p.id, source: p.source, metadata: p.metadata, instanceID: p.instance.id, binding: p.instance.snapshot.Clone(), durable: p.instance.exports.reconstructible(p)}
+func (p *publication) snapshotIn(realm RealmID) snapshotMember {
+	return snapshotMember{
+		id: p.id, source: p.source, metadata: p.metadata,
+		instanceID: p.instance.id, binding: p.instance.snapshot.Clone(),
+		reconstructionError: p.reconstructionErrorIn(realm),
+	}
+}
+
+func (p *publication) reconstructionErrorIn(realm RealmID) error {
+	if !p.instance.exports.reconstructible(p) {
+		return fmt.Errorf("%w: dynamic publication has no stable reconstruction contract", frame.ErrInvalid)
+	}
+	if !p.instance.realizesRealm(realm) {
+		return fmt.Errorf("%w: captured provider graph belongs to another realm", frame.ErrInvalid)
+	}
+	return nil
 }
 
 type Publication struct {
@@ -242,11 +256,6 @@ type Publication struct {
 
 func (p *publication) view() Publication {
 	return Publication{ID: p.id, Source: p.source, InstanceID: p.instance.id, Revision: p.revision}
-}
-
-func (i *unitInstance) exportRef(name string, contract ContractRef) ExportRef {
-	source := i.binding.Source
-	return ExportRef{InstallationID: source.InstallationID, Release: source.Release, UnitID: source.UnitID, Export: name, Contract: contract}
 }
 
 // The entire setup must be admitted before any member becomes visible.
@@ -315,7 +324,7 @@ func (h *hostState) prepareExport(ctx context.Context, instance *unitInstance, e
 	if err != nil {
 		return nil, err
 	}
-	return &preparedExport{source: instance.exportRef(export.Name, export.Contract), metadata: metadata, value: export.Value, instance: instance}, nil
+	return &preparedExport{source: instance.binding.Source.Export(export.Name, export.Contract), metadata: metadata, value: export.Value, instance: instance}, nil
 }
 
 // PublicationRequest fixes one native implementation and metadata snapshot. A

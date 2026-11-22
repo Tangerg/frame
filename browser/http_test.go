@@ -3,6 +3,7 @@ package browser_test
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -74,5 +75,35 @@ func TestControlHTTPRejectsInvalidShapeBeforeDispatch(t *testing.T) {
 	}
 	if response := controlReply(t, e.bridge, credentials.Token, "poll", struct{}{}); response.Code != http.StatusOK {
 		t.Fatalf("valid empty input refused: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+type failingBody struct{ err error }
+
+func (b failingBody) Read([]byte) (int, error) { return 0, b.err }
+
+func TestControlHTTPSeparatesReadFailureFromByteLimit(t *testing.T) {
+	e := openBridge(t, filepath.Join(t.TempDir(), "state.sqlite"), true)
+	credentials, err := e.bridge.OpenRealm(e.ctx, "http-read", "0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		body   io.Reader
+		status int
+	}{
+		{"interrupted body", failingBody{io.ErrUnexpectedEOF}, http.StatusBadRequest},
+		{"oversized body", bytes.NewReader(bytes.Repeat([]byte(" "), 8<<20)), http.StatusRequestEntityTooLarge},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/control", test.body)
+			request.Header.Set("Authorization", "Bearer "+credentials.Token)
+			response := httptest.NewRecorder()
+			e.bridge.Handler().ServeHTTP(response, request)
+			if response.Code != test.status {
+				t.Fatalf("status=%d, want %d: %s", response.Code, test.status, response.Body.String())
+			}
+		})
 	}
 }

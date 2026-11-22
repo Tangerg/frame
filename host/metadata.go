@@ -43,9 +43,6 @@ type metadataVisit struct {
 // projection, and nativeMetadata, a detached Go snapshot. Readers always
 // project a fresh value, so no reader can change what another observes.
 type publicationMetadata interface {
-	// readableAs reports whether a reader of type target can receive it; a
-	// wire document is decoded by that reader's codec instead.
-	readableAs(target reflect.Type) bool
 	wireJSON() ([]byte, error)
 }
 
@@ -54,13 +51,7 @@ type wireMetadata struct{ document framevalue.JSON }
 // nativeMetadata may hold nil: an export without metadata.
 type nativeMetadata struct{ snapshot any }
 
-func (wireMetadata) readableAs(reflect.Type) bool { return true }
-
 func (m wireMetadata) wireJSON() ([]byte, error) { return m.document.Bytes(), nil }
-
-func (m nativeMetadata) readableAs(target reflect.Type) bool {
-	return m.snapshot == nil || reflect.TypeOf(m.snapshot).AssignableTo(target)
-}
 
 func (m nativeMetadata) wireJSON() ([]byte, error) {
 	detached, err := snapshotMetadata(m.snapshot)
@@ -202,12 +193,12 @@ func (c *metadataClone) cloneCollection(value reflect.Value) (reflect.Value, err
 	return result, nil
 }
 
-func validateMetadata(definition *contractDefinition, metadataType reflect.Type, value framevalue.JSON) error {
+func (c *contractDefinition) validateMetadata(metadataType reflect.Type, value framevalue.JSON) error {
 	if err := value.Validate(); err != nil {
 		return err
 	}
-	if definition.metadataSchema != nil {
-		if err := definition.metadataSchema.Validate(value.Bytes()); err != nil {
+	if c.metadataSchema != nil {
+		if err := c.metadataSchema.Validate(value.Bytes()); err != nil {
 			return fmt.Errorf("point metadata: %w", err)
 		}
 	}
@@ -218,20 +209,20 @@ func validateMetadata(definition *contractDefinition, metadataType reflect.Type,
 	return framevalue.DecodeValue(value.Bytes(), destination.Interface(), "metadata")
 }
 
-func prepareMetadata(definition *contractDefinition, metadataType reflect.Type, metadata any) (publicationMetadata, error) {
+func (c *contractDefinition) prepareMetadata(metadataType reflect.Type, metadata any) (publicationMetadata, error) {
 	if prepared, ok := metadata.(PreparedMetadata); ok {
-		document, err := prepared.forContract(definition, metadataType)
+		document, err := prepared.forContract(c, metadataType)
 		return wireMetadata{document}, err
 	}
-	if definition.metadataSchema != nil {
+	if c.metadataSchema != nil {
 		document, err := framevalue.EncodeJSON(metadata)
 		if err != nil {
 			return nil, err
 		}
-		return validatedWireMetadata(definition, metadataType, document)
+		return c.wireMetadata(metadataType, document)
 	}
 	if document, ok := metadata.(framevalue.JSON); ok {
-		return validatedWireMetadata(definition, metadataType, document)
+		return c.wireMetadata(metadataType, document)
 	}
 	if metadataType != nil {
 		if metadata == nil {
@@ -249,8 +240,8 @@ func prepareMetadata(definition *contractDefinition, metadataType reflect.Type, 
 	return nativeMetadata{snapshot}, nil
 }
 
-func validatedWireMetadata(definition *contractDefinition, metadataType reflect.Type, document framevalue.JSON) (publicationMetadata, error) {
-	if err := validateMetadata(definition, metadataType, document); err != nil {
+func (c *contractDefinition) wireMetadata(metadataType reflect.Type, document framevalue.JSON) (publicationMetadata, error) {
+	if err := c.validateMetadata(metadataType, document); err != nil {
 		return nil, err
 	}
 	return wireMetadata{document}, nil

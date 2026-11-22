@@ -11,8 +11,10 @@ import {
   isJSONInteger,
   cloneJSON,
   freezeJSON,
+  projectNumbers,
   type JSONValue,
   type FrozenJSONValue,
+  type ProjectedJSONValue,
 } from "./json";
 
 describe("feature JSON values", () => {
@@ -226,4 +228,26 @@ describe("exact numeric semantics", () => {
   ] as const)("classifies integer %s exactly", (literal, expected) => {
     expect(isJSONInteger(new ExactNumber(literal))).toBe(expected);
   });
+});
+
+describe("number projection", () => {
+  it("projects every exactly representable number in a document", () => {
+    const projected = projectNumbers(
+      parseJSON('{"a":[1.0,2e1,{"b":9007199254740991}],"c":"1","d":null}'),
+    );
+    expect(projected).toEqual({
+      a: [1, 20, { b: 9007199254740991 }],
+      c: "1",
+      d: null,
+    });
+    expectTypeOf(projected).toEqualTypeOf<ProjectedJSONValue>();
+  });
+  it.each(["9007199254740993", "0.1000000000000000000001", "1e999"])(
+    "refuses %s instead of rounding it",
+    (number) => {
+      expect(() => projectNumbers(parseJSON(`{"a":[${number}]}`))).toThrow(
+        RangeError,
+      );
+    },
+  );
 });

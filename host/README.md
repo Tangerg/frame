@@ -110,7 +110,7 @@ notification; the worker never looks up a different failure after publishing it.
 Waiters recheck the original conclusion before reporting observer cancellation,
 including a newly recorded retry failure.
 Retirement completion drops its raw-error observation; terminal Use handles keep
-bounded diagnostics. `WithPlan` observes its private owner's causes before the
+bounded diagnostics. `Host.WithUse` observes its private owner's causes before the
 callback can retire a child, so early release cannot hide a cleanup error.
 Close errors compose through `CloseCauses.Join`, preserving shared original
 failure identities across callback errors, parent closes and settlement retries.
@@ -208,7 +208,8 @@ non-final claim cannot report success while that exit still lacks proof. Termina
 claims retain only identity and completion, including when Host close or a scope
 fence retired the instance before the caller stopped its handle.
 
-`admission.go` owns scope generations, fences and recovery together. A ScopeGrant
+The Admission owns scope generations, fences and recovery together: `scope.go`
+holds generations and fences, `admission.go` the gate and recovery. A ScopeGrant
 is a read handle to its original generation, including the same owner, key and
 cancellation context. Installation transitions capture the original scope state;
 even a repeated fence replaces that state, so delayed restoration cannot erase

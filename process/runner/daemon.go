@@ -43,13 +43,23 @@ type Daemon struct {
 	closeErr      error
 }
 
-const readinessPollInterval = 10 * time.Millisecond
+// The runner executable's command line belongs to this package: Daemon starts
+// it with these flags, and cmd/frame-runner parses exactly the same names.
+const (
+	DirectoryFlag = "directory"
+	SocketFlag    = "socket"
+)
+
+const (
+	readinessPollInterval = 10 * time.Millisecond
+	controlSocketName     = "control.sock"
+)
 
 func NewDaemon(config DaemonConfig) (*Daemon, error) {
 	if !filepath.IsAbs(config.Executable) || !filepath.IsAbs(config.Directory) || config.StartTimeout <= 0 {
 		return nil, errors.New("runner: daemon requires absolute executable and directory and startup limit")
 	}
-	socket := filepath.Join(config.Directory, "control.sock")
+	socket := filepath.Join(config.Directory, controlSocketName)
 	client, err := NewClient(socket)
 	if err != nil {
 		return nil, err
@@ -97,7 +107,7 @@ func (d *Daemon) start(ctx context.Context) error {
 	if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, syscall.ECONNREFUSED) {
 		return err
 	}
-	command := exec.Command(d.config.Executable, "--directory", d.config.Directory, "--socket", d.client.socket)
+	command := exec.Command(d.config.Executable, "--"+DirectoryFlag, d.config.Directory, "--"+SocketFlag, d.client.socket)
 	if err := detachDaemon(command); err != nil {
 		return err
 	}
@@ -141,7 +151,7 @@ func (d *Daemon) Fence(ctx context.Context, epoch uint64) error {
 }
 func (d *Daemon) Launch(ctx context.Context, request LaunchRequest) (LaunchResult, error) {
 	if err := d.connect(ctx, launchControlRequest{request}); err != nil {
-		return notDispatched(request), err
+		return request.notDispatched(), err
 	}
 	return d.client.Launch(ctx, request)
 }

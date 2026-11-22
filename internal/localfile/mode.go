@@ -1,3 +1,5 @@
+// Package localfile owns the private permissions, regular-file admission and
+// generated-file publication shared by the module's local stores and tools.
 package localfile
 
 import (

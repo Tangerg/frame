@@ -42,8 +42,5 @@ func (r Release) snapshot() Release {
 	for i, c := range r.Manifest.Contributions {
 		r.Manifest.Contributions[i].Metadata = slices.Clone(c.Metadata)
 	}
-	r.Lock.Dependencies = slices.Clone(r.Lock.Dependencies)
-	r.Lock.Artifacts = slices.Clone(r.Lock.Artifacts)
-	r.Lock.Contracts = slices.Clone(r.Lock.Contracts)
 	return r
 }

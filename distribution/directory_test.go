@@ -108,7 +108,7 @@ func TestDirectoryWalkRefusesReplacementBeforeDescending(t *testing.T) {
 	}
 	defer root.Close()
 	paths := pathInventory{}
-	err = paths.walk(t.Context(), root, DefaultLimits().Entries, func(name string, _ fs.DirEntry) error {
+	err = paths.walk(t.Context(), root, DefaultLimits().MaxEntries, func(name string, _ fs.DirEntry) error {
 		if name != "nested" {
 			t.Fatalf("replacement entered the original inventory: %s", name)
 		}

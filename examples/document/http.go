@@ -3,7 +3,7 @@ package document
 import (
 	"crypto/subtle"
 	"database/sql"
-	jsonv2 "encoding/json/v2"
+	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -96,8 +96,7 @@ func (a *App) Handler(config HTTPConfig) (http.Handler, error) {
 func decodeRequest(writer http.ResponseWriter, request *http.Request, target any) error {
 	data, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, maxRequestBytes))
 	if err != nil {
-		var limit *http.MaxBytesError
-		if errors.As(err, &limit) {
+		if _, exceeded := errors.AsType[*http.MaxBytesError](err); exceeded {
 			return errors.Join(frame.ErrCapacity, err)
 		}
 		return err
@@ -123,7 +122,7 @@ func decodeQuery(request *http.Request, target any) error {
 		}
 		members[name] = values[0]
 	}
-	data, err := jsonv2.Marshal(members)
+	data, err := json.Marshal(members)
 	if err == nil {
 		err = value.DecodeValue(data, target, "application query")
 	}
@@ -173,5 +172,5 @@ func writeFailure(writer http.ResponseWriter, output any, err error) {
 func writeResponse(writer http.ResponseWriter, status int, output any) {
 	writer.Header().Set("Content-Type", "application/json")
 	writer.WriteHeader(status)
-	_ = jsonv2.MarshalWrite(writer, output)
+	_ = json.MarshalWrite(writer, output)
 }

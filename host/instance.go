@@ -214,10 +214,10 @@ func (i *unitInstance) holdProvidersLocked(planned map[UnitRef]*unitInstance) ([
 	held := make(map[*unitInstance]bool)
 	for _, requirement := range i.binding.Imports {
 		for _, source := range requirement.Providers {
-			if source.Unit() == i.binding.Source {
+			if source.UnitRef == i.binding.Source {
 				continue
 			}
-			provider := planned[source.Unit()]
+			provider := planned[source.UnitRef]
 			if provider == nil {
 				return nil, fmt.Errorf("%w: provider not ordered before consumer", frame.ErrInvalid)
 			}

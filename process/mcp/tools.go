@@ -17,27 +17,51 @@ import (
 
 const ToolsProfile framehost.Profile = "mcp-tools"
 
+// ToolResult is what a member returns from its tool call.
+type ToolResult uint8
+
+const (
+	// StructuredResult returns structuredContent and requires the tool to
+	// advertise the member's exact output schema.
+	StructuredResult ToolResult = iota
+	// EnvelopeResult returns the entire MCP result envelope, including
+	// unstructured content; the member's output declares that envelope.
+	EnvelopeResult
+)
+
+func (r ToolResult) valid() bool { return r == StructuredResult || r == EnvelopeResult }
+
 // Tools matches each declared unary member to an MCP tool of the same name.
 // MaxCatalogPages must be positive and bounds discovery, including empty pages.
 type Tools struct {
 	MaxCatalogPages int
-	// FullResult selects members that return the entire MCP result envelope,
-	// including unstructured content. By default members return structuredContent
-	// and require an exact advertised output schema. Selection is frozen at setup.
-	FullResult func(framehost.ExportDeclaration, string) bool
+	// Result chooses each member's result; nil chooses StructuredResult for
+	// every member. The choice is frozen at setup.
+	Result func(framehost.ExportDeclaration, string) ToolResult
+}
+
+func (p Tools) resultOf(export framehost.ExportDeclaration, member string) (ToolResult, error) {
+	if p.Result == nil {
+		return StructuredResult, nil
+	}
+	result := p.Result(export, member)
+	if !result.valid() {
+		return 0, fmt.Errorf("%w: MCP tool result for %s.%s", frame.ErrInvalid, export.Name, member)
+	}
+	return result, nil
 }
 
 func (Tools) Profile() framehost.Profile { return ToolsProfile }
 
-func (p Tools) Prepare(setup framehost.Setup, metadata process.ExportMetadata, maximum int) (process.Connection, error) {
-	if !setup.Valid() || maximum <= 0 || p.MaxCatalogPages <= 0 {
+func (p Tools) Prepare(setup framehost.Setup, metadata process.ExportMetadata, maxFrameBytes int) (process.Connection, error) {
+	if !setup.Valid() || maxFrameBytes <= 0 || p.MaxCatalogPages <= 0 {
 		return nil, fmt.Errorf("%w: MCP tools requires a setup and positive limits", frame.ErrInvalid)
 	}
 	unit := setup.Unit()
 	if len(unit.Imports) != 0 {
 		return nil, fmt.Errorf("%w: standard MCP tools cannot implement Frame imports", frame.ErrContractMismatch)
 	}
-	c := &toolsConnection{maximum: maximum, pages: p.MaxCatalogPages, required: make(toolRequirements)}
+	c := &toolsConnection{maxFrameBytes: maxFrameBytes, pages: p.MaxCatalogPages, required: make(toolRequirements)}
 	for _, export := range unit.Exports {
 		contract, err := setup.Capability(export.Contract)
 		if err != nil {
@@ -46,7 +70,11 @@ func (p Tools) Prepare(setup framehost.Setup, metadata process.ExportMetadata, m
 		service := &toolService{connection: c, members: make(map[string]*toolMember)}
 		for _, descriptor := range contract.Descriptor().Methods {
 			method, _ := contract.Method(descriptor.Name)
-			member := &toolMember{method: method, fullResult: p.FullResult != nil && p.FullResult(export, method.Name())}
+			result, err := p.resultOf(export, method.Name())
+			if err != nil {
+				return nil, err
+			}
+			member := &toolMember{method: method, result: result}
 			if err := c.required.admit(export.Name, member); err != nil {
 				return nil, err
 			}
@@ -58,16 +86,16 @@ func (p Tools) Prepare(setup framehost.Setup, metadata process.ExportMetadata, m
 }
 
 type toolsConnection struct {
-	maximum     int
-	pages       int
-	required    toolRequirements
-	values      []framehost.ExportValue
-	session     *sdk.ClientSession
-	discovering atomic.Bool
+	maxFrameBytes int
+	pages         int
+	required      toolRequirements
+	values        []framehost.ExportValue
+	session       *sdk.ClientSession
+	discovering   atomic.Bool
 }
 
 func (c *toolsConnection) Connect(ctx context.Context, channel io.ReadWriteCloser) ([]framehost.ExportValue, error) {
-	session, err := connect(ctx, channel, c.maximum, func(client *sdk.Client) error {
+	session, err := connect(ctx, channel, c.maxFrameBytes, func(client *sdk.Client) error {
 		client.AddSendingMiddleware(c.admitCatalogRequests)
 		return nil
 	})
@@ -109,29 +137,11 @@ func (c *toolsConnection) discover(ctx context.Context) error {
 		if err != nil {
 			return errors.Join(err, frame.ContextError(ctx))
 		}
-		for _, tool := range page.Tools {
-			if tool == nil {
-				return fmt.Errorf("%w: null MCP tool", frame.ErrContractMismatch)
-			}
-			required, declared := c.required[tool.Name]
-			if !declared {
-				continue
-			}
-			if found[tool.Name] {
-				return fmt.Errorf("%w: duplicate MCP tool %q", frame.ErrContractMismatch, tool.Name)
-			}
-			if err := required.bind(tool); err != nil {
-				return err
-			}
-			found[tool.Name] = true
+		if err := c.required.bindPage(page.Tools, found); err != nil {
+			return err
 		}
 		if page.NextCursor == "" {
-			for name := range c.required {
-				if !found[name] {
-					return fmt.Errorf("%w: missing MCP tool %q", frame.ErrContractMismatch, name)
-				}
-			}
-			return nil
+			return c.required.requireAll(found)
 		}
 		if page.NextCursor == cursor {
 			return fmt.Errorf("%w: repeated MCP tools cursor", frame.ErrContractMismatch)
@@ -149,8 +159,8 @@ func (c *toolsConnection) Close(context.Context) error {
 }
 
 type toolMember struct {
-	method     *frame.Method
-	fullResult bool
+	method *frame.Method
+	result ToolResult
 }
 
 // Preserve the SDK's json.Number and its content-specific wire marshaling.
@@ -167,7 +177,7 @@ type toolService struct {
 	members    map[string]*toolMember
 }
 
-const commandIDMetadataKey = "io.github.tangerg.frame/commandID"
+const commandIDMetadataKey = frame.ProtocolNamespace + "commandID"
 
 // ToolError is an MCP tool's explicit failure. Result includes its content and metadata.
 type ToolError struct{ Result value.JSON }
@@ -215,7 +225,7 @@ func (s *toolService) Invoke(ctx context.Context, invocation frame.Invocation) (
 	if result.IsError {
 		return value.JSON{}, &ToolError{Result: reply}
 	}
-	if !member.fullResult {
+	if member.result == StructuredResult {
 		if result.StructuredContent == nil {
 			return value.JSON{}, fmt.Errorf("%w: MCP tool %q omitted structuredContent", frame.ErrOutcomeUnknown, name)
 		}

@@ -51,7 +51,7 @@ func runPackage(args []string, output io.Writer) error {
 	if *source == "" {
 		*source = filepath.Dir(*manifestPath)
 	}
-	data, err := boundedFile(*manifestPath, distribution.DefaultLimits().ManifestBytes)
+	data, err := boundedFile(*manifestPath, distribution.DefaultLimits().MaxManifestBytes)
 	if err != nil {
 		return err
 	}
@@ -65,7 +65,7 @@ func runPackage(args []string, output io.Writer) error {
 	}
 	defer os.Remove(temp.Name())
 	hash := sha256.New()
-	lock, err := distribution.Build(context.Background(), *source, manifest, io.MultiWriter(temp, hash))
+	release, err := distribution.Build(context.Background(), *source, manifest, io.MultiWriter(temp, hash))
 	if err == nil {
 		err = temp.Sync()
 	}
@@ -76,10 +76,15 @@ func runPackage(args []string, output io.Writer) error {
 	if err = os.Link(temp.Name(), *destination); err != nil {
 		return err
 	}
-	return json.MarshalWrite(output, struct {
-		ArchiveDigest value.Digest      `json:"archiveDigest"`
-		Lock          distribution.Lock `json:"lock"`
-	}{value.DigestOf([sha256.Size]byte(hash.Sum(nil))), lock})
+	return json.MarshalWrite(output, packageReceipt{ArchiveDigest: value.DigestOf([sha256.Size]byte(hash.Sum(nil))), ReleaseDigest: release.Digest, Manifest: release.Manifest})
+}
+
+// packageReceipt shares inspection's vocabulary: the archive's bytes, the
+// release identity and the manifest that identity covers.
+type packageReceipt struct {
+	ArchiveDigest value.Digest          `json:"archiveDigest"`
+	ReleaseDigest value.Digest          `json:"releaseDigest"`
+	Manifest      distribution.Manifest `json:"manifest"`
 }
 
 type inspection struct {
@@ -201,18 +206,18 @@ func archiveDigest(archive string, limits distribution.Limits) (value.Digest, er
 		return value.Digest{}, err
 	}
 	hash := sha256.New()
-	size, err := io.Copy(hash, io.LimitReader(file, limits.ArchiveBytes+1))
+	size, err := io.Copy(hash, io.LimitReader(file, limits.MaxArchiveBytes+1))
 	if err = errors.Join(err, file.Close()); err != nil {
 		return value.Digest{}, err
 	}
-	if size > limits.ArchiveBytes {
+	if size > limits.MaxArchiveBytes {
 		return value.Digest{}, distribution.ErrCapacity
 	}
 	return value.DigestOf([sha256.Size]byte(hash.Sum(nil))), nil
 }
 
 func checkPublisherPolicy(path string, digest value.Digest, limits distribution.Limits) error {
-	data, err := boundedFile(path, limits.ManifestBytes)
+	data, err := boundedFile(path, limits.MaxManifestBytes)
 	if err != nil {
 		return err
 	}

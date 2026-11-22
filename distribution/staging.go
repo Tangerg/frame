@@ -46,9 +46,9 @@ func (s *staging) writeFile(ctx context.Context, name string, mode fs.FileMode, 
 	if err := s.root.MkdirAll(path.Dir(name), privateDirectoryMode); err != nil {
 		return err
 	}
-	limit := s.limits.ExpandedBytes - s.bytes
+	limit := s.limits.MaxExpandedBytes - s.bytes
 	if isReleaseMetadata(name) {
-		limit = min(limit, s.limits.ManifestBytes)
+		limit = min(limit, s.limits.MaxManifestBytes)
 	}
 	data, err := readBounded(ctx, reader, limit)
 	if err != nil {
@@ -106,7 +106,7 @@ func (s *staging) extract(ctx context.Context, archive *zip.Reader, limits Limit
 		if entry.Mode().IsDir() {
 			kind = directoryEntry
 		}
-		if err := s.paths.admitBounded(name, kind, s.limits.Entries); err != nil {
+		if err := s.paths.admitBounded(name, kind, s.limits.MaxEntries); err != nil {
 			return err
 		}
 		if kind == directoryEntry {

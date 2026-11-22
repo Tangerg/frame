@@ -9,11 +9,13 @@ import (
 	"github.com/Tangerg/frame"
 	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 const (
 	defaultMaxRealms       = 64
 	defaultMaxPending      = 4096
+	defaultMaxRoutes       = 4096
 	defaultMaxMessageBytes = 4 << 20
 )
 
@@ -22,7 +24,8 @@ func encodedSize(value any) (int64, error) {
 	return int64(len(encoded)), err
 }
 
-func requestSize(method methodName, input any) (int64, error) {
+// requestSize is the encoded size of input sent as this control method.
+func (method methodName) requestSize(input any) (int64, error) {
 	encoded, err := marshalControl(input)
 	if err != nil {
 		return 0, err
@@ -31,7 +34,7 @@ func requestSize(method methodName, input any) (int64, error) {
 }
 
 func (b *Bridge) checkRequest(method methodName, input any) error {
-	size, err := requestSize(method, input)
+	size, err := method.requestSize(input)
 	if err != nil {
 		return err
 	}
@@ -62,7 +65,7 @@ func (b *Bridge) checkPlanCapacity(plan LocalPlan) error {
 			object := ObjectRef{ObjectID: plan.ApprovalToken, Export: LocalExport{InstanceID: unit.Instance.ID, Name: export.Name, Contract: export.Contract}}
 			ready.Objects = append(ready.Objects, object)
 			if export.Contract.Kind == framehost.PointKind {
-				ready.Contributions = append(ready.Contributions, PreparedContribution{Object: object, MetadataJSON: jsonNull})
+				ready.Contributions = append(ready.Contributions, PreparedContribution{Object: object, MetadataJSON: framevalue.Null})
 			}
 		}
 	}
@@ -90,7 +93,7 @@ func (b *Bridge) checkRouteCapacity(grant UseGrant, source, receiver LocalExport
 // admitted execution changes from a plan to a fence before the next poll.
 // Reservations also cover the complete reconnect request and its response.
 func (b *Bridge) reserveProjectionLocked(session *realmSession, plan LocalPlan) (int64, error) {
-	if session.sealed || b.sessions.get(RealmID(session.realm)) != session {
+	if session.sealed || b.sessions.get(session.realm.HostRealm()) != session {
 		return 0, framehost.ErrFenced
 	}
 	base := Poll{Authority: b.authority, Realm: session.realm, Plans: []LocalPlan{}, Fences: []ScopeRef{}}
@@ -98,7 +101,7 @@ func (b *Bridge) reserveProjectionLocked(session *realmSession, plan LocalPlan) 
 	if err != nil {
 		return 0, err
 	}
-	reconnectBytes, err := requestSize(reconnectMethod, ReconnectRequest{Authority: b.authority, Realm: session.realm, Executions: []Execution{}})
+	reconnectBytes, err := reconnectMethod.requestSize(ReconnectRequest{Authority: b.authority, Realm: session.realm, Executions: []Execution{}})
 	if err != nil {
 		return 0, err
 	}
@@ -129,7 +132,7 @@ func (b *Bridge) removeExecutionLocked(entry *browserExecution) {
 		return
 	}
 	b.executions.remove(entry.plan.Execution.ID)
-	if session := b.sessions.get(RealmID(entry.plan.Realm)); session != nil {
+	if session := b.sessions.get(entry.plan.Realm.HostRealm()); session != nil {
 		session.projectionBytes -= entry.projectionBytes
 	}
 }

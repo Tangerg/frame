@@ -203,22 +203,22 @@ func TestInstanceObservationProjectsOriginalCloseEvidence(t *testing.T) {
 
 type diagnosticUseOwner struct {
 	id     string
-	values []framehost.Dependency
+	values []value.Digest
 	reads  int
 }
 
 func (o *diagnosticUseOwner) ID() string { return o.id }
 
-func (o *diagnosticUseOwner) Held(context.Context, framehost.InstallationID) ([]framehost.Dependency, error) {
+func (o *diagnosticUseOwner) Held(context.Context, framehost.InstallationID) ([]value.Digest, error) {
 	o.reads++
 	return o.values, nil
 }
 
 func TestRetainedDependenciesIdentifyTheirOriginalOwners(t *testing.T) {
 	admission := framehost.NewAdmission()
-	dependency := framehost.Dependency{InstallationID: "original", Release: value.Hash([]byte("release"))}
-	documents := &diagnosticUseOwner{id: "consumer.documents", values: []framehost.Dependency{dependency}}
-	tasks := &diagnosticUseOwner{id: "consumer.tasks", values: []framehost.Dependency{dependency, dependency}}
+	dependency := framehost.ReleaseRef{InstallationID: "original", Release: value.Hash([]byte("release"))}
+	documents := &diagnosticUseOwner{id: "consumer.documents", values: []value.Digest{dependency.Release}}
+	tasks := &diagnosticUseOwner{id: "consumer.tasks", values: []value.Digest{dependency.Release, dependency.Release}}
 	for _, owner := range []*diagnosticUseOwner{tasks, documents} {
 		if err := admission.RegisterUseOwner(owner); err != nil {
 			t.Fatal(err)
@@ -237,7 +237,7 @@ func TestRetainedDependenciesIdentifyTheirOriginalOwners(t *testing.T) {
 	}
 	retained[0].Dependency.Release = value.Hash([]byte("changed projection"))
 	retained[0].OwnerID = "changed projection"
-	if documents.values[0] != dependency {
+	if documents.values[0] != dependency.Release {
 		t.Fatal("diagnostic projection mutated its business owner")
 	}
 	admission.RequireRecovery(errors.New("another owner needs recovery"))
@@ -373,7 +373,7 @@ func TestInstallationRestorationPreservesScopeRevocation(t *testing.T) {
 			records := []framehost.InstallationRecord{record}
 			switch change {
 			case "fence":
-				if err := host.SetEnabled(ctx, "original", false); err != nil {
+				if err := host.Disable(ctx, "original"); err != nil {
 					t.Fatal(err)
 				}
 			case "disable":

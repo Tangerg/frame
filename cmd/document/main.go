@@ -1,3 +1,5 @@
+// Command document serves the document example application or generates its
+// TypeScript HTTP API without opening application state.
 package main
 
 //go:generate go run . -command generate -out ../../examples/document/web/src/api.generated.ts
@@ -45,8 +47,9 @@ const (
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if err := run(ctx, os.Args[1:], os.Stdout); err != nil && !errors.Is(err, flag.ErrHelp) {
+	err := run(ctx, os.Args[1:], os.Stdout)
+	stop()
+	if err != nil && !errors.Is(err, flag.ErrHelp) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

@@ -86,7 +86,7 @@ func TestToolsOnApprovedRunner(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			p := Tools{MaxCatalogPages: tc.pages, FullResult: func(_ framehost.ExportDeclaration, name string) bool { return name == "text" }}
+			p := Tools{MaxCatalogPages: tc.pages, Result: func(_ framehost.ExportDeclaration, name string) ToolResult { return resultWhen(name == "text") }}
 			checkExecution(t, p, capability, func(t *testing.T, dir string) process.Program {
 				executable, err := os.Executable()
 				if err != nil {
@@ -192,7 +192,7 @@ func TestToolCannotWeakenApprovedContract(t *testing.T) {
 	if err := required[method.Name()].bind(&tool); !errors.Is(err, frame.ErrContractMismatch) {
 		t.Fatalf("downgraded structured output: %v", err)
 	}
-	member.fullResult = true
+	member.result = EnvelopeResult
 	fullResult := make(toolRequirements)
 	if err := fullResult.admit("service", &member); err != nil {
 		t.Fatal(err)
@@ -200,4 +200,12 @@ func TestToolCannotWeakenApprovedContract(t *testing.T) {
 	if err := fullResult[method.Name()].bind(&tool); err != nil {
 		t.Fatalf("host-selected result envelope: %v", err)
 	}
+}
+
+// resultWhen chooses the envelope for the members a test selects.
+func resultWhen(envelope bool) ToolResult {
+	if envelope {
+		return EnvelopeResult
+	}
+	return StructuredResult
 }

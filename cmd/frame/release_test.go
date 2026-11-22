@@ -23,7 +23,7 @@ func TestPackageAndVerifyPreserveTheExactArtifactAndRefusePartialOutput(t *testi
 		Package: "example.theme", Version: "1.0.0",
 		Artifacts:    []distribution.Artifact{{Path: "theme.css"}},
 		Units:        []distribution.Unit{{ID: "theme", Profile: framehost.StaticResource, Resources: []string{"theme.css"}}},
-		Dependencies: []distribution.LockedRelease{{Package: "example.dependency", Release: value.Hash([]byte("original dependency"))}},
+		Dependencies: []distribution.Dependency{{Package: "example.dependency", Release: value.Hash([]byte("original dependency"))}},
 	}
 	writeManifest := func() {
 		t.Helper()
@@ -41,14 +41,11 @@ func TestPackageAndVerifyPreserveTheExactArtifactAndRefusePartialOutput(t *testi
 	if err := runPackage([]string{"--source", source, "--out", archive}, &output); err != nil {
 		t.Fatal(err)
 	}
-	var report struct {
-		ArchiveDigest value.Digest      `json:"archiveDigest"`
-		Lock          distribution.Lock `json:"lock"`
-	}
+	var report packageReceipt
 	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Lock.Dependencies) != 1 || report.Lock.Dependencies[0] != manifest.Dependencies[0] {
+	if len(report.Manifest.Dependencies) != 1 || report.Manifest.Dependencies[0] != manifest.Dependencies[0] {
 		t.Fatal("package command lost canonical manifest dependencies")
 	}
 	data, err := os.ReadFile(archive)
@@ -60,7 +57,7 @@ func TestPackageAndVerifyPreserveTheExactArtifactAndRefusePartialOutput(t *testi
 		t.Fatal(err)
 	}
 	var verified inspection
-	if err := json.Unmarshal(output.Bytes(), &verified); err != nil || verified.ReleaseDigest != report.Lock.Release {
+	if err := json.Unmarshal(output.Bytes(), &verified); err != nil || verified.ReleaseDigest != report.ReleaseDigest {
 		t.Fatalf("verified identity: %v, %v", verified.ReleaseDigest, err)
 	}
 	if err := runPackage([]string{"--source", source, "--out", archive}, &output); !errors.Is(err, os.ErrExist) {

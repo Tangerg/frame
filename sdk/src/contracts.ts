@@ -1,13 +1,7 @@
-import {
-  ContractModeValues,
-  DIGEST_PATTERN,
-  type ContractRef,
-} from "./protocol.generated.js";
+import { ContractModeValues, type ContractRef } from "./protocol.generated.js";
 
 import { FrameError } from "./errors.js";
-import { identity } from "./identity.js";
-
-const digestPattern = new RegExp(DIGEST_PATTERN);
+import { identity, validDigest } from "./identity.js";
 
 export function sameContract(left: ContractRef, right: ContractRef): boolean {
   return (
@@ -30,8 +24,7 @@ function checked(ref: ContractRef, kind: ContractRef["kind"]): ContractRef {
   identity(captured.name, "contract name");
   identity(captured.version, "contract version");
   if (
-    typeof captured.digest !== "string" ||
-    !digestPattern.test(captured.digest) ||
+    !validDigest(captured.digest) ||
     captured.kind !== kind ||
     !ContractModeValues.includes(captured.mode)
   ) {

@@ -237,7 +237,7 @@ func TestApprovedProcessUsesPublicContractAndReleasesOriginalAttempt(t *testing.
 	if _, err := owner.Close(e.ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.host.SetEnabled(e.ctx, "echo", false); err != nil {
+	if err := e.host.Disable(e.ctx, "echo"); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.host.WaitRetired(e.ctx, "echo"); err != nil {
@@ -280,7 +280,7 @@ func TestDisableDuringRealProcessSetupCannotPublishOrActivate(t *testing.T) {
 			}
 		}
 	}
-	if err := e.host.SetEnabled(e.ctx, "echo", false); err != nil {
+	if err := e.host.Disable(e.ctx, "echo"); err != nil {
 		t.Fatal(err)
 	}
 	select {

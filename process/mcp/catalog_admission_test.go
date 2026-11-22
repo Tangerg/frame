@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"net"
@@ -151,7 +150,9 @@ func TestToolsPrepareRetainsSharedViewsAndRemoteRequirements(t *testing.T) {
 				if envelopeFirst {
 					slices.Reverse(exports)
 				}
-				protocol := Tools{MaxCatalogPages: 1, FullResult: func(export framehost.ExportDeclaration, _ string) bool { return export.Name == "envelope" }}
+				protocol := Tools{MaxCatalogPages: 1, Result: func(export framehost.ExportDeclaration, _ string) ToolResult {
+					return resultWhen(export.Name == "envelope")
+				}}
 				err := prepareCatalog(t, ctx, exports, func(ctx context.Context, setup framehost.Setup) error {
 					connection, err := protocol.Prepare(setup, nil, 1<<20)
 					if err != nil {
@@ -190,98 +191,5 @@ func TestToolsPrepareRetainsSharedViewsAndRemoteRequirements(t *testing.T) {
 				}
 			})
 		}
-	}
-}
-
-func TestManagedPrepareOwnsGlobalMethodIdentity(t *testing.T) {
-	for _, change := range []string{"none", "input", "output", "kind", "target", "remote"} {
-		t.Run(change, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-			defer cancel()
-			declared := make(map[string]ManagedExport)
-			var exports []catalogExport
-			description := managedDescription{Protocol: managedVersion}
-			for index, name := range []string{"first", "second"} {
-				member := frame.MethodDescriptor{Name: "write", Kind: frame.Command, Target: "document", Input: []byte(inputSchema), Output: []byte(outputSchema)}
-				if index == 1 {
-					member.Description = "A different presentation of the shared operation."
-					switch change {
-					case "input":
-						member.Input = []byte(`{"type":"object","properties":{"action":{"type":"integer"}},"additionalProperties":false}`)
-					case "output":
-						member.Output = []byte(`{"type":"boolean"}`)
-					case "kind":
-						member.Kind = frame.Query
-					case "target":
-						member.Target = "workspace"
-					}
-				}
-				descriptor, err := value.EncodeJSON(managedDescriptor{managedVersion, "catalog." + name, managedSelection, "installation", []frame.MethodDescriptor{member}})
-				if err != nil {
-					t.Fatal(err)
-				}
-				contract, err := ParseManagedContract(descriptor.Bytes())
-				if err != nil {
-					t.Fatal(err)
-				}
-				declared[name] = ManagedExport{Name: name, Contract: contract}
-				exports = append(exports, catalogExport{name, contract.Capability()})
-				description.Capabilities = append(description.Capabilities, struct {
-					Name     string         `json:"name"`
-					Contract jsontext.Value `json:"contract"`
-				}{name, descriptor.Bytes()})
-				if index == 0 {
-					description.Methods = []frame.MethodDescriptor{member}
-				}
-			}
-			if change == "remote" {
-				description.Methods[0].Target = "workspace"
-			}
-			protocol := ManagedProtocol{Exports: func(framehost.UnitBinding) (map[string]ManagedExport, error) { return declared, nil }}
-			connected := false
-			err := prepareCatalog(t, ctx, exports, func(ctx context.Context, setup framehost.Setup) error {
-				connection, err := protocol.Prepare(setup, nil, 1<<20)
-				if err != nil {
-					return err
-				}
-				connected = true
-				server := sdk.NewServer(&sdk.Implementation{Name: "shared-managed", Version: "1"}, nil)
-				for _, name := range []string{managedDescribe, managedSetup, managedActivate} {
-					if err := sdk.AddReceivingCustomMethod(server, name, func(context.Context, *sdk.ServerSession, *managedParams) (*managedResult, error) {
-						if name != managedDescribe {
-							return &managedResult{Value: jsontext.Value(`true`)}, nil
-						}
-						raw, err := value.EncodeJSON(description)
-						return &managedResult{Value: raw.Bytes()}, err
-					}); err != nil {
-						return err
-					}
-				}
-				values, err := connectPreparedCatalog(t, ctx, connection, server)
-				if err == nil && len(values) != len(exports) {
-					return fmt.Errorf("shared managed exports changed: %d", len(values))
-				}
-				return err
-			})
-			switch change {
-			case "none":
-				if err != nil || !connected {
-					t.Fatalf("legal shared methods were refused: %v", err)
-				}
-			case "remote":
-				if !errors.Is(err, frame.ErrContractMismatch) || !connected {
-					t.Fatalf("remote drift escaped connect verification: %v", err)
-				}
-			default:
-				if !errors.Is(err, frame.ErrContractMismatch) || connected {
-					t.Fatalf("contradictory method reached connect: connected=%t error=%v", connected, err)
-				}
-				for _, evidence := range []string{"write", "first", "second"} {
-					if !strings.Contains(err.Error(), evidence) {
-						t.Fatalf("conflict diagnostic lost %q: %v", evidence, err)
-					}
-				}
-			}
-		})
 	}
 }

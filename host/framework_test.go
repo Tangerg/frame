@@ -82,7 +82,7 @@ func TestScopedStartSharesOnlyTheOriginalGrantAndFinalStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := host.SetEnabled(ctx, id, false); err != nil {
+	if err := host.Disable(ctx, id); err != nil {
 		t.Fatal(err)
 	}
 	if err := host.WaitInstanceRetired(ctx, third.ID()); err != nil {

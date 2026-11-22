@@ -35,7 +35,7 @@ func routedUse(t *testing.T, e *bridgeEnvironment) (browser.UseGrant, browser.Lo
 		t.Fatal(err)
 	}
 	root := framehost.ExportRef{InstallationID: "emitter", Release: plugin.Revision(), UnitID: "emitter", Export: "ping", Contract: event.Ref()}
-	plan, err := e.host.PlanWith(e.ctx, browser.RealmID(credentials.Realm), nil, root)
+	plan, err := e.host.PlanWith(e.ctx, credentials.Realm.HostRealm(), nil, root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,9 +103,9 @@ func TestRouteGrantsEventDeliveryWithinItsOriginalUse(t *testing.T) {
 	}
 }
 
-func TestIssuedRoutesCountAgainstPendingCapacity(t *testing.T) {
+func TestIssuedRoutesCountAgainstRouteCapacity(t *testing.T) {
 	const capacity = 4
-	e := openConfiguredBridge(t, filepath.Join(t.TempDir(), "route-capacity.db"), true, func(config *browser.BridgeConfig) { config.MaxPending = capacity })
+	e := openConfiguredBridge(t, filepath.Join(t.TempDir(), "route-capacity.db"), true, func(config *browser.BridgeConfig) { config.MaxRoutes = capacity })
 	grant, export := routedUse(t, e)
 	undeclared := export
 	undeclared.Name = "undeclared"

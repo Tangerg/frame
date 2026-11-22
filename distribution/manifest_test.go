@@ -50,3 +50,36 @@ func TestExplicitNullContributionMetadataSurvivesAuthorEncoding(t *testing.T) {
 		t.Fatalf("the author writer changed explicit null to omission: %s, %v", encoded, err)
 	}
 }
+
+func TestParseManifestValidatesItsArtifactAndContractInventory(t *testing.T) {
+	digest := value.Hash([]byte("artifact"))
+	contract, err := framehost.NewContract[string]("inventory.contract", "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name      string
+		artifacts []Artifact
+		contracts []framehost.ContractRef
+	}{
+		{name: "escaping path", artifacts: []Artifact{{Path: "../escape", Digest: digest}}},
+		{name: "negative size", artifacts: []Artifact{{Path: "asset.txt", Digest: digest, Size: -1}}},
+		{name: "duplicate path", artifacts: []Artifact{{Path: "asset.txt", Digest: digest}, {Path: "asset.txt", Digest: digest}}},
+		{name: "incomplete contract", contracts: []framehost.ContractRef{{Name: "incomplete"}}},
+		{name: "duplicate contract", contracts: []framehost.ContractRef{contract.Ref(), contract.Ref()}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manifest := Manifest{Package: "inventory.package", Version: "1", Artifacts: test.artifacts, Contracts: test.contracts, Units: []Unit{}}
+			if manifest.Artifacts == nil {
+				manifest.Artifacts = []Artifact{}
+			}
+			encoded, err := json.Marshal(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ParseManifest(encoded); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("invalid inventory was admitted: %v", err)
+			}
+		})
+	}
+}

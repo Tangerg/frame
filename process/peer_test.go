@@ -44,7 +44,7 @@ func TestDuplexStreamingAllowsNestedCallsWithAcknowledgedChunks(t *testing.T) {
 	}}
 	var right *peer
 	right = newPeer(b, wire.MaxFrameBytes, func(ctx context.Context, _ string, raw jsontext.Value) (jsontext.Value, error) {
-		return dispatchCall(ctx, right, map[string]binding{"one": {contract, implementation}}, raw)
+		return dispatchCall(ctx, right, map[string]boundService{"one": {contract, implementation}}, raw)
 	})
 	left.start()
 	right.start()

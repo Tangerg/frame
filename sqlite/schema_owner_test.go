@@ -14,7 +14,7 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
-func noSchemaReferences(context.Context, sqlite.Reader, framehost.InstallationID) ([]framehost.Dependency, error) {
+func noSchemaReferences(context.Context, sqlite.Reader, framehost.InstallationID) ([]value.Digest, error) {
 	return nil, nil
 }
 
@@ -49,7 +49,7 @@ func TestBusinessOwnerCannotEraseExecutionProtection(t *testing.T) {
 	}
 	source := framehost.UnitRef{InstallationID: "provider", Release: value.Hash(nil), UnitID: "main"}
 	binding := framehost.BindingSnapshot{Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{source}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil)}}}
-	if _, err := store.RecordAttempt(t.Context(), sqlite.Attempt{ID: "running", Epoch: store.Epoch(), Source: source, Binding: binding, Realm: "realm", Profile: framehost.LocalProcess}); err != nil {
+	if _, err := store.RecordAttempt(t.Context(), sqlite.Attempt{ID: "running", Epoch: store.Epoch(), Source: source, Binding: binding, Realm: "realm", Profile: framehost.LocalProcess, Scope: "scope", ScopeGeneration: 1, Generation: 1}); err != nil {
 		t.Fatal(err)
 	}
 	err = owner.Update(t.Context(), func(ctx context.Context, tx sqlite.Executor) error {

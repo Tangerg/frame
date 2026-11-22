@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	framehost "github.com/Tangerg/frame/host"
+	"github.com/Tangerg/frame/value"
 )
 
 func TestInterruptedAdmissionReadAndRecoveryRequireRecovery(t *testing.T) {
@@ -30,7 +31,7 @@ func TestInterruptedAdmissionReadAndRecoveryRequireRecovery(t *testing.T) {
 				ctx := testContext(t)
 				admission := framehost.NewAdmission()
 				repaired := false
-				owner := &retainedUseOwner{read: func(context.Context, framehost.InstallationID) ([]framehost.Dependency, error) {
+				owner := &retainedUseOwner{read: func(context.Context, framehost.InstallationID) ([]value.Digest, error) {
 					if !repaired {
 						interruption.run()
 					}

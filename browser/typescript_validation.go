@@ -166,7 +166,7 @@ func (e *typeScriptEmitter) validateWireModel(source, model reflect.Type, value 
 	case reflect.Int8, reflect.Uint8, reflect.Int16, reflect.Uint16, reflect.Int32, reflect.Uint32,
 		reflect.Int, reflect.Uint, reflect.Int64, reflect.Uint64:
 		minimum, maximum := integerBounds(model)
-		if model.Kind() != reflect.Int && model.Kind() != reflect.Uint && model.Bits() <= 32 {
+		if model.Kind() != reflect.Int && model.Kind() != reflect.Uint && model.Bits() <= javaScriptExactIntegerBits {
 			return fmt.Sprintf("typeof %s === \"number\" && Number.isInteger(%s) && %s >= %s && %s <= %s", value, value, value, minimum, value, maximum), nil
 		}
 		e.needsIntegerChecks = true
@@ -191,7 +191,7 @@ func (e *typeScriptEmitter) validateWireModel(source, model reflect.Type, value 
 	case reflect.Struct:
 		return e.validateWireFields(model, value)
 	default:
-		return "", fmt.Errorf("control: unsupported response model %s", model)
+		return "", fmt.Errorf("browser: unsupported response model %s", model)
 	}
 }
 
@@ -219,6 +219,10 @@ func (e *typeScriptEmitter) validateWireFields(model reflect.Type, value string)
 	}
 	return strings.Join(checks, " &&\n    "), nil
 }
+
+// javaScriptExactIntegerBits is the widest machine integer every value of which
+// a JavaScript number represents exactly; wider integers need bigint checks.
+const javaScriptExactIntegerBits = 53
 
 func integerBounds(model reflect.Type) (string, string) {
 	limit := new(big.Int).Lsh(big.NewInt(1), uint(model.Bits()))

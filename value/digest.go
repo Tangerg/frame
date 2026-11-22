@@ -1,4 +1,3 @@
-// Package value defines immutable wire values and their content identities.
 package value
 
 import (

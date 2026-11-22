@@ -21,27 +21,33 @@ const emptyConfiguration = `{}`
 
 const executionResourcePrefix = "browser execution "
 
-// Ready rejections tell the Runtime why its report was refused. They name a
-// protocol condition and never carry application diagnostics.
+// readyProblem tells the Runtime why its report was refused. It names a
+// protocol condition and never carries application diagnostics.
+type readyProblem string
+
+func (p readyProblem) Error() string { return string(p) }
+
 const (
-	problemWrongAuthority       = "wrong execution authority"
-	problemExecutionUnavailable = "execution unavailable"
-	problemInvalidObjectSource  = "invalid object source"
-	problemDuplicateExport      = "duplicate export name"
-	problemDuplicateObject      = "duplicate prepared object"
-	problemInexactPoint         = "metadata does not identify an exact prepared point"
-	problemDuplicateMetadata    = "duplicate prepared metadata"
-	problemUndeclaredExports    = "actual exports differ from approved declarations"
-	problemInvalidPointMetadata = "invalid point metadata"
-	problemUndeclaredMember     = "undeclared prepared contribution"
-	problemMissingMetadata      = "missing prepared metadata"
-	problemInvalidMemberData    = "invalid prepared metadata"
-	problemExecutionReleased    = "execution already released"
+	problemWrongAuthority       readyProblem = "wrong execution authority"
+	problemExecutionUnavailable readyProblem = "execution unavailable"
+	problemInvalidObjectSource  readyProblem = "invalid object source"
+	problemDuplicateExport      readyProblem = "duplicate export name"
+	problemDuplicateObject      readyProblem = "duplicate prepared object"
+	problemInexactPoint         readyProblem = "metadata does not identify an exact prepared point"
+	problemDuplicateMetadata    readyProblem = "duplicate prepared metadata"
+	problemUndeclaredExports    readyProblem = "actual exports differ from approved declarations"
+	problemInvalidPointMetadata readyProblem = "invalid point metadata"
+	problemUndeclaredMember     readyProblem = "undeclared prepared contribution"
+	problemMissingMetadata      readyProblem = "missing prepared metadata"
+	problemInvalidMemberData    readyProblem = "invalid prepared metadata"
+	problemExecutionReleased    readyProblem = "execution already released"
 )
 
 func rejectedDecision(problem string) DecisionResult {
 	return DecisionResult{Decision: Rejected, Problem: problem}
 }
+
+func (p readyProblem) decision() DecisionResult { return rejectedDecision(string(p)) }
 
 func (b *Bridge) Prepare(ctx context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 	if !b.config.Host.OwnsSetup(setup) {
@@ -81,7 +87,7 @@ func (b *Bridge) Prepare(ctx context.Context, setup framehost.Setup) ([]framehos
 			b.mu.Unlock()
 		}
 	}()
-	attempt := sqlite.Attempt{ID: setup.InstanceID(), Epoch: setup.Epoch(), Source: setup.Binding().Source, Binding: setup.Snapshot(), Realm: string(RealmID(session.realm)), Profile: framehost.BrowserJS, Scope: setup.ScopeGrant().WireID(), ScopeGeneration: setup.ScopeGrant().Generation(), Generation: setup.Generation()}
+	attempt := sqlite.NewAttempt(setup, string(session.realm.HostRealm()))
 	entry := &browserExecution{plan: plan, attempt: attempt, setup: setup, prepared: make(chan []framehost.ExportValue, 1), approvalDone: make(chan struct{}), projectionBytes: projectionBytes}
 	resource, err := setup.Own(frame.Resource{Name: executionResourcePrefix + attempt.ID, Cancel: func(error) { b.fence(entry) }, Close: func(wait context.Context) (frame.ReleaseState, error) {
 		return b.closeExecution(wait, entry)
@@ -356,7 +362,7 @@ func (b *Bridge) Ready(ctx context.Context, token string, report ReadyReport) (D
 		return DecisionResult{}, err
 	}
 	if report.Authority != b.authority || report.Realm != session.realm || report.OperationID == "" {
-		return rejectedDecision(problemWrongAuthority), nil
+		return problemWrongAuthority.decision(), nil
 	}
 	digest, err := requestDigest(report)
 	if err != nil {
@@ -370,15 +376,18 @@ func (b *Bridge) Ready(ctx context.Context, token string, report ReadyReport) (D
 	}
 	if session.sealed || !entry.runtimeOwnsExit() || !entry.serves(session.realm, report.Execution) {
 		b.mu.Unlock()
-		return rejectedDecision(problemExecutionUnavailable), nil
+		return problemExecutionUnavailable.decision(), nil
 	}
 	b.mu.Unlock()
 	if err := b.validateCurrentPlan(ctx, token, entry.plan); err != nil {
 		return DecisionResult{}, err
 	}
-	exports, problem := b.readyExports(entry.plan.Units[0], report)
-	if problem != "" {
-		return rejectedDecision(problem), nil
+	exports, err := b.readyExports(entry.plan.Units[0], report)
+	if problem, rejected := errors.AsType[readyProblem](err); rejected {
+		return problem.decision(), nil
+	}
+	if err != nil {
+		return DecisionResult{}, err
 	}
 	if err := b.validateCurrentPlan(ctx, token, entry.plan); err != nil {
 		return DecisionResult{}, err
@@ -389,7 +398,7 @@ func (b *Bridge) Ready(ctx context.Context, token string, report ReadyReport) (D
 		return result, err
 	}
 	if session.sealed {
-		return rejectedDecision(problemExecutionReleased), nil
+		return problemExecutionReleased.decision(), nil
 	}
 	result, accepted, err := entry.acceptReady(report.OperationID, digest)
 	if accepted {
@@ -401,14 +410,14 @@ func (b *Bridge) Ready(ctx context.Context, token string, report ReadyReport) (D
 // readyExports admits the reported objects against the approved unit: every
 // declared export exactly once, plus dynamic members of declared Points, each
 // with metadata that names its exact prepared object.
-func (b *Bridge) readyExports(unit PlannedUnit, report ReadyReport) ([]framehost.ExportValue, string) {
-	objects, problem := readyObjects(unit, report.Objects)
-	if problem != "" {
-		return nil, problem
+func (b *Bridge) readyExports(unit PlannedUnit, report ReadyReport) ([]framehost.ExportValue, error) {
+	objects, err := unit.readyObjects(report.Objects)
+	if err != nil {
+		return nil, err
 	}
-	metadata, problem := readyMetadata(objects, report.Contributions)
-	if problem != "" {
-		return nil, problem
+	metadata, err := objects.metadata(report.Contributions)
+	if err != nil {
+		return nil, err
 	}
 	exports := make([]framehost.ExportValue, 0, len(report.Objects))
 	for _, declaration := range unit.Exports {
@@ -420,7 +429,7 @@ func (b *Bridge) readyExports(unit PlannedUnit, report ReadyReport) ([]framehost
 		if declaration.Contract.Kind == framehost.PointKind {
 			encoded, exists := metadata[reference.ObjectID]
 			if !exists {
-				encoded = jsonNull
+				encoded = framevalue.Null
 			}
 			prepared, err := b.config.Host.PrepareMetadata(declaration.Contract, []byte(encoded))
 			if err != nil {
@@ -434,7 +443,7 @@ func (b *Bridge) readyExports(unit PlannedUnit, report ReadyReport) ([]framehost
 	// Dynamic setup contributions require a declared Point and are returned in
 	// the same prepared batch. They acquire visibility only in the Core owner.
 	for _, reference := range objects.byExport {
-		if reference.Export.Contract.Kind != framehost.PointKind || !declaresContract(unit, reference.Export.Contract) {
+		if reference.Export.Contract.Kind != framehost.PointKind || !unit.declaresContract(reference.Export.Contract) {
 			return nil, problemUndeclaredMember
 		}
 		encoded, exists := metadata[reference.ObjectID]
@@ -447,10 +456,10 @@ func (b *Bridge) readyExports(unit PlannedUnit, report ReadyReport) ([]framehost
 		}
 		exports = append(exports, framehost.ExportValue{Name: reference.Export.Name, Contract: reference.Export.Contract, Metadata: prepared, Value: Object{Reference: reference}})
 	}
-	return exports, ""
+	return exports, nil
 }
 
-func declaresContract(unit PlannedUnit, contract framehost.ContractRef) bool {
+func (unit PlannedUnit) declaresContract(contract framehost.ContractRef) bool {
 	return slices.ContainsFunc(unit.Exports, func(declaration framehost.ExportDeclaration) bool { return declaration.Contract == contract })
 }
 
@@ -459,7 +468,7 @@ type readyObjectIndex struct {
 	byID     map[string]ObjectRef
 }
 
-func readyObjects(unit PlannedUnit, references []ObjectRef) (readyObjectIndex, string) {
+func (unit PlannedUnit) readyObjects(references []ObjectRef) (readyObjectIndex, error) {
 	index := readyObjectIndex{byExport: make(map[string]ObjectRef, len(references)), byID: make(map[string]ObjectRef, len(references))}
 	for _, reference := range references {
 		if !reference.validIn(unit.Instance.ID) {
@@ -474,10 +483,10 @@ func readyObjects(unit PlannedUnit, references []ObjectRef) (readyObjectIndex, s
 		index.byExport[reference.Export.Name] = reference
 		index.byID[reference.ObjectID] = reference
 	}
-	return index, ""
+	return index, nil
 }
 
-func readyMetadata(objects readyObjectIndex, contributions []PreparedContribution) (map[string]string, string) {
+func (objects readyObjectIndex) metadata(contributions []PreparedContribution) (map[string]string, error) {
 	metadata := make(map[string]string, len(contributions))
 	for _, contribution := range contributions {
 		reference, exists := objects.byID[contribution.Object.ObjectID]
@@ -489,5 +498,5 @@ func readyMetadata(objects readyObjectIndex, contributions []PreparedContributio
 		}
 		metadata[reference.ObjectID] = contribution.MetadataJSON
 	}
-	return metadata, ""
+	return metadata, nil
 }

@@ -114,7 +114,7 @@ func TestMultiPointCaptureValidatesItsWholeReadSet(t *testing.T) {
 				t.Fatal(err)
 			}
 			calls := 0
-			useErr := framehost.WithPlan(ctx, host, plan, scope, func(use framehost.Use) error {
+			useErr := host.WithUse(ctx, scope, plan, func(use framehost.Use) error {
 				calls++
 				if err := framehost.Borrow(ctx, use, firstSelection, func(_ context.Context, values []string) error {
 					if len(values) != 1 || values[0] != "first-value" {

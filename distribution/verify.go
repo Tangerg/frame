@@ -20,14 +20,18 @@ func VerifyArchive(ctx context.Context, archive string, digest value.Digest, lim
 	defer func() { err = errors.Join(err, removeSealed(directory)) }()
 	store, err := Open(Config{
 		Directory: directory, Admission: framehost.NewAdmission(), Limits: limits,
-		Trust:    func(context.Context, Source, Manifest, Lock) error { return nil },
+		Trust:    func(context.Context, Source, Release) error { return nil },
 		Retained: func(context.Context, value.Digest) (bool, error) { return true, nil },
 	})
 	if err != nil {
 		return Release{}, err
 	}
 	defer func() { err = errors.Join(err, store.Close(context.Background())) }()
-	return store.ImportArchive(ctx, archive, digest)
+	lease, err := store.ImportArchive(ctx, archive, digest)
+	if err != nil {
+		return Release{}, err
+	}
+	return lease.Snapshot(), lease.Close()
 }
 
 func (s *storeAuthority) Inspect(ctx context.Context, digest value.Digest) (Release, error) {
@@ -68,7 +72,7 @@ func (s *storeAuthority) validate(ctx context.Context, root *os.Root, admission 
 		verifier.expected[artifact.Path] = artifact
 	}
 	paths := pathInventory{}
-	if err := paths.walk(ctx, root, s.limits.Entries, verifier.visit); err != nil {
+	if err := paths.walk(ctx, root, s.limits.MaxEntries, verifier.visit); err != nil {
 		return Release{}, err
 	}
 	if len(verifier.expected) != 0 {
@@ -78,7 +82,7 @@ func (s *storeAuthority) validate(ctx context.Context, root *os.Root, admission 
 }
 
 func (s *storeAuthority) readReleaseMetadata(ctx context.Context, root *os.Root) (Release, error) {
-	manifestFile, err := readRegular(ctx, root, ManifestName, s.limits.ManifestBytes)
+	manifestFile, err := readRegular(ctx, root, ManifestName, s.limits.MaxManifestBytes)
 	if err != nil {
 		return Release{}, err
 	}
@@ -90,21 +94,7 @@ func (s *storeAuthority) readReleaseMetadata(ctx context.Context, root *os.Root)
 	if err != nil {
 		return Release{}, err
 	}
-	if !manifest.Release.IsZero() && manifest.Release != digest {
-		return Release{}, ErrIntegrity
-	}
-	lockFile, err := readRegular(ctx, root, LockName, s.limits.ManifestBytes)
-	if err != nil {
-		return Release{}, err
-	}
-	lock, err := ParseLock(lockFile.data)
-	if err != nil {
-		return Release{}, err
-	}
-	if err := lock.Verify(manifest); err != nil {
-		return Release{}, err
-	}
-	return Release{Digest: digest, Manifest: manifest, Lock: lock}, nil
+	return Release{Digest: digest, Manifest: manifest}, nil
 }
 
 type artifactVerifier struct {
@@ -158,7 +148,7 @@ func (v *artifactVerifier) account(info fs.FileInfo) error {
 	if !info.Mode().IsRegular() {
 		return ErrInvalid
 	}
-	if info.Size() > v.limits.ExpandedBytes-v.size {
+	if info.Size() > v.limits.MaxExpandedBytes-v.size {
 		return ErrCapacity
 	}
 	v.size += info.Size()

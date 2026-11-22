@@ -95,12 +95,12 @@ func TestNestedReadPanicCannotEraseOriginalDiscardObligation(t *testing.T) {
 			database.db.SetMaxIdleConns(1)
 			defer database.Close()
 			var recovered any
-			err = RunInTx(t.Context(), database, func(ctx context.Context) error {
-				if _, err := Connection(ctx, database).ExecContext(ctx, `INSERT INTO facts VALUES('must rollback')`); err != nil {
+			err = database.RunInTx(t.Context(), func(ctx context.Context) error {
+				if _, err := database.Executor(ctx).ExecContext(ctx, `INSERT INTO facts VALUES('must rollback')`); err != nil {
 					return err
 				}
 				recovered = capturePanic(func() {
-					_ = RunReadSnapshot(ctx, database, func(context.Context) error { panic(panicCause) })
+					_ = database.RunReadSnapshot(ctx, func(context.Context) error { panic(panicCause) })
 				})
 				return nil
 			})
@@ -120,8 +120,8 @@ func TestNestedReadPanicCannotEraseOriginalDiscardObligation(t *testing.T) {
 			if err := observer.QueryRowContext(t.Context(), `SELECT count(*) FROM facts`).Scan(&count); err != nil || count != 0 {
 				t.Fatalf("tainted transaction committed: count=%d error=%v", count, err)
 			}
-			if err := RunInTx(t.Context(), database, func(ctx context.Context) error {
-				_, err := Connection(ctx, database).ExecContext(ctx, `INSERT INTO facts VALUES('next write')`)
+			if err := database.RunInTx(t.Context(), func(ctx context.Context) error {
+				_, err := database.Executor(ctx).ExecContext(ctx, `INSERT INTO facts VALUES('next write')`)
 				return err
 			}); err != nil {
 				t.Fatalf("nested read mode poisoned the next owner: %v", err)

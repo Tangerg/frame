@@ -60,7 +60,7 @@ func TestExecutableInventoryOwnsPublishedPermissions(t *testing.T) {
 				if err := os.WriteFile(archive, changed.Bytes(), privateFileMode); err != nil {
 					t.Fatal(err)
 				}
-				release, err := store.ImportArchive(t.Context(), archive, value.Hash(changed.Bytes()))
+				lease, err := store.ImportArchive(t.Context(), archive, value.Hash(changed.Bytes()))
 				if (mode&fileExecuteMask != 0) != executable {
 					if !errors.Is(err, ErrIntegrity) {
 						t.Fatalf("mismatched executable declaration admitted: %v", err)
@@ -70,11 +70,8 @@ func TestExecutableInventoryOwnsPublishedPermissions(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				lease, err := store.Acquire(t.Context(), release.Digest)
-				if err != nil {
-					t.Fatal(err)
-				}
 				defer lease.Close()
+				release := lease.Snapshot()
 				path := filepath.Join(store.directory, release.Digest.String(), "theme.css")
 				info, err := os.Stat(path)
 				if err != nil {

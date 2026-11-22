@@ -9,114 +9,114 @@ import (
 
 // Close joins the original database shutdown. An unconfirmed connection remains
 // owned, and its authority lock remains held, until that exact connection closes.
-func (s *databaseOwner) close() error {
-	if s == nil {
+func (d *databaseOwner) close() error {
+	if d == nil {
 		return nil
 	}
-	s.startClose()
+	d.startClose()
 	result := make(chan error, 1)
 	select {
-	case <-s.closeDone:
-		return s.closeErr
-	case s.closeRequests <- result:
+	case <-d.closeDone:
+		return d.closeErr
+	case d.closeRequests <- result:
 	}
 	select {
 	case err := <-result:
 		return err
-	case <-s.closeDone:
-		return s.closeErr
+	case <-d.closeDone:
+		return d.closeErr
 	}
 }
 
-func (s *databaseOwner) startClose() {
-	s.closeOnce.Do(func() {
-		s.lifecycleMu.Lock()
-		s.closing = true
-		s.lifecycleMu.Unlock()
-		s.closeRequests = make(chan chan error)
-		s.closeDone = make(chan struct{})
-		go s.closeOriginal()
+func (d *databaseOwner) startClose() {
+	d.closeOnce.Do(func() {
+		d.lifecycleMu.Lock()
+		d.closing = true
+		d.lifecycleMu.Unlock()
+		d.closeRequests = make(chan chan error)
+		d.closeDone = make(chan struct{})
+		go d.closeOriginal()
 	})
 }
 
 // This is the outstanding resource owner, including when Open's caller drops
 // an error. It keeps the original connection and os.File alive while release is
 // unconfirmed; no finalizer can silently relinquish the authority in that state.
-func (s *databaseOwner) closeOriginal() {
-	for result := range s.closeRequests {
-		err := s.advanceClose()
-		if err == nil || len(s.unconfirmed) == 0 && s.databaseCloseErr == nil && s.lock == nil {
-			s.closeErr = err
-			close(s.closeDone)
+func (d *databaseOwner) closeOriginal() {
+	for result := range d.closeRequests {
+		err := d.advanceClose()
+		if err == nil || len(d.unconfirmed) == 0 && d.databaseCloseErr == nil && d.lock == nil {
+			d.closeErr = err
+			close(d.closeDone)
 			result <- err
 			return
 		}
-		s.requireRecovery(err)
+		d.requireRecovery(err)
 		result <- err
 	}
 }
 
-func (s *databaseOwner) advanceClose() error {
-	s.transactions.Wait()
-	if s.db != nil {
-		if err := s.sealDatabase(); err != nil {
+func (d *databaseOwner) advanceClose() error {
+	d.transactions.Wait()
+	if d.db != nil {
+		if err := d.sealDatabase(); err != nil {
 			return err
 		}
 	}
-	s.lifecycleMu.Lock()
-	sealErr := s.databaseCloseErr
-	s.lifecycleMu.Unlock()
-	remaining := s.unconfirmed[:0]
+	d.lifecycleMu.Lock()
+	sealErr := d.databaseCloseErr
+	d.lifecycleMu.Unlock()
+	remaining := d.unconfirmed[:0]
 	closeErr := sealErr
-	for _, connection := range s.unconfirmed {
+	for _, connection := range d.unconfirmed {
 		released, err := closeOriginalConnection(connection)
 		closeErr = errors.Join(closeErr, err)
 		if !released {
 			remaining = append(remaining, connection)
 		}
 	}
-	clear(s.unconfirmed[len(remaining):])
-	s.unconfirmed = remaining
+	clear(d.unconfirmed[len(remaining):])
+	d.unconfirmed = remaining
 	if len(remaining) != 0 || sealErr != nil {
 		return errors.Join(ErrIndeterminate, closeErr)
 	}
-	if s.lock != nil {
-		closeErr = errors.Join(closeErr, releaseAuthority(s.lock))
-		s.lock = nil
+	if d.lock != nil {
+		closeErr = errors.Join(closeErr, releaseAuthority(d.lock))
+		d.lock = nil
 	}
-	s.unconfirmed = nil
+	d.unconfirmed = nil
 	return closeErr
 }
 
-func (s *databaseOwner) retainUnconfirmedConnection(connection *sql.Conn, cause error) {
-	s.lifecycleMu.Lock()
-	s.unconfirmed = append(s.unconfirmed, connection)
-	s.lifecycleMu.Unlock()
-	s.requireRecovery(cause)
-	s.startClose()
+func (d *databaseOwner) retainUnconfirmedConnection(connection *sql.Conn, cause error) {
+	d.lifecycleMu.Lock()
+	d.unconfirmed = append(d.unconfirmed, connection)
+	d.lifecycleMu.Unlock()
+	d.requireRecovery(cause)
+	d.startClose()
 	// The checked-out original remains available to its close owner. Sealing
 	// the pool prevents queued transactions from waiting forever or replacing it.
-	_ = s.sealDatabase()
+	_ = d.sealDatabase()
 }
 
 // sealDatabase closes the pool once. database/sql.Close only disposes idle
 // connections, so the sole open connection is pinned first, unless one is
 // already retained, and its own close is observed afterwards.
-func (s *databaseOwner) sealDatabase() error {
-	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
-	if s.databaseSealed {
+func (d *databaseOwner) sealDatabase() error {
+	d.lifecycleMu.Lock()
+	defer d.lifecycleMu.Unlock()
+	if d.databaseSealed {
 		return nil
 	}
-	if len(s.unconfirmed) == 0 && s.db.Stats().OpenConnections != 0 {
-		connection, err := s.db.Conn(context.Background())
+	if len(d.unconfirmed) == 0 && d.db.Stats().OpenConnections != 0 {
+		connection, err := d.db.Conn(context.Background())
 		if err != nil {
 			return err
 		}
-		s.unconfirmed = append(s.unconfirmed, connection)
+		d.unconfirmed = append(d.unconfirmed, connection)
 	}
-	s.databaseCloseErr = s.db.Close()
-	s.databaseSealed = true
+	d.databaseCloseErr = d.db.Close()
+	d.databaseSealed = true
 	return nil
 }
 

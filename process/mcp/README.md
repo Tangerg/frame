@@ -5,7 +5,7 @@ A host can run a third-party MCP server as a Frame plugin by registering a proce
 | Remote server implements | Unit profile | Protocol to register |
 | --- | --- | --- |
 | Standard MCP tools | `mcp.ToolsProfile` | `mcp.Tools` |
-| Qimu managed lifecycle, capabilities and command receipts | `mcp.ManagedProfile` | [`mcp.ManagedProtocol`](MANAGED.md) |
+| Application-defined MCP methods | The application's profile | Its own `process.Protocol` over `mcp.Transport` |
 
 ## Register a standard tools server
 
@@ -29,7 +29,7 @@ Publish a portable service contract whose member names match the allowed MCP too
 
 Before launching the child, the adapter combines all requirements for each global
 tool name. Shared tools must have one input schema and one output schema across
-the members that require structured results. A full-result view can coexist with
+the members that require structured results. An envelope-result view can coexist with
 those members without imposing its envelope schema on the tool. Any query view
 requires the shared tool to advertise read-only operation. Conflicting local
 declarations fail preparation and identify the contributing exports.
@@ -63,22 +63,25 @@ identity. The adapter carries it unchanged in the standard MCP request metadata
 at `_meta["io.github.tangerg.frame/commandID"]`; queries omit that entry. This
 metadata identifies the invocation. It does not add receipt storage or idempotent
 execution to a third-party server. Those guarantees belong to the service's
-business contract; the managed profile exposes receipts where supported.
+business contract.
 
 By default the host expects `structuredContent`. The tool must advertise the declared output schema, and its actual return value must validate against it. For an unstructured result, configure the output projection when registering the driver. Declare the Frame output as the MCP result object, with a `content` array and any other fields the consumer needs. This lets applications handle text, images and resource links.
 
 ```go
 protocol := mcp.Tools{
     MaxCatalogPages: 16,
-    FullResult: func(export framehost.ExportDeclaration, method string) bool {
-        return export.Name == "documents" && method == "preview"
+    Result: func(export framehost.ExportDeclaration, method string) mcp.ToolResult {
+        if export.Name == "documents" && method == "preview" {
+            return mcp.EnvelopeResult
+        }
+        return mcp.StructuredResult
     },
 }
 ```
 
 The host freezes this choice before the child starts. A server cannot change it by adding or removing its output schema. An MCP `isError` response produces a `*mcp.ToolError`. Its `Result` retains the response content for the caller. A missing or invalid successful reply, or a canceled call after dispatch, carries `frame.ErrOutcomeUnknown`. The SDK's automatic multi-round-trip middleware is disabled, and input-required results retain an unknown outcome. The adapter closes catalog discovery after the original bounded admission. Its SDK sending boundary refuses later `tools/list` requests, including the SDK's implicit header-mismatch refresh. Stdio has no HTTP headers to refresh, so this path never expands the catalog budget or repeats `tools/call`. The original `HeaderMismatch` error remains inspectable with `errors.As`, alongside `frame.ErrOutcomeUnknown`; the original command ID is unchanged. Only the original runner's terminal evidence releases a durable process attempt.
 
-Full results and tool errors retain the original response envelope, including
+Envelope results and tool errors retain the original response envelope, including
 extension fields and exact numbers. The adapter validates the original required
 `content` array before returning a result; null or absent content cannot become
 an empty successful reply through SDK normalization. The SDK owns request IDs,
@@ -89,8 +92,6 @@ An already cancelled local context is rejected before SDK handoff and retains
 only its cancellation cause. Once the SDK owns the request, a cancelled wait
 cannot establish whether the peer received it. An explicit ToolError preserves
 the tool's reported failure; it does not prove rollback or non-execution.
-Managed invocation evidence and parameter admission reject a missing context
-with `frame.ErrInvalid` before calling the SDK.
 
 Canceling a request queued for stdio leaves the active sender and other readers alone. After a request is written, the SDK can notify the peer that the call was canceled. Cancellation while bytes are being written closes the shared stream because the peer may already have received part of a frame. Other in-flight calls on that stream can then lose their replies. The process still requires its original exit proof.
 

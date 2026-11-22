@@ -34,7 +34,7 @@ func (p AbsenceProof) Validate(request AttemptRef) error {
 	if request.Validate() != nil || p.AttemptRef != request || p.FenceEpoch <= p.Epoch {
 		return ErrUnknown
 	}
-	expected, err := absentProof(request, p.FenceEpoch)
+	expected, err := request.absenceProof(p.FenceEpoch)
 	if err != nil || p.ProofID != expected.ProofID {
 		return ErrUnknown
 	}
@@ -59,17 +59,19 @@ func (s *Server) ProveAbsent(ctx context.Context, request AttemptRef) (AbsencePr
 	if _, exists, err := s.lookupAttempt(request.AttemptID); err != nil || exists {
 		return AbsenceProof{}, ErrUnknown
 	}
-	return absentProof(request, s.journal.Epoch)
+	return request.absenceProof(s.journal.Epoch)
 }
 
-func absentProof(request AttemptRef, fenceEpoch uint64) (AbsenceProof, error) {
+// absenceProof derives the proof identity from the attempt and the fence epoch
+// under which this runner observed it missing.
+func (r AttemptRef) absenceProof(fenceEpoch uint64) (AbsenceProof, error) {
 	encoded, err := json.Marshal(struct {
 		Kind       string     `json:"kind"`
 		Attempt    AttemptRef `json:"attempt"`
 		FenceEpoch uint64     `json:"fenceEpoch"`
-	}{absenceProofDomain, request, fenceEpoch})
+	}{absenceProofDomain, r, fenceEpoch})
 	if err != nil {
 		return AbsenceProof{}, err
 	}
-	return AbsenceProof{AttemptRef: request, FenceEpoch: fenceEpoch, ProofID: value.Hash(encoded).String()}, nil
+	return AbsenceProof{AttemptRef: r, FenceEpoch: fenceEpoch, ProofID: value.Hash(encoded).String()}, nil
 }

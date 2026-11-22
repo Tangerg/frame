@@ -124,7 +124,7 @@ func TestExecutableRetainsOriginalWaitAuthorityUntilJournalRecovers(t *testing.T
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(directory) })
 	socket := filepath.Join(directory, "socket")
-	command := exec.Command(executable, "--directory", directory, "--socket", socket)
+	command := exec.Command(executable, "--"+runner.DirectoryFlag, directory, "--"+runner.SocketFlag, socket)
 	stderr, err := command.StderrPipe()
 	if err != nil {
 		t.Fatal(err)

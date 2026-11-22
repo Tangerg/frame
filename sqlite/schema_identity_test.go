@@ -6,11 +6,12 @@ import (
 	"testing"
 
 	framehost "github.com/Tangerg/frame/host"
+	"github.com/Tangerg/frame/value"
 )
 
 func TestOwnerSchemaIdentityPreservesDeclarationBoundaries(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "owners.db")
-	references := func(context.Context, Reader, framehost.InstallationID) ([]framehost.Dependency, error) {
+	references := func(context.Context, Reader, framehost.InstallationID) ([]value.Digest, error) {
 		return nil, nil
 	}
 	left := `CREATE TABLE left_facts (value TEXT);`

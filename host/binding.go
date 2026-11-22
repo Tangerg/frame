@@ -2,7 +2,6 @@ package host
 
 import (
 	"cmp"
-	json "encoding/json/v2"
 	"fmt"
 	"slices"
 
@@ -10,37 +9,42 @@ import (
 	framevalue "github.com/Tangerg/frame/value"
 )
 
-type Dependency struct {
+// ReleaseRef names the exact release installed under one installation. Unit
+// and export references compose it, so every reference spells it once.
+type ReleaseRef struct {
 	InstallationID InstallationID    `json:"installationId"`
 	Release        framevalue.Digest `json:"release"`
 }
 
-func (d Dependency) Validate() error {
-	if err := d.InstallationID.Validate(); err != nil {
+func (r ReleaseRef) Validate() error {
+	if err := r.InstallationID.Validate(); err != nil {
 		return err
 	}
-	if err := d.Release.Validate(); err != nil {
-		return fmt.Errorf("%w: dependency release: %w", frame.ErrInvalid, err)
+	if err := r.Release.Validate(); err != nil {
+		return fmt.Errorf("%w: release: %w", frame.ErrInvalid, err)
 	}
 	return nil
 }
 
-func CompactDependencies(values []Dependency) []Dependency {
+func (r ReleaseRef) compare(other ReleaseRef) int {
+	return cmp.Or(cmp.Compare(r.InstallationID, other.InstallationID), r.Release.Compare(other.Release))
+}
+
+// CompactReleases orders releases and drops repeats, so equal retention reads
+// compare equal however their owners listed them.
+func CompactReleases(values []ReleaseRef) []ReleaseRef {
 	result := slices.Clone(values)
-	slices.SortFunc(result, func(a, b Dependency) int {
-		return cmp.Or(cmp.Compare(a.InstallationID, b.InstallationID), a.Release.Compare(b.Release))
-	})
+	slices.SortFunc(result, ReleaseRef.compare)
 	return slices.Compact(result)
 }
 
 type UnitRef struct {
-	InstallationID InstallationID    `json:"installationId"`
-	Release        framevalue.Digest `json:"release"`
-	UnitID         UnitID            `json:"unitId"`
+	ReleaseRef
+	UnitID UnitID `json:"unitId"`
 }
 
 func (r UnitRef) Validate() error {
-	if err := r.Dependency().Validate(); err != nil {
+	if err := r.ReleaseRef.Validate(); err != nil {
 		return err
 	}
 	return r.UnitID.Validate()
@@ -48,34 +52,35 @@ func (r UnitRef) Validate() error {
 
 func (r UnitRef) String() string { return r.InstallationID.String() + "/" + r.UnitID.String() }
 
-func (r UnitRef) Dependency() Dependency {
-	return Dependency{InstallationID: r.InstallationID, Release: r.Release}
+func (r UnitRef) compare(other UnitRef) int {
+	return cmp.Or(r.ReleaseRef.compare(other.ReleaseRef), cmp.Compare(r.UnitID, other.UnitID))
 }
 
 // Export names one export of this exact unit release.
 func (r UnitRef) Export(name string, contract ContractRef) ExportRef {
-	return ExportRef{InstallationID: r.InstallationID, Release: r.Release, UnitID: r.UnitID, Export: name, Contract: contract}
+	return ExportRef{UnitRef: r, Export: name, Contract: contract}
 }
 
 type ExportRef struct {
-	InstallationID InstallationID    `json:"installationId"`
-	Release        framevalue.Digest `json:"release"`
-	UnitID         UnitID            `json:"unitId"`
-	Export         string            `json:"export"`
-	Contract       ContractRef       `json:"contract"`
+	UnitRef
+	Export   string      `json:"export"`
+	Contract ContractRef `json:"contract"`
 }
 
-func (r ExportRef) Unit() UnitRef {
-	return UnitRef{InstallationID: r.InstallationID, Release: r.Release, UnitID: r.UnitID}
-}
 func (r ExportRef) Validate() error {
-	if err := r.Unit().Validate(); err != nil {
+	if err := r.UnitRef.Validate(); err != nil {
 		return err
 	}
 	if err := validateName("export name", r.Export); err != nil {
 		return err
 	}
 	return r.Contract.Validate()
+}
+
+func (r ExportRef) String() string { return r.UnitRef.String() + "/" + r.Export }
+
+func (r ExportRef) compare(other ExportRef) int {
+	return cmp.Or(r.UnitRef.compare(other.UnitRef), cmp.Compare(r.Export, other.Export))
 }
 
 // ImportDeclaration is one slot an author requires. It names no provider:
@@ -172,6 +177,22 @@ func (d UnitDeclaration) fixedProviders(slot string) ([]ExportRef, bool) {
 		}
 	}
 	return nil, false
+}
+
+// RequirePortable refuses a native contract in any slot or export. A unit that
+// runs outside the Host process cannot share a native Go value with it.
+func (d UnitDeclaration) RequirePortable() error {
+	for _, required := range d.Imports {
+		if required.Contract.Mode != PortableMode {
+			return fmt.Errorf("%w: import %q is native", frame.ErrContractMismatch, required.Slot)
+		}
+	}
+	for _, export := range d.Exports {
+		if export.Contract.Mode != PortableMode {
+			return fmt.Errorf("%w: export %q is native", frame.ErrContractMismatch, export.Name)
+		}
+	}
+	return nil
 }
 
 // declaresPoint permits dynamic membership in a Point the unit declared. A
@@ -327,20 +348,12 @@ func (b BindingSnapshot) Clone() BindingSnapshot {
 	return b
 }
 
-func compareUnit(a, b UnitRef) int {
-	return cmp.Or(cmp.Compare(a.InstallationID, b.InstallationID), a.Release.Compare(b.Release), cmp.Compare(a.UnitID, b.UnitID))
-}
-
-func compareExport(a, b ExportRef) int {
-	return cmp.Or(compareUnit(a.Unit(), b.Unit()), cmp.Compare(a.Export, b.Export))
-}
-
 func (b BindingSnapshot) sameIdentity(other BindingSnapshot) (bool, error) {
-	left, err := b.Identity()
+	left, err := b.Canonical()
 	if err != nil {
 		return false, err
 	}
-	right, err := other.Identity()
+	right, err := other.Canonical()
 	return left == right, err
 }
 
@@ -361,15 +374,15 @@ func (b BindingSnapshot) Validate() error {
 	return b.validateReachability(units)
 }
 
-func (u UnitBinding) validate() error {
-	if err := u.Source.Validate(); err != nil {
+func (b UnitBinding) validate() error {
+	if err := b.Source.Validate(); err != nil {
 		return err
 	}
-	if err := u.Configuration.Validate(); err != nil {
+	if err := b.Configuration.Validate(); err != nil {
 		return err
 	}
 	slots := make(map[string]bool)
-	for _, binding := range u.Imports {
+	for _, binding := range b.Imports {
 		if slots[binding.Slot] {
 			return fmt.Errorf("%w: duplicate bound import", frame.ErrInvalid)
 		}
@@ -386,7 +399,7 @@ func (b BindingSnapshot) validateRoots(units map[UnitRef]UnitBinding) error {
 		if err := root.Validate(); err != nil {
 			return err
 		}
-		if _, exists := units[root.Unit()]; !exists {
+		if _, exists := units[root.UnitRef]; !exists {
 			return fmt.Errorf("%w: root unit missing from binding", frame.ErrInvalid)
 		}
 	}
@@ -409,47 +422,54 @@ func (b BindingSnapshot) validateRoots(units map[UnitRef]UnitBinding) error {
 // validateReachability requires every bound unit to be reachable from a root
 // through acyclic provider edges.
 func (b BindingSnapshot) validateReachability(units map[UnitRef]UnitBinding) error {
-	visiting, visited := make(map[UnitRef]bool), make(map[UnitRef]bool)
-	var visit func(UnitRef) error
-	visit = func(ref UnitRef) error {
-		if visiting[ref] {
-			return fmt.Errorf("%w: %s/%s", ErrDependencyCycle, ref.InstallationID, ref.UnitID)
-		}
-		if visited[ref] {
-			return nil
-		}
-		unit, found := units[ref]
-		if !found {
-			return fmt.Errorf("%w: bound provider unit missing", frame.ErrInvalid)
-		}
-		visiting[ref] = true
-		for _, imp := range unit.Imports {
-			for _, provider := range imp.Providers {
-				if provider.Unit() == ref {
-					continue
-				}
-				if err := visit(provider.Unit()); err != nil {
-					return err
-				}
-			}
-		}
-		delete(visiting, ref)
-		visited[ref] = true
-		return nil
-	}
+	walk := providerWalk{units: units, visiting: make(map[UnitRef]bool), visited: make(map[UnitRef]bool)}
 	for _, root := range b.Roots {
-		if err := visit(root.Unit()); err != nil {
+		if err := walk.visit(root.UnitRef); err != nil {
 			return err
 		}
 	}
 	for _, root := range b.UnitRoots {
-		if err := visit(root); err != nil {
+		if err := walk.visit(root); err != nil {
 			return err
 		}
 	}
-	if len(visited) != len(units) {
+	if len(walk.visited) != len(units) {
 		return fmt.Errorf("%w: binding includes unreachable units", frame.ErrInvalid)
 	}
+	return nil
+}
+
+// providerWalk is a depth-first walk; visiting holds the current path, so
+// reentering it is a provider cycle rather than a shared provider.
+type providerWalk struct {
+	units             map[UnitRef]UnitBinding
+	visiting, visited map[UnitRef]bool
+}
+
+func (w providerWalk) visit(ref UnitRef) error {
+	if w.visiting[ref] {
+		return fmt.Errorf("%w: %s", ErrDependencyCycle, ref)
+	}
+	if w.visited[ref] {
+		return nil
+	}
+	unit, found := w.units[ref]
+	if !found {
+		return fmt.Errorf("%w: bound provider unit missing", frame.ErrInvalid)
+	}
+	w.visiting[ref] = true
+	for _, imp := range unit.Imports {
+		for _, provider := range imp.Providers {
+			if provider.UnitRef == ref {
+				continue
+			}
+			if err := w.visit(provider.UnitRef); err != nil {
+				return err
+			}
+		}
+	}
+	delete(w.visiting, ref)
+	w.visited[ref] = true
 	return nil
 }
 
@@ -459,32 +479,30 @@ func (b BindingSnapshot) requiresInstallation(id InstallationID) bool {
 	})
 }
 
-func (b BindingSnapshot) Dependencies() []Dependency {
-	values := make([]Dependency, 0, len(b.Units))
+func (b BindingSnapshot) Dependencies() []ReleaseRef {
+	values := make([]ReleaseRef, 0, len(b.Units))
 	for _, unit := range b.Units {
-		values = append(values, unit.Source.Dependency())
+		values = append(values, unit.Source.ReleaseRef)
 	}
-	return CompactDependencies(values)
+	return CompactReleases(values)
 }
 
-// CanonicalJSON is the identity spelling: units and slots are sorted, while
-// root and provider order remain part of the accepted binding.
-func (b BindingSnapshot) CanonicalJSON() ([]byte, error) {
+// Canonical is the binding's one identity document: units and slots are
+// sorted, while root and provider order remain part of the accepted binding.
+// Equal bindings compare equal, and its Digest is the binding Identity.
+func (b BindingSnapshot) Canonical() (framevalue.JSON, error) {
 	if err := b.Validate(); err != nil {
-		return nil, err
+		return framevalue.JSON{}, err
 	}
 	value := b.Clone()
-	slices.SortFunc(value.Units, func(a, b UnitBinding) int { return compareUnit(a.Source, b.Source) })
+	slices.SortFunc(value.Units, func(a, b UnitBinding) int { return a.Source.compare(b.Source) })
 	for i := range value.Units {
 		value.Units[i] = value.Units[i].canonical()
 	}
-	return json.Marshal(value, json.Deterministic(true))
+	return framevalue.EncodeJSON(value)
 }
 
 func (b BindingSnapshot) Identity() (framevalue.Digest, error) {
-	data, err := b.CanonicalJSON()
-	if err != nil {
-		return framevalue.Digest{}, err
-	}
-	return framevalue.Hash(data), nil
+	canonical, err := b.Canonical()
+	return canonical.Digest(), err
 }

@@ -19,7 +19,7 @@ import (
 	framevalue "github.com/Tangerg/frame/value"
 )
 
-func packageFixture(t *testing.T) (string, Manifest, []byte, Lock) {
+func packageFixture(t *testing.T) (string, Manifest, []byte, Release) {
 	t.Helper()
 	directory := t.TempDir()
 	if err := os.WriteFile(filepath.Join(directory, "theme.css"), []byte("body { color: blue; }\n"), 0600); err != nil {
@@ -27,11 +27,11 @@ func packageFixture(t *testing.T) (string, Manifest, []byte, Lock) {
 	}
 	manifest := Manifest{Package: "test.theme", Version: "1.0.0", Artifacts: []Artifact{{Path: "theme.css"}}, Units: []Unit{{ID: "theme", Profile: "static-resource", Resources: []string{"theme.css"}}}}
 	var archive bytes.Buffer
-	lock, err := Build(context.Background(), directory, manifest, &archive)
+	release, err := Build(context.Background(), directory, manifest, &archive)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return directory, manifest, archive.Bytes(), lock
+	return directory, manifest, archive.Bytes(), release
 }
 
 func storeFixture(t *testing.T, retained func(context.Context, framevalue.Digest) (bool, error)) Store {
@@ -39,7 +39,7 @@ func storeFixture(t *testing.T, retained func(context.Context, framevalue.Digest
 	if retained == nil {
 		retained = func(context.Context, framevalue.Digest) (bool, error) { return false, nil }
 	}
-	store, err := Open(Config{Directory: t.TempDir(), Admission: framehost.NewAdmission(), Trust: func(context.Context, Source, Manifest, Lock) error { return nil }, Retained: retained})
+	store, err := Open(Config{Directory: t.TempDir(), Admission: framehost.NewAdmission(), Trust: func(context.Context, Source, Release) error { return nil }, Retained: retained})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,26 +62,30 @@ func installArchive(t *testing.T, store Store, data []byte) Release {
 	if err := os.WriteFile(file, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	release, err := store.ImportArchive(context.Background(), file, framevalue.Hash(data))
+	lease, err := store.ImportArchive(context.Background(), file, framevalue.Hash(data))
 	if err != nil {
+		t.Fatal(err)
+	}
+	release := lease.Snapshot()
+	if err := lease.Close(); err != nil {
 		t.Fatal(err)
 	}
 	return release
 }
 
 func TestBuildDeterministicAndResourceNeedsNoMethods(t *testing.T) {
-	directory, manifest, archive, lock := packageFixture(t)
+	directory, manifest, archive, built := packageFixture(t)
 	var second bytes.Buffer
 	other, err := Build(context.Background(), directory, manifest, &second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(archive, second.Bytes()) || lock.Release != other.Release {
+	if !bytes.Equal(archive, second.Bytes()) || built.Digest != other.Digest {
 		t.Fatal("same release produced different bytes")
 	}
 	store := storeFixture(t, nil)
 	release := installArchive(t, store, archive)
-	if release.Digest != lock.Release || len(release.Manifest.Units[0].Exports) != 0 {
+	if !reflect.DeepEqual(release, built) || len(release.Manifest.Units[0].Exports) != 0 {
 		t.Fatal("resource release changed its declaration")
 	}
 	lease, err := store.Acquire(context.Background(), release.Digest)
@@ -95,37 +99,23 @@ func TestBuildDeterministicAndResourceNeedsNoMethods(t *testing.T) {
 	}
 }
 
-func TestLockCannotIntroduceUnownedReleaseDependencies(t *testing.T) {
-	_, _, archive, _ := packageFixture(t)
-	release := installArchive(t, storeFixture(t, nil), archive)
-	lock := release.Lock
-	lock.Dependencies = []LockedRelease{{Package: "other.release", Release: framevalue.Hash([]byte("other"))}}
-	if err := lock.Verify(release.Manifest); !errors.Is(err, ErrIntegrity) {
-		t.Fatalf("lock advanced dependencies without changing the manifest identity: %v", err)
-	}
-}
-
 func TestDuplicateInstallReturnsAndTrustsTheFinalCachedSnapshot(t *testing.T) {
 	source, _, archive, _ := packageFixture(t)
 	store := storeFixture(t, nil)
 	first := installArchive(t, store, archive)
-	manifest := first.Manifest
-	manifest.Release = framevalue.Digest{}
-	for name, value := range map[string]any{ManifestName: manifest, LockName: first.Lock} {
-		data, err := json.Marshal(value)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(source, name), data, 0600); err != nil {
-			t.Fatal(err)
-		}
+	data, err := json.Marshal(first.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, ManifestName), data, 0600); err != nil {
+		t.Fatal(err)
 	}
 	var trusted Release
-	store.trust = func(_ context.Context, _ Source, manifest Manifest, lock Lock) error {
-		trusted = Release{Digest: lock.Release, Manifest: manifest, Lock: lock}
+	store.trust = func(_ context.Context, _ Source, release Release) error {
+		trusted = release
 		return nil
 	}
-	lease, err := store.ImportDirectoryHeld(t.Context(), source)
+	lease, err := store.ImportDirectory(t.Context(), source)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,13 +139,13 @@ func TestDuplicateInstallReturnsAndTrustsTheFinalCachedSnapshot(t *testing.T) {
 		t.Error("reacquiring the release changed its snapshot")
 	}
 	refusal := errors.New("cached projection refused")
-	store.trust = func(_ context.Context, _ Source, manifest Manifest, _ Lock) error {
-		if manifest.Release == first.Digest {
+	store.trust = func(_ context.Context, _ Source, release Release) error {
+		if release.Digest == first.Digest {
 			return refusal
 		}
 		return nil
 	}
-	if _, err := store.ImportDirectoryHeld(t.Context(), source); !errors.Is(err, ErrUntrusted) || !errors.Is(err, refusal) {
+	if _, err := store.ImportDirectory(t.Context(), source); !errors.Is(err, ErrUntrusted) || !errors.Is(err, refusal) {
 		t.Fatalf("duplicate install bypassed final cache trust: %v", err)
 	}
 	if err := errors.Join(lease.Close(), again.Close()); err != nil {
@@ -164,7 +154,7 @@ func TestDuplicateInstallReturnsAndTrustsTheFinalCachedSnapshot(t *testing.T) {
 	if err := os.Chmod(filepath.Join(store.directory, first.Digest.String()), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ImportDirectoryHeld(t.Context(), source); !errors.Is(err, ErrUntrusted) {
+	if _, err := store.ImportDirectory(t.Context(), source); !errors.Is(err, ErrUntrusted) {
 		t.Fatal(err)
 	}
 	if _, err := store.Inspect(t.Context(), first.Digest); !errors.Is(err, ErrIntegrity) {
@@ -180,14 +170,14 @@ func TestManifestDependencyChangesCreateDistinctImmutableReleases(t *testing.T) 
 	store := storeFixture(t, nil)
 	var releases []Release
 	for _, name := range []string{"first", "second"} {
-		manifest.Dependencies = []LockedRelease{{Package: "dependency", Release: framevalue.Hash([]byte(name))}}
+		manifest.Dependencies = []Dependency{{Package: "dependency", Release: framevalue.Hash([]byte(name))}}
 		var archive bytes.Buffer
-		lock, err := Build(t.Context(), source, manifest, &archive)
+		built, err := Build(t.Context(), source, manifest, &archive)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !reflect.DeepEqual(lock.Dependencies, manifest.Dependencies) {
-			t.Fatal("lock does not project its manifest dependencies")
+		if !reflect.DeepEqual(built.Manifest.Dependencies, manifest.Dependencies) {
+			t.Fatal("release does not keep its manifest dependencies")
 		}
 		releases = append(releases, installArchive(t, store, archive.Bytes()))
 	}
@@ -200,7 +190,7 @@ func TestManifestDependencyChangesCreateDistinctImmutableReleases(t *testing.T) 
 			t.Fatalf("release changed in cache: %+v, %v", inspected, err)
 		}
 	}
-	for _, invalid := range [][]LockedRelease{
+	for _, invalid := range [][]Dependency{
 		{{Package: "invalid package", Release: framevalue.Hash([]byte("valid"))}},
 		{{Package: "dependency", Release: framevalue.Digest{}}},
 		{manifest.Dependencies[0], manifest.Dependencies[0]},
@@ -256,12 +246,12 @@ func TestArchiveDigestLimitsAndTrust(t *testing.T) {
 	if _, err := store.ImportArchive(context.Background(), file, framevalue.Hash([]byte("different"))); !errors.Is(err, ErrIntegrity) {
 		t.Fatalf("digest: %v", err)
 	}
-	store.limits.ExpandedBytes = 4
+	store.limits.MaxExpandedBytes = 4
 	if _, err := store.ImportArchive(context.Background(), file, framevalue.Hash(data)); !errors.Is(err, ErrCapacity) {
 		t.Fatalf("size: %v", err)
 	}
 	store.limits = DefaultLimits()
-	store.trust = func(context.Context, Source, Manifest, Lock) error { return errors.New("publisher is not approved") }
+	store.trust = func(context.Context, Source, Release) error { return errors.New("publisher is not approved") }
 	if _, err := store.ImportArchive(context.Background(), file, framevalue.Hash(data)); !errors.Is(err, ErrUntrusted) {
 		t.Fatalf("trust: %v", err)
 	}
@@ -293,18 +283,14 @@ func TestDirectorySnapshotCannotFollowLaterSourceChanges(t *testing.T) {
 		}
 	}
 	store := storeFixture(t, nil)
-	release, err := store.ImportDirectory(context.Background(), root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "theme.css"), []byte("changed source"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	lease, err := store.Acquire(context.Background(), release.Digest)
+	lease, err := store.ImportDirectory(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer lease.Close()
+	if err := os.WriteFile(filepath.Join(root, "theme.css"), []byte("changed source"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	actual, err := lease.Read(context.Background(), "theme.css")
 	if err != nil || string(actual) != "body { color: blue; }\n" {
 		t.Fatalf("source replaced release: %q %v", actual, err)
@@ -364,38 +350,21 @@ func TestCachedByteDriftAndManifestAliasesAreRefused(t *testing.T) {
 	}
 }
 
-func TestManifestDuplicateKeysAndWrongLockAreRefused(t *testing.T) {
+func TestManifestDuplicateKeysAreRefused(t *testing.T) {
 	if _, err := ParseManifest([]byte(`{"package":"p","package":"p","version":"1","artifacts":[],"units":[]}`)); err == nil {
 		t.Fatal("duplicate member accepted")
 	}
-	_, _, data, _ := packageFixture(t)
-	archive, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	_, _, _, release := packageFixture(t)
+	body, err := json.Marshal(release.Manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var manifest Manifest
-	var lock Lock
-	for _, entry := range archive.File {
-		reader, _ := entry.Open()
-		body, _ := io.ReadAll(reader)
-		_ = reader.Close()
-		if entry.Name == ManifestName {
-			manifest, err = ParseManifest(body)
-		}
-		if entry.Name == LockName {
-			lock, err = ParseLock(body)
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	lock.Release = framevalue.Hash([]byte("another release"))
-	if err := lock.Verify(manifest); !errors.Is(err, ErrIntegrity) {
-		t.Fatalf("wrong lock: %v", err)
-	}
-	body, _ := json.Marshal(manifest)
-	if _, err := ParseManifest(body); err != nil {
+	parsed, err := ParseManifest(body)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if identity, err := parsed.Identity(); err != nil || identity != release.Digest {
+		t.Fatalf("round trip changed the release identity: %v %v", identity, err)
 	}
 }
 

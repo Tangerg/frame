@@ -12,7 +12,7 @@ import (
 	framevalue "github.com/Tangerg/frame/value"
 )
 
-const RefPrefix = "#/$defs/"
+const RefPrefix = "#" + framevalue.DefinitionPointer
 
 type objectOpenness uint8
 
@@ -78,7 +78,7 @@ type schemaDocument struct {
 func newProjection(definitions map[string]jsontext.Value) (*projection, error) {
 	p := &projection{definitions: make(map[string]*projectionNode), names: make(map[*projectionNode]string), paths: make(map[string]*projectionNode)}
 	for _, name := range slices.Sorted(maps.Keys(definitions)) {
-		node, err := p.parse(definitions[name], "/$defs/"+pointerToken(name))
+		node, err := p.parse(definitions[name], framevalue.DefinitionPointer+framevalue.PointerToken(name))
 		if err != nil {
 			return nil, err
 		}
@@ -95,13 +95,13 @@ func newProjection(definitions map[string]jsontext.Value) (*projection, error) {
 		}
 		target := p.paths[targetPath]
 		if target == nil {
-			return nil, fmt.Errorf("feature contracts: unresolved schema reference %q", node.referencePath)
+			return nil, fmt.Errorf("contractgen: unresolved schema reference %q", node.referencePath)
 		}
 		node.reference = target
 		if p.names[target] != "" {
 			continue
 		}
-		tokens, err := pointerTokens(targetPath)
+		tokens, err := framevalue.PointerNames(targetPath)
 		if err != nil {
 			return nil, err
 		}
@@ -109,7 +109,7 @@ func newProjection(definitions map[string]jsontext.Value) (*projection, error) {
 		if p.definitions[name] != nil {
 			name += "Reference" + framevalue.Hash([]byte(targetPath)).String()
 			if p.definitions[name] != nil {
-				return nil, fmt.Errorf("feature contracts: referenced node name collision %s", name)
+				return nil, fmt.Errorf("contractgen: referenced node name collision %s", name)
 			}
 		}
 		p.names[target], p.definitions[name] = name, target
@@ -170,7 +170,7 @@ func (p *projection) parseMembers(n *projectionNode, wire schemaDocument, path s
 		{framevalue.KeywordProperties, wire.Properties}, {framevalue.KeywordPatternProperties, wire.PatternProperties}, {framevalue.KeywordDefs, wire.Defs}, {framevalue.KeywordDefinitions, wire.Definitions},
 	} {
 		for _, name := range slices.Sorted(maps.Keys(entry.children)) {
-			child, err := p.parse(entry.children[name], path+"/"+entry.keyword+"/"+pointerToken(name))
+			child, err := p.parse(entry.children[name], path+"/"+entry.keyword+"/"+framevalue.PointerToken(name))
 			if err != nil {
 				return err
 			}
@@ -250,33 +250,22 @@ const (
 	jsonFalse = "false"
 )
 
+func booleanSchema(raw jsontext.Value) bool {
+	kind := raw.Kind()
+	return kind == 't' || kind == 'f'
+}
+
 func (n *projectionNode) required(name string) bool { return slices.Contains(n.object.required, name) }
 
 func (n *projectionNode) pureReference() bool {
 	return n.reference != nil && n.kind == "" && len(n.kinds) == 0 && !n.forbidden && len(n.literals) == 0 && len(n.allOf) == 0 && len(n.anyOf) == 0 && len(n.object.properties) == 0 && len(n.object.required) == 0 && n.object.openness == objectOpen && n.items == nil
 }
 
-func pointerToken(value string) string {
-	return strings.NewReplacer("~", "~0", "/", "~1").Replace(value)
-}
 func referencePath(ref string) (string, error) {
 	if !strings.HasPrefix(ref, "#") {
-		return "", fmt.Errorf("feature contracts: nonlocal reference %q", ref)
+		return "", fmt.Errorf("contractgen: nonlocal reference %q", ref)
 	}
 	return url.PathUnescape(strings.TrimPrefix(ref, "#"))
-}
-func pointerTokens(path string) ([]string, error) {
-	if path == "" {
-		return nil, nil
-	}
-	if !strings.HasPrefix(path, "/") {
-		return nil, fmt.Errorf("feature contracts: invalid JSON pointer %q", path)
-	}
-	tokens := strings.Split(path[1:], "/")
-	for i, token := range tokens {
-		tokens[i] = strings.NewReplacer("~1", "/", "~0", "~").Replace(token)
-	}
-	return tokens, nil
 }
 
 func (o objectProjection) impossible() bool {
@@ -319,11 +308,11 @@ func (n *projectionNode) contextualKind(inherited framevalue.SchemaType) (framev
 		}
 	}
 	if kind == "" {
-		if contextKind == framevalue.TypeObject && n.object.constrained() {
-			kind = framevalue.TypeObject
+		if contextKind == framevalue.SchemaTypeObject && n.object.constrained() {
+			kind = framevalue.SchemaTypeObject
 		}
-		if contextKind == framevalue.TypeArray && n.items != nil {
-			kind = framevalue.TypeArray
+		if contextKind == framevalue.SchemaTypeArray && n.items != nil {
+			kind = framevalue.SchemaTypeArray
 		}
 	}
 	return kind, contextKind

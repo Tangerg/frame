@@ -31,6 +31,8 @@ func (s *interruptedInstallationStore) CommitInstallation(_ context.Context, cha
 	return framehost.Committed, nil
 }
 
+func (*interruptedInstallationStore) ConfirmRestoredInstallations(context.Context) error { return nil }
+
 func (s *interruptedInstallationStore) ConfirmInstallation(context.Context, framehost.InstallationID) error {
 	if s.confirm != nil {
 		s.confirm()
@@ -56,7 +58,7 @@ func TestCommittedWithdrawalRetiresBeforeStorageConfirmation(t *testing.T) {
 			change func(context.Context, framehost.Host, *framehost.Plugin) error
 		}{
 			{"disable", func(ctx context.Context, host framehost.Host, _ *framehost.Plugin) error {
-				return host.SetEnabled(ctx, "worker", false)
+				return host.Disable(ctx, "worker")
 			}},
 			{"replace", func(ctx context.Context, host framehost.Host, plugin *framehost.Plugin) error {
 				return host.Replace(ctx, "worker", plugin, []byte("next configuration"))
@@ -147,7 +149,7 @@ func TestCommittedWithdrawalDrainsUsesDuringStorageConfirmation(t *testing.T) {
 		confirming, confirm := make(chan struct{}), make(chan struct{})
 		storage.confirm = func() { close(confirming); <-confirm }
 		changed := make(chan error, 1)
-		go func() { changed <- host.SetEnabled(t.Context(), "worker", false) }()
+		go func() { changed <- host.Disable(t.Context(), "worker") }()
 		<-confirming
 		synctest.Wait()
 		work, err := use.Enter(t.Context())
@@ -213,7 +215,7 @@ func TestCommittedWithdrawalRetainsOriginalExitProof(t *testing.T) {
 		confirming, confirm := make(chan struct{}), make(chan struct{})
 		storage.confirm = func() { close(confirming); <-confirm }
 		changed := make(chan error, 1)
-		go func() { changed <- host.SetEnabled(t.Context(), "worker", false) }()
+		go func() { changed <- host.Disable(t.Context(), "worker") }()
 		<-confirming
 		synctest.Wait()
 		if outcome, closing := originalLifetime.CloseOutcome(); !closing || outcome.Released || cleanups.Load() != 1 {
@@ -224,7 +226,7 @@ func TestCommittedWithdrawalRetainsOriginalExitProof(t *testing.T) {
 			t.Fatal(err)
 		}
 		storage.confirm = nil
-		if err := host.SetEnabled(t.Context(), "worker", true); err != nil {
+		if err := host.Enable(t.Context(), "worker"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := host.ActivateUnit(t.Context(), "", root); !errors.Is(err, framehost.ErrInUse) || preparations.Load() != 1 {
@@ -295,7 +297,7 @@ func TestInterruptedInstallationWriteRequiresRecovery(t *testing.T) {
 						}
 						instanceID = <-prepared
 						if operation == "disable" {
-							apply = func() error { return host.SetEnabled(ctx, "worker", false) }
+							apply = func() error { return host.Disable(ctx, "worker") }
 						} else {
 							apply = func() error { return host.Uninstall(ctx, "worker") }
 						}
@@ -373,7 +375,7 @@ func TestInterruptedEnableRecoversOriginalTransition(t *testing.T) {
 					return nil, nil
 				},
 			})
-			if err := host.SetEnabled(t.Context(), "provider", false); err != nil {
+			if err := host.Disable(t.Context(), "provider"); err != nil {
 				t.Fatal(err)
 			}
 			store.commit = interruption.run
@@ -381,7 +383,7 @@ func TestInterruptedEnableRecoversOriginalTransition(t *testing.T) {
 			go func() {
 				defer close(done)
 				defer func() { _ = recover() }()
-				_ = host.SetEnabled(t.Context(), "provider", true)
+				_ = host.Enable(t.Context(), "provider")
 				t.Error("interrupted enable returned")
 			}()
 			<-done
@@ -389,7 +391,7 @@ func TestInterruptedEnableRecoversOriginalTransition(t *testing.T) {
 			if err := host.Admission().Recover(t.Context(), func() error { return nil }); err != nil {
 				t.Fatal(err)
 			}
-			if err := host.SetEnabled(t.Context(), "provider", false); !errors.Is(err, framehost.ErrRecoveryRequired) {
+			if err := host.Disable(t.Context(), "provider"); !errors.Is(err, framehost.ErrRecoveryRequired) {
 				t.Fatalf("another operation replaced the original unresolved enable: %v", err)
 			}
 			records, err := store.Installations(t.Context())

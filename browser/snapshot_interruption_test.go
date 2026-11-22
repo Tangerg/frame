@@ -71,7 +71,7 @@ func TestSnapshotInterruptionRetainsFailureAndReleasesCapacity(t *testing.T) {
 				t.Fatal(err)
 			}
 			root := framehost.ExportRef{InstallationID: "metadata", Release: plugin.Revision(), UnitID: "metadata", Export: "metadata", Contract: point.Ref()}
-			if _, err := e.host.ActivateIn(e.ctx, browser.RealmID(e.credentials.Realm), root); err != nil {
+			if _, err := e.host.ActivateIn(e.ctx, e.credentials.Realm.HostRealm(), root); err != nil {
 				t.Fatal(err)
 			}
 			request := snapshotRequest(point.Ref().Name)

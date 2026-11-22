@@ -1,9 +1,12 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"errors"
 
+	"github.com/Tangerg/frame"
+	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/value"
 )
 
@@ -31,6 +34,27 @@ func (r *protectedRecord) scan(row interface{ Scan(...any) error }) error {
 		return corruptProtection(errors.New("sqlite: execution protection integrity failure"))
 	}
 	return nil
+}
+
+// recordProtection stores one protection request under its identity. A replay
+// of the identical original request confirms it; any other stored request under
+// that identity is a conflict, and a corrupt one fences the store.
+func recordProtection[T any](ctx context.Context, s *storeAuthority, query, id string, request []byte, decode func(protectedRecord) (T, error), insert func(Executor) error) (framehost.CommitState, error) {
+	if len(request) > s.maxRequestBytes {
+		return framehost.NotCommitted, frame.ErrCapacity
+	}
+	return s.protectionTransaction(ctx, func(tx Executor) error {
+		return recordOnce(func() (bool, error) {
+			row, err := readProtectionRow(ctx, tx, query, id)
+			if err != nil {
+				return false, err
+			}
+			if _, err := decode(row); err != nil {
+				return false, err
+			}
+			return bytes.Equal(row.request, request), nil
+		}, func() error { return insert(tx) })
+	})
 }
 
 func readProtectionRow(ctx context.Context, tx Reader, query, id string) (protectedRecord, error) {

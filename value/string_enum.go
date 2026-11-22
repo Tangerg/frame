@@ -62,8 +62,7 @@ func stringEnum(schema *jsonschema.Schema, work int) ([]string, error) {
 	members := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
 		if err := schema.Validate(candidate); err != nil {
-			var rejection *jsonschema.ValidationError
-			if !errors.As(err, &rejection) {
+			if _, rejected := errors.AsType[*jsonschema.ValidationError](err); !rejected {
 				return nil, err
 			}
 			continue
@@ -79,7 +78,7 @@ func finiteStringCandidates(schema *jsonschema.Schema, visiting map[*jsonschema.
 	}
 	visiting[schema] = true
 	defer delete(visiting, schema)
-	if schema.Bool != nil && !*schema.Bool || schema.Types != nil && !slices.Contains(schema.Types.ToStrings(), string(TypeString)) {
+	if schema.Bool != nil && !*schema.Bool || schema.Types != nil && !slices.Contains(schema.Types.ToStrings(), string(SchemaTypeString)) {
 		return []string{}
 	}
 	if schema.Enum != nil {

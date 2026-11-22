@@ -9,9 +9,13 @@ import (
 	framevalue "github.com/Tangerg/frame/value"
 )
 
+// ProtocolNamespace prefixes every wire identifier Frame publishes, so its
+// protocols cannot collide with an application's or a plugin's names.
+const ProtocolNamespace = "io.github.tangerg.frame/"
+
 // CapabilityProtocol identifies public wire behavior, independently of private releases.
 // Only the current contract is admitted; a source relocation does not change it.
-const CapabilityProtocol = "io.github.tangerg.frame/portable/1"
+const CapabilityProtocol = ProtocolNamespace + "portable/1"
 
 type MethodKind string
 
@@ -63,7 +67,7 @@ func AdmitMethod(descriptor MethodDescriptor) (*Method, error) {
 	if err != nil {
 		return nil, fmt.Errorf("frame: %s input contract: %w", descriptor.Name, err)
 	}
-	if input.Validate([]byte("null")) == nil {
+	if input.Validate([]byte(framevalue.Null)) == nil {
 		return nil, errors.New("frame: method input must exclude null")
 	}
 	output, err := framevalue.AdmitSchema(descriptor.Output)

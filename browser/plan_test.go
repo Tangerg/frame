@@ -35,7 +35,7 @@ func TestBridgeFreshPlanPreservesPreparationPremises(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := framehost.ExportRef{InstallationID: "consumer", Release: consumer.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
-	plan, err := e.host.PlanWith(e.ctx, browser.RealmID(e.credentials.Realm), nil, root)
+	plan, err := e.host.PlanWith(e.ctx, e.credentials.Realm.HostRealm(), nil, root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestBridgeAcquiresDeclarationPlanInItsOriginalRealm(t *testing.T) {
 	e := openBridge(t, filepath.Join(t.TempDir(), "store.db"), true)
 	execution := e.start("component")
 	root := framehost.ExportRef{InstallationID: "component", Release: e.plugin.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
-	plan, err := e.host.PlanWith(e.ctx, browser.RealmID(e.credentials.Realm), nil, root)
+	plan, err := e.host.PlanWith(e.ctx, e.credentials.Realm.HostRealm(), nil, root)
 	if err != nil {
 		t.Fatal(err)
 	}

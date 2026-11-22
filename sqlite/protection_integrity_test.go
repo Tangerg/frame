@@ -13,7 +13,7 @@ import (
 func testAttempt(store Store) Attempt {
 	source := framehost.UnitRef{InstallationID: "provider", Release: value.Hash(nil), UnitID: "main"}
 	binding := framehost.BindingSnapshot{Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{source}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil)}}}
-	return Attempt{ID: "execution", Epoch: store.Epoch(), Source: source, Binding: binding, Realm: "realm", Profile: framehost.LocalProcess}
+	return Attempt{ID: "execution", Epoch: store.Epoch(), Source: source, Binding: binding, Realm: "realm", Profile: framehost.LocalProcess, Scope: "scope", ScopeGeneration: 1, Generation: 1}
 }
 
 func protectedAttempt(t *testing.T, store Store) Attempt {
@@ -85,7 +85,7 @@ func TestProtectionSettlementValidatesOriginalRequest(t *testing.T) {
 }
 
 func TestProtectionApprovalValidatesOriginalRecord(t *testing.T) {
-	for _, operation := range []string{"repeat attempt", "child attempt", "repeat use", "child use"} {
+	for _, operation := range []string{"repeat attempt", "repeat use", "child use"} {
 		t.Run(operation, func(t *testing.T) {
 			store, _, admission := testStore(t)
 			attempt := protectedAttempt(t, store)
@@ -93,12 +93,9 @@ func TestProtectionApprovalValidatesOriginalRecord(t *testing.T) {
 			var id string
 			var approve func() error
 			switch operation {
-			case "repeat attempt", "child attempt":
+			case "repeat attempt":
 				id = attempt.ID
 				corrupt = `UPDATE frame_attempts SET request_digest=? WHERE id=?`
-				if operation == "child attempt" {
-					attempt.Parent, attempt.ID = attempt.ID, "child-execution"
-				}
 				approve = func() error { _, err := store.RecordAttempt(t.Context(), attempt); return err }
 			case "repeat use", "child use":
 				approval := protectedUse(t, store, attempt)
@@ -187,10 +184,10 @@ func TestAttemptWithoutProvenStateDoesNotClaimExit(t *testing.T) {
 	}
 }
 
-func TestStoredAttemptCannotDelegateToItself(t *testing.T) {
+func TestStoredAttemptRequiresCompleteScope(t *testing.T) {
 	store, _, _ := testStore(t)
 	attempt := protectedAttempt(t, store)
-	attempt.Parent = attempt.ID
+	attempt.ScopeGeneration = 0
 	encoded, err := json.Marshal(attempt)
 	if err != nil {
 		t.Fatal(err)
@@ -199,6 +196,6 @@ func TestStoredAttemptCannotDelegateToItself(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.Attempt(t.Context(), attempt.ID); err == nil {
-		t.Fatal("stored attempt accepted a self-parent delegation")
+		t.Fatal("stored attempt accepted a scope without its generations")
 	}
 }

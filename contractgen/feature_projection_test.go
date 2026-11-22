@@ -398,7 +398,7 @@ func TestGeneratedConsumersRoundTripDateAndMixedObjectOutputs(t *testing.T) {
 	if err := os.WriteFile(source, descriptor, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Generate(source, "", directory, GoOutput{Path: filepath.Join(directory, "types.go"), Package: "consumer"}); err != nil {
+	if err := Generate(GenerateConfig{Source: source, TypeScriptDirectory: directory, Go: []GoOutput{{Path: filepath.Join(directory, "types.go"), Package: "consumer"}}}); err != nil {
 		t.Fatal(err)
 	}
 	ts, err := os.ReadFile(filepath.Join(directory, "methods.generated.ts"))

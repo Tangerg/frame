@@ -149,9 +149,9 @@ func (g *schemaGraph) visit(value any, path string) (int, error) {
 		return 0, errors.New("portable: schema must be an object or boolean")
 	}
 	kind, _ := object[KeywordType].(string)
-	g.nodes[index].stringOnly = kind == string(TypeString)
+	g.nodes[index].stringOnly = kind == string(SchemaTypeString)
 	for key, field := range object {
-		if err := g.visitKeyword(index, key, field, path+"/"+pointerToken(key)); err != nil {
+		if err := g.visitKeyword(index, key, field, path+"/"+PointerToken(key)); err != nil {
 			return 0, err
 		}
 	}
@@ -164,14 +164,14 @@ func (g *schemaGraph) visitKeyword(index int, key string, field any, path string
 		return fmt.Errorf("portable: unsupported schema keyword %q", key)
 	}
 	switch keyword.Children {
-	case SchemaMap:
+	case SchemaChildrenMap:
 		return g.visitMap(index, key, field, path, keyword.Edge)
-	case SchemaChild:
+	case SchemaChildrenSchema:
 		return g.visitChild(index, field, path, keyword.Edge)
-	case SchemaArray:
+	case SchemaChildrenArray:
 		return g.visitComposition(index, field, path, keyword.Edge)
 	}
-	if keyword.Value == SchemaSize {
+	if keyword.Value == SchemaValueSize {
 		return g.sizeConstraint(key, field)
 	}
 	switch key {
@@ -217,9 +217,9 @@ func (g *schemaGraph) visitChild(index int, field any, path string, edge SchemaE
 		return err
 	}
 	switch edge {
-	case SchemaDescend:
+	case SchemaEdgeDescend:
 		g.nodes[index].descend = append(g.nodes[index].descend, child)
-	case SchemaSame:
+	case SchemaEdgeSame:
 		g.nodes[index].same = append(g.nodes[index].same, child)
 	}
 	return nil
@@ -278,7 +278,7 @@ func (g *schemaGraph) visitMap(index int, key string, field any, path string, ed
 				return err
 			}
 		}
-		if err := g.visitChild(index, child, path+"/"+pointerToken(name), edge); err != nil {
+		if err := g.visitChild(index, child, path+"/"+PointerToken(name), edge); err != nil {
 			return err
 		}
 	}
@@ -404,8 +404,4 @@ func equalityWeight(value any) uint64 {
 		}
 	}
 	return weight
-}
-
-func pointerToken(value string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(value, "~", "~0"), "/", "~1")
 }

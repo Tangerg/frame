@@ -33,7 +33,7 @@ func beginBrowserActivation(e *bridgeEnvironment, id string) <-chan error {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := e.host.ActivateUnit(e.ctx, browser.RealmID(e.credentials.Realm), framehost.UnitRef{InstallationID: framehost.InstallationID(id), Release: e.plugin.Revision(), UnitID: "view"})
+		_, err := e.host.ActivateUnit(e.ctx, e.credentials.Realm.HostRealm(), framehost.UnitRef{InstallationID: framehost.InstallationID(id), Release: e.plugin.Revision(), UnitID: "view"})
 		done <- err
 	}()
 	return done

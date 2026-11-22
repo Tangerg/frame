@@ -153,7 +153,7 @@ type PointDescriptor struct {
 	ValueContract ContractRef    `json:"valueContract"`
 }
 
-const PointProtocol = "io.github.tangerg.frame/point/1"
+const PointProtocol = frame.ProtocolNamespace + "point/1"
 
 func pointDeclaration(ref ContractRef, descriptor []byte) (*declaration, error) {
 	if err := ref.Validate(); err != nil {
@@ -258,13 +258,17 @@ func NewEvent[T any](name, version string) (Event[T], error) {
 	return Event[T]{value: value}, err
 }
 
+// NewDescriptorContract binds a published portable descriptor to its local
+// type and derives the contract identity from those exact bytes. A received
+// ContractRef goes through BindContract, which verifies the claimed identity.
+func NewDescriptorContract[T any](name, version string, descriptor []byte) (Contract[T], error) {
+	return BindContract[T](ContractRef{Name: name, Version: version, Digest: framevalue.Hash(descriptor), Kind: ServiceKind, Mode: PortableMode}, descriptor)
+}
+
 // BindContract uses an already published portable descriptor. Local types do
 // not derive another identity or alter the original contract's validation.
 func BindContract[T any](ref ContractRef, descriptor []byte) (Contract[T], error) {
-	if err := ref.Validate(); err != nil {
-		return Contract[T]{}, err
-	}
-	if ref.Kind != ServiceKind || ref.Mode != PortableMode || framevalue.Hash(descriptor) != ref.Digest {
+	if ref.Kind != ServiceKind || ref.Mode != PortableMode {
 		return Contract[T]{}, frame.ErrContractMismatch
 	}
 	definition, err := descriptorDeclaration(ref, descriptor)

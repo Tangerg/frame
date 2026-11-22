@@ -9,9 +9,10 @@ import (
 )
 
 // Restore reads and projects the original durable authority under one maintenance
-// admission. Caller-held records cannot authorize restoration. Retained business
-// dependencies and execution protection must also be restored before the caller
-// clears recovery; this operation neither starts resources nor clears that fence.
+// admission, then confirms that projection to the authority. Caller-held records
+// cannot authorize restoration. Retained business dependencies and execution
+// protection must also be restored before the caller clears recovery; this
+// operation neither starts resources nor clears that fence.
 func (h *hostState) Restore(ctx context.Context, plugins []*Plugin) error {
 	if h.durable == nil {
 		return fmt.Errorf("%w: installation restoration requires durable authority", frame.ErrInvalid)
@@ -30,32 +31,37 @@ func (h *hostState) Restore(ctx context.Context, plugins []*Plugin) error {
 		}
 		definitions[captured.revision] = captured
 	}
-	return h.admission.Maintenance(ctx, func() error {
-		work, err := h.lifetime.Enter(ctx)
-		if err != nil {
-			return err
-		}
-		defer work.Finish()
-		h.mu.Lock()
-		err = h.checkRestorationLocked()
-		h.mu.Unlock()
-		if err != nil {
-			return err
-		}
-		records, err := h.readInstallationRestoration(work.Context())
-		if err != nil {
-			return err
-		}
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		if err := frame.ContextError(work.Context()); err != nil {
-			return err
-		}
-		if err := h.checkRestorationLocked(); err != nil {
-			return err
-		}
-		return h.restoreInstallationsLocked(records, definitions)
-	})
+	if err := h.admission.Maintenance(ctx, func() error { return h.restoreUnderMaintenance(ctx, definitions) }); err != nil {
+		return err
+	}
+	return h.durable.ConfirmRestoredInstallations(ctx)
+}
+
+func (h *hostState) restoreUnderMaintenance(ctx context.Context, definitions map[framevalue.Digest]Plugin) error {
+	work, err := h.lifetime.Enter(ctx)
+	if err != nil {
+		return err
+	}
+	defer work.Finish()
+	h.mu.Lock()
+	err = h.checkRestorationLocked()
+	h.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	records, err := h.readInstallationRestoration(work.Context())
+	if err != nil {
+		return err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if err := frame.ContextError(work.Context()); err != nil {
+		return err
+	}
+	if err := h.checkRestorationLocked(); err != nil {
+		return err
+	}
+	return h.restoreInstallationsLocked(records, definitions)
 }
 
 func (h *hostState) checkRestorationLocked() error {

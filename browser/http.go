@@ -1,7 +1,7 @@
 package browser
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"io"
 	"net/http"
@@ -33,8 +33,12 @@ func (b *Bridge) Handler() http.Handler {
 			return
 		}
 		body, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, b.config.MaxMessageBytes))
-		if err != nil {
+		if _, exceeded := errors.AsType[*http.MaxBytesError](err); exceeded {
 			writeProblem(writer, http.StatusRequestEntityTooLarge, capacityProblem.code, "control request exceeds its byte limit")
+			return
+		}
+		if err != nil {
+			writeProblem(writer, http.StatusBadRequest, invalidProblem.code, "control request could not be read")
 			return
 		}
 		var envelope HTTPEnvelope
@@ -66,7 +70,7 @@ const (
 	bearerScheme        = "Bearer "
 )
 
-func decodeInput[T any](input json.RawMessage) (T, error) {
+func decodeInput[T any](input jsontext.Value) (T, error) {
 	var value T
 	err := framevalue.DecodeValue(input, &value, "control input")
 	if err != nil {

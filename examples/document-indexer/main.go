@@ -143,38 +143,47 @@ func (p approvedProgram) Program(_ context.Context, binding framehost.UnitBindin
 	return p.program, nil
 }
 
-func run(ctx context.Context, entry string) (answer string, returned error) {
+// approveEntry pins the Node executable and the already-read script bytes. This
+// example trusts its local workspace, but a later edit cannot change the
+// behavior of the release it approved.
+func approveEntry(entry string) (approvedProgram, error) {
 	entry, err := filepath.Abs(entry)
 	if err != nil {
-		return "", err
+		return approvedProgram{}, err
 	}
 	plugin, err := os.ReadFile(entry)
 	if err != nil {
-		return "", err
+		return approvedProgram{}, err
 	}
 	node, err := exec.LookPath("node")
 	if err != nil {
-		return "", err
+		return approvedProgram{}, err
 	}
 	node, err = filepath.EvalSymlinks(node)
 	if err != nil {
-		return "", err
+		return approvedProgram{}, err
 	}
 	bin, err := os.ReadFile(node)
 	if err != nil {
-		return "", err
+		return approvedProgram{}, err
 	}
 	release, err := value.EncodeJSON(struct {
 		Entry  string `json:"entry"`
 		Domain string `json:"domain"`
 	}{string(plugin), string(domain)})
 	if err != nil {
+		return approvedProgram{}, err
+	}
+	program := process.Program{Command: node, ExecutableDigest: value.Hash(bin), Args: []string{"--input-type=module", "--eval", string(plugin)}, Directory: filepath.Dir(entry)}
+	return approvedProgram{program, release.Digest()}, nil
+}
+
+func run(ctx context.Context, entry string) (answer string, returned error) {
+	program, err := approveEntry(entry)
+	if err != nil {
 		return "", err
 	}
-	revision := release.Digest()
-	// This example trusts its local workspace. Pin the already-read script bytes
-	// before dispatch so a later edit cannot change that entry's behavior.
-	program := approvedProgram{process.Program{Command: node, ExecutableDigest: value.Hash(bin), Args: []string{"--input-type=module", "--eval", string(plugin)}, Directory: filepath.Dir(entry)}, revision}
+	revision := program.revision
 	dir, err := os.MkdirTemp("", "frame-docs-")
 	if err != nil {
 		return "", err
@@ -267,8 +276,8 @@ func main() {
 	entry := flag.String("entry", "examples/document-indexer/index.mjs", "trusted Node plugin entry")
 	flag.Parse()
 	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
-	defer cancel()
 	text, err := run(ctx, *entry)
+	cancel()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

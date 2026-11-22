@@ -1,13 +1,3 @@
-// Tool-call identifiers, schema bounds, and protocol ids routinely carry
-// integers past IEEE-754's exact range, and encoding/json/v2 represents a number
-// in an any as a float64, which rounds those silently and refuses magnitudes
-// outside float64 entirely.
-//
-// This is the remedy encoding/json/v2 documents for that case, not a local
-// workaround: v2 says to supply an unmarshaler that pre-populates the interface
-// with a concrete type that preserves precision. v1's decoder-wide UseNumber is
-// the only part of the vocabulary v2 does not export, so it is the only part
-// restated here.
 package value
 
 import (
@@ -22,8 +12,12 @@ import (
 	"strings"
 )
 
-// Opaque numbers keep their lexemes; machine integers consume equivalent
-// decimal and exponent spellings without passing through floating-point values.
+// Numbers keeps opaque numbers as their lexemes and lets machine integers
+// consume equivalent decimal and exponent spellings without passing through
+// floating point. Identifiers, schema bounds and protocol ids routinely exceed
+// IEEE-754's exact range, and encoding/json/v2 decodes a number in an any as a
+// float64. This is v2's documented remedy: an unmarshaler that pre-populates
+// the interface with a precision-preserving type, which v1's UseNumber did.
 func Numbers() json.Options {
 	return json.WithUnmarshalers(json.JoinUnmarshalers(
 		json.UnmarshalFromFunc(decodeNumber),
@@ -67,14 +61,14 @@ func decodeInteger(decoder *jsontext.Decoder, target any) error {
 	if value.CanInt() {
 		parsed, err := strconv.ParseInt(integer, 10, value.Type().Bits())
 		if err != nil {
-			return fmt.Errorf("json integer: value is outside %s: %w", value.Type(), err)
+			return fmt.Errorf("value: integer is outside %s: %w", value.Type(), err)
 		}
 		value.SetInt(parsed)
 		return nil
 	}
 	parsed, err := strconv.ParseUint(integer, 10, value.Type().Bits())
 	if err != nil {
-		return fmt.Errorf("json integer: value is outside %s: %w", value.Type(), err)
+		return fmt.Errorf("value: integer is outside %s: %w", value.Type(), err)
 	}
 	value.SetUint(parsed)
 	return nil
@@ -97,19 +91,19 @@ func integerDecimal(raw string) (string, error) {
 	significant := strings.TrimRight(digits, "0")
 	maximumDigits := len(strconv.FormatUint(math.MaxUint64, 10))
 	if len(significant) > maximumDigits {
-		return "", errors.New("json integer: value exceeds machine integer precision")
+		return "", errors.New("value: integer exceeds machine precision")
 	}
 	var exponent int64
 	if exponentText != "" {
 		var err error
 		exponent, err = strconv.ParseInt(exponentText, 10, 64)
 		if err != nil {
-			return "", errors.New("json integer: exponent cannot produce a machine integer")
+			return "", errors.New("value: exponent cannot produce a machine integer")
 		}
 	}
 	integerExponent := int64(len(fraction) - (len(digits) - len(significant)))
 	if exponent < integerExponent || uint64(exponent)-uint64(integerExponent) > uint64(maximumDigits-len(significant)) {
-		return "", errors.New("json integer: value is fractional or exceeds machine integer precision")
+		return "", errors.New("value: integer is fractional or exceeds machine precision")
 	}
 	integer := significant + strings.Repeat("0", int(uint64(exponent)-uint64(integerExponent)))
 	if negative {

@@ -27,7 +27,7 @@ The indexer receives a document-scoped reader and writer, starts only after acti
 | Native plugin author | [Typed importer and exports](examples/authoring/native/plugins.go) | Declare slots once, obtain the approved values during setup, bind each implementation once. |
 | Host author | [Build/check engine](examples/buildcheck/engine.go) | Select from a common snapshot, capture the choices, borrow members within one protected access. |
 | Process author | [Node unit](examples/document-indexer/index.mjs) and [Go host](examples/document-indexer/main.go) | Local duplex stdio supports exact session handles, cancellation and backpressured streaming. |
-| MCP host integrator | [Standard tools and managed plugins](process/mcp/README.md) | Choose a protocol at composition and bind verified peer exports to already approved services. |
+| MCP host integrator | [Standard tools and custom protocols](process/mcp/README.md) | Choose a protocol at composition and bind verified peer exports to already approved services. |
 | Browser and React author | [Browser exercise](examples/authoring/browser) · [React adapter](sdk/src/react/README.md) | Native objects remain in their original realm and are held for the duration of their use. |
 | Distribution or operations | [Archive format](distribution/README.md) · [Runner](process/runner/README.md) · [SQLite](sqlite/README.md) | Content identity, installation authority, real process exit and business settlement have separate owners. |
 

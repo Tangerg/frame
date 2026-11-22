@@ -157,7 +157,7 @@ func (e *bridgeEnvironment) beginActivation(id string) (browser.LocalPlan, <-cha
 	root := framehost.ExportRef{InstallationID: framehost.InstallationID(id), Release: e.plugin.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
 	done := make(chan error, 1)
 	go func() {
-		_, err := e.host.ActivateIn(e.ctx, browser.RealmID(e.credentials.Realm), root)
+		_, err := e.host.ActivateIn(e.ctx, e.credentials.Realm.HostRealm(), root)
 		done <- err
 	}()
 	var plan browser.LocalPlan
@@ -369,7 +369,7 @@ func TestExactBindingChildKeepsOriginalParentExecutionOwner(t *testing.T) {
 	providerPlan := e.start("provider")
 	_, parent := e.acquire(parentPlan, "parent-use")
 	root := framehost.ExportRef{InstallationID: "provider", Release: e.plugin.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
-	binding, err := e.host.PlanWith(e.ctx, browser.RealmID(e.credentials.Realm), nil, root)
+	binding, err := e.host.PlanWith(e.ctx, e.credentials.Realm.HostRealm(), nil, root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +406,7 @@ func TestParentUseProofClosesUnknownChildGrantWithoutClosingExecution(t *testing
 	providerPlan := e.start("provider")
 	_, parent := e.acquire(parentPlan, "parent-use")
 	root := framehost.ExportRef{InstallationID: "provider", Release: e.plugin.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
-	binding, err := e.host.PlanWith(e.ctx, browser.RealmID(e.credentials.Realm), nil, root)
+	binding, err := e.host.PlanWith(e.ctx, e.credentials.Realm.HostRealm(), nil, root)
 	if err != nil {
 		t.Fatal(err)
 	}

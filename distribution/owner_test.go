@@ -15,7 +15,7 @@ import (
 )
 
 func ownerConfig(directory string) Config {
-	return Config{Directory: directory, Admission: framehost.NewAdmission(), Trust: func(context.Context, Source, Manifest, Lock) error { return nil }, Retained: func(context.Context, framevalue.Digest) (bool, error) { return false, nil }}
+	return Config{Directory: directory, Admission: framehost.NewAdmission(), Trust: func(context.Context, Source, Release) error { return nil }, Retained: func(context.Context, framevalue.Digest) (bool, error) { return false, nil }}
 }
 
 type missingCloseContext struct{ context.Context }
@@ -96,7 +96,7 @@ func TestCloseJoinsAcceptedIOAndLeasesAfterItsOnlyWaiterCancels(t *testing.T) {
 	var once sync.Once
 	t.Cleanup(func() { once.Do(func() { close(resume) }) })
 	config := ownerConfig(directory)
-	config.Trust = func(context.Context, Source, Manifest, Lock) error { close(entered); <-resume; return nil }
+	config.Trust = func(context.Context, Source, Release) error { close(entered); <-resume; return nil }
 	store, err := Open(config)
 	if err != nil {
 		t.Fatal(err)
@@ -112,7 +112,7 @@ func TestCloseJoinsAcceptedIOAndLeasesAfterItsOnlyWaiterCancels(t *testing.T) {
 	}
 	installed := make(chan result, 1)
 	go func() {
-		lease, err := store.ImportArchiveHeld(t.Context(), archive, framevalue.Hash(data))
+		lease, err := store.ImportArchive(t.Context(), archive, framevalue.Hash(data))
 		installed <- result{lease, err}
 	}()
 	<-entered

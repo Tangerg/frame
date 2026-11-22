@@ -117,8 +117,8 @@ type previewTrust struct{ archive value.Digest }
 
 func (t *previewTrust) pin(archive value.Digest) { t.archive = archive }
 
-func (t *previewTrust) check(_ context.Context, source distribution.Source, manifest distribution.Manifest, _ distribution.Lock) error {
-	if t.archive.IsZero() || source.ArchiveDigest != t.archive || manifest.Package != previewPackageName || manifest.Version != previewPackageVersion {
+func (t *previewTrust) check(_ context.Context, source distribution.Source, release distribution.Release) error {
+	if t.archive.IsZero() || source.ArchiveDigest != t.archive || release.Manifest.Package != previewPackageName || release.Manifest.Version != previewPackageVersion {
 		return distribution.ErrUntrusted
 	}
 	return nil
@@ -138,7 +138,7 @@ func (a *App) retainsRelease(ctx context.Context, release value.Digest) (bool, e
 	if err != nil {
 		return false, err
 	}
-	return slices.ContainsFunc(dependencies, func(dependency framehost.Dependency) bool { return dependency.Release == release }), nil
+	return slices.ContainsFunc(dependencies, func(dependency framehost.ReleaseRef) bool { return dependency.Release == release }), nil
 }
 
 type catalog struct {
@@ -191,9 +191,6 @@ func (a *App) restore(ctx context.Context, directory string, trustPreview func(v
 		definitions = append(definitions, preview)
 	}
 	if err := a.Host.Restore(ctx, definitions); err != nil {
-		return err
-	}
-	if err := a.Store.ConfirmRestoredInstallations(ctx); err != nil {
 		return err
 	}
 	if err := a.Recover(ctx); err != nil {
@@ -368,7 +365,7 @@ func (a *App) ActivatePreview(ctx context.Context, credentials browser.Credentia
 		return framehost.ErrFenced
 	}
 	root := framehost.ExportRef{InstallationID: previewInstallationID, Release: a.preview.Digest, UnitID: previewUnitID, Export: previewExportName, Contract: a.Contracts.Previews.Ref()}
-	_, err = a.Host.ActivateIn(ctx, browser.RealmID(credentials.Realm), root)
+	_, err = a.Host.ActivateIn(ctx, credentials.Realm.HostRealm(), root)
 	return err
 }
 

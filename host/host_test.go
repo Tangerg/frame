@@ -265,7 +265,7 @@ func TestLateReadyCannotEscapeScopeFence(t *testing.T) {
 		activated <- err
 	}()
 	<-started
-	if err := host.SetEnabled(ctx, "late", false); err != nil {
+	if err := host.Disable(ctx, "late"); err != nil {
 		t.Fatal(err)
 	}
 	close(resume)
@@ -335,8 +335,7 @@ func TestPortablePointHasIndependentMetadataAndValueIdentity(t *testing.T) {
 	ctx := testContext(t)
 	host := testHost(t, framehost.Config{})
 	descriptor := []byte(`{"protocol":"example","methods":["format"]}`)
-	valueRef := framehost.ContractRef{Name: "example.portable.format", Version: "1", Digest: framevalue.Hash(descriptor), Kind: framehost.ServiceKind, Mode: framehost.PortableMode}
-	valueContract, err := framehost.BindContract[func() string](valueRef, descriptor)
+	valueContract, err := framehost.NewDescriptorContract[func() string]("example.portable.format", "1", descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,7 +346,7 @@ func TestPortablePointHasIndependentMetadataAndValueIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if point.Ref().Digest == valueRef.Digest || point.ValueContract() != valueRef {
+	if point.Ref().Digest == valueContract.Ref().Digest || point.ValueContract() != valueContract.Ref() {
 		t.Fatal("point relabelled callable contract")
 	}
 	if err := host.Register(valueContract, point); err != nil {
@@ -356,7 +355,7 @@ func TestPortablePointHasIndependentMetadataAndValueIdentity(t *testing.T) {
 	metadata, _ := framevalue.ParseJSON([]byte(`{"priority":2}`))
 	plugin := installNative(t, host, "portable", framehost.Unit{Declaration: framehost.UnitDeclaration{ID: "main", Profile: framehost.NativeGo, Exports: []framehost.ExportDeclaration{{Name: "format", Contract: point.Ref()}}}, Setup: func(_ context.Context, setup framehost.Setup) ([]framehost.ExportValue, error) {
 		actual, err := setup.ValueContract(point.Ref())
-		if err != nil || actual != valueRef {
+		if err != nil || actual != valueContract.Ref() {
 			return nil, errors.New("wrong value contract")
 		}
 		return []framehost.ExportValue{{Name: "format", Contract: point.Ref(), Metadata: metadata, Value: func() string { return "ok" }}}, nil
@@ -424,6 +423,8 @@ func (s *pausedInstallationStore) CommitInstallation(context.Context, framehost.
 	}
 	return framehost.Committed, nil
 }
+func (*pausedInstallationStore) ConfirmRestoredInstallations(context.Context) error { return nil }
+
 func (*pausedInstallationStore) ConfirmInstallation(context.Context, framehost.InstallationID) error {
 	return nil
 }
@@ -498,8 +499,7 @@ func TestActivationRegistrationEndsWhenPreparationReturns(t *testing.T) {
 	ctx := testContext(t)
 	h := testHost(t, framehost.Config{})
 	descriptor := []byte(`{"protocol":"example"}`)
-	ref := framehost.ContractRef{Name: "stage.value", Version: "1", Kind: framehost.ServiceKind, Mode: framehost.PortableMode, Digest: framevalue.Hash(descriptor)}
-	value, err := framehost.BindContract[string](ref, descriptor)
+	value, err := framehost.NewDescriptorContract[string]("stage.value", "1", descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -14,23 +14,23 @@ import (
 )
 
 type Limits struct {
-	Entries          int
-	ExpandedBytes    int64
-	ArchiveBytes     int64
-	ManifestBytes    int64
-	CompressionRatio uint64
+	MaxEntries          int
+	MaxExpandedBytes    int64
+	MaxArchiveBytes     int64
+	MaxManifestBytes    int64
+	MaxCompressionRatio uint64
 }
 
 const (
-	defaultMaxEntries       = 10000
-	defaultExpandedBytes    = 512 << 20
-	defaultArchiveBytes     = 256 << 20
-	defaultManifestBytes    = 4 << 20
-	defaultCompressionRatio = 200
+	defaultMaxEntries          = 10000
+	defaultMaxExpandedBytes    = 512 << 20
+	defaultMaxArchiveBytes     = 256 << 20
+	defaultMaxManifestBytes    = 4 << 20
+	defaultMaxCompressionRatio = 200
 )
 
 func DefaultLimits() Limits {
-	return Limits{Entries: defaultMaxEntries, ExpandedBytes: defaultExpandedBytes, ArchiveBytes: defaultArchiveBytes, ManifestBytes: defaultManifestBytes, CompressionRatio: defaultCompressionRatio}
+	return Limits{MaxEntries: defaultMaxEntries, MaxExpandedBytes: defaultMaxExpandedBytes, MaxArchiveBytes: defaultMaxArchiveBytes, MaxManifestBytes: defaultMaxManifestBytes, MaxCompressionRatio: defaultMaxCompressionRatio}
 }
 
 // resolve selects the default of each zero bound independently, so narrowing
@@ -38,7 +38,7 @@ func DefaultLimits() Limits {
 func (l Limits) resolve() (Limits, error) {
 	defaults := DefaultLimits()
 	var err error
-	if l.Entries, err = frame.ResolveLimit("archive entries", l.Entries, defaults.Entries); err != nil {
+	if l.MaxEntries, err = frame.ResolveLimit("archive entries", l.MaxEntries, defaults.MaxEntries); err != nil {
 		return Limits{}, err
 	}
 	for _, limit := range []struct {
@@ -46,15 +46,15 @@ func (l Limits) resolve() (Limits, error) {
 		value    *int64
 		fallback int64
 	}{
-		{"expanded bytes", &l.ExpandedBytes, defaults.ExpandedBytes},
-		{"archive bytes", &l.ArchiveBytes, defaults.ArchiveBytes},
-		{"manifest bytes", &l.ManifestBytes, defaults.ManifestBytes},
+		{"expanded bytes", &l.MaxExpandedBytes, defaults.MaxExpandedBytes},
+		{"archive bytes", &l.MaxArchiveBytes, defaults.MaxArchiveBytes},
+		{"manifest bytes", &l.MaxManifestBytes, defaults.MaxManifestBytes},
 	} {
 		if *limit.value, err = frame.ResolveLimit(limit.name, *limit.value, limit.fallback); err != nil {
 			return Limits{}, err
 		}
 	}
-	if l.CompressionRatio, err = frame.ResolveLimit("compression ratio", l.CompressionRatio, defaults.CompressionRatio); err != nil {
+	if l.MaxCompressionRatio, err = frame.ResolveLimit("compression ratio", l.MaxCompressionRatio, defaults.MaxCompressionRatio); err != nil {
 		return Limits{}, err
 	}
 	return l, nil
@@ -67,7 +67,7 @@ type Source struct {
 
 // Trust is supplied by the application. A digest fixes bytes but cannot decide
 // whether their author, source or requested capabilities are trusted.
-type Trust func(context.Context, Source, Manifest, Lock) error
+type Trust func(context.Context, Source, Release) error
 
 type Config struct {
 	Directory string
@@ -101,10 +101,10 @@ type storeAuthority struct {
 	changed    chan struct{}
 }
 
+// Release is a verified release: Digest is its Manifest's Identity.
 type Release struct {
 	Digest   value.Digest
 	Manifest Manifest
-	Lock     Lock
 }
 
 func Open(config Config) (Store, error) {

@@ -51,7 +51,7 @@ func TestMetadataCallbacksConcludeOriginalPreparation(t *testing.T) {
 func metadataTestPoint[M any](t *testing.T, host framehost.Host) framehost.Point[M, string] {
 	t.Helper()
 	descriptor := []byte(`{"protocol":"metadata-boundary"}`)
-	service, err := framehost.BindContract[string](framehost.ContractRef{Name: "metadata.value", Version: "1", Kind: framehost.ServiceKind, Mode: framehost.PortableMode, Digest: value.Hash(descriptor)}, descriptor)
+	service, err := framehost.NewDescriptorContract[string]("metadata.value", "1", descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}

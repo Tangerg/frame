@@ -19,13 +19,28 @@ type hello struct {
 	Protocol      framevalue.Digest `json:"protocol"`
 	MaxFrameBytes int               `json:"maxFrameBytes"`
 }
+
+// description answers hello with the negotiated terms and the capability
+// identities the unit was built against, keyed by export and import slot.
 type description struct {
-	Protocol      framevalue.Digest `json:"protocol"`
-	MaxFrameBytes int               `json:"maxFrameBytes"`
-	Unit          string            `json:"unit"`
-	Exports       map[string]string `json:"exports"`
-	Imports       map[string]string `json:"imports"`
+	hello
+	Unit    string            `json:"unit"`
+	Exports map[string]string `json:"exports"`
+	Imports map[string]string `json:"imports"`
 }
+
+func describe(terms hello, unit string, exports, imports map[string]*frame.Capability) description {
+	return description{hello: terms, Unit: unit, Exports: identities(exports), Imports: identities(imports)}
+}
+
+func identities(contracts map[string]*frame.Capability) map[string]string {
+	result := make(map[string]string, len(contracts))
+	for name, contract := range contracts {
+		result[name] = contract.Identity().Digest().String()
+	}
+	return result
+}
+
 type offered struct {
 	Handle        string                 `json:"handle"`
 	Source        framehost.ExportRef    `json:"source"`
@@ -56,7 +71,7 @@ type hostSession struct {
 	peer       *peer
 	active     atomic.Bool
 	lifetime   frame.Lifetime
-	grants     map[string]binding
+	grants     map[string]boundService
 	deliveries deliveries
 }
 
@@ -79,6 +94,15 @@ type localProtocol struct{}
 
 func (localProtocol) Profile() framehost.Profile { return framehost.LocalProcess }
 
+// admitFrameLimit refuses a driver frame larger than the published local wire
+// accepts, before any setup can negotiate it.
+func (localProtocol) admitFrameLimit(maxFrameBytes int) error {
+	if maxFrameBytes > wire.MaxFrameBytes {
+		return fmt.Errorf("%w: local process frame exceeds %d bytes", frame.ErrInvalid, wire.MaxFrameBytes)
+	}
+	return nil
+}
+
 type assembly struct {
 	setup    framehost.Setup
 	session  *hostSession
@@ -87,55 +111,68 @@ type assembly struct {
 	values   []framehost.ExportValue
 }
 
-func (localProtocol) Prepare(setup framehost.Setup, metadata ExportMetadata, maximum int) (Connection, error) {
+func (localProtocol) Prepare(setup framehost.Setup, metadata ExportMetadata, maxFrameBytes int) (Connection, error) {
 	s := &hostSession{}
-	s.peer = newPeer(nil, maximum, s.dispatch)
-	s.grants = map[string]binding{}
+	s.peer = newPeer(nil, maxFrameBytes, s.dispatch)
+	s.grants = map[string]boundService{}
 	s.lifetime = setup.Lifetime()
-	expected := description{Protocol: protocol, MaxFrameBytes: maximum, Unit: string(setup.Unit().ID), Exports: map[string]string{}, Imports: map[string]string{}}
-	prepared := preparation{Imports: map[string][]offered{}}
-	values := make([]framehost.ExportValue, 0, len(setup.Unit().Exports))
-	for _, export := range setup.Unit().Exports {
+	unit := setup.Unit()
+	exports := make(map[string]*frame.Capability, len(unit.Exports))
+	values := make([]framehost.ExportValue, 0, len(unit.Exports))
+	for _, export := range unit.Exports {
 		contract, err := setup.Capability(export.Contract)
 		if err != nil {
 			return nil, err
 		}
-		expected.Exports[export.Name] = contract.Identity().Digest().String()
+		exports[export.Name] = contract
 		values = append(values, metadata.Export(export, &remote{s.peer, export.Name, contract, &s.deliveries}))
 	}
-	for _, slot := range setup.Unit().Imports {
+	imports := make(map[string]*frame.Capability, len(unit.Imports))
+	prepared := preparation{Imports: map[string][]offered{}}
+	for _, slot := range unit.Imports {
 		contract, err := setup.Capability(slot.Contract)
 		if err != nil {
 			return nil, err
 		}
-		expected.Imports[slot.Slot] = contract.Identity().Digest().String()
-		resolved, err := setup.Imports(slot.Slot)
+		imports[slot.Slot] = contract
+		offers, err := s.offer(setup, slot.Slot, contract)
 		if err != nil {
 			return nil, err
 		}
-		handles := make([]offered, 0, len(resolved))
-		for _, provider := range resolved {
-			svc, ok := provider.Value.(frame.Service)
-			if provider.Local {
-				svc = &remote{s.peer, provider.Source.Export, contract, &s.deliveries}
-			} else if !ok || framevalue.IsNil(svc) {
-				return nil, fmt.Errorf("%w: slot %s requires a portable service", frame.ErrContractMismatch, slot.Slot)
-			}
-			handle := rand.Text()
-			s.grants[handle] = binding{contract, svc}
-			offer := offered{Handle: handle, Source: provider.Source}
-			if provider.Source.Contract.Kind == framehost.PointKind {
-				value, err := setup.ValueContract(provider.Source.Contract)
-				if err != nil {
-					return nil, err
-				}
-				offer.ValueContract = &value
-			}
-			handles = append(handles, offer)
-		}
-		prepared.Imports[slot.Slot] = handles
+		prepared.Imports[slot.Slot] = offers
 	}
+	expected := describe(hello{Protocol: protocol, MaxFrameBytes: maxFrameBytes}, string(unit.ID), exports, imports)
 	return &assembly{setup, s, expected, prepared, values}, nil
+}
+
+// offer grants the child one handle per provider the Host bound to slot. A
+// provider inside the same unit is served back through the child itself.
+func (s *hostSession) offer(setup framehost.Setup, slot string, contract *frame.Capability) ([]offered, error) {
+	resolved, err := setup.Imports(slot)
+	if err != nil {
+		return nil, err
+	}
+	offers := make([]offered, 0, len(resolved))
+	for _, provider := range resolved {
+		svc, ok := provider.Value.(frame.Service)
+		if provider.Local {
+			svc = &remote{s.peer, provider.Source.Export, contract, &s.deliveries}
+		} else if !ok || framevalue.IsNil(svc) {
+			return nil, fmt.Errorf("%w: slot %s requires a portable service", frame.ErrContractMismatch, slot)
+		}
+		handle := rand.Text()
+		s.grants[handle] = boundService{contract, svc}
+		offer := offered{Handle: handle, Source: provider.Source}
+		if provider.Source.Contract.Kind == framehost.PointKind {
+			value, err := setup.ValueContract(provider.Source.Contract)
+			if err != nil {
+				return nil, err
+			}
+			offer.ValueContract = &value
+		}
+		offers = append(offers, offer)
+	}
+	return offers, nil
 }
 
 func (a *assembly) Connect(ctx context.Context, ch io.ReadWriteCloser) ([]framehost.ExportValue, error) {
@@ -143,7 +180,7 @@ func (a *assembly) Connect(ctx context.Context, ch io.ReadWriteCloser) ([]frameh
 	s.peer.transport = ch
 	s.peer.start()
 	var actual description
-	if err := s.peer.request(ctx, wire.Methods.Hello, hello{protocol, expected.MaxFrameBytes}, &actual); err != nil {
+	if err := s.peer.request(ctx, wire.Methods.Hello, expected.hello, &actual); err != nil {
 		return nil, err
 	}
 	if actual.Protocol != expected.Protocol || actual.Unit != expected.Unit || actual.Exports == nil || actual.Imports == nil || !maps.Equal(actual.Exports, expected.Exports) || !maps.Equal(actual.Imports, expected.Imports) {

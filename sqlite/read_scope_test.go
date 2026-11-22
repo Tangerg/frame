@@ -39,7 +39,7 @@ func TestOverlappingReadScopesKeepTheirOriginalConnectionReadOnly(t *testing.T) 
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			var writeFailure error
-			err := sqlite.RunInTx(ctx, database, func(writer context.Context) error {
+			err := database.RunInTx(ctx, func(writer context.Context) error {
 				firstContext := make(chan context.Context, 1)
 				firstDone, secondDone := make(chan error, 1), make(chan error, 1)
 				releaseFirst, firstReleased := make(chan struct{}), make(chan struct{})
@@ -49,7 +49,7 @@ func TestOverlappingReadScopesKeepTheirOriginalConnectionReadOnly(t *testing.T) 
 				defer allowSecondContinue()
 				secondEntered := make(chan struct{})
 				go func() {
-					firstDone <- sqlite.RunReadSnapshot(writer, database, func(read context.Context) error {
+					firstDone <- database.RunReadSnapshot(writer, func(read context.Context) error {
 						firstContext <- read
 						select {
 						case <-releaseFirst:
@@ -71,14 +71,14 @@ func TestOverlappingReadScopesKeepTheirOriginalConnectionReadOnly(t *testing.T) 
 					parent = writer
 				}
 				go func() {
-					secondDone <- sqlite.RunReadSnapshot(parent, database, func(read context.Context) error {
+					secondDone <- database.RunReadSnapshot(parent, func(read context.Context) error {
 						close(secondEntered)
 						select {
 						case <-firstReleased:
 						case <-ctx.Done():
 							return ctx.Err()
 						}
-						_, writeFailure = sqlite.Connection(read, database).ExecContext(read, `INSERT INTO facts VALUES('read scope must not write')`)
+						_, writeFailure = database.Executor(read).ExecContext(read, `INSERT INTO facts VALUES('read scope must not write')`)
 						return nil
 					})
 				}()
@@ -95,7 +95,7 @@ func TestOverlappingReadScopesKeepTheirOriginalConnectionReadOnly(t *testing.T) 
 				if err := errors.Join(firstErr, <-secondDone); err != nil {
 					return err
 				}
-				_, err := sqlite.Connection(writer, database).ExecContext(writer, `INSERT INTO facts VALUES('original writer')`)
+				_, err := database.Executor(writer).ExecContext(writer, `INSERT INTO facts VALUES('original writer')`)
 				return err
 			})
 			if err != nil {
@@ -131,13 +131,13 @@ func TestTransactionSealsAndJoinsAcceptedReadScopesBeforeCommit(t *testing.T) {
 	readDone, committed := make(chan error, 1), make(chan error, 1)
 	go func() {
 		defer close(ownerReturned)
-		committed <- sqlite.RunInTx(ctx, database, func(writer context.Context) error {
+		committed <- database.RunInTx(ctx, func(writer context.Context) error {
 			originalContext <- writer
-			if _, err := sqlite.Connection(writer, database).ExecContext(writer, `INSERT INTO facts VALUES('pending commit')`); err != nil {
+			if _, err := database.Executor(writer).ExecContext(writer, `INSERT INTO facts VALUES('pending commit')`); err != nil {
 				return err
 			}
 			go func() {
-				readDone <- sqlite.RunReadSnapshot(writer, database, func(context.Context) error {
+				readDone <- database.RunReadSnapshot(writer, func(context.Context) error {
 					close(entered)
 					<-release
 					return nil
@@ -169,7 +169,7 @@ func TestTransactionSealsAndJoinsAcceptedReadScopesBeforeCommit(t *testing.T) {
 		t.Fatal(ctx.Err())
 	}
 	for {
-		err := sqlite.RunReadSnapshot(original, database, func(context.Context) error { return nil })
+		err := database.RunReadSnapshot(original, func(context.Context) error { return nil })
 		if errors.Is(err, sql.ErrTxDone) {
 			break
 		}
@@ -200,7 +200,7 @@ func TestTransactionSealsAndJoinsAcceptedReadScopesBeforeCommit(t *testing.T) {
 	if err := observer.QueryRowContext(ctx, `SELECT count(*) FROM facts`).Scan(&visible); err != nil || visible != 1 {
 		t.Fatalf("joined reader lost its original commit: count=%d error=%v", visible, err)
 	}
-	if err := sqlite.RunReadSnapshot(original, database, func(context.Context) error {
+	if err := database.RunReadSnapshot(original, func(context.Context) error {
 		t.Fatal("closed transaction admitted a new read scope")
 		return nil
 	}); !errors.Is(err, sql.ErrTxDone) {

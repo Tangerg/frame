@@ -41,6 +41,8 @@ type Source interface {
 type Runner interface {
 	Identity(context.Context) (runner.Identity, error)
 	Fence(context.Context, uint64) error
+	// Launch given a done context must not dispatch: it returns the request's
+	// non-dispatch proof. The Driver relies on this while creation is queued.
 	Launch(context.Context, runner.LaunchRequest) (runner.LaunchResult, error)
 	Attach(context.Context, runner.AttemptRef) (io.ReadWriteCloser, error)
 	Inspect(context.Context, string) (runner.Observation, error)
@@ -61,8 +63,12 @@ type Config struct {
 type Driver struct {
 	config  Config
 	profile framehost.Profile
-	mu      sync.Mutex
-	live    map[string]*execution
+	// creating admits one creation at a time. The runner serializes creation
+	// in its journal, where a queued request can no longer be withdrawn;
+	// waiting here instead keeps cancellation a proof of non-dispatch.
+	creating chan struct{}
+	mu       sync.Mutex
+	live     map[string]*execution
 }
 
 type execution struct {
@@ -89,7 +95,11 @@ func New(config Config) (*Driver, error) {
 		return nil, fmt.Errorf("%w: process driver requires runner, store, source and explicit limits", frame.ErrInvalid)
 	}
 	if config.Protocol == nil {
-		config.Protocol = localProtocol{}
+		local := localProtocol{}
+		if err := local.admitFrameLimit(config.MaxFrameBytes); err != nil {
+			return nil, err
+		}
+		config.Protocol = local
 	}
 	if framevalue.IsNil(config.Protocol) {
 		return nil, fmt.Errorf("%w: missing process protocol", frame.ErrInvalid)
@@ -98,13 +108,10 @@ func New(config Config) (*Driver, error) {
 	if err := name.Validate(); err != nil {
 		return nil, err
 	}
-	if name == framehost.LocalProcess && config.MaxFrameBytes > wire.MaxFrameBytes {
-		return nil, fmt.Errorf("%w: neutral process frame exceeds %d bytes", frame.ErrInvalid, wire.MaxFrameBytes)
-	}
 	if name == framehost.NativeGo {
 		return nil, fmt.Errorf("%w: reserved native profile", frame.ErrInvalid)
 	}
-	return &Driver{config: config, profile: name, live: make(map[string]*execution)}, nil
+	return &Driver{config: config, profile: name, creating: make(chan struct{}, 1), live: make(map[string]*execution)}, nil
 }
 
 func (d *Driver) Profile() framehost.Profile { return d.profile }
@@ -136,7 +143,7 @@ func (d *Driver) Prepare(ctx context.Context, setup framehost.Setup) ([]framehos
 	if err != nil {
 		return nil, err
 	}
-	attempt := sqlite.Attempt{ID: setup.InstanceID(), Epoch: setup.Epoch(), Source: setup.Binding().Source, Binding: setup.Snapshot(), Realm: realm, Profile: d.profile}
+	attempt := sqlite.NewAttempt(setup, realm)
 	request := runner.LaunchRequest{
 		AttemptRef: runnerAttempt(attempt), Command: program.Command,
 		ExecutableDigest: program.ExecutableDigest, Args: slices.Clone(program.Args), Env: slices.Clone(program.Env),
@@ -181,23 +188,11 @@ func (d *Driver) Prepare(ctx context.Context, setup framehost.Setup) ([]framehos
 	return e.start(ownedCtx, connection)
 }
 
-// checkUnit admits only Portable contracts: a child process cannot share a
-// native Go value with the Host.
 func (d *Driver) checkUnit(unit framehost.UnitDeclaration) error {
 	if unit.Profile != d.profile {
 		return frame.ErrContractMismatch
 	}
-	for _, requirement := range unit.Imports {
-		if requirement.Contract.Mode != framehost.PortableMode {
-			return frame.ErrContractMismatch
-		}
-	}
-	for _, export := range unit.Exports {
-		if export.Contract.Mode != framehost.PortableMode {
-			return frame.ErrContractMismatch
-		}
-	}
-	return nil
+	return unit.RequirePortable()
 }
 
 func (d *Driver) program(ctx context.Context, setup framehost.Setup) (Program, frame.ResourceHandle, error) {
@@ -243,7 +238,7 @@ func (e *execution) start(ctx context.Context, connection Connection) ([]frameho
 	e.launch = new(runner.LaunchResult)
 	e.mu.Unlock()
 	attempt := runnerAttempt(e.attempt)
-	result, err := e.driver.config.Runner.Launch(ctx, e.request)
+	result, err := e.driver.launch(ctx, e.request)
 	e.mu.Lock()
 	*e.launch = result
 	e.mu.Unlock()
@@ -264,6 +259,23 @@ func (e *execution) start(ctx context.Context, connection Connection) ([]frameho
 	stopInterrupt := context.AfterFunc(ctx, func() { _ = channel.Close() })
 	defer stopInterrupt()
 	return connection.Connect(ctx, channel)
+}
+
+// launch dispatches a durably admitted creation. Cancellation before dispatch
+// keeps the runner's exact non-dispatch proof. Once dispatched, the original
+// request is joined: cancellation could otherwise discard its acknowledgement
+// and turn an ordinary close into an unknown creation.
+func (d *Driver) launch(ctx context.Context, request runner.LaunchRequest) (runner.LaunchResult, error) {
+	select {
+	case d.creating <- struct{}{}:
+		defer func() { <-d.creating }()
+	case <-ctx.Done():
+		return d.config.Runner.Launch(ctx, request)
+	}
+	if ctx.Err() != nil {
+		return d.config.Runner.Launch(ctx, request)
+	}
+	return d.config.Runner.Launch(context.WithoutCancel(ctx), request)
 }
 
 func (e *execution) close(ctx context.Context) (frame.ReleaseState, error) {

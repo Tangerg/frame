@@ -31,8 +31,8 @@ func TestRunInTxCancellationDoesNotDependOnNesting(t *testing.T) {
 			run := func(parent context.Context) error {
 				ctx, cancel := context.WithCancelCause(parent)
 				defer cancel(nil)
-				return sqlite.RunInTx(ctx, database, func(ctx context.Context) error {
-					if _, err := sqlite.Connection(ctx, database).ExecContext(ctx, `INSERT INTO entries VALUES (1)`); err != nil {
+				return database.RunInTx(ctx, func(ctx context.Context) error {
+					if _, err := database.Executor(ctx).ExecContext(ctx, `INSERT INTO entries VALUES (1)`); err != nil {
 						return err
 					}
 					cancel(cause)
@@ -40,7 +40,7 @@ func TestRunInTxCancellationDoesNotDependOnNesting(t *testing.T) {
 				})
 			}
 			if test.nested {
-				err = sqlite.RunInTx(t.Context(), database, run)
+				err = database.RunInTx(t.Context(), run)
 			} else {
 				err = run(t.Context())
 			}

@@ -29,7 +29,7 @@ type pragmaRequirement struct {
 // cleanup is unconfirmed. That Store permits Close and identity diagnostics,
 // not database work.
 func Open(ctx context.Context, config Config) (result Store, err error) {
-	if !config.Admission.Valid() || config.Path == "" || config.Path == ":memory:" {
+	if !config.Admission.Valid() || config.Path == "" || config.Path == memoryDatabase {
 		return Store{}, errors.New("sqlite: a file path and the host admission are required")
 	}
 	path, err := databasePath(config.Path)

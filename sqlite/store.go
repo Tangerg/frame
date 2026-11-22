@@ -8,11 +8,11 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	"reflect"
 
 	"github.com/Tangerg/frame"
 	framehost "github.com/Tangerg/frame/host"
 	framevalue "github.com/Tangerg/frame/value"
-	_ "modernc.org/sqlite"
 )
 
 var (
@@ -54,7 +54,7 @@ type Executor interface {
 type OwnerSchema struct {
 	ID         string
 	Statements []string
-	References func(context.Context, Reader, framehost.InstallationID) ([]framehost.Dependency, error)
+	References func(context.Context, Reader, framehost.InstallationID) ([]framevalue.Digest, error)
 	// ProjectInstallation writes this owner's projection in the original
 	// installation transaction, without authority over Frame's state.
 	ProjectInstallation func(context.Context, Executor, framehost.InstallationChange) error
@@ -94,12 +94,25 @@ type storeAuthority struct {
 type Owner struct {
 	store               *storeAuthority
 	id                  string
-	references          func(context.Context, Reader, framehost.InstallationID) ([]framehost.Dependency, error)
+	references          func(context.Context, Reader, framehost.InstallationID) ([]framevalue.Digest, error)
 	schema              schemaWriteSet
 	projectInstallation func(context.Context, Executor, framehost.InstallationChange) error
 }
 
-const schema = `
+// useExecutionPath reads the stored approval's execution member. The
+// UseApproval field tag owns that member name; the generated column follows it.
+var useExecutionPath = "$." + wireMember[framehost.UseApproval]("ExecutionID")
+
+func wireMember[T any](goName string) string {
+	for _, field := range framevalue.Fields(reflect.TypeFor[T]()) {
+		if field.GoName == goName {
+			return field.Name
+		}
+	}
+	panic(fmt.Sprintf("sqlite: %T has no wire member for %s", *new(T), goName))
+}
+
+var schema = `
 CREATE TABLE frame_meta (singleton INTEGER PRIMARY KEY CHECK(singleton=1),store_id TEXT NOT NULL,schema_digest TEXT NOT NULL,epoch INTEGER NOT NULL CHECK(epoch>0));
 CREATE TABLE frame_owners (id TEXT PRIMARY KEY,next_sequence INTEGER NOT NULL DEFAULT 0,compacted_through INTEGER NOT NULL DEFAULT 0 CHECK(compacted_through<=next_sequence));
 CREATE TABLE frame_submissions (owner_id TEXT NOT NULL REFERENCES frame_owners(id),sequence INTEGER NOT NULL,digest TEXT NOT NULL,request BLOB NOT NULL,state TEXT NOT NULL CHECK(state IN ('` + string(submissionPrepared) + `','` + string(submissionCommitted) + `','` + string(submissionNotCommitted) + `','` + string(submissionCommittedSynchronized) + `','` + string(submissionNotCommittedSynchronized) + `')),evidence BLOB,CHECK(state IN ('` + string(submissionCommitted) + `','` + string(submissionCommittedSynchronized) + `') OR evidence IS NULL),PRIMARY KEY(owner_id,sequence));
@@ -107,7 +120,7 @@ CREATE TABLE frame_evidence_references (owner_id TEXT NOT NULL,sequence INTEGER 
 CREATE TABLE frame_attempts (id TEXT PRIMARY KEY,request BLOB NOT NULL,request_digest TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('` + string(AttemptApproved) + `','` + string(AttemptHandoff) + `','` + string(AttemptReleased) + `')),proof BLOB);
 CREATE INDEX frame_attempts_by_state ON frame_attempts(state,id);
 CREATE TABLE frame_installations (id TEXT PRIMARY KEY,record BLOB NOT NULL);
-CREATE TABLE frame_use_approvals (id TEXT PRIMARY KEY,request BLOB NOT NULL,execution_id TEXT GENERATED ALWAYS AS (json_extract(CAST(request AS TEXT),'$.executionId')) VIRTUAL,request_digest TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('` + string(useApproved) + `','` + string(useReleased) + `')),proof BLOB);
+CREATE TABLE frame_use_approvals (id TEXT PRIMARY KEY,request BLOB NOT NULL,execution_id TEXT GENERATED ALWAYS AS (json_extract(CAST(request AS TEXT),'` + useExecutionPath + `')) VIRTUAL,request_digest TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('` + string(useApproved) + `','` + string(useReleased) + `')),proof BLOB);
 CREATE INDEX frame_use_approvals_by_state ON frame_use_approvals(state,id);
 CREATE INDEX frame_uses_by_execution ON frame_use_approvals(execution_id,id);
 CREATE TABLE frame_realms (id TEXT NOT NULL,epoch TEXT NOT NULL,operation_id TEXT NOT NULL UNIQUE,resume_verifier TEXT NOT NULL,history_bytes INTEGER GENERATED ALWAYS AS (length(CAST(id AS BLOB))+length(CAST(epoch AS BLOB))+length(CAST(operation_id AS BLOB))+length(CAST(resume_verifier AS BLOB))) VIRTUAL,PRIMARY KEY(id,epoch));
@@ -115,7 +128,7 @@ CREATE TABLE frame_exit_proofs (attempt_id TEXT NOT NULL REFERENCES frame_attemp
 ` + realmReceiptSchema
 
 func schemaShape(ctx context.Context, statements []string) (framevalue.Digest, error) {
-	database, err := sql.Open("sqlite", ":memory:")
+	database, err := openDatabase(memoryDatabase)
 	if err != nil {
 		return framevalue.Digest{}, err
 	}
@@ -129,6 +142,15 @@ func schemaShape(ctx context.Context, statements []string) (framevalue.Digest, e
 	return readSchemaShape(ctx, database)
 }
 
+// schemaObject is one sqlite_master entry; the shape digest covers exactly
+// these columns, so an equal digest means an equal installed schema.
+type schemaObject struct {
+	Type  string `json:"type"`
+	Name  string `json:"name"`
+	Table string `json:"table"`
+	SQL   string `json:"sql"`
+}
+
 func readSchemaShape(ctx context.Context, executor interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }) (framevalue.Digest, error) {
@@ -137,10 +159,10 @@ func readSchemaShape(ctx context.Context, executor interface {
 		return framevalue.Digest{}, err
 	}
 	defer rows.Close()
-	var objects [][4]string
+	var objects []schemaObject
 	for rows.Next() {
-		var object [4]string
-		if err := rows.Scan(&object[0], &object[1], &object[2], &object[3]); err != nil {
+		var object schemaObject
+		if err := rows.Scan(&object.Type, &object.Name, &object.Table, &object.SQL); err != nil {
 			return framevalue.Digest{}, err
 		}
 		objects = append(objects, object)
@@ -187,11 +209,11 @@ func (o Owner) ID() string { return o.id }
 
 // Held starts a new read after admission. It must not be called from an owner
 // mutation callback; that callback already has the current transaction.
-func (o Owner) Held(ctx context.Context, installation framehost.InstallationID) ([]framehost.Dependency, error) {
+func (o Owner) Held(ctx context.Context, installation framehost.InstallationID) ([]framevalue.Digest, error) {
 	if err := o.validate(); err != nil {
 		return nil, err
 	}
-	var dependencies []framehost.Dependency
+	var dependencies []framevalue.Digest
 	err := o.store.Read(ctx, func(tx Reader) error {
 		var err error
 		dependencies, err = o.references(ctx, tx, installation)

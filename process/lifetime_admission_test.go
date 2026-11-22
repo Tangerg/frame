@@ -22,7 +22,7 @@ func admissionClient(t *testing.T, life frame.Lifetime, callback bool, handler f
 	if err != nil {
 		t.Fatal(err)
 	}
-	bound := map[string]binding{"service": {contract, handler}}
+	bound := map[string]boundService{"service": {contract, handler}}
 	left, right := net.Pipe()
 	caller := newPeer(left, wire.MaxFrameBytes, nil)
 	var receiver *peer

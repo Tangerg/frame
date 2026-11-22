@@ -468,7 +468,7 @@ func TestConvenientAndExplicitUsesKeepTheSameAdmissionAndOutcome(t *testing.T) {
 		name string
 		run  func() error
 	}{
-		{"WithPlan", func() error { return framehost.WithPlan(ctx, host, plan, scope, call) }},
+		{"WithUse", func() error { return host.WithUse(ctx, scope, plan, call) }},
 		{"Acquire and Borrow", func() error {
 			owner := frame.NewLifetime(context.Background())
 			use, err := host.Acquire(ctx, plan, framehost.UseConfig{Owner: owner, Scope: scope})
@@ -534,7 +534,7 @@ func TestBorrowedHandlerCanRequestItsOwnDisableOrReplacementWithoutWaitingOnItse
 			var calls, closes atomic.Int64
 			change := func(ctx context.Context) error {
 				if action == "disable" {
-					return host.SetEnabled(ctx, "self", false)
+					return host.Disable(ctx, "self")
 				}
 				return host.Replace(ctx, "self", plugin, []byte("reconfigured"))
 			}

@@ -90,7 +90,7 @@ func (c *catalog) members(contract ContractRef) []*publication {
 		result = append(result, value)
 	}
 	slices.SortFunc(result, func(a, b *publication) int {
-		return cmp.Or(compareExport(a.source, b.source), cmp.Compare(a.id, b.id))
+		return cmp.Or(a.source.compare(b.source), cmp.Compare(a.id, b.id))
 	})
 	return result
 }
@@ -320,7 +320,7 @@ func (h *hostState) prepareExport(ctx context.Context, instance *unitInstance, e
 	if err := instance.validateCurrent(ctx); err != nil {
 		return nil, err
 	}
-	metadata, err := prepareMetadata(definition, types.metadata, export.Metadata)
+	metadata, err := definition.prepareMetadata(types.metadata, export.Metadata)
 	if err != nil {
 		return nil, err
 	}

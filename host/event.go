@@ -77,13 +77,13 @@ func (u *useBorrow) exports(source ExportRef) bool {
 }
 
 func (h *hostState) NewEventRoute(ctx context.Context, sourceUse, receiverUse Use, source, receiver ExportRef) (EventRoute, error) {
-	if sourceUse.borrow == nil || receiverUse.borrow == nil || sourceUse.borrow.authority != h.identity || receiverUse.borrow.authority != h.identity {
+	if sourceUse.borrow == nil || receiverUse.borrow == nil || sourceUse.borrow.authority != h.domain || receiverUse.borrow.authority != h.domain {
 		return EventRoute{}, frame.ErrInvalid
 	}
 	if source.Contract.Kind != EventKind || source.Contract != receiver.Contract {
 		return EventRoute{}, frame.ErrContractMismatch
 	}
-	route := &eventRoute{identity: &eventRouteIdentity{id: rand.Text(), authority: h.identity, source: source, receiver: receiver}, source: sourceUse.borrow, receiver: receiverUse.borrow}
+	route := &eventRoute{identity: &eventRouteIdentity{id: rand.Text(), authority: h.domain, source: source, receiver: receiver}, source: sourceUse.borrow, receiver: receiverUse.borrow}
 	err := h.admission.Admit(ctx, func(context.Context) error {
 		h.mu.Lock()
 		defer h.mu.Unlock()
@@ -150,7 +150,7 @@ func (h *hostState) validateRouteUsesLocked(route *eventRoute) error {
 }
 
 func (h *hostState) liveRouteLocked(token EventRoute) (*eventRoute, error) {
-	if token.identity == nil || token.identity.authority != h.identity {
+	if token.identity == nil || token.identity.authority != h.domain {
 		return nil, frame.ErrInvalid
 	}
 	route := h.routes[token.identity.id]
@@ -173,7 +173,10 @@ func (h *hostState) ValidateEventRoute(ctx context.Context, route EventRoute) er
 // DeliverEvent registers delivery in each owner before calling application
 // code. A callback may reenter Host; no Host or admission lock crosses it.
 func DeliverEvent[T any](ctx context.Context, host Host, route EventRoute, event Event[T], payload T, receive func(context.Context, T) error) error {
-	if !host.Valid() || !route.Valid() || event.value == nil || receive == nil || route.Source().Contract != event.Ref() {
+	if !host.Valid() || !route.Valid() || event.value == nil || receive == nil {
+		return frame.ErrInvalid
+	}
+	if route.Source().Contract != event.Ref() {
 		return frame.ErrContractMismatch
 	}
 	delivery, err := host.enterRoute(ctx, route, event.value)

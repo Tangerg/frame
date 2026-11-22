@@ -18,7 +18,7 @@ func (s *storeAuthority) publishHeld(ctx context.Context, staged *staging, sourc
 	if err := s.checkTrust(ctx, source, release); err != nil {
 		return Lease{}, errors.Join(ErrUntrusted, err)
 	}
-	if err := sealReleaseContents(ctx, staged.root, release.Manifest, s.limits.Entries); err != nil {
+	if err := sealReleaseContents(ctx, staged.root, release.Manifest, s.limits.MaxEntries); err != nil {
 		return Lease{}, err
 	}
 	var lease Lease
@@ -103,7 +103,7 @@ func (s *storeAuthority) admitCached(ctx context.Context, source Source, digest 
 		if err != nil || !reflect.DeepEqual(checked, cached) {
 			return errors.Join(ErrIntegrity, err)
 		}
-		if err := sealReleaseContents(ctx, root, cached.Manifest, s.limits.Entries); err != nil {
+		if err := sealReleaseContents(ctx, root, cached.Manifest, s.limits.MaxEntries); err != nil {
 			return err
 		}
 		if err := sealEntry(root, ".", original, sealedDirectoryMode); err != nil {
@@ -119,6 +119,5 @@ func (s *storeAuthority) admitCached(ctx context.Context, source Source, digest 
 
 // Policy receives only detached metadata; it cannot rewrite verified content.
 func (s *storeAuthority) checkTrust(ctx context.Context, source Source, release Release) error {
-	view := release.snapshot()
-	return s.trust(ctx, source, view.Manifest, view.Lock)
+	return s.trust(ctx, source, release.snapshot())
 }

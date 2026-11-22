@@ -270,7 +270,7 @@ func TestCapturedBindingCannotExtendADrainingProvider(t *testing.T) {
 				}
 				t.Errorf("captured admission extended an original draining provider: use=%v error=%v", next, err)
 			}
-			if next, err := host.AcquireUnit(ctx, root.Unit(), config); next.Valid() || err == nil {
+			if next, err := host.AcquireUnit(ctx, root.UnitRef, config); next.Valid() || err == nil {
 				if next.Valid() {
 					defer next.Close(context.Background())
 				}

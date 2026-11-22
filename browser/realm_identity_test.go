@@ -31,7 +31,7 @@ func FuzzRealmCredentialIdentity(f *testing.F) {
 		if decoded != realm {
 			t.Fatal("credential changed the original Realm")
 		}
-		if err := RealmID(realm).Validate(); err != nil {
+		if err := realm.HostRealm().Validate(); err != nil {
 			t.Fatalf("valid Realm cannot enter Frame affinity: %v", err)
 		}
 	})

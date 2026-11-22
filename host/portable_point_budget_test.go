@@ -13,8 +13,7 @@ import (
 func TestPortablePointUsesTheOriginalProfileBudgets(t *testing.T) {
 	host := testHost(t, framehost.Config{})
 	descriptor := []byte(`{"protocol":"example","methods":["read"]}`)
-	valueRef := framehost.ContractRef{Name: "example.point-budget-value", Version: "1", Digest: framevalue.Hash(descriptor), Kind: framehost.ServiceKind, Mode: framehost.PortableMode}
-	value, err := framehost.BindContract[string](valueRef, descriptor)
+	value, err := framehost.NewDescriptorContract[string]("example.point-budget-value", "1", descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}

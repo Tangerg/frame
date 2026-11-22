@@ -10,7 +10,7 @@ import (
 
 func TestOpenDefaultsEachUnsetLimitIndependently(t *testing.T) {
 	config := ownerConfig(t.TempDir())
-	config.Limits = Limits{Entries: 1}
+	config.Limits = Limits{MaxEntries: 1}
 	store, err := Open(config)
 	if err != nil {
 		t.Fatalf("narrowing one limit refused the others' defaults: %v", err)
@@ -21,12 +21,12 @@ func TestOpenDefaultsEachUnsetLimitIndependently(t *testing.T) {
 		}
 	})
 	want := DefaultLimits()
-	want.Entries = 1
+	want.MaxEntries = 1
 	if store.limits != want {
 		t.Fatalf("resolved limits %+v, want %+v", store.limits, want)
 	}
 	config = ownerConfig(t.TempDir())
-	config.Limits = Limits{ArchiveBytes: -1}
+	config.Limits = Limits{MaxArchiveBytes: -1}
 	if _, err := Open(config); !errors.Is(err, frame.ErrInvalid) {
 		t.Fatalf("negative limit admitted: %v", err)
 	}

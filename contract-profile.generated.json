@@ -16,7 +16,6 @@
     "maxPatternRepeat": 256,
     "maxSizeConstraint": 9007199254740991,
     "maxMethods": 256,
-    "maxTokenBytes": 256,
     "maxCommandIDCharacters": 256
   },
   "pattern": {

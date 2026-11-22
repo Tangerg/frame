@@ -196,7 +196,22 @@ func TestRestorationReadFailurePreservesRecoveryAndCancellation(t *testing.T) {
 			if current, _ := host.Installation("worker"); len(current.Configuration) != 0 {
 				t.Fatalf("failed restoration partially published: %+v", current)
 			}
+			if store.confirmed != 0 {
+				t.Error("failed restoration confirmed records it never projected")
+			}
 		})
+	}
+}
+
+func TestRestorationConfirmsItsProjectionToTheAuthority(t *testing.T) {
+	store := newRestorationStore()
+	host := testHost(t, framehost.Config{Authority: installationAuthority(store)})
+	plugin := installNative(t, host, "worker")
+	if err := host.Restore(t.Context(), []*framehost.Plugin{plugin}); err != nil {
+		t.Fatal(err)
+	}
+	if store.confirmed != 1 {
+		t.Fatalf("restoration confirmed its projection %d times", store.confirmed)
 	}
 }
 
@@ -285,9 +300,10 @@ func TestVolatileHostHasNoInstallationRestorationAuthority(t *testing.T) {
 }
 
 type restorationStore struct {
-	mu      sync.Mutex
-	records map[framehost.InstallationID]framehost.InstallationRecord
-	read    func(context.Context) error
+	mu        sync.Mutex
+	records   map[framehost.InstallationID]framehost.InstallationRecord
+	read      func(context.Context) error
+	confirmed int
 }
 
 func newRestorationStore(records ...framehost.InstallationRecord) *restorationStore {
@@ -320,6 +336,13 @@ func (s *restorationStore) CommitInstallation(ctx context.Context, change frameh
 }
 
 func (*restorationStore) ConfirmInstallation(context.Context, framehost.InstallationID) error {
+	return nil
+}
+
+func (s *restorationStore) ConfirmRestoredInstallations(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.confirmed++
 	return nil
 }
 

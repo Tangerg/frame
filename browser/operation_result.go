@@ -125,46 +125,60 @@ func (r controlReceipt) result(id string, key *realmSigner) (operationResult, er
 		return nil, sqlite.ErrConflict
 	}
 	if len(r.Failures) != 0 {
-		if r.Grant != nil || r.Publication != nil {
-			return nil, sqlite.ErrConflict
-		}
-		failure, err := restoreControlFailure(r.Failures)
-		if err != nil {
-			return nil, err
-		}
-		return failedOperation{cause: failure}, nil
+		return r.failure()
 	}
 	switch r.Kind {
 	case acquireOperation, acquirePlanOperation:
-		if r.Grant == nil || r.Publication != nil || r.Grant.Realm != r.Realm || r.Grant.OperationID != id || !frame.ValidName(r.Grant.ID) || r.Grant.ApprovalToken != "" {
-			return nil, sqlite.ErrConflict
-		}
-		grant := copyWire(*r.Grant)
-		grant.ApprovalToken = key.approval(grant.ID)
-		return acquiredUse{grant: grant}, nil
+		return r.acquired(id, key)
 	case publishOperation:
-		if r.Publication == nil || r.Grant != nil {
-			return nil, sqlite.ErrConflict
-		}
-		switch r.Publication.Decision {
-		case Accepted:
-			publication := r.Publication.Publication
-			if publication == nil || publication.OperationID != id || !frame.ValidName(publication.ID) || r.Publication.Problem != "" {
-				return nil, sqlite.ErrConflict
-			}
-			return publishedObject{publication: copyWire(*publication)}, nil
-		case Rejected:
-			if r.Publication.Publication != nil || r.Publication.Problem == "" {
-				return nil, sqlite.ErrConflict
-			}
-			return publicationRefusal{problem: r.Publication.Problem}, nil
-		default:
-			return nil, sqlite.ErrConflict
-		}
+		return r.published(id)
 	default:
 		if r.Grant != nil || r.Publication != nil {
 			return nil, sqlite.ErrConflict
 		}
 		return completedSnapshot{}, nil
+	}
+}
+
+func (r controlReceipt) failure() (operationResult, error) {
+	if r.Grant != nil || r.Publication != nil {
+		return nil, sqlite.ErrConflict
+	}
+	failure, err := restoreControlFailure(r.Failures)
+	if err != nil {
+		return nil, err
+	}
+	return failedOperation{cause: failure}, nil
+}
+
+// acquired reissues the approval token from the original key; the archived
+// receipt never stores it.
+func (r controlReceipt) acquired(id string, key *realmSigner) (operationResult, error) {
+	if r.Grant == nil || r.Publication != nil || r.Grant.Realm != r.Realm || r.Grant.OperationID != id || !frame.ValidName(r.Grant.ID) || r.Grant.ApprovalToken != "" {
+		return nil, sqlite.ErrConflict
+	}
+	grant := copyWire(*r.Grant)
+	grant.ApprovalToken = key.approval(grant.ID)
+	return acquiredUse{grant: grant}, nil
+}
+
+func (r controlReceipt) published(id string) (operationResult, error) {
+	if r.Publication == nil || r.Grant != nil {
+		return nil, sqlite.ErrConflict
+	}
+	switch r.Publication.Decision {
+	case Accepted:
+		publication := r.Publication.Publication
+		if publication == nil || publication.OperationID != id || !frame.ValidName(publication.ID) || r.Publication.Problem != "" {
+			return nil, sqlite.ErrConflict
+		}
+		return publishedObject{publication: copyWire(*publication)}, nil
+	case Rejected:
+		if r.Publication.Publication != nil || r.Publication.Problem == "" {
+			return nil, sqlite.ErrConflict
+		}
+		return publicationRefusal{problem: r.Publication.Problem}, nil
+	default:
+		return nil, sqlite.ErrConflict
 	}
 }

@@ -70,3 +70,31 @@ func TestInvalidOrMissingInputCannotAcquireIdentity(t *testing.T) {
 		t.Fatal("duplicate raw members admitted")
 	}
 }
+
+func TestDecodeAppliesTheCodecPolicyOfAdmittedValues(t *testing.T) {
+	type input struct {
+		ID    uint64 `json:"id"`
+		Label string `json:"label,omitzero"`
+	}
+	admitted, err := ParseJSON([]byte(`{"id":18446744073709551615}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded input
+	if err := admitted.Decode(&decoded); err != nil || decoded.ID != 18446744073709551615 {
+		t.Fatalf("exact machine integer: %+v %v", decoded, err)
+	}
+	for _, document := range []string{`{"id":1,"extra":true}`, `{"label":"missing id"}`, `{"id":1.5}`} {
+		value, err := ParseJSON([]byte(document))
+		if err != nil {
+			t.Fatal(err)
+		}
+		previous := decoded
+		if err := value.Decode(&decoded); err == nil || decoded != previous {
+			t.Errorf("%s decoded or changed its destination: %+v %v", document, decoded, err)
+		}
+	}
+	if err := (JSON{}).Decode(&decoded); err == nil {
+		t.Error("absent JSON decoded")
+	}
+}

@@ -15,7 +15,7 @@ func ParseNumber(data []byte) (Number, error) {
 		return Number{}, err
 	}
 	if document.Bytes().Kind() != '0' {
-		return Number{}, errors.New("json number: numeric value is required")
+		return Number{}, errors.New("value: numeric value is required")
 	}
 	return Number{document: document}, nil
 }

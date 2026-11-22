@@ -8,7 +8,7 @@ import (
 	"github.com/Tangerg/frame/value"
 )
 
-const Protocol = "io.github.tangerg.frame/control/1"
+const Protocol = frame.ProtocolNamespace + "control/1"
 
 type Authority struct {
 	ID    string `json:"id"`

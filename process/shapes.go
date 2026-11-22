@@ -60,6 +60,7 @@ type WireShapes struct {
 	Failure     framevalue.Shape `json:"failure"`
 	Problem     framevalue.Shape `json:"problem"`
 	Hello       framevalue.Shape `json:"hello"`
+	Description framevalue.Shape `json:"description"`
 	Preparation framevalue.Shape `json:"preparation"`
 	Grant       framevalue.Shape `json:"grant"`
 	Source      framevalue.Shape `json:"source"`
@@ -103,6 +104,7 @@ func wireShapes() WireShapes {
 		Failure:     framevalue.ShapeOf(reflect.TypeFor[failureMessage]()),
 		Problem:     framevalue.ShapeOf(reflect.TypeFor[Problem]()),
 		Hello:       framevalue.ShapeOf(reflect.TypeFor[hello]()),
+		Description: framevalue.ShapeOf(reflect.TypeFor[description]()),
 		Preparation: framevalue.ShapeOf(reflect.TypeFor[preparation]()),
 		Grant:       framevalue.ShapeOf(reflect.TypeFor[offered]()),
 		Source:      framevalue.ShapeOf(reflect.TypeFor[framehost.ExportRef]()),

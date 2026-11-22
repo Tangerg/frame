@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	jsonv2 "encoding/json/v2"
+	json "encoding/json/v2"
 	"errors"
 
 	"github.com/Tangerg/frame"
@@ -24,24 +24,12 @@ func (s *storeAuthority) ApproveUse(ctx context.Context, approval framehost.UseA
 	if approval.Epoch != s.epoch {
 		return framehost.NotCommitted, framehost.ErrFenced
 	}
-	encoded, err := jsonv2.Marshal(approval)
+	encoded, err := json.Marshal(approval)
 	if err != nil {
 		return framehost.NotCommitted, err
 	}
-	if len(encoded) > s.maxRequestBytes {
-		return framehost.NotCommitted, frame.ErrCapacity
-	}
-	return s.protectionTransaction(ctx, func(tx Executor) error {
-		return recordOnce(func() (bool, error) {
-			row, err := readProtectionRow(ctx, tx, useByID, approval.ID)
-			if err != nil {
-				return false, err
-			}
-			if _, err := decodeUse(row); err != nil {
-				return false, err
-			}
-			return bytes.Equal(row.request, encoded), nil
-		}, func() error { return insertUse(ctx, tx, approval, encoded) })
+	return recordProtection(ctx, s, useByID, approval.ID, encoded, protectedRecord.use, func(tx Executor) error {
+		return insertUse(ctx, tx, approval, encoded)
 	})
 }
 
@@ -51,7 +39,7 @@ func insertUse(ctx context.Context, tx Executor, approval framehost.UseApproval,
 		if err != nil {
 			return err
 		}
-		parent, err := decodeUse(row)
+		parent, err := row.use()
 		if err != nil {
 			return err
 		}
@@ -91,38 +79,39 @@ const useRecords = `SELECT id,request,request_digest,state,proof FROM frame_use_
 const useByID = useRecords + ` WHERE id=?`
 
 func (s *storeAuthority) Uses(ctx context.Context) ([]UseRecord, error) {
-	return readRecords(ctx, s, useRecords+" ORDER BY id", decodeUse)
+	return readRecords(ctx, s, useRecords+" ORDER BY id", protectedRecord.use)
 }
 func (s *storeAuthority) Use(ctx context.Context, id string) (UseRecord, error) {
-	return readRecord(ctx, s, useByID, decodeUse, id)
+	return readRecord(ctx, s, useByID, protectedRecord.use, id)
 }
 func (s *storeAuthority) ExecutionUses(ctx context.Context, id string) ([]UseRecord, error) {
-	return readRecords(ctx, s, useRecords+` WHERE execution_id=? ORDER BY id`, decodeUse, id)
+	return readRecords(ctx, s, useRecords+` WHERE execution_id=? ORDER BY id`, protectedRecord.use, id)
 }
 
-func decodeUse(row protectedRecord) (record UseRecord, err error) {
+// use decodes this row as a Use approval; any inconsistency is corruption.
+func (r protectedRecord) use() (record UseRecord, err error) {
 	defer func() { err = corruptProtection(err) }()
-	state := useState(row.state)
+	state := useState(r.state)
 	if err := state.validate(); err != nil {
 		return record, err
 	}
-	if err := jsonv2.Unmarshal(row.request, &record.Approval, jsonv2.RejectUnknownMembers(true)); err != nil {
+	if err := json.Unmarshal(r.request, &record.Approval, json.RejectUnknownMembers(true)); err != nil {
 		return record, err
 	}
 	if err := record.Approval.Validate(); err != nil {
 		return record, err
 	}
-	if record.Approval.ID != row.id {
+	if record.Approval.ID != r.id {
 		return record, errors.New("sqlite: execution use identity mismatch")
 	}
 	if state == useApproved {
-		if len(row.proof) != 0 {
+		if len(r.proof) != 0 {
 			return record, errors.New("sqlite: approved use has release proof")
 		}
 		return record, nil
 	}
 	var proof UseProof
-	if err := jsonv2.Unmarshal(row.proof, &proof, jsonv2.RejectUnknownMembers(true)); err != nil {
+	if err := json.Unmarshal(r.proof, &proof, json.RejectUnknownMembers(true)); err != nil {
 		return record, err
 	}
 	if !proof.proves(record.Approval) {
@@ -136,7 +125,7 @@ func (s *storeAuthority) SettleUse(ctx context.Context, id string, proof frame.R
 	if !frame.ValidName(id) || proof.CloseID == 0 {
 		return frame.ErrInvalid
 	}
-	encoded, err := encodeProof(UseProof{Host: &proof})
+	encoded, err := json.Marshal(UseProof{Host: &proof})
 	if err != nil {
 		return err
 	}
@@ -151,7 +140,7 @@ func (s *storeAuthority) SettleUse(ctx context.Context, id string, proof frame.R
 			if err != nil {
 				return err
 			}
-			record, err := decodeUse(row)
+			record, err := row.use()
 			if err != nil {
 				return err
 			}
@@ -175,7 +164,7 @@ func (s *storeAuthority) ReleaseRealmUse(ctx context.Context, id string, realm f
 	if !frame.ValidName(id) || realm.Validate() != nil || !proof.proves(executionID) || proof.Realm != string(realm) {
 		return frame.ErrInvalid
 	}
-	encoded, err := encodeProof(UseProof{Realm: &proof})
+	encoded, err := json.Marshal(UseProof{Realm: &proof})
 	if err != nil {
 		return err
 	}
@@ -185,7 +174,7 @@ func (s *storeAuthority) ReleaseRealmUse(ctx context.Context, id string, realm f
 			if err != nil {
 				return err
 			}
-			record, err := decodeUse(row)
+			record, err := row.use()
 			if err != nil {
 				return err
 			}

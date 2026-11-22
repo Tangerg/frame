@@ -14,7 +14,15 @@ import (
 )
 
 func execute(ctx context.Context, source SourceRevision, passes []framehost.Member[PassMetadata, CompilerPass], analyzers []framehost.Member[AnalyzerMetadata, Analyzer], formatter Formatter, around []framehost.Member[AroundMetadata, Around]) (Result, error) {
-	base := Next(func(ctx context.Context, input SourceRevision) (Result, error) {
+	run := check(passes, analyzers, formatter)
+	for i := len(around) - 1; i >= 0; i-- {
+		run = wrap(around[i].Value, run)
+	}
+	return run(ctx, source)
+}
+
+func check(passes []framehost.Member[PassMetadata, CompilerPass], analyzers []framehost.Member[AnalyzerMetadata, Analyzer], formatter Formatter) Next {
+	return func(ctx context.Context, input SourceRevision) (Result, error) {
 		result := Result{Source: input, Output: input.Text, Diagnostics: []Diagnostic{}, Failures: []string{}, Trace: []string{}}
 		for _, pass := range passes {
 			if err := frame.ContextError(ctx); err != nil {
@@ -41,67 +49,90 @@ func execute(ctx context.Context, source SourceRevision, passes []framehost.Memb
 			return result, ErrStaleRevision
 		}
 		return result, nil
-	})
-	for i := len(around) - 1; i >= 0; i-- {
-		wrapper, next := around[i], base
-		base = func(ctx context.Context, input SourceRevision) (Result, error) {
-			var mu sync.Mutex
-			open, called := true, false
-			inner, cancel := context.WithCancelCause(ctx)
-			defer cancel(nil)
-			var running sync.WaitGroup
-			continuation := Next(func(nextCtx context.Context, nextInput SourceRevision) (Result, error) {
-				mu.Lock()
-				if !open || called {
-					mu.Unlock()
-					return Result{}, errors.New("buildcheck: continuation is once-only within its original call")
-				}
-				if nextInput != input {
-					mu.Unlock()
-					return Result{}, ErrStaleRevision
-				}
-				called = true
-				running.Add(1)
-				mu.Unlock()
-				defer running.Done()
-				owned, cancel := context.WithCancelCause(nextCtx)
-				stop := context.AfterFunc(inner, func() { cancel(frame.ContextError(inner)) })
-				defer stop()
-				defer cancel(nil)
-				if err := frame.ContextError(inner); err != nil {
-					return Result{}, err
-				}
-				if err := frame.ContextError(owned); err != nil {
-					return Result{}, err
-				}
-				return next(owned, nextInput)
-			})
-			var result Result
-			var err error
-			func() {
-				returned := false
-				defer func() {
-					mu.Lock()
-					open = false
-					mu.Unlock()
-					if !returned || err != nil {
-						cancel(err)
-					}
-					running.Wait()
-				}()
-				result, err = wrapper.Value(inner, input, continuation)
-				returned = true
-			}()
-			if !called && err == nil {
-				return result, errors.New("buildcheck: around contract requires one continuation")
-			}
-			if result.Source.Revision != 0 && result.Source != input {
-				return result, ErrStaleRevision
-			}
-			return result, err
-		}
 	}
-	return base(ctx, source)
+}
+
+func wrap(wrapper Around, next Next) Next {
+	return func(ctx context.Context, input SourceRevision) (Result, error) {
+		inner, cancel := context.WithCancelCause(ctx)
+		defer cancel(nil)
+		gate := &continuation{open: true, input: input, next: next, owner: inner}
+		result, err := gate.around(wrapper, cancel)
+		if !gate.continued() && err == nil {
+			return result, errors.New("buildcheck: around contract requires one continuation")
+		}
+		if result.Source.Revision != 0 && result.Source != input {
+			return result, ErrStaleRevision
+		}
+		return result, err
+	}
+}
+
+// continuation is the single call an around wrapper may make to the next
+// stage while its own call is open. The wrapper's return joins that call, so a
+// continuation can never outlive or run after the wrapper that admitted it.
+type continuation struct {
+	mu      sync.Mutex
+	open    bool
+	called  bool
+	running sync.WaitGroup
+	input   SourceRevision
+	next    Next
+	owner   context.Context
+}
+
+func (c *continuation) around(wrapper Around, cancel context.CancelCauseFunc) (result Result, err error) {
+	returned := false
+	defer func() {
+		c.mu.Lock()
+		c.open = false
+		c.mu.Unlock()
+		if !returned || err != nil {
+			cancel(err)
+		}
+		c.running.Wait()
+	}()
+	result, err = wrapper(c.owner, c.input, c.call)
+	returned = true
+	return result, err
+}
+
+func (c *continuation) enter(input SourceRevision) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.open || c.called {
+		return errors.New("buildcheck: continuation is once-only within its original call")
+	}
+	if input != c.input {
+		return ErrStaleRevision
+	}
+	c.called = true
+	c.running.Add(1)
+	return nil
+}
+
+func (c *continuation) call(ctx context.Context, input SourceRevision) (Result, error) {
+	if err := c.enter(input); err != nil {
+		return Result{}, err
+	}
+	defer c.running.Done()
+	owned, cancel := context.WithCancelCause(ctx)
+	stop := context.AfterFunc(c.owner, func() { cancel(frame.ContextError(c.owner)) })
+	defer stop()
+	defer cancel(nil)
+	if err := frame.ContextError(c.owner); err != nil {
+		return Result{}, err
+	}
+	if err := frame.ContextError(owned); err != nil {
+		return Result{}, err
+	}
+	return c.next(owned, input)
+}
+
+func (c *continuation) continued() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.called
 }
 
 func analyze(ctx context.Context, source SourceRevision, analyzers []framehost.Member[AnalyzerMetadata, Analyzer]) ([]Diagnostic, []string, error) {

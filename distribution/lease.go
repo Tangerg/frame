@@ -153,8 +153,7 @@ func (s *storeAuthority) readArtifact(ctx context.Context, release Release, name
 	var found *Artifact
 	for _, artifact := range release.Manifest.Artifacts {
 		if artifact.Path == name {
-			copy := artifact
-			found = &copy
+			found = &artifact
 			break
 		}
 	}

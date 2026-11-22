@@ -239,7 +239,7 @@ func TestPortableContractAndTypedCall(t *testing.T) {{
   directory:=t.TempDir()
   source:=filepath.Join(directory,"capability.json")
   if err=os.WriteFile(source,contract.Descriptor(),0600);err!=nil {{t.Fatal(err)}}
-  if err=contractgen.Generate(source,"",directory,contractgen.GoOutput{{Path:filepath.Join(directory,"types.go"),Package:"editor"}});err!=nil {{t.Fatal(err)}}
+  if err=contractgen.Generate(contractgen.GenerateConfig{{Source:source,TypeScriptDirectory:directory,Go:[]contractgen.GoOutput{{{{Path:filepath.Join(directory,"types.go"),Package:"editor"}}}}}});err!=nil {{t.Fatal(err)}}
 }}
 func TestPlugin(t *testing.T) {{
   host, err := framehost.New(t.Context(), framehost.Config{{}})
@@ -309,7 +309,7 @@ func TestRestorationUsesOriginalCommittedAuthority(t *testing.T) {{
 func TestDistributionAuthority(t *testing.T) {{
   store,err:=distribution.Open(distribution.Config{{
     Directory:t.TempDir(),Admission:framehost.NewAdmission(),
-    Trust:func(context.Context,distribution.Source,distribution.Manifest,distribution.Lock)error{{return nil}},
+    Trust:func(context.Context,distribution.Source,distribution.Release)error{{return nil}},
     Retained:func(context.Context,value.Digest)(bool,error){{return false,nil}},
   }})
   if err!=nil {{t.Fatal(err)}}

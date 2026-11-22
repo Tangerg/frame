@@ -42,7 +42,7 @@ func TestBridgeChildRecoveryHelper(t *testing.T) {
 	for _, id := range []string{"provider-a", "provider-b"} {
 		plan := e.start(id)
 		root := framehost.ExportRef{InstallationID: framehost.InstallationID(id), Release: e.plugin.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
-		binding, err := e.host.PlanWith(e.ctx, browser.RealmID(e.credentials.Realm), nil, root)
+		binding, err := e.host.PlanWith(e.ctx, e.credentials.Realm.HostRealm(), nil, root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -123,9 +123,6 @@ func TestChildDependencyOutsideStartAttemptSurvivesHostProcessCrash(t *testing.T
 		t.Fatal(err)
 	}
 	if err := e.host.Restore(e.ctx, []*framehost.Plugin{e.plugin}); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.store.ConfirmRestoredInstallations(e.ctx); err != nil {
 		t.Fatal(err)
 	}
 	if len(e.host.Observations()) != 0 {

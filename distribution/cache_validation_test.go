@@ -56,7 +56,7 @@ func TestCachedTreeRevalidatesPathsAndCapacity(t *testing.T) {
 		t.Run(mutation.name, func(t *testing.T) {
 			_, _, archive, _ := packageFixture(t)
 			store := storeFixture(t, nil)
-			store.limits.Entries = 4
+			store.limits.MaxEntries = 3
 			release := installArchive(t, store, archive)
 			root := filepath.Join(store.directory, release.Digest.String())
 			if err := os.Chmod(root, privateDirectoryMode); err != nil {

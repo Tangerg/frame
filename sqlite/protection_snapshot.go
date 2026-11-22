@@ -15,19 +15,19 @@ type protectionSnapshot struct {
 }
 
 func readProtectionSnapshot(ctx context.Context, tx Reader) (protectionSnapshot, error) {
-	attempts, err := scanRecords(ctx, tx, attemptRecords+" ORDER BY id", decodeAttempt)
+	attempts, err := scanRecords(ctx, tx, attemptRecords+" ORDER BY id", protectedRecord.attempt)
 	if err != nil {
 		return protectionSnapshot{}, err
 	}
-	uses, err := scanRecords(ctx, tx, useRecords+" ORDER BY id", decodeUse)
+	uses, err := scanRecords(ctx, tx, useRecords+" ORDER BY id", protectedRecord.use)
 	if err != nil {
 		return protectionSnapshot{}, err
 	}
 	return protectionSnapshot{attempts: attempts, uses: uses}, nil
 }
 
-func (s protectionSnapshot) dependencies() []framehost.Dependency {
-	var dependencies []framehost.Dependency
+func (s protectionSnapshot) dependencies() []framehost.ReleaseRef {
+	var dependencies []framehost.ReleaseRef
 	for _, record := range s.attempts {
 		if !record.ExitProven() {
 			dependencies = append(dependencies, record.Attempt.Binding.Dependencies()...)
@@ -38,7 +38,7 @@ func (s protectionSnapshot) dependencies() []framehost.Dependency {
 			dependencies = append(dependencies, record.Approval.Binding.Dependencies()...)
 		}
 	}
-	return framehost.CompactDependencies(dependencies)
+	return framehost.CompactReleases(dependencies)
 }
 
 func (s protectionSnapshot) requiresRecovery() bool {

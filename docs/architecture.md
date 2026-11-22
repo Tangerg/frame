@@ -58,7 +58,8 @@ replaced on every fence, including repeated fences of an already closed
 generation. Installation recovery may advance only the exact state it admitted.
 Recovery reports likewise retain immutable identity; a later report invalidates
 an older restoration even when its cause is unchanged. Diagnostic counts cannot
-authorize recovery. These rules live together in `host/admission.go`.
+authorize recovery. The Admission owns these rules in `host/scope.go` and
+`host/admission.go`.
 
 Installation creation, update, enable, replacement and removal share one
 transition lifecycle. Their existence and destructive-change policies are checked
@@ -227,7 +228,9 @@ starting an exit or changing admission. A cancelled valid context abandons only
 its caller's wait; completed release evidence remains with the original owner.
 
 A portable contract retains its admitted `Capability` beside the immutable
-identity document. `NewPortableContract` captures the original model;
+identity document. `NewPortableContract` captures the original model, and
+`NewDescriptorContract` derives the identity of any other published descriptor
+from its exact bytes, so an author never restates a digest, kind or mode.
 `BindContract` and `RegisterDescriptor` admit a received Frame descriptor before
 registration, including its reference and canonical identity. `Host.Capability`
 and `Setup.Capability` return read handles for that model, resolving a Point to
@@ -279,9 +282,9 @@ errors. Specific integrity, trust, capacity, existence and contract categories
 remain available. Classification preserves the original cause and message;
 consumers branch on the code instead of parsing diagnostic text.
 
-Use Store.ImportArchiveHeld to obtain a content lease. Lease.Install validates and projects the verified manifest into the Host. For compiled native units supply native setup functions in distribution.Installation. For an external execution profile register its driver with the Host and implement distribution.ArchiveDriver on that driver. The driver checks the already integrity-validated unit's execution shape. Unknown profiles remain inspectable. Store retention must query both installed release facts and any retained business/execution dependencies. Close a lease to release content; Lease.Snapshot returns a detached projection.
+Use Store.ImportArchive to obtain a content lease. Lease.Install validates and projects the verified manifest into the Host. For compiled native units supply native setup functions in distribution.Installation. For an external execution profile register its driver with the Host and implement distribution.ArchiveDriver on that driver. The driver checks the already integrity-validated unit's execution shape. Unknown profiles remain inspectable. Store retention must query both installed release facts and any retained business/execution dependencies. Close a lease to release content; Lease.Snapshot returns a detached projection.
 
-`distribution.Limits.Entries` counts files, explicit directories and implicit
+`distribution.Limits.MaxEntries` counts files, explicit directories and implicit
 ancestors. Import and cached-release verification use the same path admission.
 Every artifact read checks its bytes, size and executable status against the
 manifest using one physical file snapshot. A previously acquired lease does
@@ -580,7 +583,7 @@ evidence. They do not reconstruct original error chains from diagnostic text.
 The conclusion is a closed projection of released and failed facts. Its error
 categories are matched with `errors.Is`; that projection is never recorded as a
 new original failure. `close_outcome.go` owns evidence and its translation to a
-parent resource, while `lifetime.go` owns the actual execution and proof.
+parent resource, while `close.go` owns the actual retirement and release proof.
 `ResourceState` translates Frame's known conclusion without inspecting an opaque
 error's unwrap tree or erasing that error's original identity.
 
@@ -610,7 +613,7 @@ conclusion or discard a ResourceHandle's release proof.
 Use retirement retains its one original observation through durable settlement
 and reference release; a retry after physical exit cannot create an empty
 replacement observation. It drops that retention at full retirement. A scoped
-`WithPlan` owner starts observing before its callback can close a child. Multiple
+`Host.WithUse` owner starts observing before its callback can close a child. Multiple
 close results compose with `CloseCauses.Join(errors...)`: conclusions, inherited
 failure identities and additional errors stay distinct, so parent confirmation
 cannot duplicate an original fault after a settlement retry.
@@ -636,7 +639,7 @@ command or release a durable attempt.
 | --- | --- | --- |
 | Physical executable and package revision | Host package source and content store | A pinned program for the approved unit |
 | Service interface and identity | Published contract | Exact descriptor and digest in the host binding |
-| MCP method mapping and representation | Selected MCP protocol | Verified peer tools, or the managed descriptor projected into both identity formats |
+| MCP method mapping and representation | Selected MCP protocol | Verified peer tools, or the application protocol's own declared methods |
 | Permission to start a binding | Frame Host admission | Frozen slots and lifetime-bound exports |
 | Permission to call back into the host | Host application | A credential scoped to the original session or call |
 | End of a reverse call grant | Broker that issued that grant | Joined callbacks and closed listener, independently of child exit |
@@ -668,13 +671,9 @@ See the [MCP guide](../process/mcp/README.md) for protocol-specific requirements
 | SDK `acquire(owner, label, create)` and `AcquiredResource` wrappers | `owner.acquire(label, create, release)`; creators return resources directly |
 | SDK `withResource(owner, label, create, work)` | `owner.withResource(label, create, release, work)` |
 | Calling-owner invocation, origin, target and identity conflict | Pure `frame/call`; protocol projections and execution adapters share its values and validation |
-| Business refusal and identity-conflict code | Pure `frame/call` values; optional `frame/process/mcp` decodes the original reply and alone proves its transport outcome |
+| Business refusal and identity-conflict code | Pure `frame/call` values; the application protocol that decodes the original reply alone proves its transport outcome |
 | `frame/cancellation` | Removed. `frame.ContextError` preserves the standard cancellation category and original owner cause across adapters |
 
 Here `frame/` stands for `github.com/Tangerg/frame/`. Native and local wire
 identities, browser control protocol values, and SQLite record encodings survive
 these source moves. Install the revised SDK tarball in downstream workspaces.
-For a managed MCP plugin, publish host bindings from its original descriptor and
-select the managed profile explicitly. The plugin author's command receipts and
-the host's choices of scopes, grants and business authorization stay at their
-original owners.

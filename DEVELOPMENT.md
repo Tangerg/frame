@@ -30,7 +30,7 @@ Run `make hooks` to enable local whitespace and conventional commit checks. Go f
 For a committed tree, `python3 scripts/go-consumer.py --version v0.4.0` creates a temporary standard Go module proxy and compiles a separate consumer without a replace or workspace link. It also copies the native author implementation into that consumer's own module to verify that the recommended source uses only public dependencies. All five commands are installed from that module artifact with their documented executable names; the buildcheck and document generator run outside the checkout. `--proxy <directory>` retains the module for local distribution. Verify a public release separately through the public Go module proxy.
 
 Application-specific process protocols are qualified in their owning application.
-Flame owns its current MCP business protocol and its adapter over `process.Protocol`;
-it is distinct from the optional Qimu managed profile. Frame's generic Go/Node
+Flame owns its MCP business protocol and its adapter over `process.Protocol`.
+Frame's generic Go/Node
 streaming and cancellation exercise runs through `make example`, while the public
 module consumer and packed SDK checks verify use without an application checkout.

@@ -292,9 +292,6 @@ func TestInterruptedInstallationProjectionReleasesReceiptBeforeHostRecovery(t *t
 				if err := host.Restore(t.Context(), nil); err != nil {
 					t.Fatal(err)
 				}
-				if err := store.ConfirmRestoredInstallations(t.Context()); err != nil {
-					t.Fatal(err)
-				}
 				if err := admission.Recover(t.Context(), func() error { return nil }); err != nil {
 					t.Fatal(err)
 				}

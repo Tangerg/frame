@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/Tangerg/frame"
-	sqlitedriver "modernc.org/sqlite"
+	modernc "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
@@ -45,12 +45,12 @@ func OpenSchema(ctx context.Context, path string, statements []string) (result D
 		}
 	}()
 
-	if path != ":memory:" {
+	if path != memoryDatabase {
 		if err := admitWAL(ctx, db); err != nil {
 			return Database{}, errors.Join(fmt.Errorf("sqlite: admit wal: %w", err), frame.ContextError(ctx))
 		}
 	}
-	if err := InstallSchema(ctx, database, statements); err != nil {
+	if err := database.InstallSchema(ctx, statements); err != nil {
 		return Database{}, err
 	}
 	return database, nil
@@ -92,9 +92,9 @@ func waitForSQLite(ctx context.Context, limit time.Duration, attempt func() erro
 			return err
 		}
 		err := attempt()
-		var busy *sqlitedriver.Error
+		busy, driverFailure := errors.AsType[*modernc.Error](err)
 		// Extended busy result codes share the primary code in the low byte.
-		if !errors.As(err, &busy) || busy.Code()&primaryResultMask != sqlite3.SQLITE_BUSY || limit == 0 {
+		if !driverFailure || busy.Code()&primaryResultMask != sqlite3.SQLITE_BUSY || limit == 0 {
 			return err
 		}
 		timer := time.NewTimer(busyRetryInterval)
@@ -110,12 +110,10 @@ func waitForSQLite(ctx context.Context, limit time.Duration, attempt func() erro
 	}
 }
 
-func InstallSchema(ctx context.Context, db Database, stmts []string) error {
-	if db.databaseOwner == nil {
+func (d Database) InstallSchema(ctx context.Context, stmts []string) error {
+	if d.databaseOwner == nil {
 		return frame.ErrInvalid
 	}
-	original := db
-	db = original
 	expected, err := schemaShape(ctx, stmts)
 	if err != nil {
 		return fmt.Errorf("sqlite: declared schema: %w", err)
@@ -134,9 +132,9 @@ func InstallSchema(ctx context.Context, db Database, stmts []string) error {
 		return true, nil
 	}
 	var current bool
-	err = db.databaseOwner.runIndependentTx(ctx, readTransaction, func(ctx context.Context) error {
+	err = d.databaseOwner.runIndependentTx(ctx, readTransaction, func(ctx context.Context) error {
 		var err error
-		current, err = inspect(ctx, Connection(ctx, db))
+		current, err = inspect(ctx, d.Executor(ctx))
 		return err
 	})
 	if err != nil {
@@ -147,8 +145,8 @@ func InstallSchema(ctx context.Context, db Database, stmts []string) error {
 	}
 	// A competing initializer can commit before this writer acquires its slot.
 	// Replaying seed statements would recreate business facts the owner deleted.
-	return RunIndependentTx(ctx, db, func(ctx context.Context) error {
-		tx := Connection(ctx, db)
+	return d.RunIndependentTx(ctx, func(ctx context.Context) error {
+		tx := d.Executor(ctx)
 		current, err := inspect(ctx, tx)
 		if err != nil || current {
 			return err

@@ -80,10 +80,10 @@ func TestNestedReaderCannotOutliveItsGrantInsideTheOriginalWriter(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer database.Close()
-	err = RunInTx(t.Context(), database, func(writer context.Context) error {
+	err = database.RunInTx(t.Context(), func(writer context.Context) error {
 		var escaped Executor
-		if err := RunReadSnapshot(writer, database, func(reader context.Context) error {
-			access := Connection(reader, database)
+		if err := database.RunReadSnapshot(writer, func(reader context.Context) error {
+			access := database.Executor(reader)
 			escaped = access
 			requireUnauthorized(t, access, `PRAGMA query_only=''`)
 			requireUnauthorized(t, access, `INSERT INTO facts VALUES('denied') RETURNING value`)
@@ -94,7 +94,7 @@ func TestNestedReaderCannotOutliveItsGrantInsideTheOriginalWriter(t *testing.T) 
 		if _, err := escaped.ExecContext(writer, `INSERT INTO facts VALUES('expired')`); !errors.Is(err, sql.ErrTxDone) {
 			t.Fatalf("read capability survived its own callback: %v", err)
 		}
-		_, err := Connection(writer, database).ExecContext(writer, `INSERT INTO facts VALUES('original writer')`)
+		_, err := database.Executor(writer).ExecContext(writer, `INSERT INTO facts VALUES('original writer')`)
 		return err
 	})
 	if err != nil {

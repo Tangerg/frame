@@ -101,7 +101,7 @@ func TestPreparedBindingCannotAdoptSuccessorInstances(t *testing.T) {
 			root := ExportRef{InstallationID: "root", Release: rootPlugin.Revision(), UnitID: "consumer", Export: "value", Contract: output.Ref()}
 			planRoot := func() (BindingPlan, error) {
 				if scenario.unitRoot {
-					return host.PlanUnit(ctx, "", root.Unit(), nil)
+					return host.PlanUnit(ctx, "", root.UnitRef, nil)
 				}
 				return host.Plan(ctx, root)
 			}

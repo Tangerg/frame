@@ -32,7 +32,7 @@ func TestExecutionRetirementJoinsItsOriginalApproval(t *testing.T) {
 				realm := Realm{ID: "realm", Epoch: "1"}
 				source := framehost.UnitRef{InstallationID: "original", Release: value.Hash(nil), UnitID: "view"}
 				attempt := sqlite.Attempt{
-					ID: "execution", Epoch: store.Epoch(), Realm: string(RealmID(realm)), Profile: framehost.BrowserJS,
+					ID: "execution", Epoch: store.Epoch(), Realm: string(realm.HostRealm()), Profile: framehost.BrowserJS,
 					Scope: "scope", ScopeGeneration: 1, Generation: 1, Source: source,
 					Binding: framehost.BindingSnapshot{Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{source}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil)}}},
 				}

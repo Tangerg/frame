@@ -84,7 +84,7 @@ func (h *hostState) acceptedBinding(recordID string, grant ScopeGrant) activatio
 		if err := h.ValidateBindingUnder(admitted, accepted); err != nil {
 			return BindingSnapshot{}, nil, err
 		}
-		binding, err := reachableBinding(accepted, accepted.Roots, accepted.UnitRoots)
+		binding, err := accepted.reachable(accepted.Roots, accepted.UnitRoots)
 		return binding, nil, err
 	}
 }
@@ -217,9 +217,9 @@ func (p *bindingPreparation) captureLocked() (*capturedPlan, error) {
 			return nil, err
 		}
 	}
-	plan := &capturedPlan{planHeader: planHeader{owner: p.host.identity, realm: p.realm, binding: p.binding.Clone()}}
+	plan := &capturedPlan{planHeader: planHeader{owner: p.host.domain, realm: p.realm, binding: p.binding.Clone()}}
 	for _, source := range p.binding.Roots {
-		instance := p.instances[source.Unit()]
+		instance := p.instances[source.UnitRef]
 		export, err := instance.exports.bound(source)
 		if err != nil {
 			return nil, err
@@ -255,7 +255,7 @@ func (h *hostState) planInstanceLocked(binding BindingSnapshot, bound UnitBindin
 	if err := h.admission.ValidateScope(installation.scope); err != nil {
 		return nil, false, err
 	}
-	snapshot, identity, err := setupBinding(binding, declaredExports(bound.Source, unit.Declaration), bound.Source)
+	snapshot, identity, err := binding.setupOf(bound.Source, unit.Declaration)
 	if err != nil {
 		return nil, false, err
 	}
@@ -270,7 +270,7 @@ func (h *hostState) planInstanceLocked(binding BindingSnapshot, bound UnitBindin
 		return nil, false, fmt.Errorf("%w: original unit has not proved resource release", ErrInUse)
 	}
 	h.nextGeneration++
-	lifetime := h.newLifetime(context.WithoutCancel(h.lifetime.Context()))
+	lifetime := h.domain.NewLifetime(context.WithoutCancel(h.lifetime.Context()))
 	preparation, err := newUnitPreparation(lifetime, bound.Source, reads)
 	if err != nil {
 		lifetime.BeginClose(err)
@@ -323,18 +323,19 @@ func (h *hostState) overlappingInstanceLocked(key instanceKey) bool {
 	return false
 }
 
-func declaredExports(source UnitRef, unit UnitDeclaration) []ExportRef {
-	exports := make([]ExportRef, 0, len(unit.Exports))
-	for _, export := range unit.Exports {
+// exportsOf names every declared export of this exact unit release.
+func (d UnitDeclaration) exportsOf(source UnitRef) []ExportRef {
+	exports := make([]ExportRef, 0, len(d.Exports))
+	for _, export := range d.Exports {
 		exports = append(exports, source.Export(export.Name, export.Contract))
 	}
 	return exports
 }
 
-// setupBinding projects the exact graph one unit's setup depends on. The
+// setupOf projects the exact graph one unit's setup depends on. The
 // consumer's selection rule belongs to its capture, never to setup identity.
-func setupBinding(graph BindingSnapshot, exports []ExportRef, unit UnitRef) (BindingSnapshot, framevalue.Digest, error) {
-	binding, err := reachableBinding(graph, exports, []UnitRef{unit})
+func (b BindingSnapshot) setupOf(unit UnitRef, declaration UnitDeclaration) (BindingSnapshot, framevalue.Digest, error) {
+	binding, err := b.reachable(declaration.exportsOf(unit), []UnitRef{unit})
 	if err != nil {
 		return BindingSnapshot{}, framevalue.Digest{}, err
 	}

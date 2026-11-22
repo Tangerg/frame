@@ -1,7 +1,6 @@
 package document
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	json "encoding/json/v2"
@@ -14,6 +13,7 @@ import (
 	"github.com/Tangerg/frame"
 	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
+	"github.com/Tangerg/frame/value"
 )
 
 const maximumTaskBytes = 32 << 20
@@ -74,13 +74,13 @@ func taskSchema() sqlite.OwnerSchema {
 		states[i] = "'" + strings.ReplaceAll(state, "'", "''") + "'"
 	}
 	taskTable := fmt.Sprintf(`CREATE TABLE document_tasks (id TEXT PRIMARY KEY,admission_sequence INTEGER NOT NULL UNIQUE,definition BLOB NOT NULL,state TEXT NOT NULL CHECK(state IN (%s)),run_epoch INTEGER NOT NULL DEFAULT 0,result BLOB,failure TEXT NOT NULL DEFAULT '')`, strings.Join(states, ","))
-	return sqlite.OwnerSchema{ID: taskOwnerID, Statements: []string{taskTable, `CREATE TABLE document_bootstrap (singleton INTEGER PRIMARY KEY CHECK(singleton=1))`}, References: func(ctx context.Context, tx sqlite.Reader, id framehost.InstallationID) ([]framehost.Dependency, error) {
+	return sqlite.OwnerSchema{ID: taskOwnerID, Statements: []string{taskTable, `CREATE TABLE document_bootstrap (singleton INTEGER PRIMARY KEY CHECK(singleton=1))`}, References: func(ctx context.Context, tx sqlite.Reader, id framehost.InstallationID) ([]value.Digest, error) {
 		rows, err := tx.QueryContext(ctx, `SELECT definition FROM document_tasks WHERE state IN (?,?)`, Queued, Unsettled)
 		if err != nil {
 			return nil, err
 		}
 		defer rows.Close()
-		var dependencies []framehost.Dependency
+		var releases []value.Digest
 		for rows.Next() {
 			var encoded []byte
 			if err := rows.Scan(&encoded); err != nil {
@@ -95,11 +95,11 @@ func taskSchema() sqlite.OwnerSchema {
 			}
 			for _, dependency := range definition.Binding.Dependencies() {
 				if dependency.InstallationID == id {
-					dependencies = append(dependencies, dependency)
+					releases = append(releases, dependency.Release)
 				}
 			}
 		}
-		return framehost.CompactDependencies(dependencies), rows.Err()
+		return releases, rows.Err()
 	}}
 }
 
@@ -174,15 +174,15 @@ func (a *App) CommitTask(ctx context.Context, prepared *PreparedTask) (sqlite.Se
 		if err != nil {
 			return nil, err
 		}
-		left, err := binding.CanonicalJSON()
+		left, err := binding.Canonical()
 		if err != nil {
 			return nil, err
 		}
-		right, err := prepared.definition.Binding.CanonicalJSON()
+		right, err := prepared.definition.Binding.Canonical()
 		if err != nil {
 			return nil, err
 		}
-		if !bytes.Equal(left, right) {
+		if left != right {
 			return nil, framehost.ErrStaleBinding
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO document_tasks(id,admission_sequence,definition,state) VALUES(?,?,?,?)`, prepared.definition.ID, prepared.Submission.Sequence, prepared.request, Queued); err != nil {

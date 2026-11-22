@@ -25,7 +25,7 @@ func TestGeneratedNullableOutputAndChunkUseTheDeclaredCodec(t *testing.T) {
 		t.Fatal(err)
 	}
 	generated := filepath.Join(directory, "types.go")
-	if err := Generate(source, "", directory, GoOutput{Path: generated, Package: "consumer"}); err != nil {
+	if err := Generate(GenerateConfig{Source: source, TypeScriptDirectory: directory, Go: []GoOutput{{Path: generated, Package: "consumer"}}}); err != nil {
 		t.Fatal(err)
 	}
 	consumer := `package consumer

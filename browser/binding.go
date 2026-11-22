@@ -28,11 +28,11 @@ func (b *Bridge) AcquirePlan(ctx context.Context, token, operationID string, pla
 	if !frame.ValidName(operationID) || len(binding.Roots) != 1 || len(binding.UnitRoots) != 0 {
 		return UseGrant{}, frame.ErrInvalid
 	}
-	canonical, err := binding.CanonicalJSON()
+	canonical, err := binding.Canonical()
 	if err != nil {
 		return UseGrant{}, err
 	}
-	digest, err := requestDigest(acquirePlanRequest{Binding: string(canonical), Parent: parentUseID})
+	digest, err := requestDigest(acquirePlanRequest{Binding: canonical.String(), Parent: parentUseID})
 	if err != nil {
 		return UseGrant{}, err
 	}
@@ -60,7 +60,7 @@ func (b *Bridge) AcquirePlan(ctx context.Context, token, operationID string, pla
 	// A child must enter through its parent's exact grant before any new
 	// provider can execute. A root Realm bootstraps its own trusted execution.
 	if parentUseID == "" {
-		if _, err = b.config.Host.ActivatePlan(ctx, RealmID(session.realm), plan); err != nil {
+		if _, err = b.config.Host.ActivatePlan(ctx, session.realm.HostRealm(), plan); err != nil {
 			return UseGrant{}, err
 		}
 	}
@@ -105,7 +105,7 @@ func (b *Bridge) planExecution(session *realmSession, binding framehost.BindingS
 }
 
 func (b *Bridge) readyExecutionLocked(realm Realm, binding framehost.BindingSnapshot) (*browserExecution, error) {
-	root := binding.Roots[0].Unit()
+	root := binding.Roots[0].UnitRef
 	var configuration value.Digest
 	for _, unit := range binding.Units {
 		if unit.Source == root {

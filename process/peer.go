@@ -28,15 +28,7 @@ func (p *Problem) Is(target error) bool {
 	return p.Code == wire.Errors.Unknown && target == frame.ErrOutcomeUnknown
 }
 
-func (p *Problem) valid() bool {
-	switch p.Code {
-	case wire.Errors.Invalid, wire.Errors.Capacity, wire.Errors.Contract,
-		wire.Errors.Unknown, wire.Errors.Closed, wire.Errors.Cancelled:
-		return true
-	default:
-		return false
-	}
-}
+func (p *Problem) valid() bool { return wire.Errors.publishes(p.Code) }
 
 // answer is one admitted reply to an outbound request: a result or a failure.
 type answer interface {

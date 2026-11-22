@@ -54,9 +54,9 @@ func TestDeclarationPlanRechecksOptionalAbsenceAtAdmission(t *testing.T) {
 			case "activate":
 				plan, err = host.Plan(ctx, root)
 			case "acquire unit":
-				plan, err = host.PlanUnit(ctx, "", root.Unit(), nil)
+				plan, err = host.PlanUnit(ctx, "", root.UnitRef, nil)
 			case "business commit":
-				plan, err = host.PlanWith(ctx, "", []framehost.BindingChoice{{Unit: root.Unit(), Slot: "optional", Providers: []framehost.ExportRef{}}}, root)
+				plan, err = host.PlanWith(ctx, "", []framehost.BindingChoice{{Unit: root.UnitRef, Slot: "optional", Providers: []framehost.ExportRef{}}}, root)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -225,13 +225,13 @@ func TestCommittedAbsenceRestoresExactlyBeforeFirstActivation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var retained []byte
+	var retained value.JSON
 	if err := original.Admission().Admit(ctx, func(admitted context.Context) error {
 		binding, err := original.ValidatePlanUnder(admitted, plan)
 		if err != nil {
 			return err
 		}
-		retained, err = binding.CanonicalJSON()
+		retained, err = binding.Canonical()
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -246,7 +246,7 @@ func TestCommittedAbsenceRestoresExactlyBeforeFirstActivation(t *testing.T) {
 		if id != "original" {
 			return framehost.BindingSnapshot{}, framehost.ErrUnavailable
 		}
-		return framehost.ParseBinding(retained)
+		return framehost.ParseBinding(retained.Bytes())
 	}})
 	if err := restored.Register(output, optional); err != nil {
 		t.Fatal(err)
@@ -364,11 +364,11 @@ func TestFreshPlanCannotCommitAfterAnotherSetupOwnsItsUnit(t *testing.T) {
 		},
 	})
 	root := source("consumer", consumer, "main", "value", output.Ref())
-	firstPlan, err := host.PlanWith(ctx, "", []framehost.BindingChoice{{Unit: root.Unit(), Slot: "dependency", Providers: []framehost.ExportRef{first}}}, root)
+	firstPlan, err := host.PlanWith(ctx, "", []framehost.BindingChoice{{Unit: root.UnitRef, Slot: "dependency", Providers: []framehost.ExportRef{first}}}, root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondPlan, err := host.PlanWith(ctx, "", []framehost.BindingChoice{{Unit: root.Unit(), Slot: "dependency", Providers: []framehost.ExportRef{second}}}, root)
+	secondPlan, err := host.PlanWith(ctx, "", []framehost.BindingChoice{{Unit: root.UnitRef, Slot: "dependency", Providers: []framehost.ExportRef{second}}}, root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +493,7 @@ func TestConsumerChoiceCannotOverrideFixedProviders(t *testing.T) {
 	})
 	root := source("consumer", consumer, "main", "value", output.Ref())
 	choose := func(provider framehost.ExportRef) []framehost.BindingChoice {
-		return []framehost.BindingChoice{{Unit: root.Unit(), Slot: "input", Providers: []framehost.ExportRef{provider}}}
+		return []framehost.BindingChoice{{Unit: root.UnitRef, Slot: "input", Providers: []framehost.ExportRef{provider}}}
 	}
 	if _, err := host.PlanWith(ctx, "", choose(other), root); !errors.Is(err, frame.ErrContractMismatch) {
 		t.Fatalf("consumer choice replaced a fixed provider: %v", err)
@@ -517,7 +517,7 @@ func TestDeclaredExportsListOnlyEnabledInstallations(t *testing.T) {
 	}
 	enabled := optionalExport(t, host, contract, "enabled")
 	disabled := optionalExport(t, host, contract, "disabled")
-	if err := host.SetEnabled(ctx, "disabled", false); err != nil {
+	if err := host.Disable(ctx, "disabled"); err != nil {
 		t.Fatal(err)
 	}
 	if declared := host.DeclaredExports(contract.Ref()); len(declared) != 1 || declared[0] != enabled || declared[0] == disabled {

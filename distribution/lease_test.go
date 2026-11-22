@@ -39,7 +39,7 @@ func TestPublishedLeaseCopiesShareOneContentClaim(t *testing.T) {
 			if err := os.WriteFile(path, archive, privateFileMode); err != nil {
 				t.Fatal(err)
 			}
-			lease, err := store.ImportArchiveHeld(t.Context(), path, value.Hash(archive))
+			lease, err := store.ImportArchive(t.Context(), path, value.Hash(archive))
 			if err != nil {
 				t.Fatal(err)
 			}

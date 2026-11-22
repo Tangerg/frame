@@ -74,7 +74,7 @@ func TestRefusedRouteDoesNotConsumeHostCapacity(t *testing.T) {
 			t.Fatal(err)
 		}
 		root := framehost.ExportRef{InstallationID: framehost.InstallationID(id), Release: plugin.Revision(), UnitID: "emitter", Export: "ping", Contract: event.Ref()}
-		plan, err := host.PlanWith(ctx, browser.RealmID(credentials.Realm), nil, root)
+		plan, err := host.PlanWith(ctx, credentials.Realm.HostRealm(), nil, root)
 		if err != nil {
 			t.Fatal(err)
 		}

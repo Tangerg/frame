@@ -10,7 +10,9 @@ import (
 	"github.com/Tangerg/frame/value"
 )
 
-func (s *storeAuthority) ImportDirectoryHeld(ctx context.Context, directory string) (lease Lease, err error) {
+// ImportDirectory publishes a release from a source directory and returns the
+// lease that holds it; the caller closes that lease.
+func (s *storeAuthority) ImportDirectory(ctx context.Context, directory string) (lease Lease, err error) {
 	done, err := s.beginOperation(newOperation)
 	if err != nil {
 		return Lease{}, err
@@ -32,7 +34,7 @@ func (s *storeAuthority) ImportDirectoryHeld(ctx context.Context, directory stri
 		return Lease{}, err
 	}
 	defer func() { err = errors.Join(err, staged.discard()) }()
-	err = staged.paths.walk(ctx, input, staged.limits.Entries, func(name string, entry fs.DirEntry) error {
+	err = staged.paths.walk(ctx, input, staged.limits.MaxEntries, func(name string, entry fs.DirEntry) error {
 		if entry.IsDir() {
 			return nil
 		}
@@ -46,7 +48,9 @@ func (s *storeAuthority) ImportDirectoryHeld(ctx context.Context, directory stri
 
 // Networking and trust policy belong to the application. This operation keeps
 // the digest-pinned archive and its installed content under one original lease.
-func (s *storeAuthority) ImportArchiveHeld(ctx context.Context, fileName string, expected value.Digest) (lease Lease, err error) {
+// ImportArchive publishes the archive whose digest is expected and returns the
+// lease that holds it; the caller closes that lease.
+func (s *storeAuthority) ImportArchive(ctx context.Context, fileName string, expected value.Digest) (lease Lease, err error) {
 	done, err := s.beginOperation(newOperation)
 	if err != nil {
 		return Lease{}, err
@@ -70,10 +74,10 @@ func (s *storeAuthority) ImportArchiveHeld(ctx context.Context, fileName string,
 	if err != nil {
 		return Lease{}, err
 	}
-	if !info.Mode().IsRegular() || info.Size() > s.limits.ArchiveBytes {
+	if !info.Mode().IsRegular() || info.Size() > s.limits.MaxArchiveBytes {
 		return Lease{}, ErrCapacity
 	}
-	data, err := readBounded(ctx, file, s.limits.ArchiveBytes)
+	data, err := readBounded(ctx, file, s.limits.MaxArchiveBytes)
 	if err != nil {
 		return Lease{}, err
 	}
@@ -93,20 +97,4 @@ func (s *storeAuthority) ImportArchiveHeld(ctx context.Context, fileName string,
 		return Lease{}, err
 	}
 	return s.publishHeld(ctx, staged, Source{Location: fileName, ArchiveDigest: expected})
-}
-
-func (s *storeAuthority) ImportDirectory(ctx context.Context, directory string) (Release, error) {
-	lease, err := s.ImportDirectoryHeld(ctx, directory)
-	if err != nil {
-		return Release{}, err
-	}
-	return lease.Snapshot(), lease.Close()
-}
-
-func (s *storeAuthority) ImportArchive(ctx context.Context, fileName string, expected value.Digest) (Release, error) {
-	lease, err := s.ImportArchiveHeld(ctx, fileName, expected)
-	if err != nil {
-		return Release{}, err
-	}
-	return lease.Snapshot(), lease.Close()
 }

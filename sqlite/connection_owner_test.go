@@ -86,9 +86,9 @@ func TestStandaloneRetainsOriginalConnectionUntilPhysicalClose(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			err = RunInTx(t.Context(), database, func(ctx context.Context) error {
+			err = database.RunInTx(t.Context(), func(ctx context.Context) error {
 				if phase == "policy" {
-					_ = RunReadSnapshot(ctx, database, func(context.Context) error { return nil })
+					_ = database.RunReadSnapshot(ctx, func(context.Context) error { return nil })
 				}
 				if phase == "rollback" {
 					return boundaryCause
@@ -98,7 +98,7 @@ func TestStandaloneRetainsOriginalConnectionUntilPhysicalClose(t *testing.T) {
 			if !errors.Is(err, boundaryCause) || !errors.Is(err, closeCause) || !errors.Is(err, ErrIndeterminate) {
 				t.Fatalf("cleanup lost original evidence: %v", err)
 			}
-			if err := RunInTx(t.Context(), database, func(context.Context) error { t.Fatal("sealed database admitted work"); return nil }); !errors.Is(err, frame.ErrClosed) {
+			if err := database.RunInTx(t.Context(), func(context.Context) error { t.Fatal("sealed database admitted work"); return nil }); !errors.Is(err, frame.ErrClosed) {
 				t.Fatalf("unconfirmed owner remained open: %v", err)
 			}
 			if err := database.Close(); !errors.Is(err, closeCause) {
@@ -127,10 +127,10 @@ func TestStandaloneCloseJoinsAdmittedTransaction(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	finished := make(chan error, 1)
 	go func() {
-		finished <- RunInTx(t.Context(), database, func(ctx context.Context) error {
+		finished <- database.RunInTx(t.Context(), func(ctx context.Context) error {
 			close(entered)
 			<-release
-			_, err := Connection(ctx, database).ExecContext(ctx, `INSERT INTO facts VALUES ('original')`)
+			_, err := database.Executor(ctx).ExecContext(ctx, `INSERT INTO facts VALUES ('original')`)
 			return err
 		})
 	}()
@@ -138,7 +138,7 @@ func TestStandaloneCloseJoinsAdmittedTransaction(t *testing.T) {
 	database.startClose()
 	closing := make(chan error, 1)
 	go func() { closing <- database.Close() }()
-	if err := RunReadSnapshot(t.Context(), database, func(context.Context) error { t.Error("new read entered closing database"); return nil }); !errors.Is(err, frame.ErrClosed) {
+	if err := database.RunReadSnapshot(t.Context(), func(context.Context) error { t.Error("new read entered closing database"); return nil }); !errors.Is(err, frame.ErrClosed) {
 		t.Errorf("closing admission: %v", err)
 	}
 	select {
@@ -163,7 +163,7 @@ func TestStandaloneConnectionRequiresOriginalTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer database.Close()
-	if _, err := Connection(t.Context(), database).ExecContext(t.Context(), `INSERT INTO facts VALUES ('outside')`); !errors.Is(err, sql.ErrTxDone) {
+	if _, err := database.Executor(t.Context()).ExecContext(t.Context(), `INSERT INTO facts VALUES ('outside')`); !errors.Is(err, sql.ErrTxDone) {
 		t.Fatalf("unscoped executor admitted work: %v", err)
 	}
 }
@@ -174,16 +174,16 @@ func TestDatabaseCopiesJoinTheOriginalTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer database.Close()
-	copy := database
-	if err := RunInTx(t.Context(), database, func(ctx context.Context) error {
-		return RunInTx(ctx, copy, func(ctx context.Context) error {
-			_, err := Connection(ctx, copy).ExecContext(ctx, `INSERT INTO facts VALUES ('original')`)
+	duplicate := database
+	if err := database.RunInTx(t.Context(), func(ctx context.Context) error {
+		return duplicate.RunInTx(ctx, func(ctx context.Context) error {
+			_, err := duplicate.Executor(ctx).ExecContext(ctx, `INSERT INTO facts VALUES ('original')`)
 			return err
 		})
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := copy.Close(); err != nil {
+	if err := duplicate.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.Read(t.Context(), func(Reader) error { t.Fatal("copy close did not close original owner"); return nil }); !errors.Is(err, frame.ErrClosed) {
@@ -206,8 +206,8 @@ func TestUnresolvedCommitClosesItsOriginalDatabaseAfterHandleReplacement(t *test
 		t.Fatal(err)
 	}
 	defer replacement.Close()
-	err = RunIndependentTx(t.Context(), database, func(ctx context.Context) error {
-		if _, err := Connection(ctx, database).ExecContext(ctx, `INSERT INTO facts VALUES ('original')`); err != nil {
+	err = database.RunIndependentTx(t.Context(), func(ctx context.Context) error {
+		if _, err := database.Executor(ctx).ExecContext(ctx, `INSERT INTO facts VALUES ('original')`); err != nil {
 			return err
 		}
 		database = replacement
@@ -216,8 +216,8 @@ func TestUnresolvedCommitClosesItsOriginalDatabaseAfterHandleReplacement(t *test
 	if !errors.Is(err, cause) || !errors.Is(err, ErrIndeterminate) {
 		t.Fatalf("original commit lost its evidence: %v", err)
 	}
-	if err := RunInTx(t.Context(), replacement, func(ctx context.Context) error {
-		_, err := Connection(ctx, replacement).ExecContext(ctx, `INSERT INTO facts VALUES ('replacement')`)
+	if err := replacement.RunInTx(t.Context(), func(ctx context.Context) error {
+		_, err := replacement.Executor(ctx).ExecContext(ctx, `INSERT INTO facts VALUES ('replacement')`)
 		return err
 	}); err != nil {
 		t.Fatalf("original commit sealed an unrelated database: %v", err)
@@ -251,11 +251,11 @@ func TestStandaloneUnresolvedCommitFencesQueuedTransactions(t *testing.T) {
 		},
 	})
 	original := make(chan error, 1)
-	go func() { original <- RunInTx(t.Context(), database, func(context.Context) error { return nil }) }()
+	go func() { original <- database.RunInTx(t.Context(), func(context.Context) error { return nil }) }()
 	<-committing
 	queued := make(chan error, 1)
 	go func() {
-		queued <- RunInTx(t.Context(), database, func(context.Context) error {
+		queued <- database.RunInTx(t.Context(), func(context.Context) error {
 			t.Error("queued callback entered after an unresolved commit")
 			return nil
 		})
@@ -291,8 +291,8 @@ func TestStandaloneRollbackPreservesCallbackAndCancellationCauses(t *testing.T) 
 	cancellationCause := errors.New("caller canceled")
 	ctx, cancel := context.WithCancelCause(t.Context())
 	defer cancel(nil)
-	err = RunInTx(ctx, database, func(ctx context.Context) error {
-		if _, err := Connection(ctx, database).ExecContext(ctx, `INSERT INTO facts VALUES ('original')`); err != nil {
+	err = database.RunInTx(ctx, func(ctx context.Context) error {
+		if _, err := database.Executor(ctx).ExecContext(ctx, `INSERT INTO facts VALUES ('original')`); err != nil {
 			return err
 		}
 		cancel(cancellationCause)
@@ -315,8 +315,8 @@ func TestStandaloneRejectsNilCallbacksAtNestedBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer database.Close()
-	if err := RunInTx(t.Context(), database, func(ctx context.Context) error {
-		for _, err := range []error{RunInTx(ctx, database, nil), RunReadSnapshot(ctx, database, nil), RunIndependentTx(ctx, database, nil)} {
+	if err := database.RunInTx(t.Context(), func(ctx context.Context) error {
+		for _, err := range []error{database.RunInTx(ctx, nil), database.RunReadSnapshot(ctx, nil), database.RunIndependentTx(ctx, nil)} {
 			if !errors.Is(err, frame.ErrInvalid) {
 				t.Fatalf("nil callback was admitted: %v", err)
 			}

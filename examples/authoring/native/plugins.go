@@ -57,8 +57,24 @@ func configuration(setup framehost.Setup) (Configuration, error) {
 // Plugin uses the bytes of the authored implementation as its release identity.
 // Contract names and identities come from their existing document owner.
 func Plugin(contracts document.Contracts) (*framehost.Plugin, error) {
+	var units []framehost.Unit
+	for _, spec := range []framehost.UnitSpec{filesUnit(contracts), converterUnit(contracts), validationUnit(contracts)} {
+		unit, err := framehost.DefineUnit(spec)
+		if err != nil {
+			return nil, err
+		}
+		units = append(units, unit)
+	}
+	revision, err := pluginRevision()
+	if err != nil {
+		return nil, err
+	}
+	return framehost.Define(framehost.Definition{Revision: revision, Units: units})
+}
+
+func filesUnit(contracts document.Contracts) framehost.UnitSpec {
 	readOut := framehost.Export("read", contracts.Files)
-	fileUnit, err := framehost.DefineUnit(framehost.UnitSpec{ID: "files", Exports: framehost.Exports(readOut), Prepare: func(setup framehost.Setup) error {
+	return framehost.UnitSpec{ID: "files", Exports: framehost.Exports(readOut), Prepare: func(setup framehost.Setup) error {
 		config, err := configuration(setup)
 		if err != nil {
 			return err
@@ -71,14 +87,13 @@ func Plugin(contracts document.Contracts) (*framehost.Plugin, error) {
 			return readSource(ctx, root, ref)
 		})
 		return readOut.Bind(setup, read)
-	}})
-	if err != nil {
-		return nil, err
-	}
+	}}
+}
 
+func converterUnit(contracts document.Contracts) framehost.UnitSpec {
 	filesSlot := framehost.Required("files", contracts.Files)
 	upper := framehost.Offer("uppercase", contracts.Converters)
-	converterUnit, err := framehost.DefineUnit(framehost.UnitSpec{ID: "converter", Imports: framehost.Imports(filesSlot), Exports: framehost.Exports(upper), Prepare: func(setup framehost.Setup) error {
+	return framehost.UnitSpec{ID: "converter", Imports: framehost.Imports(filesSlot), Exports: framehost.Exports(upper), Prepare: func(setup framehost.Setup) error {
 		config, err := configuration(setup)
 		if err != nil {
 			return err
@@ -104,28 +119,31 @@ func Plugin(contracts document.Contracts) (*framehost.Plugin, error) {
 		if err := os.WriteFile(preparedTemplate, []byte(template.Text), templateFileMode); err != nil {
 			return err
 		}
-		convert := document.Converter(func(ctx context.Context, ref document.DocumentRef) (document.Converted, error) {
-			source, err := files(ctx, ref)
-			if err != nil {
-				return document.Converted{}, err
-			}
-			compiled, err := os.ReadFile(preparedTemplate)
-			if err != nil {
-				return document.Converted{}, err
-			}
-			content := html.EscapeString(strings.ToUpper(source.Text))
-			output := strings.Replace(string(compiled), contentSlot, content, 1)
-			if err := frame.ContextError(ctx); err != nil {
-				return document.Converted{}, err
-			}
-			return document.Converted{Source: ref, HTML: output, Title: strings.TrimSpace(strings.SplitN(source.Text, "\n", 2)[0])}, nil
-		})
-		return upper.Bind(setup, document.ConverterMetadata{Format: textFormat, Priority: uppercaseConverterPriority}, convert)
-	}})
-	if err != nil {
-		return nil, err
-	}
+		return upper.Bind(setup, document.ConverterMetadata{Format: textFormat, Priority: uppercaseConverterPriority}, uppercaseConverter(files, preparedTemplate))
+	}}
+}
 
+func uppercaseConverter(files document.FileReader, preparedTemplate string) document.Converter {
+	return func(ctx context.Context, ref document.DocumentRef) (document.Converted, error) {
+		source, err := files(ctx, ref)
+		if err != nil {
+			return document.Converted{}, err
+		}
+		compiled, err := os.ReadFile(preparedTemplate)
+		if err != nil {
+			return document.Converted{}, err
+		}
+		content := html.EscapeString(strings.ToUpper(source.Text))
+		output := strings.Replace(string(compiled), contentSlot, content, 1)
+		if err := frame.ContextError(ctx); err != nil {
+			return document.Converted{}, err
+		}
+		heading, _, _ := strings.Cut(source.Text, "\n")
+		return document.Converted{Source: ref, HTML: output, Title: strings.TrimSpace(heading)}, nil
+	}
+}
+
+func validationUnit(contracts document.Contracts) framehost.UnitSpec {
 	nonempty := validationRule{
 		metadata:   document.ValidatorMetadata{Name: "nonempty", Order: nonemptyValidationOrder},
 		message:    "conversion produced no output",
@@ -138,20 +156,12 @@ func Plugin(contracts document.Contracts) (*framehost.Plugin, error) {
 	}
 	nonemptyOut := framehost.Offer(nonempty.metadata.Name, contracts.Validators)
 	titleOut := framehost.Offer(title.metadata.Name, contracts.Validators)
-	validatorUnit, err := framehost.DefineUnit(framehost.UnitSpec{ID: "validation", Exports: framehost.Exports(nonemptyOut, titleOut), Prepare: func(setup framehost.Setup) error {
+	return framehost.UnitSpec{ID: "validation", Exports: framehost.Exports(nonemptyOut, titleOut), Prepare: func(setup framehost.Setup) error {
 		if err := nonemptyOut.Bind(setup, nonempty.metadata, document.Validator(nonempty.validate)); err != nil {
 			return err
 		}
 		return titleOut.Bind(setup, title.metadata, document.Validator(title.validate))
-	}})
-	if err != nil {
-		return nil, err
-	}
-	revision, err := pluginRevision()
-	if err != nil {
-		return nil, err
-	}
-	return framehost.Define(framehost.Definition{Revision: revision, Units: []framehost.Unit{fileUnit, converterUnit, validatorUnit}})
+	}}
 }
 
 type validationRule struct {

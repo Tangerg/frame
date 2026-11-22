@@ -52,7 +52,7 @@ func TestRefusedPreparationRetainsNoRuntimeOrRealmObligation(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := framehost.ExportRef{InstallationID: "refused", Release: e.plugin.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
-	if _, err := e.host.ActivateIn(e.ctx, browser.RealmID(credentials.Realm), root); !errors.Is(err, frame.ErrCapacity) {
+	if _, err := e.host.ActivateIn(e.ctx, credentials.Realm.HostRealm(), root); !errors.Is(err, frame.ErrCapacity) {
 		t.Fatalf("oversized preparation was not refused: %v", err)
 	}
 	if err := e.host.Admission().RecoveryError(); err != nil {
@@ -172,7 +172,7 @@ func TestPrepareRefusesForeignHostBeforeSource(t *testing.T) {
 	if _, err = h.Install(e.ctx, framehost.InstallationConfig{ID: "foreign", Plugin: e.plugin, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	_, err = h.ActivateUnit(e.ctx, browser.RealmID(cred.Realm), framehost.UnitRef{InstallationID: "foreign", Release: e.plugin.Revision(), UnitID: "view"})
+	_, err = h.ActivateUnit(e.ctx, cred.Realm.HostRealm(), framehost.UnitRef{InstallationID: "foreign", Release: e.plugin.Revision(), UnitID: "view"})
 	if !errors.Is(err, framehost.ErrFenced) || source.called {
 		t.Fatalf("foreign setup reached source=%v: %v", source.called, err)
 	}
@@ -188,7 +188,7 @@ func TestAcquisitionRefusalDoesNotConsumePendingBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := framehost.ExportRef{InstallationID: "component", Release: e.plugin.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
-	plan, err := e.host.PlanWith(e.ctx, browser.RealmID(r.Realm), nil, root)
+	plan, err := e.host.PlanWith(e.ctx, r.Realm.HostRealm(), nil, root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestUnadmittedRetirementRetriesOriginalProof(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := e.host.ActivateUnit(e.ctx, browser.RealmID(cred.Realm), framehost.UnitRef{InstallationID: "component", Release: e.plugin.Revision(), UnitID: "view"})
+		_, err := e.host.ActivateUnit(e.ctx, cred.Realm.HostRealm(), framehost.UnitRef{InstallationID: "component", Release: e.plugin.Revision(), UnitID: "view"})
 		done <- err
 	}()
 	var id string
@@ -296,7 +296,7 @@ func TestPrepareReservesCapacityBeforeResolvingAModule(t *testing.T) {
 		}
 	}
 	activate := func(id framehost.InstallationID) error {
-		_, err := e.host.ActivateUnit(e.ctx, browser.RealmID(cred.Realm), framehost.UnitRef{InstallationID: id, Release: e.plugin.Revision(), UnitID: "view"})
+		_, err := e.host.ActivateUnit(e.ctx, cred.Realm.HostRealm(), framehost.UnitRef{InstallationID: id, Release: e.plugin.Revision(), UnitID: "view"})
 		return err
 	}
 	done := make(chan error, 1)
@@ -365,7 +365,7 @@ func TestUnicodeAcquisitionReceiptDoesNotConsumeCapacity(t *testing.T) {
 	e := openConfiguredBridge(t, filepath.Join(t.TempDir(), "state.sqlite"), true, func(c *browser.BridgeConfig) { c.MaxPending = 1 })
 	plan := e.start("test")
 	root := framehost.ExportRef{InstallationID: "test", Release: e.plugin.Revision(), UnitID: "view", Export: "preview", Contract: e.first.Ref()}
-	binding, err := e.host.PlanWith(e.ctx, browser.RealmID(e.credentials.Realm), nil, root)
+	binding, err := e.host.PlanWith(e.ctx, e.credentials.Realm.HostRealm(), nil, root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +462,7 @@ func TestBrowserOwnsCleanupBeforeRecordingCreation(t *testing.T) {
 	if _, err = e.host.Install(e.ctx, framehost.InstallationConfig{ID: "component", Plugin: e.plugin, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	_, err = e.host.ActivateUnit(e.ctx, browser.RealmID(cred.Realm), framehost.UnitRef{InstallationID: "component", Release: e.plugin.Revision(), UnitID: "view"})
+	_, err = e.host.ActivateUnit(e.ctx, cred.Realm.HostRealm(), framehost.UnitRef{InstallationID: "component", Release: e.plugin.Revision(), UnitID: "view"})
 	if !errors.Is(err, frame.ErrCapacity) {
 		t.Fatalf("full lifetime: %v", err)
 	}

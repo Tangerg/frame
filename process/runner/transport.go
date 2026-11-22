@@ -254,7 +254,7 @@ func (c *Client) Fence(ctx context.Context, epoch uint64) error {
 func (c *Client) Launch(ctx context.Context, request LaunchRequest) (LaunchResult, error) {
 	response, dispatch, err := c.request(ctx, launchControlRequest{request})
 	if dispatch == controlNotDispatched {
-		return notDispatched(request), err
+		return request.notDispatched(), err
 	}
 	observation, _ := response.(Observation)
 	return LaunchResult{Observation: observation}, err

@@ -267,7 +267,7 @@ func TestUseAdmissionRejectsOriginalOwnerCycles(t *testing.T) {
 		Declaration: framehost.UnitDeclaration{ID: "independent", Profile: framehost.NativeGo}, Setup: prepare,
 	})
 	refs := map[framehost.UnitID]framehost.UnitRef{
-		"provider":    providerSource.Unit(),
+		"provider":    providerSource.UnitRef,
 		"consumer":    {InstallationID: "consumer", Release: consumer.Revision(), UnitID: "consumer"},
 		"independent": {InstallationID: "independent", Release: independent.Revision(), UnitID: "independent"},
 	}

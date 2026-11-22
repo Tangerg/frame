@@ -18,8 +18,8 @@ func TestWorkCopiesShareTheOriginalInterval(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer work.Finish()
-	copy := work
-	copy.Finish()
+	duplicate := work
+	duplicate.Finish()
 	next, err := lifetime.Enter(t.Context())
 	if err != nil {
 		t.Fatalf("finishing the copied handle did not release the original interval: %v", err)
@@ -81,9 +81,9 @@ func TestFinishedWorkCannotBeReopenedThroughACopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	copy := work
+	duplicate := work
 	work.Finish()
-	if _, err := copy.Cleanup("late", func() error { return nil }); !errors.Is(err, frame.ErrClosed) {
+	if _, err := duplicate.Cleanup("late", func() error { return nil }); !errors.Is(err, frame.ErrClosed) {
 		t.Fatalf("copied handle accepted a resource after its interval finished: %v", err)
 	}
 	if _, err := lifetime.Close(context.Background()); err != nil {

@@ -20,7 +20,7 @@ func TestCachedTrustPanicReleasesOriginalLease(t *testing.T) {
 	}
 	refusal := errors.New("cached trust panicked")
 	checks := 0
-	store.trust = func(context.Context, Source, Manifest, Lock) error {
+	store.trust = func(context.Context, Source, Release) error {
 		checks++
 		if checks == 2 {
 			panic(refusal)
@@ -33,7 +33,7 @@ func TestCachedTrustPanicReleasesOriginalLease(t *testing.T) {
 				t.Errorf("original trust panic = %v", cause)
 			}
 		}()
-		_, _ = store.ImportArchiveHeld(t.Context(), file, value.Hash(archive))
+		_, _ = store.ImportArchive(t.Context(), file, value.Hash(archive))
 	}()
 	if checks != 2 {
 		t.Fatalf("cached trust was not reached: %d checks", checks)

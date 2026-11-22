@@ -35,7 +35,10 @@ type chunkParams struct {
 	Stream string     `json:"stream"`
 	Value  value.JSON `json:"value"`
 }
-type binding struct {
+
+// boundService is one handle a peer may call: the admitted capability that
+// validates every invocation and the implementation behind it.
+type boundService struct {
 	contract *frame.Capability
 	service  frame.Service
 }
@@ -142,7 +145,7 @@ func (r *remote) invoke(ctx context.Context, invocation frame.Invocation, emit f
 	return result, nil
 }
 
-func dispatchCall(ctx context.Context, conn *peer, services map[string]binding, raw jsontext.Value) (jsontext.Value, error) {
+func dispatchCall(ctx context.Context, conn *peer, services map[string]boundService, raw jsontext.Value) (jsontext.Value, error) {
 	var params callParams
 	if err := decodeRequest(raw, &params); err != nil {
 		return nil, err

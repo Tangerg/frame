@@ -72,7 +72,7 @@ func TestInstallationRevalidatesAfterRetentionRead(t *testing.T) {
 						expected = context.Canceled
 						invalidate = func() { cancel(cause) }
 					}
-					owner := &retainedUseOwner{read: func(context.Context, framehost.InstallationID) ([]framehost.Dependency, error) {
+					owner := &retainedUseOwner{read: func(context.Context, framehost.InstallationID) ([]value.Digest, error) {
 						invalidate()
 						return nil, nil
 					}}
@@ -95,7 +95,7 @@ func TestInstallationRevalidatesAfterRetentionRead(t *testing.T) {
 					} else if !boundary.cancellation && !errors.Is(err, cause) {
 						t.Errorf("original recovery barrier changed: %v", err)
 					}
-					owner.read = func(context.Context, framehost.InstallationID) ([]framehost.Dependency, error) { return nil, nil }
+					owner.read = func(context.Context, framehost.InstallationID) ([]value.Digest, error) { return nil, nil }
 					if !boundary.cancellation {
 						if err := host.Admission().Recover(t.Context(), func() error { return nil }); err != nil {
 							t.Fatal(err)

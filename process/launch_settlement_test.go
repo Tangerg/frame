@@ -297,3 +297,22 @@ func TestReconcileNeverReplacesAnUnknownLaunchWithAnUndispatchedRetry(t *testing
 	}
 	e.assertRunnerExit(t, runner.Exited)
 }
+
+func TestCallerCancellationJoinsADispatchedCreation(t *testing.T) {
+	e := newSettlementEnvironment(t)
+	activation, cancel := context.WithCancelCause(t.Context())
+	cause := errors.New("caller stopped waiting after dispatch")
+	joined := make(chan bool, 1)
+	e.runner.launch = func(ctx context.Context, request runner.LaunchRequest) (runner.LaunchResult, error) {
+		cancel(cause)
+		joined <- ctx.Done() == nil
+		return e.runner.Server.Launch(ctx, request)
+	}
+	if _, err := e.host.ActivateUnit(activation, "application", e.unit); err == nil {
+		t.Fatal("fixture activation unexpectedly attached")
+	}
+	if !<-joined {
+		t.Fatal("a dispatched creation remained cancelable by its caller")
+	}
+	e.assertRunnerExit(t, runner.Exited)
+}

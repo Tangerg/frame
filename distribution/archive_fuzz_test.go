@@ -28,7 +28,7 @@ func archiveSeed(f *testing.F, names ...string) []byte {
 
 func FuzzOpenArchiveRefusesWithAClass(f *testing.F) {
 	limits := DefaultLimits()
-	limits.Entries = 4
+	limits.MaxEntries = 4
 	for _, archive := range [][]byte{
 		archiveSeed(f),
 		archiveSeed(f, "manifest.json"),
@@ -47,8 +47,8 @@ func FuzzOpenArchiveRefusesWithAClass(f *testing.F) {
 			}
 			return
 		}
-		if len(reader.File) > limits.Entries {
-			t.Fatalf("admitted %d entries under a limit of %d", len(reader.File), limits.Entries)
+		if len(reader.File) > limits.MaxEntries {
+			t.Fatalf("admitted %d entries under a limit of %d", len(reader.File), limits.MaxEntries)
 		}
 	})
 }

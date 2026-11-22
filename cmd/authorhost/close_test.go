@@ -144,7 +144,7 @@ func TestSealRouteClosesOriginalRealmAfterActivationWaitWasCancelled(t *testing.
 	if err != nil || len(dependencies) != 0 {
 		t.Fatalf("sealed plan retained dependencies: %+v %v", dependencies, err)
 	}
-	_, err = host.ActivateUnit(ctx, browser.RealmID(credentials.Realm), framehost.UnitRef{InstallationID: installationID, Release: plugin.Revision(), UnitID: "view"})
+	_, err = host.ActivateUnit(ctx, credentials.Realm.HostRealm(), framehost.UnitRef{InstallationID: installationID, Release: plugin.Revision(), UnitID: "view"})
 	if !errors.Is(err, framehost.ErrFenced) {
 		t.Fatalf("sealed Realm admitted another activation: %v", err)
 	}

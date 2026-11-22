@@ -41,7 +41,7 @@ func TestInstallToolArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer host.Close(ctx)
-	store, err := distribution.Open(distribution.Config{Directory: t.TempDir(), Admission: gate, Trust: func(context.Context, distribution.Source, distribution.Manifest, distribution.Lock) error { return nil }, Retained: func(context.Context, value.Digest) (bool, error) { return false, nil }})
+	store, err := distribution.Open(distribution.Config{Directory: t.TempDir(), Admission: gate, Trust: func(context.Context, distribution.Source, distribution.Release) error { return nil }, Retained: func(context.Context, value.Digest) (bool, error) { return false, nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestInstallToolArchive(t *testing.T) {
 				t.Fatal(err)
 			}
 			digest := value.Hash(archive.Bytes())
-			lease, err := store.ImportArchiveHeld(ctx, path, digest)
+			lease, err := store.ImportArchive(ctx, path, digest)
 			if err != nil {
 				t.Fatal(err)
 			}

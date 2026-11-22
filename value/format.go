@@ -60,7 +60,7 @@ func formatPredicates() []formatPredicate {
 
 var (
 	dateExpression = regexp.MustCompile(`\A[0-9]{4}-[0-9]{2}-[0-9]{2}\z`)
-	timeExpression = regexp.MustCompile(`\A([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.[0-9]+)?([Zz]|([+-])([0-9]{2}):([0-9]{2}))\z`)
+	timeExpression = regexp.MustCompile(`\A(?P<hour>[0-9]{2}):(?P<minute>[0-9]{2}):(?P<second>[0-9]{2})(?:\.[0-9]+)?(?:[Zz]|(?P<offsetSign>[+-])(?P<offsetHour>[0-9]{2}):(?P<offsetMinute>[0-9]{2}))\z`)
 	uuidExpression = regexp.MustCompile(`\A[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\z`)
 )
 
@@ -79,15 +79,14 @@ const (
 	minutesPerDay    = hoursPerDay * minutesPerHour
 )
 
-const (
-	_ = iota
-	timeHourGroup
-	timeMinuteGroup
-	timeSecondGroup
-	_
-	timeOffsetSignGroup
-	timeOffsetHourGroup
-	timeOffsetMinuteGroup
+// The expression names its own groups, so their positions are never restated.
+var (
+	timeHourGroup         = timeExpression.SubexpIndex("hour")
+	timeMinuteGroup       = timeExpression.SubexpIndex("minute")
+	timeSecondGroup       = timeExpression.SubexpIndex("second")
+	timeOffsetSignGroup   = timeExpression.SubexpIndex("offsetSign")
+	timeOffsetHourGroup   = timeExpression.SubexpIndex("offsetHour")
+	timeOffsetMinuteGroup = timeExpression.SubexpIndex("offsetMinute")
 )
 
 func validTime(value string) bool {

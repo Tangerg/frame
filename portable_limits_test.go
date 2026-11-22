@@ -17,8 +17,8 @@ import (
 
 func TestPortableDescriptorLimitsPrecedeCompilationAndCannotBeReconfigured(t *testing.T) {
 	limits := frame.CurrentPortableProfile().Limits
-	copy := limits
-	copy.MaxDescriptorBytes = 1
+	duplicate := limits
+	duplicate.MaxDescriptorBytes = 1
 	if frame.CurrentPortableProfile().Limits != limits {
 		t.Fatal("profile projection changed the owner")
 	}

@@ -44,11 +44,11 @@ func (t *typeScript) numberType() string {
 }
 
 func (t *typeScript) Definition(name string, node *projectionNode) string {
-	if node.kind == framevalue.TypeObject && !node.object.impossible() && node.reference == nil && len(node.allOf) == 0 && len(node.anyOf) == 0 && len(node.literals) == 0 && node.object.openness == objectClosed && !node.object.patterns && len(node.object.properties) > 0 {
+	if node.kind == framevalue.SchemaTypeObject && !node.object.impossible() && node.reference == nil && len(node.allOf) == 0 && len(node.anyOf) == 0 && len(node.literals) == 0 && node.object.openness == objectClosed && !node.object.patterns && len(node.object.properties) > 0 {
 		var out strings.Builder
 		fmt.Fprintf(&out, "export interface %s {\n", name)
 		for _, name := range t.propertyNames(node) {
-			fmt.Fprintf(&out, "  %s%s: %s;\n", PropertyKey(name), optionalMark(node, name), t.TypeOf(node.object.property(name)))
+			fmt.Fprintf(&out, "  %s%s: %s;\n", PropertyKey(name), node.optionalMark(name), t.TypeOf(node.object.property(name)))
 		}
 		out.WriteString("}\n\n")
 		return out.String()
@@ -65,7 +65,7 @@ func (t *typeScript) expression(node *projectionNode, inherited framevalue.Schem
 	if node.forbidden {
 		return tsNever
 	}
-	if node.kind == framevalue.TypeString && node.stringValues != nil {
+	if node.kind == framevalue.SchemaTypeString && node.stringValues != nil {
 		return unionOf(QuoteAll(node.stringValues))
 	}
 	if len(node.kinds) > 0 {
@@ -118,18 +118,18 @@ func (t *typeScript) propertyNames(node *projectionNode) []string {
 
 func (t *typeScript) keyword(kind, contextKind framevalue.SchemaType, node *projectionNode) string {
 	switch kind {
-	case framevalue.TypeString:
+	case framevalue.SchemaTypeString:
 		return "string"
-	case framevalue.TypeInteger, framevalue.TypeNumber:
+	case framevalue.SchemaTypeInteger, framevalue.SchemaTypeNumber:
 		return t.numberType()
-	case framevalue.TypeBoolean:
+	case framevalue.SchemaTypeBoolean:
 		return "boolean"
-	case framevalue.TypeNull:
+	case framevalue.SchemaTypeNull:
 		return "null"
-	case framevalue.TypeArray:
+	case framevalue.SchemaTypeArray:
 		// Generic array syntax owns its grouping even for unions and intersections.
 		return typeScriptArray + "<" + t.TypeOf(node.items) + ">"
-	case framevalue.TypeObject:
+	case framevalue.SchemaTypeObject:
 		return t.object(node)
 	default:
 		if contextKind != "" {
@@ -154,7 +154,7 @@ func (t *typeScript) object(node *projectionNode) string {
 	}
 	var fields []string
 	for _, name := range t.propertyNames(node) {
-		fields = append(fields, fmt.Sprintf("%s%s: %s", PropertyKey(name), optionalMark(node, name), t.TypeOf(node.object.property(name))))
+		fields = append(fields, fmt.Sprintf("%s%s: %s", PropertyKey(name), node.optionalMark(name), t.TypeOf(node.object.property(name))))
 	}
 	object := "{ " + strings.Join(fields, "; ") + " }"
 	switch {
@@ -181,8 +181,8 @@ func (t *typeScript) object(node *projectionNode) string {
 	}
 }
 
-func optionalMark(node *projectionNode, name string) string {
-	if node.required(name) {
+func (n *projectionNode) optionalMark(name string) string {
+	if n.required(name) {
 		return ""
 	}
 	return "?"

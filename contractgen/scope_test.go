@@ -51,7 +51,7 @@ func TestGeneratedConsumersPreserveIndependentSchemaScopes(t *testing.T) {
 		t.Fatal(err)
 	}
 	goOutput := GoOutput{Path: filepath.Join(directory, "types.go"), Package: "consumer"}
-	if err := Generate(source, directory, directory, goOutput); err != nil {
+	if err := Generate(GenerateConfig{Source: source, ArtifactDirectory: directory, TypeScriptDirectory: directory, Go: []GoOutput{goOutput}}); err != nil {
 		t.Fatalf("independently admitted schema documents: %v", err)
 	}
 	var bundle struct {
@@ -116,7 +116,7 @@ func TestGeneratedConsumersPreserveIndependentSchemaScopes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := Generate(source, directory, directory, goOutput); err != nil {
+	if err := Generate(GenerateConfig{Source: source, ArtifactDirectory: directory, TypeScriptDirectory: directory, Go: []GoOutput{goOutput}}); err != nil {
 		t.Fatal(err)
 	}
 	for name, original := range generated {

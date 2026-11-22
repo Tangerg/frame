@@ -29,7 +29,7 @@ func TestModuleArtifactURLsPreserveLiteralFileNames(t *testing.T) {
 	})
 	store, err := distribution.Open(distribution.Config{
 		Directory: filepath.Join(directory, "content"), Admission: framehost.NewAdmission(),
-		Trust:    func(context.Context, distribution.Source, distribution.Manifest, distribution.Lock) error { return nil },
+		Trust:    func(context.Context, distribution.Source, distribution.Release) error { return nil },
 		Retained: func(context.Context, value.Digest) (bool, error) { return false, nil },
 	})
 	if err != nil {
@@ -57,8 +57,12 @@ func TestModuleArtifactURLsPreserveLiteralFileNames(t *testing.T) {
 	if err := os.WriteFile(archivePath, archive.Bytes(), 0600); err != nil {
 		t.Fatal(err)
 	}
-	release, err := store.ImportArchive(t.Context(), archivePath, value.Hash(archive.Bytes()))
+	lease, err := store.ImportArchive(t.Context(), archivePath, value.Hash(archive.Bytes()))
 	if err != nil {
+		t.Fatal(err)
+	}
+	release := lease.Snapshot()
+	if err := lease.Close(); err != nil {
 		t.Fatal(err)
 	}
 	app := &App{Content: store, preview: release}

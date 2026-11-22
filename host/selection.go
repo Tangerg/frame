@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
-	"reflect"
 
 	"github.com/Tangerg/frame"
 )
@@ -43,14 +42,12 @@ type snapshotMember struct {
 // afresh: a rule may reorder or change these values without affecting another
 // read of the same publication.
 type Candidate[M, V any] struct {
+	CandidateRef
 	Metadata M
-	snapshot *catalogSnapshot
-	member   snapshotMember
 }
 
-func (c Candidate[M, V]) Source() ExportRef { return c.member.source }
-func (c Candidate[M, V]) ID() string        { return c.member.id }
-
+// CandidateRef names one member of the original snapshot read; selection
+// accepts it only together with that same read.
 type CandidateRef struct {
 	snapshot *catalogSnapshot
 	member   snapshotMember
@@ -94,7 +91,7 @@ func (h *hostState) SnapshotIn(ctx context.Context, realm RealmID, points ...Con
 // snapshotLocked reads native members only from the requested realm; a
 // portable member can be called from any realm.
 func (h *hostState) snapshotLocked(realm RealmID, points []ContractRef) (Snapshot, error) {
-	result := &catalogSnapshot{owner: h.identity, members: make(map[ContractRef][]snapshotMember, len(points)), realm: realm}
+	result := &catalogSnapshot{owner: h.domain, members: make(map[ContractRef][]snapshotMember, len(points)), realm: realm}
 	for _, point := range points {
 		if h.contracts.lookup(point) == nil {
 			return Snapshot{}, frame.ErrContractMismatch
@@ -152,14 +149,11 @@ func Candidates[M, V any](snapshot Snapshot, point Point[M, V]) ([]Candidate[M, 
 	}
 	result := make([]Candidate[M, V], len(members))
 	for i, member := range members {
-		if !member.metadata.readableAs(reflect.TypeFor[M]()) {
-			return nil, frame.ErrContractMismatch
-		}
 		metadata, err := readMetadata[M](member.metadata)
 		if err != nil {
 			return nil, err
 		}
-		result[i] = Candidate[M, V]{Metadata: metadata, snapshot: snapshot.catalogSnapshot, member: member}
+		result[i] = Candidate[M, V]{CandidateRef: CandidateRef{snapshot: snapshot.catalogSnapshot, member: member}, Metadata: metadata}
 	}
 	return result, nil
 }
@@ -195,7 +189,7 @@ func Select[M, V any](snapshot Snapshot, point Point[M, V], rule string, candida
 	}
 	refs := make([]CandidateRef, len(candidates))
 	for i, candidate := range candidates {
-		refs[i] = CandidateRef{snapshot: candidate.snapshot, member: candidate.member}
+		refs[i] = candidate.CandidateRef
 	}
 	ref, err := SelectRefs(snapshot, point.Ref(), rule, refs...)
 	return Selection[M, V]{value: ref}, err

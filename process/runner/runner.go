@@ -5,21 +5,16 @@ package runner
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
-	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/internal/localfile"
@@ -45,51 +40,6 @@ const (
 	Unknown    State = "unknown"
 )
 
-type LaunchRequest struct {
-	AttemptRef
-	Command            string            `json:"command"`
-	ExecutableDigest   framevalue.Digest `json:"executableDigest"`
-	Args               []string          `json:"args,omitempty"`
-	Env                []string          `json:"env"`
-	Directory          string            `json:"directory,omitempty"`
-	Configuration      framevalue.Digest `json:"configuration"`
-	CredentialRevision string            `json:"credentialRevision,omitempty"`
-}
-
-// LaunchResult distinguishes this invocation's undispatched request from an
-// original runner's durable observation. An undispatched retry says nothing
-// about whether an earlier invocation of the same request was accepted.
-type LaunchResult struct {
-	Observation
-	undispatchedRequest *framevalue.Digest
-}
-
-func (result LaunchResult) NotDispatched(request LaunchRequest) bool {
-	if result.Observation != (Observation{}) || result.undispatchedRequest == nil {
-		return false
-	}
-	digest, err := invocationDigest(request)
-	return err == nil && digest == *result.undispatchedRequest
-}
-
-func notDispatched(request LaunchRequest) LaunchResult {
-	digest, err := invocationDigest(request)
-	if err != nil {
-		return LaunchResult{}
-	}
-	return LaunchResult{undispatchedRequest: &digest}
-}
-
-// invocationDigest binds a nondispatch result to this exact in-memory request,
-// including its environment. It is never persisted; requestIdentity is.
-func invocationDigest(request LaunchRequest) (framevalue.Digest, error) {
-	data, err := json.Marshal(request)
-	if err != nil {
-		return framevalue.Digest{}, err
-	}
-	return framevalue.Hash(data), nil
-}
-
 type Observation struct {
 	AttemptRef
 	State    State  `json:"state"`
@@ -99,32 +49,48 @@ type Observation struct {
 	Reason   string `json:"reason,omitempty"`
 }
 
+// presence states whether an observation must carry, must omit or may carry
+// one member of its evidence.
+type presence uint8
+
+const (
+	absent presence = iota
+	present
+	either
+)
+
+func (p presence) admits(carried bool) bool { return p == either || (p == present) == carried }
+
+type observationEvidence struct{ pid, exitCode, proof presence }
+
+// evidence is the single statement of what each state carries. A runner that
+// lost its wait identity may still report the PID it last observed.
+func (s State) evidence() (observationEvidence, bool) {
+	switch s {
+	case Starting:
+		return observationEvidence{}, true
+	case Running:
+		return observationEvidence{pid: present}, true
+	case NotCreated:
+		return observationEvidence{proof: present}, true
+	case Exited:
+		return observationEvidence{pid: present, exitCode: present, proof: present}, true
+	case Unknown:
+		return observationEvidence{pid: either}, true
+	default:
+		return observationEvidence{}, false
+	}
+}
+
 func (o Observation) validate() error {
-	if o.AttemptRef.Validate() != nil || o.PID < 0 {
+	evidence, known := o.State.evidence()
+	if !known || o.AttemptRef.Validate() != nil || o.PID < 0 {
 		return frame.ErrInvalid
 	}
-	switch o.State {
-	case Starting:
-		if o.PID != 0 || o.ExitCode != nil || o.ProofID != "" {
-			return frame.ErrInvalid
-		}
-	case Running:
-		if o.PID == 0 || o.ExitCode != nil || o.ProofID != "" {
-			return frame.ErrInvalid
-		}
-	case NotCreated:
-		if o.PID != 0 || o.ExitCode != nil || !frame.ValidName(o.ProofID) {
-			return frame.ErrInvalid
-		}
-	case Exited:
-		if o.PID == 0 || o.ExitCode == nil || !frame.ValidName(o.ProofID) {
-			return frame.ErrInvalid
-		}
-	case Unknown:
-		if o.ExitCode != nil || o.ProofID != "" {
-			return frame.ErrInvalid
-		}
-	default:
+	if !evidence.pid.admits(o.PID != 0) || !evidence.exitCode.admits(o.ExitCode != nil) || !evidence.proof.admits(o.ProofID != "") {
+		return frame.ErrInvalid
+	}
+	if evidence.proof == present && !frame.ValidName(o.ProofID) {
 		return frame.ErrInvalid
 	}
 	return nil
@@ -160,23 +126,6 @@ type Config struct {
 	ControlTimeout        time.Duration
 }
 
-type storedAttempt struct {
-	Observation   Observation       `json:"observation"`
-	RequestDigest framevalue.Digest `json:"requestDigest"`
-}
-
-const (
-	journalFilename           = "attempts.json"
-	lostWaitReason            = "runner restarted without the original child wait identity"
-	defaultMaxAttempts        = 4096
-	defaultMaxExecutableBytes = 512 << 20
-)
-
-type journal struct {
-	Epoch    uint64                   `json:"epoch"`
-	Attempts map[string]storedAttempt `json:"attempts"`
-}
-
 type process struct {
 	command    *exec.Cmd
 	kill       func() error
@@ -188,6 +137,11 @@ type process struct {
 	environment []string
 	done        chan struct{}
 }
+
+const (
+	defaultMaxAttempts        = 4096
+	defaultMaxExecutableBytes = 512 << 20
+)
 
 type Server struct {
 	config               Config
@@ -284,41 +238,6 @@ func (c Config) resolve() (Config, error) {
 	return c, verifyAuthorityDirectory(c.Directory)
 }
 
-// loadJournal reads the attempts of an earlier runner. A child it was still
-// waiting for becomes Unknown: no later runner holds that wait identity.
-func loadJournal(directory *os.Root, maxAttempts int) (journal, error) {
-	data, err := directory.ReadFile(journalFilename)
-	if errors.Is(err, os.ErrNotExist) {
-		return journal{Attempts: make(map[string]storedAttempt)}, nil
-	}
-	if err != nil {
-		return journal{}, err
-	}
-	var loaded journal
-	if err := framevalue.DecodeValue(data, &loaded, "runner journal"); err != nil {
-		return journal{}, fmt.Errorf("runner: invalid journal: %w", err)
-	}
-	if loaded.Attempts == nil || len(loaded.Attempts) > maxAttempts {
-		return journal{}, errors.New("runner: incompatible journal")
-	}
-	for id, attempt := range loaded.Attempts {
-		if id != attempt.Observation.AttemptID || attempt.Observation.validate() != nil || attempt.Observation.Epoch > loaded.Epoch || attempt.RequestDigest.Validate() != nil {
-			return journal{}, errors.New("runner: invalid attempt record")
-		}
-		switch attempt.Observation.State {
-		case Starting, Running:
-			attempt.Observation.State = Unknown
-			attempt.Observation.Reason = lostWaitReason
-			attempt.Observation.PID = 0
-			loaded.Attempts[id] = attempt
-		case Exited, Unknown:
-		default:
-			return journal{}, errors.New("runner: invalid attempt state")
-		}
-	}
-	return loaded, nil
-}
-
 // Fence settles all earlier Launch entries before advancing the creation epoch.
 // Existing processes keep their original close and wait path. It never kills a
 // PID recovered from disk, nor permits a missing old attempt to be recreated.
@@ -351,28 +270,22 @@ func (s *Server) Fence(_ context.Context, epoch uint64) error {
 
 func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ LaunchResult, err error) {
 	if err := request.Validate(); err != nil {
-		return notDispatched(request), err
+		return request.notDispatched(), err
 	}
 	if err := frame.ContextError(ctx); err != nil {
-		return notDispatched(request), err
+		return request.notDispatched(), err
 	}
-	digest, err := requestIdentity(request)
+	digest, err := request.durableIdentity()
 	if err != nil {
-		return notDispatched(request), err
+		return request.notDispatched(), err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if previous, found, err := s.replayLaunch(request, digest); err != nil || found {
 		return LaunchResult{Observation: previous}, err
 	}
-	if s.closed || s.fenced || request.RunnerID != s.id || request.Epoch != s.journal.Epoch {
-		return notDispatched(request), ErrFenced
-	}
-	if err := s.verifyDirectory(); err != nil {
-		return notDispatched(request), err
-	}
-	if err := frame.ContextError(ctx); err != nil {
-		return notDispatched(request), err
+	if err := s.admitLaunchLocked(ctx, request); err != nil {
+		return request.notDispatched(), err
 	}
 	observation := Observation{AttemptRef: request.AttemptRef, State: Starting}
 	full := len(s.journal.Attempts) >= s.config.MaxAttempts
@@ -421,6 +334,18 @@ func (s *Server) Launch(ctx context.Context, request LaunchRequest) (_ LaunchRes
 		return LaunchResult{Observation: observation}, errors.Join(ErrUnknown, persistErr)
 	}
 	return LaunchResult{Observation: observation}, nil
+}
+
+// admitLaunchLocked refuses a request this runner may not dispatch: another
+// runner's or epoch's attempt, a fenced authority or a replaced directory.
+func (s *Server) admitLaunchLocked(ctx context.Context, request LaunchRequest) error {
+	if s.closed || s.fenced || request.RunnerID != s.id || request.Epoch != s.journal.Epoch {
+		return ErrFenced
+	}
+	if err := s.verifyDirectory(); err != nil {
+		return err
+	}
+	return frame.ContextError(ctx)
 }
 
 // spawn starts the verified executable with only stdin and stdout connected.
@@ -582,13 +507,6 @@ func (s *Server) wait(id string, live *process, path string) {
 	s.mu.Unlock()
 }
 
-func (s *Server) releaseExecutable(path string) error {
-	if err := s.directory.Remove(path); err != nil {
-		return fmt.Errorf("runner: executable snapshot cleanup failed: %w", err)
-	}
-	return nil
-}
-
 func (s *Server) failedStart(id, reason string, cause error) (LaunchResult, error) {
 	item := s.journal.Attempts[id]
 	item.Observation.State = NotCreated
@@ -621,115 +539,6 @@ func (s *Server) commitTerminal(id string) (Observation, error) {
 	return observation.clone(), nil
 }
 
-const (
-	executableSnapshotMode   os.FileMode = 0500
-	executableSnapshotPrefix             = "executable-"
-	temporaryRecordPrefix                = ".record-"
-)
-
-func (s *Server) snapshotExecutable(request LaunchRequest) (_ string, err error) {
-	input, err := localfile.OpenRegular(request.Command)
-	if err != nil {
-		return "", err
-	}
-	defer input.Close()
-	info, err := input.Stat()
-	if err != nil {
-		return "", err
-	}
-	if info.Size() > s.config.MaxExecutableBytes {
-		return "", errors.New("runner: invalid executable")
-	}
-	name := executableSnapshotPrefix + rand.Text()
-	file, err := s.directory.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_RDWR, localfile.PrivateFileMode)
-	if err != nil {
-		return "", err
-	}
-	defer func() {
-		err = errors.Join(err, file.Close())
-		if err != nil {
-			err = errors.Join(err, s.releaseExecutable(name))
-		}
-	}()
-	hash := sha256.New()
-	n, err := io.Copy(io.MultiWriter(file, hash), io.LimitReader(input, s.config.MaxExecutableBytes+1))
-	if err != nil {
-		return "", err
-	}
-	if n > s.config.MaxExecutableBytes || framevalue.DigestOf([sha256.Size]byte(hash.Sum(nil))) != request.ExecutableDigest {
-		return "", errors.New("runner: executable digest mismatch")
-	}
-	if err := file.Chmod(executableSnapshotMode); err != nil {
-		return "", err
-	}
-	if err := file.Sync(); err != nil {
-		return "", err
-	}
-	return name, nil
-}
-
-func (s *Server) persist() error {
-	projection := s.journal
-	if len(s.terminalObservations) != 0 {
-		projection.Attempts = maps.Clone(s.journal.Attempts)
-		for id, observation := range s.terminalObservations {
-			item := projection.Attempts[id]
-			item.Observation = observation
-			if observation.State == NotCreated {
-				// A refusal must remain replayable even when every active slot is
-				// occupied. It uses the same immutable receipt as acknowledged exits.
-				if err := s.storeReceipt(item); err != nil {
-					return err
-				}
-				delete(projection.Attempts, id)
-			} else {
-				projection.Attempts[id] = item
-			}
-		}
-	}
-	if err := storeRecord(s.directory, journalFilename, projection); err != nil {
-		return err
-	}
-	s.journal = projection
-	clear(s.terminalObservations)
-	return nil
-}
-
-func storeRecord(directory *os.Root, path string, value any) (err error) {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	name := filepath.Join(filepath.Dir(path), temporaryRecordPrefix+rand.Text())
-	file, err := directory.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_RDWR, localfile.PrivateFileMode)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if cleanupErr := directory.Remove(name); !errors.Is(cleanupErr, os.ErrNotExist) {
-			err = errors.Join(err, cleanupErr)
-		}
-	}()
-	if _, err := file.Write(data); err != nil {
-		return errors.Join(err, file.Close())
-	}
-	if err := errors.Join(file.Sync(), file.Close()); err != nil {
-		return err
-	}
-	if err := directory.Rename(name, path); err != nil {
-		return err
-	}
-	return syncDirectory(directory, filepath.Dir(path))
-}
-
-func syncDirectory(root *os.Root, path string) error {
-	directory, err := root.Open(path)
-	if err != nil {
-		return err
-	}
-	return errors.Join(directory.Sync(), directory.Close())
-}
-
 // Directory handles keep persistence and cleanup on the original inode even
 // after a pathname is replaced. Path-based process and socket creation must
 // still refuse a directory that no longer names this authority.
@@ -744,46 +553,4 @@ func (s *Server) verifyDirectory() error {
 		return errors.Join(ErrFenced, err)
 	}
 	return verifyAuthorityDirectory(s.config.Directory)
-}
-
-func (request LaunchRequest) Validate() error {
-	if request.AttemptRef.Validate() != nil || !filepath.IsAbs(request.Command) || !validProgramText(request.Command) || request.ExecutableDigest.Validate() != nil || request.Configuration.Validate() != nil {
-		return fmt.Errorf("%w: runner requires exact launch identity", frame.ErrInvalid)
-	}
-	if request.Directory != "" && (!filepath.IsAbs(request.Directory) || !validProgramText(request.Directory)) {
-		return fmt.Errorf("%w: runner working directory must be absolute utf-8 text without nul", frame.ErrInvalid)
-	}
-	if request.CredentialRevision != "" && !frame.ValidName(request.CredentialRevision) {
-		return fmt.Errorf("%w: runner credential revision", frame.ErrInvalid)
-	}
-	for _, argument := range request.Args {
-		if !validProgramText(argument) {
-			return fmt.Errorf("%w: runner arguments must be utf-8 text without nul", frame.ErrInvalid)
-		}
-	}
-	names := map[string]bool{}
-	for _, entry := range request.Env {
-		key, _, ok := strings.Cut(entry, "=")
-		if !ok || key == "" || !validProgramText(entry) || names[key] {
-			return fmt.Errorf("%w: runner environment requires unique names and utf-8 text without nul", frame.ErrInvalid)
-		}
-		names[key] = true
-	}
-	return nil
-}
-
-func validProgramText(text string) bool {
-	return utf8.ValidString(text) && !strings.ContainsRune(text, '\x00')
-}
-
-func requestIdentity(request LaunchRequest) (framevalue.Digest, error) {
-	copy := request
-	// Credential values never enter the durable identity. While the child is live,
-	// its original injected environment is checked directly on replay.
-	copy.Env = nil
-	data, err := json.Marshal(copy)
-	if err != nil {
-		return framevalue.Digest{}, err
-	}
-	return framevalue.Hash(data), nil
 }

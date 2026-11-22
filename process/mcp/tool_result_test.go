@@ -17,7 +17,7 @@ import (
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
 
-func toolWireService(t *testing.T, result string, fullResult bool, outputSchema string) *toolService {
+func toolWireService(t *testing.T, result string, form ToolResult, outputSchema string) *toolService {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	t.Cleanup(cancel)
@@ -55,13 +55,13 @@ func toolWireService(t *testing.T, result string, fullResult bool, outputSchema 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &toolService{connection: &toolsConnection{session: session}, members: map[string]*toolMember{"write": {method: method, fullResult: fullResult}}}
+	return &toolService{connection: &toolsConnection{session: session}, members: map[string]*toolMember{"write": {method: method, result: form}}}
 }
 
 func TestToolResultRequiresOriginalContentArray(t *testing.T) {
 	for _, result := range []string{"null", `{}`, `{"content":null}`, `{"content":{}}`, `{"Content":[]}`, `{"content":[],"isError":null}`, `{"content":[],"_meta":null}`} {
 		t.Run(result, func(t *testing.T) {
-			service := toolWireService(t, result, true, `{"type":"object","required":["content"]}`)
+			service := toolWireService(t, result, EnvelopeResult, `{"type":"object","required":["content"]}`)
 			input, _ := value.ParseJSON([]byte(`{}`))
 			_, err := service.Invoke(t.Context(), commandInvocation(t, "original-command", "write", input))
 			if !errors.Is(err, frame.ErrOutcomeUnknown) {
@@ -73,7 +73,7 @@ func TestToolResultRequiresOriginalContentArray(t *testing.T) {
 
 func TestToolResultExtensionsCannotChangeOutcomeClassification(t *testing.T) {
 	const result = `{"content":[],"isError":false,"IsError":true,"ResultType":"input_required"}`
-	service := toolWireService(t, result, true, `{"type":"object","required":["content"]}`)
+	service := toolWireService(t, result, EnvelopeResult, `{"type":"object","required":["content"]}`)
 	input, _ := value.ParseJSON([]byte(`{}`))
 	reply, err := service.Invoke(t.Context(), commandInvocation(t, "original-command", "write", input))
 	want, _ := value.ParseJSON([]byte(result))
@@ -101,7 +101,7 @@ func TestToolResultAdmitsNegotiatedCompleteEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service.members[method.Name()].fullResult = true
+	service.members[method.Name()].result = EnvelopeResult
 	reply, err := service.Invoke(t.Context(), catalogInvocation(t, method))
 	if err != nil {
 		t.Fatalf("negotiated result was rejected: %s %v", reply.String(), err)
@@ -111,7 +111,7 @@ func TestToolResultAdmitsNegotiatedCompleteEnvelope(t *testing.T) {
 
 func TestToolResultRetainsEnvelopeExtensions(t *testing.T) {
 	const result = `{"content":[{"type":"text","text":"ok","vendor":{"exact":9007199254740993}}],"runId":"original-run","isError":false}`
-	service := toolWireService(t, result, true, `{"type":"object","required":["content","runId"],"properties":{"content":{"type":"array"},"runId":{"type":"string"}}}`)
+	service := toolWireService(t, result, EnvelopeResult, `{"type":"object","required":["content","runId"],"properties":{"content":{"type":"array"},"runId":{"type":"string"}}}`)
 	input, _ := value.ParseJSON([]byte(`{}`))
 	reply, err := service.Invoke(t.Context(), commandInvocation(t, "original-command", "write", input))
 	want, _ := value.ParseJSON([]byte(result))
@@ -122,7 +122,7 @@ func TestToolResultRetainsEnvelopeExtensions(t *testing.T) {
 
 func TestToolErrorRetainsOriginalEnvelope(t *testing.T) {
 	const result = `{"content":[],"isError":true,"runId":"refused-run"}`
-	service := toolWireService(t, result, false, `{"type":"string"}`)
+	service := toolWireService(t, result, StructuredResult, `{"type":"string"}`)
 	input, _ := value.ParseJSON([]byte(`{}`))
 	_, err := service.Invoke(t.Context(), commandInvocation(t, "original-command", "write", input))
 	reported, ok := errors.AsType[*ToolError](err)

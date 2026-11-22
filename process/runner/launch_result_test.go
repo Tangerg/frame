@@ -196,7 +196,7 @@ func TestDurableNonCreationReceiptSurvivesAnInterruptedJournalProjection(t *test
 	if err := server.AcknowledgeExit(t.Context(), receipt); err != nil {
 		t.Fatal(err)
 	}
-	digest, err := requestIdentity(request)
+	digest, err := request.durableIdentity()
 	if err != nil {
 		t.Fatal(err)
 	}

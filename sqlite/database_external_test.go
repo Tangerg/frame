@@ -23,9 +23,9 @@ func (q standaloneQuery) Scan(dest ...any) error {
 	})
 }
 func execDatabase(database sqlite.Database, ctx context.Context, statement string, args ...any) (result sql.Result, err error) {
-	err = sqlite.RunInTx(ctx, database, func(ctx context.Context) error {
+	err = database.RunInTx(ctx, func(ctx context.Context) error {
 		var err error
-		result, err = sqlite.Connection(ctx, database).ExecContext(ctx, statement, args...)
+		result, err = database.Executor(ctx).ExecContext(ctx, statement, args...)
 		return err
 	})
 	return result, err

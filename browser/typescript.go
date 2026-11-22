@@ -79,7 +79,7 @@ func newTypeScriptEmitter(roots []reflect.Type) (*typeScriptEmitter, error) {
 	emitter := &typeScriptEmitter{types: make(map[string]typeScriptDeclaration), valueNames: make(map[string]string)}
 	for _, root := range roots {
 		if err := framevalue.ValidateType(root); err != nil {
-			return nil, fmt.Errorf("control: invalid wire type: %w", err)
+			return nil, fmt.Errorf("browser: invalid wire type: %w", err)
 		}
 		if err := emitter.collect(root); err != nil {
 			return nil, err
@@ -116,16 +116,16 @@ func (e *typeScriptEmitter) collect(t reflect.Type) error {
 	name := typeScriptTypeName(t)
 	if existing, found := e.types[name]; found && t.PkgPath() != "" {
 		if existing.source != t {
-			return fmt.Errorf("control: generated name %s is shared by %s and %s", name, existing.source, t)
+			return fmt.Errorf("browser: generated name %s is shared by %s and %s", name, existing.source, t)
 		}
 		return nil
 	}
 	model, err := framevalue.EncodingModel(t)
 	if err != nil {
-		return fmt.Errorf("control: %w", err)
+		return fmt.Errorf("browser: %w", err)
 	}
 	if t == model && t.Name() != "" && (t.Kind() == reflect.Slice || t.Kind() == reflect.Array || t.Kind() == reflect.Map) {
-		return fmt.Errorf("control: unsupported named collection %s", t)
+		return fmt.Errorf("browser: unsupported named collection %s", t)
 	}
 	if t.PkgPath() != "" {
 		enumeration, err := framevalue.EncodingEnum(t)
@@ -207,7 +207,7 @@ func (e *typeScriptEmitter) renderModel(t reflect.Type) (string, error) {
 		}
 		return "readonly " + element + "[]", err
 	default:
-		return "", fmt.Errorf("control: unsupported protocol type %s", t)
+		return "", fmt.Errorf("browser: unsupported protocol type %s", t)
 	}
 }
 

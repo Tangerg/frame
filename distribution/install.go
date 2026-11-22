@@ -61,29 +61,29 @@ func (l Lease) Install(ctx context.Context, host framehost.Host, config Installa
 	return host.Install(ctx, framehost.InstallationConfig{ID: config.ID, Plugin: plugin, Configuration: config.Configuration, Enabled: config.Enabled})
 }
 
-func (entry Unit) executableUnit(host framehost.Host, native func(framehost.UnitID) (framehost.SetupFunc, error)) (framehost.Unit, error) {
-	unit := framehost.Unit{Declaration: framehost.UnitDeclaration{ID: entry.ID, Profile: entry.Profile, Imports: entry.Imports, Exports: entry.Exports}}
-	if entry.Profile == framehost.NativeGo {
+func (u Unit) executableUnit(host framehost.Host, native func(framehost.UnitID) (framehost.SetupFunc, error)) (framehost.Unit, error) {
+	unit := framehost.Unit{Declaration: u.Declaration()}
+	if u.Profile == framehost.NativeGo {
 		if native == nil {
 			return framehost.Unit{}, framehost.ErrUnavailable
 		}
-		fn, err := native(entry.ID)
+		fn, err := native(u.ID)
 		if err != nil {
 			return framehost.Unit{}, err
 		}
 		unit.Setup = fn
 		return unit, nil
 	}
-	driver, ok := host.Driver(entry.Profile)
+	driver, ok := host.Driver(u.Profile)
 	if !ok {
-		return framehost.Unit{}, fmt.Errorf("%w: unsupported profile %s", framehost.ErrUnavailable, entry.Profile)
+		return framehost.Unit{}, fmt.Errorf("%w: unsupported profile %s", framehost.ErrUnavailable, u.Profile)
 	}
 	if validator, ok := driver.(ArchiveDriver); ok {
-		return unit, validator.ValidateArchiveUnit(entry.snapshot())
+		return unit, validator.ValidateArchiveUnit(u.snapshot())
 	}
-	standard, err := entry.profileShape()
+	standard, err := u.profileShape()
 	if !standard {
-		return framehost.Unit{}, fmt.Errorf("%w: profile %s lacks an archive validator", framehost.ErrUnavailable, entry.Profile)
+		return framehost.Unit{}, fmt.Errorf("%w: profile %s lacks an archive validator", framehost.ErrUnavailable, u.Profile)
 	}
 	return unit, err
 }

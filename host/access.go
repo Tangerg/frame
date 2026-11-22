@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/Tangerg/frame"
+	framevalue "github.com/Tangerg/frame/value"
 )
 
 // Access borrows every selected member under one admitted work interval.
@@ -64,7 +65,7 @@ func (h *hostState) With(ctx context.Context, grant ScopeGrant, plan BindingPlan
 	if call == nil {
 		return frame.ErrInvalid
 	}
-	return WithPlan(ctx, Host{h}, plan, grant, func(use Use) error { return withAccess(ctx, use, call) })
+	return h.WithUse(ctx, grant, plan, func(use Use) error { return withAccess(ctx, use, call) })
 }
 
 func (s Selection[M, V]) Members(access Access) ([]Member[M, V], error) {
@@ -126,4 +127,70 @@ func (s Selection[M, V]) One(access Access) (Member[M, V], error) {
 	default:
 		return Member[M, V]{}, ErrAmbiguous
 	}
+}
+
+func Borrow[M, V any](ctx context.Context, use Use, selection Selection[M, V], call func(context.Context, []V) error) error {
+	if call == nil {
+		return frame.ErrInvalid
+	}
+	return withAccess(ctx, use, func(a Access) error {
+		members, err := selection.Members(a)
+		if err != nil {
+			return err
+		}
+		values := make([]V, len(members))
+		for i, member := range members {
+			values[i] = member.Value
+		}
+		return call(a.Context(), values)
+	})
+}
+
+func BorrowExport[V any](ctx context.Context, use Use, source ExportRef, call func(context.Context, V) error) error {
+	if use.borrow == nil || call == nil {
+		return frame.ErrInvalid
+	}
+	borrow := use.borrow
+	work, err := borrow.enter(ctx)
+	if err != nil {
+		return err
+	}
+	defer work.Finish()
+	value, found := exportValue[V](borrow, source)
+	if !found {
+		return frame.ErrContractMismatch
+	}
+	return call(work.Context(), value)
+}
+
+func exportValue[V any](use *useBorrow, source ExportRef) (V, bool) {
+	use.host.mu.Lock()
+	defer use.host.mu.Unlock()
+	for _, member := range use.members {
+		if member.source == source {
+			value, ok := member.value.(V)
+			return value, ok
+		}
+	}
+	var zero V
+	return zero, false
+}
+
+// WithUse acquires plan for one callback under a private owner, then closes
+// that Use and reports its retirement with the callback's result.
+func (h *hostState) WithUse(ctx context.Context, grant ScopeGrant, plan BindingPlan, call func(Use) error) (err error) {
+	if framevalue.IsNil(ctx) || h == nil || !plan.Valid() || call == nil {
+		return frame.ErrInvalid
+	}
+	owner := frame.NewLifetime(context.WithoutCancel(ctx))
+	causes := owner.ObserveCloseCauses()
+	defer func() {
+		_, closeErr := owner.Close(context.Background())
+		err = causes.Join(err, closeErr)
+	}()
+	use, err := h.Acquire(ctx, plan, UseConfig{Owner: owner, Scope: grant, Realm: plan.plan.header().realm})
+	if err != nil {
+		return err
+	}
+	return call(use)
 }

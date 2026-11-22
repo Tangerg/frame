@@ -91,7 +91,7 @@ func (e *browserExecution) acceptReady(operationID string, digest value.Digest) 
 		return result, false, err
 	}
 	if e.fenced || !e.runtimeOwnsExit() {
-		return rejectedDecision(problemExecutionReleased), false, nil
+		return problemExecutionReleased.decision(), false, nil
 	}
 	e.runtime.ready = &readyReport{operationID: operationID, digest: digest}
 	return DecisionResult{Decision: Accepted}, true, nil

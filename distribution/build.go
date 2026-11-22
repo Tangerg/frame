@@ -18,31 +18,31 @@ import (
 
 // Author sources remain mutable, so the inventory and deterministic archive
 // must derive from the same captured bytes.
-func Build(ctx context.Context, source string, manifest Manifest, output io.Writer) (Lock, error) {
+// Build returns the archived release, whose manifest records each artifact's
+// measured size and digest.
+func Build(ctx context.Context, source string, manifest Manifest, output io.Writer) (Release, error) {
 	input, err := os.OpenRoot(source)
 	if err != nil {
-		return Lock{}, err
+		return Release{}, err
 	}
 	defer input.Close()
 	limits := DefaultLimits()
 	manifest.Artifacts = sortedArtifacts(manifest.Artifacts)
-	contents := releaseContents{files: make(map[string][]byte, len(manifest.Artifacts)+2), limits: limits}
+	contents := releaseContents{files: make(map[string][]byte, len(manifest.Artifacts)+1), limits: limits}
 	if err := contents.readArtifacts(ctx, input, manifest.Artifacts); err != nil {
-		return Lock{}, err
+		return Release{}, err
 	}
-	manifest.Release = value.Digest{}
-	lock, err := manifest.Lock()
+	digest, err := manifest.Identity()
 	if err != nil {
-		return Lock{}, err
+		return Release{}, err
 	}
-	manifest.Release = lock.Release
 	if err := contents.addMetadata(ManifestName, manifest); err != nil {
-		return Lock{}, err
+		return Release{}, err
 	}
-	if err := contents.addMetadata(LockName, lock); err != nil {
-		return Lock{}, err
+	if err := contents.writeArchive(ctx, output, manifest.Artifacts); err != nil {
+		return Release{}, err
 	}
-	return lock, contents.writeArchive(ctx, output, manifest.Artifacts)
+	return Release{Digest: digest, Manifest: manifest}, nil
 }
 
 type releaseContents struct {
@@ -53,14 +53,14 @@ type releaseContents struct {
 
 func (c *releaseContents) readArtifacts(ctx context.Context, input *os.Root, artifacts []Artifact) error {
 	paths := reservedMetadataPaths()
-	if len(artifacts)+len(paths) > c.limits.Entries {
+	if len(artifacts)+len(paths) > c.limits.MaxEntries {
 		return ErrCapacity
 	}
 	for i, artifact := range artifacts {
-		if err := paths.admitBounded(artifact.Path, fileEntry, c.limits.Entries); err != nil {
+		if err := paths.admitBounded(artifact.Path, fileEntry, c.limits.MaxEntries); err != nil {
 			return err
 		}
-		content, err := readRegular(ctx, input, artifact.Path, c.limits.ExpandedBytes-c.total)
+		content, err := readRegular(ctx, input, artifact.Path, c.limits.MaxExpandedBytes-c.total)
 		if err != nil {
 			return err
 		}
@@ -78,7 +78,7 @@ func (c *releaseContents) addMetadata(name string, document any) error {
 		return err
 	}
 	size := int64(len(data))
-	if size > c.limits.ManifestBytes || size > c.limits.ExpandedBytes-c.total {
+	if size > c.limits.MaxManifestBytes || size > c.limits.MaxExpandedBytes-c.total {
 		return ErrCapacity
 	}
 	c.total += size
@@ -96,7 +96,7 @@ func (c *releaseContents) writeArchive(ctx context.Context, output io.Writer, ar
 			err = errors.Join(err, frame.ContextError(ctx))
 		}
 	}()
-	archive := zip.NewWriter(&limitedWriter{writer: output, remaining: c.limits.ArchiveBytes})
+	archive := zip.NewWriter(&limitedWriter{writer: output, remaining: c.limits.MaxArchiveBytes})
 	for _, name := range slices.Sorted(maps.Keys(c.files)) {
 		if err := frame.ContextError(ctx); err != nil {
 			return errors.Join(err, archive.Close())

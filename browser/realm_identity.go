@@ -11,10 +11,11 @@ import (
 
 const realmIdentitySeparator = "."
 
-// Frame affinity must remain bounded and distinguish the complete tuple even
-// when its valid components contain punctuation or fill their own byte limits.
-func RealmID(realm Realm) framehost.RealmID {
-	return framehost.RealmID(value.Hash([]byte(realm.encodedIdentity())).String())
+// HostRealm is the Host's affinity for this Realm. It must remain bounded and
+// distinguish the complete tuple even when its valid components contain
+// punctuation or fill their own byte limits.
+func (r Realm) HostRealm() framehost.RealmID {
+	return framehost.RealmID(value.Hash([]byte(r.encodedIdentity())).String())
 }
 
 func (r Realm) encodedIdentity() string {

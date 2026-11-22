@@ -6,8 +6,6 @@ import (
 	"encoding/json/jsontext"
 	"errors"
 	"fmt"
-	"io/fs"
-	"path"
 	"slices"
 	"strings"
 
@@ -17,7 +15,6 @@ import (
 )
 
 const ManifestName = "manifest.json"
-const LockName = "plugin.lock.json"
 
 var (
 	ErrInvalid   = errors.New("distribution: invalid release")
@@ -83,28 +80,22 @@ type Contribution struct {
 	Metadata jsontext.Value        `json:"metadata,omitzero"`
 }
 
+// Manifest is a release's one declaration. Its release digest is Identity, a
+// derivation the manifest never stores beside itself.
 type Manifest struct {
 	Package       string                  `json:"package"`
 	Version       string                  `json:"version"`
-	Release       framevalue.Digest       `json:"release,omitzero"`
 	Artifacts     []Artifact              `json:"artifacts"`
 	Contracts     []framehost.ContractRef `json:"contracts,omitempty"`
 	Units         []Unit                  `json:"units"`
 	Contributions []Contribution          `json:"contributions,omitempty"`
-	Dependencies  []LockedRelease         `json:"dependencies,omitempty"`
+	Dependencies  []Dependency            `json:"dependencies,omitempty"`
 }
 
-type LockedRelease struct {
+// Dependency pins another package to its exact release.
+type Dependency struct {
 	Package string            `json:"package"`
 	Release framevalue.Digest `json:"release"`
-}
-
-type Lock struct {
-	Package      string                  `json:"package"`
-	Release      framevalue.Digest       `json:"release"`
-	Artifacts    []Artifact              `json:"artifacts"`
-	Contracts    []framehost.ContractRef `json:"contracts,omitempty"`
-	Dependencies []LockedRelease         `json:"dependencies,omitempty"`
 }
 
 func ParseManifest(data []byte) (Manifest, error) {
@@ -115,29 +106,7 @@ func ParseManifest(data []byte) (Manifest, error) {
 	return manifest, manifest.Validate()
 }
 
-func ParseLock(data []byte) (Lock, error) {
-	var lock Lock
-	if err := framevalue.DecodeValue(data, &lock, "lock"); err != nil {
-		return lock, errors.Join(ErrInvalid, err)
-	}
-	return lock, lock.Validate()
-}
-
-func (l Lock) Validate() error {
-	if !frame.ValidName(l.Package) || l.Release.Validate() != nil {
-		return ErrInvalid
-	}
-	if err := validateDependencies(l.Dependencies); err != nil {
-		return err
-	}
-	if _, err := indexArtifacts(l.Artifacts); err != nil {
-		return err
-	}
-	_, err := indexContracts(l.Contracts)
-	return err
-}
-
-func validateDependencies(dependencies []LockedRelease) error {
+func validateDependencies(dependencies []Dependency) error {
 	seen := map[string]struct{}{}
 	for _, dependency := range dependencies {
 		if !frame.ValidName(dependency.Package) || dependency.Release.Validate() != nil {
@@ -157,8 +126,6 @@ func (m Manifest) Validate() error {
 		return fmt.Errorf("%w: package name %q", ErrInvalid, m.Package)
 	case !frame.ValidName(m.Version):
 		return fmt.Errorf("%w: version %q", ErrInvalid, m.Version)
-	case !m.Release.IsZero() && m.Release.Validate() != nil:
-		return fmt.Errorf("%w: release digest", ErrInvalid)
 	}
 	if err := validateDependencies(m.Dependencies); err != nil {
 		return err
@@ -219,11 +186,17 @@ func indexContracts(declared []framehost.ContractRef) (map[framehost.ContractRef
 	return contracts, nil
 }
 
+// Declaration is the Host declaration of this unit; the Host owns the
+// validity of its identity, slots and exports.
+func (u Unit) Declaration() framehost.UnitDeclaration {
+	return framehost.UnitDeclaration{ID: u.ID, Profile: u.Profile, Imports: slices.Clone(u.Imports), Exports: slices.Clone(u.Exports)}
+}
+
 func (u Unit) validate(contracts map[framehost.ContractRef]struct{}, artifacts map[string]Artifact) error {
-	if u.ID.Validate() != nil || u.Profile.Validate() != nil {
-		return fmt.Errorf("%w: unit identity", ErrInvalid)
+	if err := u.Declaration().Validate(); err != nil {
+		return errors.Join(ErrInvalid, err)
 	}
-	if err := u.validateBindings(contracts); err != nil {
+	if err := u.validateContracts(contracts); err != nil {
 		return err
 	}
 	if err := u.validateVariants(artifacts); err != nil {
@@ -248,32 +221,18 @@ func (u Unit) validate(contracts map[framehost.ContractRef]struct{}, artifacts m
 	return err
 }
 
-func (u Unit) validateBindings(contracts map[framehost.ContractRef]struct{}) error {
-	slots := map[string]struct{}{}
+// validateContracts requires every slot and export to name a contract the
+// manifest itself publishes.
+func (u Unit) validateContracts(contracts map[framehost.ContractRef]struct{}) error {
 	for _, imported := range u.Imports {
-		if !frame.ValidName(imported.Slot) {
-			return fmt.Errorf("%w: import slot %q", ErrInvalid, imported.Slot)
-		}
-		if _, exists := slots[imported.Slot]; exists {
-			return fmt.Errorf("%w: duplicate import slot %q", ErrInvalid, imported.Slot)
-		}
 		if _, exists := contracts[imported.Contract]; !exists {
 			return fmt.Errorf("%w: import slot %q names an undeclared contract", ErrInvalid, imported.Slot)
 		}
-		slots[imported.Slot] = struct{}{}
 	}
-	exports := map[string]struct{}{}
 	for _, export := range u.Exports {
-		if !frame.ValidName(export.Name) {
-			return fmt.Errorf("%w: export name %q", ErrInvalid, export.Name)
-		}
-		if _, exists := exports[export.Name]; exists {
-			return fmt.Errorf("%w: duplicate export %q", ErrInvalid, export.Name)
-		}
 		if _, exists := contracts[export.Contract]; !exists {
 			return fmt.Errorf("%w: export %q names an undeclared contract", ErrInvalid, export.Name)
 		}
-		exports[export.Name] = struct{}{}
 	}
 	return nil
 }
@@ -288,7 +247,7 @@ func (u Unit) validateVariants(artifacts map[string]Artifact) error {
 		if variant.Runtime == nil && !artifact.Executable {
 			return fmt.Errorf("%w: process entry %q is not executable", ErrInvalid, variant.Path)
 		}
-		if variant.Runtime != nil && !validRuntime(*variant.Runtime) {
+		if variant.Runtime != nil && !variant.Runtime.valid() {
 			return fmt.Errorf("%w: runtime reference of %q", ErrInvalid, variant.Path)
 		}
 		key := [2]string{variant.OS, variant.Arch}
@@ -328,15 +287,8 @@ func (u Unit) ValidateProcessEntry() error {
 	if len(u.Variants) == 0 || u.Module != nil {
 		return fmt.Errorf("%w: process unit entry", ErrInvalid)
 	}
-	for _, imported := range u.Imports {
-		if imported.Contract.Mode != framehost.PortableMode {
-			return fmt.Errorf("%w: process import %q is native", ErrInvalid, imported.Slot)
-		}
-	}
-	for _, exported := range u.Exports {
-		if exported.Contract.Mode != framehost.PortableMode {
-			return fmt.Errorf("%w: process export %q is native", ErrInvalid, exported.Name)
-		}
+	if err := u.Declaration().RequirePortable(); err != nil {
+		return errors.Join(ErrInvalid, err)
 	}
 	return nil
 }
@@ -416,157 +368,25 @@ func validateContributions(declared []Contribution, units map[framehost.UnitID]U
 
 // Canonical preserves all declaration order. Artifact order is a set and is
 // normalized; metadata is JSON syntax, not an inferred schema equivalence.
-func (m Manifest) Canonical() ([]byte, error) {
+func (m Manifest) Canonical() (framevalue.JSON, error) {
 	if err := m.Validate(); err != nil {
-		return nil, err
+		return framevalue.JSON{}, err
 	}
-	m.Release = framevalue.Digest{}
 	m.Artifacts = sortedArtifacts(m.Artifacts)
-	canonical, err := framevalue.EncodeJSON(m)
-	if err != nil {
-		return nil, err
-	}
-	return canonical.Bytes(), nil
+	return framevalue.EncodeJSON(m)
 }
 
+// Identity is the release digest: the canonical manifest's, covering the
+// declaration and its artifact inventory.
 func (m Manifest) Identity() (framevalue.Digest, error) {
-	data, err := m.Canonical()
-	if err != nil {
-		return framevalue.Digest{}, err
-	}
-	return framevalue.Hash(data), nil
-}
-
-func (m Manifest) Lock() (Lock, error) {
-	digest, err := m.Identity()
-	if err != nil {
-		return Lock{}, err
-	}
-	return Lock{Package: m.Package, Release: digest, Artifacts: sortedArtifacts(m.Artifacts), Contracts: slices.Clone(m.Contracts), Dependencies: slices.Clone(m.Dependencies)}, nil
-}
-
-// Verify compares the lock with the one the manifest derives. Artifacts are a
-// set; contracts and dependencies keep their declared order.
-func (l Lock) Verify(m Manifest) error {
-	expected, err := m.Lock()
-	if err != nil {
-		return err
-	}
-	if l.Package != expected.Package || l.Release != expected.Release ||
-		!slices.Equal(sortedArtifacts(l.Artifacts), expected.Artifacts) ||
-		!slices.Equal(l.Contracts, expected.Contracts) || !slices.Equal(l.Dependencies, expected.Dependencies) {
-		return errors.Join(ErrIntegrity, errors.New("lock does not describe the release"))
-	}
-	return nil
+	canonical, err := m.Canonical()
+	return canonical.Digest(), err
 }
 
 func sortedArtifacts(artifacts []Artifact) []Artifact {
 	return slices.SortedFunc(slices.Values(artifacts), func(a, b Artifact) int { return strings.Compare(a.Path, b.Path) })
 }
 
-func validRuntime(value RuntimeReference) bool {
-	return frame.ValidName(value.Name) && frame.ValidName(value.Version) && value.Digest.Validate() == nil
-}
-
-// Portable archive paths deliberately use ASCII. This rejects Unicode and
-// case-fold aliases rather than depending on a destination filesystem's rules.
-const maxArtifactPathBytes = 1024
-const maxArtifactPathSegmentBytes = 240
-
-// Release paths must stay valid on every platform a host may extract to, so
-// Windows device names and reserved characters are refused everywhere.
-var (
-	windowsDeviceNames            = []string{"con", "prn", "aux", "nul"}
-	windowsNumberedDevicePrefixes = []string{"com", "lpt"}
-)
-
-const windowsReservedCharacters = ":*?\"<>|"
-
-func validPath(value string) bool {
-	if value == "" || len(value) > maxArtifactPathBytes || !fs.ValidPath(value) || value == "." || strings.Contains(value, "\\") {
-		return false
-	}
-	if strings.ContainsFunc(value, unportableRune) {
-		return false
-	}
-	return !slices.ContainsFunc(strings.Split(value, "/"), unportableSegment)
-}
-
-func unportableRune(r rune) bool {
-	return r < '!' || r > '~' || strings.ContainsRune(windowsReservedCharacters, r)
-}
-
-func unportableSegment(segment string) bool {
-	if strings.HasSuffix(segment, ".") || strings.HasSuffix(segment, " ") || len(segment) > maxArtifactPathSegmentBytes {
-		return true
-	}
-	stem := strings.ToLower(strings.SplitN(segment, ".", 2)[0])
-	return slices.Contains(windowsDeviceNames, stem) || numberedDevice(stem)
-}
-
-func numberedDevice(stem string) bool {
-	if len(stem) != 4 || stem[3] < '1' || stem[3] > '9' {
-		return false
-	}
-	return slices.Contains(windowsNumberedDevicePrefixes, stem[:3])
-}
-
-func isReleaseMetadata(name string) bool { return name == ManifestName || name == LockName }
-
-type entryKind uint8
-
-const (
-	fileEntry entryKind = iota
-	directoryEntry
-	ancestorEntry
-)
-
-// Implicit ancestors reserve their original spelling before a later explicit
-// directory can introduce a filesystem-dependent alias.
-type pathEntry struct {
-	name string
-	kind entryKind
-}
-
-type pathInventory map[string]pathEntry
-
-func reservedMetadataPaths() pathInventory {
-	return pathInventory{ManifestName: {name: ManifestName, kind: fileEntry}, LockName: {name: LockName, kind: fileEntry}}
-}
-
-func (paths pathInventory) ownsFile(name string) bool {
-	entry, present := paths[strings.ToLower(name)]
-	return present && entry.name == name && entry.kind == fileEntry
-}
-
-func (paths pathInventory) admitBounded(name string, kind entryKind, limit int) error {
-	if err := paths.admit(name, kind); err != nil {
-		return err
-	}
-	if len(paths) > limit {
-		return ErrCapacity
-	}
-	return nil
-}
-
-func (paths pathInventory) admit(name string, kind entryKind) error {
-	if !validPath(name) {
-		return fmt.Errorf("%w: unsafe path", ErrInvalid)
-	}
-	key := strings.ToLower(name)
-	if prior, exists := paths[key]; exists && (prior.kind != ancestorEntry || kind != directoryEntry || prior.name != name) {
-		return fmt.Errorf("%w: duplicate or aliased path", ErrInvalid)
-	}
-	for ancestor := path.Dir(name); ancestor != "."; ancestor = path.Dir(ancestor) {
-		key := strings.ToLower(ancestor)
-		if prior, ok := paths[key]; ok {
-			if prior.kind == fileEntry || prior.name != ancestor {
-				return fmt.Errorf("%w: file or alias is a path ancestor", ErrInvalid)
-			}
-		} else {
-			paths[key] = pathEntry{name: ancestor, kind: ancestorEntry}
-		}
-	}
-	paths[key] = pathEntry{name: name, kind: kind}
-	return nil
+func (r RuntimeReference) valid() bool {
+	return frame.ValidName(r.Name) && frame.ValidName(r.Version) && r.Digest.Validate() == nil
 }

@@ -1,3 +1,6 @@
+// Package contractgen publishes Go, TypeScript and JSON Schema projections of a
+// portable capability descriptor. It is a publisher tool, never a runtime
+// dependency of a Host.
 package contractgen
 
 import (
@@ -13,11 +16,39 @@ import (
 
 type GoOutput struct{ Path, Package, Prefix string }
 
+// GenerateConfig selects the projections of one published capability
+// descriptor. An empty directory requests none of that directory's files.
+type GenerateConfig struct {
+	// Source is a descriptor path, or StandardInput.
+	Source              string
+	ArtifactDirectory   string
+	TypeScriptDirectory string
+	Go                  []GoOutput
+}
+
+// StandardInput names the process's standard input as the descriptor source.
+const StandardInput = "-"
+
+const (
+	methodsFile    = "methods.generated.json"
+	capabilityFile = "capability.generated.json"
+	referenceFile  = "API_REFERENCE.md"
+	typeScriptFile = "methods.generated.ts"
+)
+
 var ErrInvalid = errors.New("contractgen: invalid input")
 
 // Callers own the selected destinations for the duration of generation. Files in
 // different directories cannot form a single filesystem transaction for readers.
-func Generate(source, directory, tsDirectory string, goOutputs ...GoOutput) error {
+func Generate(config GenerateConfig) error {
+	if config.Source == "" {
+		return fmt.Errorf("%w: descriptor source is required", ErrInvalid)
+	}
+	for _, output := range config.Go {
+		if output.Path == "" {
+			return fmt.Errorf("%w: Go projection path is required", ErrInvalid)
+		}
+	}
 	var outputs []artifact
 	appendOutput := func(path string, body []byte, err error) error {
 		if err != nil {
@@ -27,8 +58,8 @@ func Generate(source, directory, tsDirectory string, goOutputs ...GoOutput) erro
 		return nil
 	}
 	reader := os.Stdin
-	if source != standardInput {
-		file, err := os.Open(source)
+	if config.Source != StandardInput {
+		file, err := os.Open(config.Source)
 		if err != nil {
 			return err
 		}
@@ -43,43 +74,38 @@ func Generate(source, directory, tsDirectory string, goOutputs ...GoOutput) erro
 	if err != nil {
 		return err
 	}
-	if directory != "" {
+	if config.ArtifactDirectory != "" {
 		for _, output := range []struct {
 			name   string
 			encode func() ([]byte, error)
 		}{
 			{schemaFile, feature.schemaJSON},
-			{"methods.generated.json", feature.methodsJSON},
-			{"capability.generated.json", feature.capabilityJSON},
+			{methodsFile, feature.methodsJSON},
+			{capabilityFile, feature.capabilityJSON},
 		} {
 			body, err := output.encode()
-			if err := appendOutput(filepath.Join(directory, output.name), body, err); err != nil {
+			if err := appendOutput(filepath.Join(config.ArtifactDirectory, output.name), body, err); err != nil {
 				return err
 			}
 		}
-		outputs = append(outputs, artifact{filepath.Join(directory, "API_REFERENCE.md"), []byte(feature.reference())})
+		outputs = append(outputs, artifact{filepath.Join(config.ArtifactDirectory, referenceFile), []byte(feature.reference())})
 	}
-	if tsDirectory != "" {
-		outputs = append(outputs, artifact{filepath.Join(tsDirectory, "methods.generated.ts"), []byte(feature.typeScript())})
+	if config.TypeScriptDirectory != "" {
+		outputs = append(outputs, artifact{filepath.Join(config.TypeScriptDirectory, typeScriptFile), []byte(feature.typeScript())})
 	}
-	for _, output := range goOutputs {
-		if output.Path == "" {
-			continue
-		}
+	for _, output := range config.Go {
 		body, err := feature.goProjection(featureGoOptions{Package: output.Package, Prefix: output.Prefix})
 		if err := appendOutput(output.Path, body, err); err != nil {
 			return err
 		}
 	}
-	return publishArtifacts(source, outputs)
+	return publishArtifacts(config.Source, outputs)
 }
 
 type artifact struct {
 	path string
 	body []byte
 }
-
-const standardInput = "-"
 
 // A stage directory holds the next file and a link to the original one.
 const (
@@ -120,7 +146,7 @@ func publishArtifacts(source string, outputs []artifact) (err error) {
 // the descriptor input, another output, nor the parent of another output.
 func planStages(source string, outputs []artifact) ([]stagedArtifact, error) {
 	var input os.FileInfo
-	if source != standardInput {
+	if source != StandardInput {
 		var err error
 		if input, err = os.Stat(source); err != nil {
 			return nil, err
@@ -210,7 +236,7 @@ func (s *stagedArtifact) restore() error {
 		// Preserve the backup when the filesystem refuses rollback as well.
 		backup := s.stage
 		s.stage = ""
-		return fmt.Errorf("feature contracts: restore %s from %s: %w", s.target, backup, err)
+		return fmt.Errorf("contractgen: restore %s from %s: %w", s.target, backup, err)
 	}
 	return nil
 }

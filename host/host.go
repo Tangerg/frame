@@ -77,7 +77,7 @@ func (l Limits) resolve() (Limits, error) {
 type Host struct{ *hostState }
 
 type hostState struct {
-	identity            *frame.LifetimeDomain
+	domain              *frame.LifetimeDomain
 	admission           Admission
 	lifetime            frame.Lifetime
 	limits              Limits
@@ -126,7 +126,7 @@ func New(ctx context.Context, config Config) (_ Host, err error) {
 		return Host{}, frame.ErrClosed
 	}
 	h := &hostState{
-		identity:            new(frame.LifetimeDomain),
+		domain:              new(frame.LifetimeDomain),
 		admission:           admission,
 		lifetime:            config.Lifetime,
 		limits:              limits,
@@ -164,10 +164,6 @@ func (c Config) authority() (Admission, Durable, error) {
 		return Admission{}, nil, fmt.Errorf("%w: durable authority requires its epoch", frame.ErrInvalid)
 	}
 	return c.Authority.Admission(), durable, nil
-}
-
-func (h *hostState) newLifetime(ctx context.Context) frame.Lifetime {
-	return h.identity.NewLifetime(ctx)
 }
 
 func (h *hostState) Admission() Admission { return h.admission }
@@ -226,7 +222,7 @@ func (h *hostState) Observations() []InstanceObservation {
 		result = append(result, instance.observationLocked())
 	}
 	slices.SortFunc(result, func(a, b InstanceObservation) int {
-		return cmp.Or(compareUnit(a.Source, b.Source), cmp.Compare(a.Generation, b.Generation))
+		return cmp.Or(a.Source.compare(b.Source), cmp.Compare(a.Generation, b.Generation))
 	})
 	return result
 }

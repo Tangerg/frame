@@ -80,3 +80,8 @@ func (outcome CloseOutcome) ResourceState(err error) (ReleaseState, error) {
 	}
 	return ResourceUnconfirmed, err
 }
+
+var (
+	ErrUnconfirmedRelease = errors.New("frame: resource release unconfirmed")
+	ErrCloseFailed        = errors.New("frame: resource cleanup failed")
+)

@@ -52,7 +52,7 @@ type capturedPlan struct {
 
 func (p *capturedPlan) includeMember(member snapshotMember) {
 	p.members = append(p.members, member)
-	p.includeRoot(member.instanceID, member.source.Unit())
+	p.includeRoot(member.instanceID, member.source.UnitRef)
 }
 
 func (p *capturedPlan) includeRoot(id string, source UnitRef) {
@@ -121,7 +121,7 @@ func Capture(snapshot Snapshot, selections ...SelectionRef) (BindingPlan, error)
 		}
 		graph.Selection = framevalue.Hash(encoded)
 	}
-	binding, err := reachableBinding(graph, graph.Roots, nil)
+	binding, err := graph.reachable(graph.Roots, nil)
 	if err != nil {
 		return BindingPlan{}, err
 	}
@@ -143,7 +143,7 @@ func (h *hostState) ValidatePlanUnder(ctx context.Context, plan BindingPlan) (Bi
 }
 
 func (h *hostState) validatePlanLocked(plan admissionPlan) error {
-	if plan == nil || plan.header().owner != h.identity {
+	if plan == nil || plan.header().owner != h.domain {
 		return ErrStaleBinding
 	}
 	if h.lifetime.IsClosing() {
@@ -225,7 +225,7 @@ func (p *capturedPlan) acquire(ctx context.Context, h *hostState, config UseConf
 // validateProviderLocked accepts an export whose instance has not prepared yet;
 // a prepared instance must still serve the original setup export.
 func (h *hostState) validateProviderLocked(source ExportRef, realm RealmID) error {
-	unit, _, err := h.unitLocked(source.Unit())
+	unit, _, err := h.unitLocked(source.UnitRef)
 	if err != nil {
 		return err
 	}
@@ -233,7 +233,7 @@ func (h *hostState) validateProviderLocked(source ExportRef, realm RealmID) erro
 	if err != nil {
 		return err
 	}
-	instance := h.instances[instanceKey{source: source.Unit(), realm: realm}]
+	instance := h.instances[instanceKey{source: source.UnitRef, realm: realm}]
 	if instance == nil {
 		return nil
 	}

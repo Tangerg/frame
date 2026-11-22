@@ -3,6 +3,8 @@ package mcp
 import (
 	json "encoding/json/v2"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/Tangerg/frame"
 	"github.com/Tangerg/frame/value"
@@ -32,7 +34,7 @@ func (r toolRequirements) admit(export string, member *toolMember) error {
 	var schema struct {
 		Type value.SchemaType `json:"type"`
 	}
-	if err := json.Unmarshal(descriptor.Input, &schema); err != nil || schema.Type != value.TypeObject {
+	if err := json.Unmarshal(descriptor.Input, &schema); err != nil || schema.Type != value.SchemaTypeObject {
 		return fmt.Errorf("%w: MCP tool %q needs an object input schema", frame.ErrContractMismatch, descriptor.Name)
 	}
 	input, err := value.ParseJSON(descriptor.Input)
@@ -40,7 +42,7 @@ func (r toolRequirements) admit(export string, member *toolMember) error {
 		return err
 	}
 	required := toolRequirement{input: toolSchema{value: input, export: export}, readOnly: descriptor.Kind == frame.Query}
-	if !member.fullResult {
+	if member.result == StructuredResult {
 		output, err := value.ParseJSON(descriptor.Output)
 		if err != nil {
 			return err
@@ -61,6 +63,37 @@ func (r toolRequirements) admit(export string, member *toolMember) error {
 		required.readOnly = prior.readOnly || required.readOnly
 	}
 	r[descriptor.Name] = required
+	return nil
+}
+
+// bindPage binds one page's declared tools; found carries the names earlier
+// pages bound, so a tool repeated across pages is refused.
+func (r toolRequirements) bindPage(tools []*sdk.Tool, found map[string]bool) error {
+	for _, tool := range tools {
+		if tool == nil {
+			return fmt.Errorf("%w: null MCP tool", frame.ErrContractMismatch)
+		}
+		required, declared := r[tool.Name]
+		if !declared {
+			continue
+		}
+		if found[tool.Name] {
+			return fmt.Errorf("%w: duplicate MCP tool %q", frame.ErrContractMismatch, tool.Name)
+		}
+		if err := required.bind(tool); err != nil {
+			return err
+		}
+		found[tool.Name] = true
+	}
+	return nil
+}
+
+func (r toolRequirements) requireAll(found map[string]bool) error {
+	for _, name := range slices.Sorted(maps.Keys(r)) {
+		if !found[name] {
+			return fmt.Errorf("%w: missing MCP tool %q", frame.ErrContractMismatch, name)
+		}
+	}
 	return nil
 }
 

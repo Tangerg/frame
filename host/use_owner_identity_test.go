@@ -21,8 +21,8 @@ func (o *observedUseOwner) ID() string {
 	return o.id
 }
 
-func (*observedUseOwner) Held(_ context.Context, id framehost.InstallationID) ([]framehost.Dependency, error) {
-	return []framehost.Dependency{{InstallationID: id, Release: value.Hash(nil)}}, nil
+func (*observedUseOwner) Held(context.Context, framehost.InstallationID) ([]value.Digest, error) {
+	return []value.Digest{value.Hash(nil)}, nil
 }
 
 func TestUseOwnerIdentityIsFrozenBeforeStorageReads(t *testing.T) {

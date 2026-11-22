@@ -1,12 +1,10 @@
 package browser
 
-import (
-	"encoding/json"
-)
+import "encoding/json/jsontext"
 
 type HTTPEnvelope struct {
-	Method string          `json:"method"`
-	Input  json.RawMessage `json:"input"`
+	Method string         `json:"method"`
+	Input  jsontext.Value `json:"input"`
 }
 
 type HTTPProblem struct {

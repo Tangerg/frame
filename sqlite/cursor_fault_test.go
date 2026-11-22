@@ -90,10 +90,10 @@ func TestReadSnapshotJoinsOriginalNextAndCloseBeforeRestoringWriter(t *testing.T
 	accessReady := make(chan *transactionAccess, 1)
 	nextDone, completed := make(chan bool, 1), make(chan error, 1)
 	go func() {
-		completed <- RunInTx(ctx, database, func(writer context.Context) error {
-			if err := RunReadSnapshot(writer, database, func(reader context.Context) error {
+		completed <- database.RunInTx(ctx, func(writer context.Context) error {
+			if err := database.RunReadSnapshot(writer, func(reader context.Context) error {
 				readerEntered.Store(true)
-				access := Connection(reader, database).(*transactionAccess)
+				access := database.Executor(reader).(*transactionAccess)
 				accessReady <- access
 				rows, err := access.QueryContext(reader, statement)
 				if err != nil {
@@ -105,7 +105,7 @@ func TestReadSnapshotJoinsOriginalNextAndCloseBeforeRestoringWriter(t *testing.T
 			}); err != nil {
 				return err
 			}
-			_, err := Connection(writer, database).ExecContext(writer, `INSERT INTO facts VALUES('writer resumed')`)
+			_, err := database.Executor(writer).ExecContext(writer, `INSERT INTO facts VALUES('writer resumed')`)
 			return err
 		})
 	}()
@@ -177,13 +177,13 @@ func TestCursorCloseFailureRemainsWithOriginalTransaction(t *testing.T) {
 				afterClose: func() { disposed.Add(1) },
 			})
 			var nestedErr error
-			err := RunInTx(t.Context(), database, func(writer context.Context) error {
-				if _, err := Connection(writer, database).ExecContext(writer, `INSERT INTO facts VALUES('must rollback')`); err != nil {
+			err := database.RunInTx(t.Context(), func(writer context.Context) error {
+				if _, err := database.Executor(writer).ExecContext(writer, `INSERT INTO facts VALUES('must rollback')`); err != nil {
 					return err
 				}
 				recovered := capturePanic(func() {
-					nestedErr = RunReadSnapshot(writer, database, func(reader context.Context) error {
-						access := Connection(reader, database)
+					nestedErr = database.RunReadSnapshot(writer, func(reader context.Context) error {
+						access := database.Executor(reader)
 						if finish == "handled scan error" {
 							var value string
 							if err := access.QueryRowContext(reader, statement).Scan(&value); !errors.Is(err, closeCause) {
@@ -282,14 +282,14 @@ func TestAutomaticAndCallerCursorCloseKeepOriginalReleaseEvidence(t *testing.T) 
 				},
 				afterClose: func() { disposed.Add(1) },
 			})
-			err := RunInTx(t.Context(), database, func(writer context.Context) error {
-				if _, err := Connection(writer, database).ExecContext(writer, `INSERT INTO facts VALUES('must rollback')`); err != nil {
+			err := database.RunInTx(t.Context(), func(writer context.Context) error {
+				if _, err := database.Executor(writer).ExecContext(writer, `INSERT INTO facts VALUES('must rollback')`); err != nil {
 					return err
 				}
-				err := RunReadSnapshot(writer, database, func(reader context.Context) error {
+				err := database.RunReadSnapshot(writer, func(reader context.Context) error {
 					query, cancel := context.WithCancel(reader)
 					defer cancel()
-					rows, err := Connection(reader, database).QueryContext(query, test.statement)
+					rows, err := database.Executor(reader).QueryContext(query, test.statement)
 					if err != nil {
 						return err
 					}

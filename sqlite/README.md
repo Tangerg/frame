@@ -15,7 +15,9 @@ independent writers or atomic transactions across databases.
 schema requires a fresh data directory. The declaration identity encodes sorted
 owner identities and each statement boundary; SQL comments cannot impersonate
 another owner declaration. Reopening also checks the persisted owner set. Each
-owner supplies its original business tables and a trusted reference query.
+owner supplies its original business tables and a trusted reference query that
+answers with the release digests the queried installation still needs; the Host
+owns the installation side of each dependency and its canonical order.
 Register the resulting `Owner` with the same
 Admission through `RegisterUseOwner` before its first destructive dependency check.
 That check seals the owner set for the life of this Admission. Frame does not create a competing business
@@ -89,9 +91,9 @@ evaluation error remains distinguishable from an additional cleanup failure.
 The Store never exposes its pool, so pool closure, independent writers and
 connection settings remain with its original lifecycle owner. Application adapters
 compose by passing the issued capability explicitly. The standalone transaction
-helpers accept the `Database` handle returned by `OpenSchema`, never a raw
-`*sql.DB`. `Connection` grants an executor only inside the original transaction
-context. For independent reads, `Database.Read` lends a scoped `Reader`; direct
+methods belong to the `Database` handle returned by `OpenSchema`, never a raw
+`*sql.DB`. `Database.Executor` grants an executor only inside the original
+transaction context. For independent reads, `Database.Read` lends a scoped `Reader`; direct
 pool queries, settings and closure are not exposed. Store and standalone
 transactions compose the same transaction and physical-connection owner.
 `OpenSchema` uses modernc's registered
@@ -102,7 +104,7 @@ indexes, foreign keys and the SQLite runtime. Changing or removing an authorizer
 expires prepared statements, so a previously compiled statement cannot bypass a
 later read scope. Standalone nested readers receive their own expiring capability;
 the original writer regains its authority only after the final reader returns.
-Nested `RunInTx` joins the original transaction and reports its callback's error
+Nested `Database.RunInTx` joins the original transaction and reports its callback's error
 and cancellation cause together. This completion rule is the same as an independent
 transaction; returning that error to the outer owner prevents COMMIT. A caller
 that catches an ordinary nested error still owns its decision to continue the
@@ -179,10 +181,10 @@ synchronization. `Confirm` records synchronization but does not clear the Host's
 recovery barrier. The composition root calls `Admission.Recover` after restoring
 all necessary owners and execution scopes; recovery does not replay mutations.
 `Host.Restore(ctx, plugins)` reads committed installations from this same Store
-under Host maintenance. `RecoverInstallations` may supply records for resolving
+under Host maintenance and then confirms that projection, so no caller sequences
+the confirmation. `RecoverInstallations` may supply records for resolving
 release definitions; passing a record copy back into Host is not a recovery
-operation. `ConfirmRestoredInstallations` follows successful Host restoration
-before the composition root clears the shared recovery barrier.
+operation.
 
 ## Evidence retention
 

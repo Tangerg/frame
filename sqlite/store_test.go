@@ -18,19 +18,19 @@ import (
 )
 
 func testConfig(path string, admission framehost.Admission) Config {
-	return Config{Path: path, Admission: admission, Owners: []OwnerSchema{{ID: "documents", Statements: []string{`CREATE TABLE documents (id TEXT PRIMARY KEY,installation TEXT NOT NULL,release TEXT NOT NULL,active INTEGER NOT NULL)`}, References: func(ctx context.Context, tx Reader, id framehost.InstallationID) ([]framehost.Dependency, error) {
-		rows, err := tx.QueryContext(ctx, `SELECT DISTINCT installation,release FROM documents WHERE installation=? AND active=1`, id)
+	return Config{Path: path, Admission: admission, Owners: []OwnerSchema{{ID: "documents", Statements: []string{`CREATE TABLE documents (id TEXT PRIMARY KEY,installation TEXT NOT NULL,release TEXT NOT NULL,active INTEGER NOT NULL)`}, References: func(ctx context.Context, tx Reader, id framehost.InstallationID) ([]value.Digest, error) {
+		rows, err := tx.QueryContext(ctx, `SELECT DISTINCT release FROM documents WHERE installation=? AND active=1`, id)
 		if err != nil {
 			return nil, err
 		}
 		defer rows.Close()
-		var result []framehost.Dependency
+		var result []value.Digest
 		for rows.Next() {
-			var dependency framehost.Dependency
-			if err := rows.Scan(&dependency.InstallationID, &dependency.Release); err != nil {
+			var release value.Digest
+			if err := rows.Scan(&release); err != nil {
 				return nil, err
 			}
-			result = append(result, dependency)
+			result = append(result, release)
 		}
 		return result, rows.Err()
 	}}}}
@@ -404,7 +404,7 @@ func TestExecutionProtectionOutlivesBusinessAndEpoch(t *testing.T) {
 	}
 	source := framehost.UnitRef{InstallationID: "converter", Release: value.Hash([]byte("release")), UnitID: "backend"}
 	binding := framehost.BindingSnapshot{Roots: []framehost.ExportRef{{InstallationID: source.InstallationID, Release: source.Release, UnitID: source.UnitID, Export: "convert", Contract: contract.Ref()}}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil), Imports: []framehost.ImportBinding{}}}}
-	attempt := Attempt{ID: "attempt-1", Epoch: store.Epoch(), Source: source, Binding: binding, Realm: "runner-1", Profile: "local-process"}
+	attempt := Attempt{ID: "attempt-1", Epoch: store.Epoch(), Source: source, Binding: binding, Realm: "runner-1", Profile: "local-process", Scope: "scope", ScopeGeneration: 1, Generation: 1}
 	if _, err := store.RecordAttempt(context.Background(), attempt); err != nil {
 		t.Fatal(err)
 	}
@@ -472,7 +472,7 @@ func TestProtectionQueriesExcludeProvenHistory(t *testing.T) {
 	ctx := t.Context()
 	ref := framehost.UnitRef{InstallationID: "one", Release: value.Hash([]byte("release")), UnitID: "u"}
 	binding := framehost.BindingSnapshot{Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{ref}, Units: []framehost.UnitBinding{{Source: ref, Configuration: value.Hash(nil)}}}
-	active := Attempt{ID: "active", Epoch: store.Epoch(), Source: ref, Binding: binding, Realm: "runner", Profile: framehost.LocalProcess}
+	active := Attempt{ID: "active", Epoch: store.Epoch(), Source: ref, Binding: binding, Realm: "runner", Profile: framehost.LocalProcess, Scope: "scope", ScopeGeneration: 1, Generation: 1}
 	if _, err := store.RecordAttempt(ctx, active); err != nil {
 		t.Fatal(err)
 	}
@@ -498,7 +498,7 @@ func TestProtectionQueriesExcludeProvenHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	deps, err := store.ExecutionDependencies(ctx)
-	if err != nil || len(deps) != 1 || deps[0] != ref.Dependency() {
+	if err != nil || len(deps) != 1 || deps[0] != ref.ReleaseRef {
 		t.Fatalf("active protection=%+v %v", deps, err)
 	}
 	if _, err := store.Attempt(ctx, active.ID); err != nil {

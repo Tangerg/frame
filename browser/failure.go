@@ -148,38 +148,50 @@ func (f *controlFailure) capture() {
 			continue
 		}
 		if captured, ok := current.(*controlFailure); ok && captured != nil {
-			for index, category := range receiptFailures {
-				if slices.Contains(captured.codes, category.code) {
-					matched[index] = true
-					if !slices.Contains(f.codes, category.code) {
-						f.codes = append(f.codes, category.code)
-					}
-				}
-			}
+			f.adopt(captured, matched)
 			continue
 		}
-		comparable := reflect.ValueOf(current).Comparable()
-		matcher, hasMatcher := current.(interface{ Is(error) bool })
-		for index, category := range receiptFailures {
-			if matched[index] {
-				continue
-			}
-			if comparable && current == category.err || hasMatcher && matcher.Is(category.err) {
-				matched[index] = true
-			}
-		}
-		switch wrapped := current.(type) {
-		case interface{ Unwrap() []error }:
-			children := wrapped.Unwrap()
-			for index := len(children) - 1; index >= 0; index-- {
-				pending = append(pending, children[index])
-			}
-		case interface{ Unwrap() error }:
-			pending = append(pending, wrapped.Unwrap())
-		}
+		matchReceiptFailures(current, matched)
+		pending = append(pending, causesInStackOrder(current)...)
 	}
 	if codes := selectedFailureCodes(matched); len(codes) > 0 {
 		f.codes = codes
+	}
+}
+
+func (f *controlFailure) adopt(captured *controlFailure, matched []bool) {
+	for index, category := range receiptFailures {
+		if !slices.Contains(captured.codes, category.code) {
+			continue
+		}
+		matched[index] = true
+		if !slices.Contains(f.codes, category.code) {
+			f.codes = append(f.codes, category.code)
+		}
+	}
+}
+
+func matchReceiptFailures(err error, matched []bool) {
+	equatable := reflect.ValueOf(err).Comparable()
+	matcher, hasMatcher := err.(interface{ Is(error) bool })
+	for index, category := range receiptFailures {
+		if !matched[index] && (equatable && err == category.err || hasMatcher && matcher.Is(category.err)) {
+			matched[index] = true
+		}
+	}
+}
+
+// causesInStackOrder reverses joined causes so a stack pops them in order.
+func causesInStackOrder(err error) []error {
+	switch wrapped := err.(type) {
+	case interface{ Unwrap() []error }:
+		causes := slices.Clone(wrapped.Unwrap())
+		slices.Reverse(causes)
+		return causes
+	case interface{ Unwrap() error }:
+		return []error{wrapped.Unwrap()}
+	default:
+		return nil
 	}
 }
 

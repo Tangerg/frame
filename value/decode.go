@@ -65,7 +65,7 @@ func validateValueShape(raw jsontext.Value, target reflect.Type, path string) er
 	if model.Kind() == reflect.Interface {
 		return nil
 	}
-	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte(Null)) {
 		return &ShapeError{Field: path, Detail: "must not be null"}
 	}
 	if model == reflect.TypeFor[jsonv1.Number]() {

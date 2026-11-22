@@ -26,7 +26,6 @@ func ProfileDescriptors() DescriptorShapes {
 type PortableProfileLimits struct {
 	value.PortableProfileLimits
 	MaxMethods             int `json:"maxMethods"`
-	MaxTokenBytes          int `json:"maxTokenBytes"`
 	MaxCommandIDCharacters int `json:"maxCommandIDCharacters"`
 }
 
@@ -47,7 +46,6 @@ func CurrentPortableProfile() PortableProfile {
 		Limits: PortableProfileLimits{
 			PortableProfileLimits:  value.PortableLimits(),
 			MaxMethods:             MaxCapabilityMethods,
-			MaxTokenBytes:          MaxNameBytes,
 			MaxCommandIDCharacters: MaxCommandIDCharacters,
 		},
 		Pattern:     value.ProfilePatternSyntax(),

@@ -56,29 +56,31 @@ func (b *Bridge) AdmitPlan(ctx context.Context, token string, plan LocalPlan) (P
 		b.mu.Unlock()
 		return PlanAdmission{}, framehost.ErrStaleBinding
 	}
-	admitted := entry.runtimeOwnsExit()
+	runtimeOwnsExit := entry.runtimeOwnsExit()
 	// The pending Runtime owner already exists. A failed currentness check
 	// must retain that owner instead of racing a Host non-admission proof.
 	cleanup := session.sealed || !entry.admitRuntime()
 	b.mu.Unlock()
-	if cleanup {
-		return b.admitForCleanup(ctx, entry, admitted, plan, result)
+	switch {
+	case !cleanup:
+		return b.admitCurrent(ctx, session, entry, plan, result)
+	case runtimeOwnsExit:
+		return b.recordedPlanAdmission(ctx, plan, result)
+	default:
+		return b.refuseUnadmitted(ctx, entry, plan, result)
 	}
-	return b.admitCurrent(ctx, session, entry, plan, result)
 }
 
-// admitForCleanup answers a plan that may no longer start. An execution never
-// admitted is settled here; otherwise its Runtime owes the exit proof.
-func (b *Bridge) admitForCleanup(ctx context.Context, entry *browserExecution, admitted bool, plan LocalPlan, result PlanAdmission) (PlanAdmission, error) {
-	if !admitted {
-		state, err := b.closeExecution(ctx, entry)
-		if err != nil {
-			return PlanAdmission{}, err
-		}
-		if state == frame.ResourceReleased {
-			result.Decision = PlanNotAdmitted
-			return result, nil
-		}
+// refuseUnadmitted settles a plan that may no longer start and never reached
+// its Runtime. An unconfirmed close leaves the recorded attempt to answer.
+func (b *Bridge) refuseUnadmitted(ctx context.Context, entry *browserExecution, plan LocalPlan, result PlanAdmission) (PlanAdmission, error) {
+	state, err := b.closeExecution(ctx, entry)
+	if err != nil {
+		return PlanAdmission{}, err
+	}
+	if state == frame.ResourceReleased {
+		result.Decision = PlanNotAdmitted
+		return result, nil
 	}
 	return b.recordedPlanAdmission(ctx, plan, result)
 }
@@ -125,7 +127,7 @@ func (b *Bridge) recordedPlanAdmission(ctx context.Context, plan LocalPlan, resu
 
 func matchesAttempt(attempt sqlite.Attempt, authority Authority, realm Realm, execution Execution, scope ScopeRef) bool {
 	return attempt.Profile == framehost.BrowserJS && attempt.ID == execution.ID &&
-		attempt.Realm == string(RealmID(realm)) && authority.Epoch == strconv.FormatUint(attempt.Epoch, 10) &&
+		attempt.Realm == string(realm.HostRealm()) && authority.Epoch == strconv.FormatUint(attempt.Epoch, 10) &&
 		execution.Generation == strconv.FormatUint(attempt.Generation, 10) && scope == attemptScope(attempt)
 }
 

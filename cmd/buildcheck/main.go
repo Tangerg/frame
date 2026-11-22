@@ -1,3 +1,5 @@
+// Command buildcheck runs the build/check example engine over standard input
+// and prints its snapshot result, optionally applying the formatter patch.
 package main
 
 import (

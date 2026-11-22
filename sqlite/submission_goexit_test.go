@@ -10,6 +10,7 @@ import (
 
 	framehost "github.com/Tangerg/frame/host"
 	"github.com/Tangerg/frame/sqlite"
+	"github.com/Tangerg/frame/value"
 )
 
 func submissionExitStore(t *testing.T) (sqlite.Store, sqlite.Owner, framehost.Admission) {
@@ -19,7 +20,7 @@ func submissionExitStore(t *testing.T) (sqlite.Store, sqlite.Owner, framehost.Ad
 		Path: filepath.Join(t.TempDir(), "submission-exit.db"), Admission: admission,
 		Owners: []sqlite.OwnerSchema{{
 			ID: "tasks", Statements: []string{`CREATE TABLE task_records(id TEXT PRIMARY KEY)`},
-			References: func(context.Context, sqlite.Reader, framehost.InstallationID) ([]framehost.Dependency, error) {
+			References: func(context.Context, sqlite.Reader, framehost.InstallationID) ([]value.Digest, error) {
 				return nil, nil
 			},
 		}},

@@ -84,8 +84,7 @@ func (d Database) Read(ctx context.Context, query func(Reader) error) error {
 	if d.databaseOwner == nil || query == nil {
 		return frame.ErrInvalid
 	}
-	original := d
-	return RunReadSnapshot(ctx, original, func(ctx context.Context) error {
-		return query(readAccess{access: Connection(ctx, original)})
+	return d.RunReadSnapshot(ctx, func(ctx context.Context) error {
+		return query(readAccess{access: d.Executor(ctx)})
 	})
 }

@@ -38,7 +38,7 @@ func TestResumedRealmPreservesItsExactBoundedIdentity(t *testing.T) {
 			if err != nil || projection.Realm != test.realm {
 				t.Fatalf("resumed credential lost its Realm: %+v, %v", projection.Realm, err)
 			}
-			if err := browser.RealmID(test.realm).Validate(); err != nil {
+			if err := test.realm.HostRealm().Validate(); err != nil {
 				t.Fatalf("valid Realm components produced an invalid Frame identity: %v", err)
 			}
 		})
@@ -61,7 +61,7 @@ func TestRealmComponentsCannotAliasAnotherRealmsExecutionProof(t *testing.T) {
 	attempt := sqlite.Attempt{
 		ID: "original-execution", Epoch: e.store.Epoch(), Source: source,
 		Binding: framehost.BindingSnapshot{Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{source}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil)}}},
-		Realm:   string(browser.RealmID(original)), Profile: framehost.BrowserJS, Scope: "original-scope", ScopeGeneration: 1, Generation: 1,
+		Realm:   string(original.HostRealm()), Profile: framehost.BrowserJS, Scope: "original-scope", ScopeGeneration: 1, Generation: 1,
 	}
 	if _, err := e.store.RecordAttempt(e.ctx, attempt); err != nil {
 		t.Fatal(err)

@@ -45,6 +45,8 @@ type acceptedInstallations struct{}
 func (acceptedInstallations) CommitInstallation(context.Context, framehost.InstallationChange) (framehost.CommitState, error) {
 	return framehost.Committed, nil
 }
+func (acceptedInstallations) ConfirmRestoredInstallations(context.Context) error { return nil }
+
 func (acceptedInstallations) ConfirmInstallation(context.Context, framehost.InstallationID) error {
 	return nil
 }
@@ -121,6 +123,8 @@ type resultStore struct {
 func (s resultStore) CommitInstallation(context.Context, framehost.InstallationChange) (framehost.CommitState, error) {
 	return s.state, nil
 }
+func (resultStore) ConfirmRestoredInstallations(context.Context) error { return nil }
+
 func (s resultStore) ConfirmInstallation(context.Context, framehost.InstallationID) error {
 	return s.confirm
 }

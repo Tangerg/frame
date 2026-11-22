@@ -12,7 +12,7 @@ import (
 	framehost "github.com/Tangerg/frame/host"
 )
 
-func TestWithPlanRetainsEarlyRetirementFailures(t *testing.T) {
+func TestWithUseRetainsEarlyRetirementFailures(t *testing.T) {
 	for _, returnCloseError := range []bool{false, true} {
 		name := "scope owns cleanup failure"
 		if returnCloseError {
@@ -38,7 +38,7 @@ func TestWithPlanRetainsEarlyRetirementFailures(t *testing.T) {
 				t.Fatal(err)
 			}
 			original := errors.New("original scoped cleanup failure")
-			err = framehost.WithPlan(t.Context(), host, plan, grant, func(use framehost.Use) error {
+			err = host.WithUse(t.Context(), grant, plan, func(use framehost.Use) error {
 				if _, err := use.Lifetime().Own(frame.Resource{Name: "original scoped resource", Close: func(context.Context) (frame.ReleaseState, error) { return frame.ResourceReleased, original }}); err != nil {
 					return err
 				}
@@ -336,7 +336,7 @@ func TestUseFollowsInstallationScopeForPreactivatedInstance(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if err := host.SetEnabled(ctx, "provider", false); err != nil {
+				if err := host.Disable(ctx, "provider"); err != nil {
 					t.Fatal(err)
 				}
 				synctest.Wait()
@@ -393,7 +393,7 @@ func TestInstallationScopeFenceKeepsOriginalFailedSettlement(t *testing.T) {
 		}
 		defer use.Close(context.Background())
 		originalContext := use.Context()
-		if err := host.SetEnabled(ctx, "provider", false); err != nil {
+		if err := host.Disable(ctx, "provider"); err != nil {
 			t.Fatal(err)
 		}
 		synctest.Wait()

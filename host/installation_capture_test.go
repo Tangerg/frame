@@ -80,7 +80,7 @@ func TestInstallationRetainsItsCapturedPlugin(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := framehost.WithPlan(ctx, host, plan, scope, func(use framehost.Use) error {
+			if err := host.WithUse(ctx, scope, plan, func(use framehost.Use) error {
 				return framehost.BorrowExport(ctx, use, source, func(_ context.Context, got string) error {
 					if got != "original implementation" {
 						t.Errorf("captured release executed %q", got)

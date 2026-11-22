@@ -22,7 +22,7 @@ func TestBoundedArchiveDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	limits := DefaultLimits()
-	limits.Entries = 2
+	limits.MaxEntries = 2
 	if _, err := limits.openArchive(data.Bytes()); !errors.Is(err, ErrCapacity) {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestBoundedArchiveDirectory(t *testing.T) {
 
 func TestCompressionRatioIncludesRemainder(t *testing.T) {
 	limits := DefaultLimits()
-	limits.CompressionRatio = 2
+	limits.MaxCompressionRatio = 2
 	for _, item := range []struct {
 		expanded, compressed uint64
 		allowed              bool
@@ -55,7 +55,7 @@ func TestCompressionRatioIncludesRemainder(t *testing.T) {
 }
 
 func TestBuildRejectsReservedNamespaceBeforePublication(t *testing.T) {
-	for _, name := range []string{"MANIFEST.JSON", "Plugin.Lock.Json", "manifest.json/entry"} {
+	for _, name := range []string{"MANIFEST.JSON", "Manifest.Json", "manifest.json/entry"} {
 		dir := t.TempDir()
 		path := filepath.Join(dir, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {

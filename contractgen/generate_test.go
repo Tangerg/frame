@@ -39,7 +39,7 @@ func TestInvalidGoOutputPreservesEveryDestination(t *testing.T) {
 				}
 			}
 			output.Path = filepath.Join(directory, "invalid.go")
-			err := Generate(source, directory, directory, GoOutput{Path: filepath.Join(directory, "valid.go"), Package: "consumer"}, output)
+			err := Generate(GenerateConfig{Source: source, ArtifactDirectory: directory, TypeScriptDirectory: directory, Go: []GoOutput{{Path: filepath.Join(directory, "valid.go"), Package: "consumer"}, output}})
 			if !errors.Is(err, ErrInvalid) {
 				t.Fatalf("invalid Go configuration: %v", err)
 			}
@@ -73,7 +73,7 @@ func TestFeatureConsumerGenerationAcceptsAnUndocumentedMethod(t *testing.T) {
 		t.Fatal(err)
 	}
 	projection := filepath.Join(directory, "consumer", "contract.generated.go")
-	if err := Generate(source, "", "", GoOutput{Path: projection, Package: "consumer"}); err != nil {
+	if err := Generate(GenerateConfig{Source: source, Go: []GoOutput{{Path: projection, Package: "consumer"}}}); err != nil {
 		t.Fatal(err)
 	}
 	retained, err := os.ReadFile(source)
@@ -111,7 +111,7 @@ func TestFeatureCanonicalDescriptorCanGenerateConsumers(t *testing.T) {
 	if err := os.WriteFile(source, canonical, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Generate(source, "", directory, GoOutput{Path: filepath.Join(directory, "types.go"), Package: "consumer"}); err != nil {
+	if err := Generate(GenerateConfig{Source: source, TypeScriptDirectory: directory, Go: []GoOutput{{Path: filepath.Join(directory, "types.go"), Package: "consumer"}}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -125,7 +125,7 @@ func TestFeatureGenerationCannotOverwriteDescriptorSource(t *testing.T) {
 			if err := os.WriteFile(source, data, 0600); err != nil {
 				t.Fatal(err)
 			}
-			if err := Generate(source, directory, ""); err == nil {
+			if err := Generate(GenerateConfig{Source: source, ArtifactDirectory: directory}); err == nil {
 				t.Fatal("generator overwrote its descriptor input")
 			}
 			retained, err := os.ReadFile(source)
@@ -159,7 +159,7 @@ func TestFeatureGenerationRefusesSourceHardLinkBeforeWritingAnyProjection(t *tes
 		t.Fatal(err)
 	}
 	outputs := filepath.Join(directory, "projections")
-	if err := Generate(source, outputs, "", GoOutput{Path: target, Package: "consumer"}); err == nil {
+	if err := Generate(GenerateConfig{Source: source, ArtifactDirectory: outputs, Go: []GoOutput{{Path: target, Package: "consumer"}}}); err == nil {
 		t.Fatal("overwrote source through hard link")
 	}
 	retained, err := os.ReadFile(source)

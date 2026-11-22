@@ -12,11 +12,11 @@ import (
 )
 
 type retainedUseOwner struct {
-	read func(context.Context, framehost.InstallationID) ([]framehost.Dependency, error)
+	read func(context.Context, framehost.InstallationID) ([]value.Digest, error)
 }
 
 func (retainedUseOwner) ID() string { return "consumer.documents" }
-func (o *retainedUseOwner) Held(ctx context.Context, id framehost.InstallationID) ([]framehost.Dependency, error) {
+func (o *retainedUseOwner) Held(ctx context.Context, id framehost.InstallationID) ([]value.Digest, error) {
 	return o.read(ctx, id)
 }
 
@@ -27,7 +27,7 @@ func TestUnavailableUseOwnerFencesAdmissionUntilRecovered(t *testing.T) {
 		return nil, nil
 	}})
 	unavailable := errors.New("original business store is unavailable")
-	owner := &retainedUseOwner{read: func(context.Context, framehost.InstallationID) ([]framehost.Dependency, error) {
+	owner := &retainedUseOwner{read: func(context.Context, framehost.InstallationID) ([]value.Digest, error) {
 		return nil, unavailable
 	}}
 	if err := host.Admission().RegisterUseOwner(owner); err != nil {
@@ -49,7 +49,7 @@ func TestUnavailableUseOwnerFencesAdmissionUntilRecovered(t *testing.T) {
 	if err := host.Admission().Recover(ctx, restore); !errors.Is(err, unavailable) {
 		t.Fatalf("failed restoration cleared the owner failure: %v", err)
 	}
-	owner.read = func(context.Context, framehost.InstallationID) ([]framehost.Dependency, error) { return nil, nil }
+	owner.read = func(context.Context, framehost.InstallationID) ([]value.Digest, error) { return nil, nil }
 	if err := host.Admission().Recover(ctx, restore); err != nil {
 		t.Fatalf("repaired owner could not recover: %v", err)
 	}
@@ -64,29 +64,19 @@ func TestUnavailableUseOwnerFencesAdmissionUntilRecovered(t *testing.T) {
 	}
 }
 
-func TestInvalidUseOwnerProjectionRequiresRecovery(t *testing.T) {
-	for _, test := range []struct {
-		name       string
-		dependency framehost.Dependency
-	}{
-		{"invalid release", framehost.Dependency{InstallationID: "original", Release: value.Digest{}}},
-		{"different installation", framehost.Dependency{InstallationID: "another", Release: value.Hash([]byte("release"))}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			admission := framehost.NewAdmission()
-			owner := &retainedUseOwner{read: func(context.Context, framehost.InstallationID) ([]framehost.Dependency, error) {
-				return []framehost.Dependency{test.dependency}, nil
-			}}
-			if err := admission.RegisterUseOwner(owner); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := admission.Retained(t.Context(), "original"); !errors.Is(err, frame.ErrInvalid) || !errors.Is(err, framehost.ErrRecoveryRequired) {
-				t.Fatalf("invalid required owner projection was accepted: %v", err)
-			}
-			if err := admission.RecoveryError(); !errors.Is(err, framehost.ErrRecoveryRequired) {
-				t.Fatalf("invalid owner did not fence admission: %v", err)
-			}
-		})
+func TestInvalidUseOwnerReleaseRequiresRecovery(t *testing.T) {
+	admission := framehost.NewAdmission()
+	owner := &retainedUseOwner{read: func(context.Context, framehost.InstallationID) ([]value.Digest, error) {
+		return []value.Digest{{}}, nil
+	}}
+	if err := admission.RegisterUseOwner(owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admission.Retained(t.Context(), "original"); !errors.Is(err, frame.ErrInvalid) || !errors.Is(err, framehost.ErrRecoveryRequired) {
+		t.Fatalf("invalid required owner release was accepted: %v", err)
+	}
+	if err := admission.RecoveryError(); !errors.Is(err, framehost.ErrRecoveryRequired) {
+		t.Fatalf("invalid owner did not fence admission: %v", err)
 	}
 }
 
@@ -104,7 +94,7 @@ func TestUseOwnerCancellationDoesNotHideConcurrentFailure(t *testing.T) {
 			requestCause := errors.New("caller ended its wait")
 			storageFailure := errors.New("business store read failed")
 			admission := framehost.NewAdmission()
-			owner := &retainedUseOwner{read: func(context.Context, framehost.InstallationID) ([]framehost.Dependency, error) {
+			owner := &retainedUseOwner{read: func(context.Context, framehost.InstallationID) ([]value.Digest, error) {
 				cancel(requestCause)
 				failure := errors.Join(ctx.Err(), context.Cause(ctx))
 				if test.storageFail {
@@ -133,7 +123,7 @@ func TestUseOwnerCancellationDoesNotHideConcurrentFailure(t *testing.T) {
 func TestDestructiveReadSealsItsBusinessOwnerSet(t *testing.T) {
 	a := framehost.NewAdmission()
 	entered, resume := make(chan struct{}), make(chan struct{})
-	original := &retainedUseOwner{read: func(context.Context, framehost.InstallationID) ([]framehost.Dependency, error) {
+	original := &retainedUseOwner{read: func(context.Context, framehost.InstallationID) ([]value.Digest, error) {
 		close(entered)
 		<-resume
 		return nil, nil
@@ -146,7 +136,7 @@ func TestDestructiveReadSealsItsBusinessOwnerSet(t *testing.T) {
 		finished <- a.Under(t.Context(), func() error { return a.CheckUnused(t.Context(), "install") })
 	}()
 	<-entered
-	late := &diagnosticUseOwner{id: "late", values: []framehost.Dependency{{InstallationID: "install", Release: value.Hash(nil)}}}
+	late := &diagnosticUseOwner{id: "late", values: []value.Digest{value.Hash(nil)}}
 	err := a.RegisterUseOwner(late)
 	close(resume)
 	if !errors.Is(err, frame.ErrClosed) {

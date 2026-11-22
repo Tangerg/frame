@@ -41,8 +41,8 @@ func reportAdditionalRecovery(admission framehost.Admission) []weak.Pointer[reco
 
 func TestRecoveryDiagnosticsRetainTheFirstCauseWithoutAccumulatingErrorGraphs(t *testing.T) {
 	admission := framehost.NewAdmission()
-	dependency := framehost.Dependency{InstallationID: "original", Release: value.Hash([]byte("original-release"))}
-	if err := admission.RegisterUseOwner(&diagnosticUseOwner{id: "consumer.original", values: []framehost.Dependency{dependency}}); err != nil {
+	dependency := framehost.ReleaseRef{InstallationID: "original", Release: value.Hash([]byte("original-release"))}
+	if err := admission.RegisterUseOwner(&diagnosticUseOwner{id: "consumer.original", values: []value.Digest{dependency.Release}}); err != nil {
 		t.Fatal(err)
 	}
 	first := &recoveryBudgetCause{detail: strings.Repeat("original failure ", 1000)}
@@ -176,8 +176,8 @@ func TestUseOwnerCapacityDoesNotEvictOriginalBusinessReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dependency := framehost.Dependency{InstallationID: "original", Release: value.Hash([]byte("release"))}
-	original := &diagnosticUseOwner{id: "consumer.original", values: []framehost.Dependency{dependency}}
+	dependency := framehost.ReleaseRef{InstallationID: "original", Release: value.Hash([]byte("release"))}
+	original := &diagnosticUseOwner{id: "consumer.original", values: []value.Digest{dependency.Release}}
 	if err := admission.RegisterUseOwner(original); err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestInstallationScopeCapacityIsCheckedBeforeTheDurableMutation(t *testing.T
 	if _, err := host.Install(ctx, framehost.InstallationConfig{ID: "disabled", Plugin: plugin}); err != nil {
 		t.Fatal(err)
 	}
-	if err := host.SetEnabled(ctx, "disabled", true); !errors.Is(err, frame.ErrCapacity) {
+	if err := host.Enable(ctx, "disabled"); !errors.Is(err, frame.ErrCapacity) {
 		t.Fatalf("enable bypassed scope capacity: %v", err)
 	}
 	stored, err = store.Installations(ctx)
@@ -238,16 +238,16 @@ func TestInstallationScopeCapacityIsCheckedBeforeTheDurableMutation(t *testing.T
 			t.Fatal("scope refusal durably enabled an installation")
 		}
 	}
-	if err := host.SetEnabled(ctx, "original", false); err != nil {
+	if err := host.Disable(ctx, "original"); err != nil {
 		t.Fatal(err)
 	}
-	if err := host.SetEnabled(ctx, "original", true); err != nil {
+	if err := host.Enable(ctx, "original"); err != nil {
 		t.Fatalf("original installation could not reopen its own scope: %v", err)
 	}
 	if err := host.Uninstall(ctx, "original"); err != nil {
 		t.Fatal(err)
 	}
-	if err := host.SetEnabled(ctx, "disabled", true); !errors.Is(err, frame.ErrCapacity) {
+	if err := host.Enable(ctx, "disabled"); !errors.Is(err, frame.ErrCapacity) {
 		t.Fatalf("uninstall erased a fenced generation: %v", err)
 	}
 	if _, err := host.Install(ctx, framehost.InstallationConfig{ID: "original", Plugin: plugin, Enabled: true}); err != nil {

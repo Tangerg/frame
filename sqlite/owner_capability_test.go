@@ -14,14 +14,14 @@ import (
 
 func TestRebindingAnOwnerHandlePreservesTheRegisteredAuthority(t *testing.T) {
 	admission := framehost.NewAdmission()
-	dependency := framehost.Dependency{InstallationID: "provider", Release: value.Hash([]byte("original provider"))}
+	dependency := framehost.ReleaseRef{InstallationID: "provider", Release: value.Hash([]byte("original provider"))}
 	store, err := sqlite.Open(t.Context(), sqlite.Config{
 		Path: filepath.Join(t.TempDir(), "owner-capability.db"), Admission: admission,
 		Owners: []sqlite.OwnerSchema{
-			{ID: "retained", References: func(context.Context, sqlite.Reader, framehost.InstallationID) ([]framehost.Dependency, error) {
-				return []framehost.Dependency{dependency}, nil
+			{ID: "retained", References: func(context.Context, sqlite.Reader, framehost.InstallationID) ([]value.Digest, error) {
+				return []value.Digest{dependency.Release}, nil
 			}},
-			{ID: "unretained", References: func(context.Context, sqlite.Reader, framehost.InstallationID) ([]framehost.Dependency, error) {
+			{ID: "unretained", References: func(context.Context, sqlite.Reader, framehost.InstallationID) ([]value.Digest, error) {
 				return nil, nil
 			}},
 		},

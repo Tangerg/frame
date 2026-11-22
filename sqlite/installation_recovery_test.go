@@ -37,7 +37,7 @@ func TestRecoveredInstallationEnableAdvancesOriginalAuthority(t *testing.T) {
 	if _, err := host.Install(t.Context(), framehost.InstallationConfig{ID: installation, Plugin: plugin, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := host.SetEnabled(t.Context(), installation, false); err != nil {
+	if err := host.Disable(t.Context(), installation); err != nil {
 		t.Fatal(err)
 	}
 	var commits atomic.Int64
@@ -59,7 +59,7 @@ func TestRecoveredInstallationEnableAdvancesOriginalAuthority(t *testing.T) {
 			return nil
 		},
 	})
-	enableErr := host.SetEnabled(t.Context(), installation, true)
+	enableErr := host.Enable(t.Context(), installation)
 	if framehost.InstallationConclusion(enableErr) != framehost.CommitIndeterminate {
 		t.Fatalf("expected committed enable with unavailable acknowledgement: %v", enableErr)
 	}
@@ -73,13 +73,10 @@ func TestRecoveredInstallationEnableAdvancesOriginalAuthority(t *testing.T) {
 	if err := host.Restore(t.Context(), []*framehost.Plugin{plugin}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ConfirmRestoredInstallations(t.Context()); err != nil {
-		t.Fatal(err)
-	}
 	if err := admission.Recover(t.Context(), func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	retryErr := host.SetEnabled(t.Context(), installation, true)
+	retryErr := host.Enable(t.Context(), installation)
 	_, activateErr := host.ActivateUnit(t.Context(), "", records[0].Unit("main"))
 	restored, _ := host.Installation(installation)
 	t.Logf("enable=%v; durable enabled=%t; restored enabled=%t; recovery=%v; retry enable=%v; activate=%v; setup calls=%d", enableErr, records[0].Enabled, restored.Enabled, admission.RecoveryError(), retryErr, activateErr, setups.Load())

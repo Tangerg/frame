@@ -38,17 +38,17 @@ func validateShape(target reflect.Type, visited map[reflect.Type]bool) error {
 	switch target.Kind() {
 	case reflect.Slice, reflect.Array:
 		if target.Elem().Kind() == reflect.Uint8 {
-			return fmt.Errorf("json: %s requires an explicit string or array encoding", target)
+			return fmt.Errorf("value: %s requires an explicit string or array encoding", target)
 		}
 		_, err := validateType(target.Elem(), visited)
 		return err
 	case reflect.Map:
 		if target.Key().Kind() != reflect.String {
-			return fmt.Errorf("json: %s requires string object keys", target)
+			return fmt.Errorf("value: %s requires string object keys", target)
 		}
 		if customEncoder(target.Key()) || customDecoder(target.Key()) ||
 			target.Key().Implements(reflect.TypeFor[stringEnumerator]()) || reflect.PointerTo(target.Key()).Implements(reflect.TypeFor[stringEnumerator]()) {
-			return fmt.Errorf("json: %s requires string keys without custom codecs or enums", target)
+			return fmt.Errorf("value: %s requires string keys without custom codecs or enums", target)
 		}
 		_, err := validateType(target.Elem(), visited)
 		return err
@@ -59,7 +59,7 @@ func validateShape(target reflect.Type, visited map[reflect.Type]bool) error {
 		}
 		for _, field := range fields {
 			if _, err := validateType(field.Type, visited); err != nil {
-				return fmt.Errorf("json field %s.%s: %w", target, field.Name, err)
+				return fmt.Errorf("value: field %s.%s: %w", target, field.Name, err)
 			}
 		}
 		return nil
@@ -68,9 +68,9 @@ func validateShape(target reflect.Type, visited map[reflect.Type]bool) error {
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		return nil
 	case reflect.Float32, reflect.Float64:
-		return fmt.Errorf("json: %s cannot represent exact JSON numbers; use value.Number", target)
+		return fmt.Errorf("value: %s cannot represent exact JSON numbers; use value.Number", target)
 	default:
-		return fmt.Errorf("json: unsupported value type %s", target)
+		return fmt.Errorf("value: unsupported value type %s", target)
 	}
 }
 
@@ -129,7 +129,7 @@ func declaredFields(owner reflect.Type, visiting map[reflect.Type]bool) ([]Field
 		return nil, nil
 	}
 	if visiting[owner] {
-		return nil, fmt.Errorf("json: recursive embedding of %s", owner)
+		return nil, fmt.Errorf("value: recursive embedding of %s", owner)
 	}
 	visiting[owner] = true
 	defer delete(visiting, owner)
@@ -140,42 +140,54 @@ func declaredFields(owner reflect.Type, visiting map[reflect.Type]bool) ([]Field
 		hasJSONTag = hasJSONTag || tagged
 		name, options, err := parseFieldTag(field)
 		if err != nil {
-			return nil, fmt.Errorf("json field %s.%s: %w", owner, field.Name, err)
+			return nil, fmt.Errorf("value: field %s.%s: %w", owner, field.Name, err)
 		}
 		hasJSONField = hasJSONField || options.embedded || name != ""
-		if options.embedded {
-			embedded := field.Type
-			if embedded.Kind() == reflect.Pointer {
-				// Fresh decoding cannot allocate through an unexported pointer field.
-				if !field.IsExported() {
-					return nil, fmt.Errorf("json field %s.%s: embedded pointer must be exported", owner, field.Name)
-				}
-				embedded = embedded.Elem()
-			}
-			if embedded.Kind() != reflect.Struct || customEncoder(embedded) || customDecoder(embedded) {
-				return nil, fmt.Errorf("json field %s.%s: embedding requires a plain struct", owner, field.Name)
-			}
-			children, err := declaredFields(embedded, visiting)
+		switch {
+		case options.embedded:
+			children, err := embeddedFields(owner, field, visiting)
 			if err != nil {
 				return nil, err
 			}
 			fields = append(fields, children...)
-			continue
-		}
-		if name != "" {
+		case name != "":
 			fields = append(fields, Field{Name: name, Type: field.Type, GoName: field.Name, Optional: options.omitEmpty || options.omitZero})
 		}
 	}
 	if owner.NumField() != 0 && !hasJSONTag && !hasJSONField {
-		return nil, fmt.Errorf("json: %s has no encoded fields; use an explicit codec or ignore its fields", owner)
+		return nil, fmt.Errorf("value: %s has no encoded fields; use an explicit codec or ignore its fields", owner)
 	}
+	if err := uniqueFields(owner, fields); err != nil {
+		return nil, err
+	}
+	return fields, nil
+}
+
+func embeddedFields(owner reflect.Type, field reflect.StructField, visiting map[reflect.Type]bool) ([]Field, error) {
+	embedded := field.Type
+	if embedded.Kind() == reflect.Pointer {
+		// Fresh decoding cannot allocate through an unexported pointer field.
+		if !field.IsExported() {
+			return nil, fmt.Errorf("value: field %s.%s: embedded pointer must be exported", owner, field.Name)
+		}
+		embedded = embedded.Elem()
+	}
+	if embedded.Kind() != reflect.Struct || customEncoder(embedded) || customDecoder(embedded) {
+		return nil, fmt.Errorf("value: field %s.%s: embedding requires a plain struct", owner, field.Name)
+	}
+	return declaredFields(embedded, visiting)
+}
+
+// uniqueFields refuses a wire name or Go selector reached twice: decoding and
+// generated projections would otherwise pick different owners for it.
+func uniqueFields(owner reflect.Type, fields []Field) error {
 	names := make(map[string]bool, len(fields))
 	selectors := make(map[string]bool, len(fields))
 	for _, field := range fields {
 		if names[field.Name] || selectors[field.GoName] {
-			return nil, fmt.Errorf("json: ambiguous field %s.%s", owner, field.Name)
+			return fmt.Errorf("value: ambiguous field %s.%s", owner, field.Name)
 		}
 		names[field.Name], selectors[field.GoName] = true, true
 	}
-	return fields, nil
+	return nil
 }

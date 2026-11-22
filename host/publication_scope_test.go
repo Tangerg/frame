@@ -9,7 +9,6 @@ import (
 
 	"github.com/Tangerg/frame"
 	framehost "github.com/Tangerg/frame/host"
-	framevalue "github.com/Tangerg/frame/value"
 )
 
 type publicationMetadata func()
@@ -23,8 +22,7 @@ func scopedPublisher(t *testing.T) (framehost.Host, framehost.ScopeGrant, frameh
 	t.Helper()
 	host := testHost(t, framehost.Config{})
 	descriptor := []byte(`{"protocol":"publication-test"}`)
-	ref := framehost.ContractRef{Name: "publication.value", Version: "1", Kind: framehost.ServiceKind, Mode: framehost.PortableMode, Digest: framevalue.Hash(descriptor)}
-	value, err := framehost.BindContract[string](ref, descriptor)
+	value, err := framehost.NewDescriptorContract[string]("publication.value", "1", descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}

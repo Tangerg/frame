@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	jsonv2 "encoding/json/v2"
+	json "encoding/json/v2"
 	"errors"
 	"maps"
 	"slices"
@@ -22,7 +22,7 @@ func (s *storeAuthority) CommitInstallation(ctx context.Context, change framehos
 	if err != nil {
 		return framehost.NotCommitted, err
 	}
-	request, err := jsonv2.Marshal(change)
+	request, err := json.Marshal(change)
 	if err != nil {
 		return framehost.NotCommitted, err
 	}
@@ -98,7 +98,7 @@ func (s *storeAuthority) applyInstallation(ctx context.Context, tx Executor, id 
 			return err
 		}
 	} else {
-		encoded, err := jsonv2.Marshal(change.After)
+		encoded, err := json.Marshal(change.After)
 		if err != nil {
 			return err
 		}
@@ -131,7 +131,7 @@ func checkInstalled(ctx context.Context, tx Executor, id framehost.InstallationI
 	case err != nil:
 		return err
 	}
-	encoded, err := jsonv2.Marshal(expected)
+	encoded, err := json.Marshal(expected)
 	if err != nil {
 		return err
 	}
@@ -202,7 +202,7 @@ func (s *storeAuthority) Installations(ctx context.Context) (records []framehost
 				return err
 			}
 			var record framehost.InstallationRecord
-			if err := jsonv2.Unmarshal(data, &record, jsonv2.RejectUnknownMembers(true)); err != nil {
+			if err := json.Unmarshal(data, &record, json.RejectUnknownMembers(true)); err != nil {
 				return err
 			}
 			if record.ID != id || id.Validate() != nil || record.Release.Validate() != nil {
@@ -217,7 +217,7 @@ func (s *storeAuthority) Installations(ctx context.Context) (records []framehost
 
 // RecoverInstallations settles old control intents after exclusive ownership is
 // acquired. Returned records help load release definitions; Host restoration
-// rereads this authority under maintenance. Confirm that projection and restore
+// rereads this authority under maintenance and confirms its projection. Restore
 // every other owner before clearing RecoveryRequired.
 func (s *storeAuthority) RecoverInstallations(ctx context.Context) ([]framehost.InstallationRecord, error) {
 	if err := s.control.RecoverPrepared(ctx); err != nil {
@@ -226,6 +226,7 @@ func (s *storeAuthority) RecoverInstallations(ctx context.Context) ([]framehost.
 	return s.Installations(ctx)
 }
 
+// ConfirmRestoredInstallations is called by Host.Restore after its projection.
 func (s *storeAuthority) ConfirmRestoredInstallations(ctx context.Context) error {
 	return s.admission.Maintenance(ctx, func() error {
 		if err := s.transaction(ctx, func(tx Executor) error {

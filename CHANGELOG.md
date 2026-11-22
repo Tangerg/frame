@@ -2,6 +2,142 @@
 
 ## Unreleased
 
+- **Breaking:** The local stdio protocol projects its `hello` reply shape into
+  `process.WireShapes.Description` and therefore into the protocol digest. The
+  Node SDK admits its own description against that shape, so Go and Node can no
+  longer drift on its members. Rebuild the SDK; peers built from v0.4.0 refuse
+  the new protocol at hello.
+- **Breaking:** `process.Protocol.Prepare` names its frame limit
+  `maxFrameBytes`. The default local protocol alone checks that limit against
+  the published wire maximum; `process.New` no longer infers it from a profile
+  name, so a custom protocol reporting `local-process` owns its own limit.
+- **Breaking:** `host.Host.SetEnabled(ctx, id, bool)` becomes `Enable(ctx, id)`
+  and `Disable(ctx, id)`.
+- **Breaking:** `host.Candidate` embeds `host.CandidateRef`; candidates expose
+  `InstanceID` and `MetadataJSON` directly. Point candidate reads no longer run a
+  separate readability check ahead of the metadata decoder that owns it.
+- **Breaking:** `sqlite.Attempt` drops `Parent`, which no driver produced. Scope,
+  scope generation and instance generation are recorded together or not at all;
+  SQLite no longer encodes a browser-specific rule, and the browser driver keeps
+  matching the exact recorded scope.
+- **Breaking:** `browser.BridgeConfig.MaxRoutes` bounds event routes granted to
+  Realms. They previously borrowed the unrelated pending-execution limit.
+- **Breaking:** Remove the Qimu managed MCP profile: `mcp.ManagedProtocol`,
+  `ManagedProfile`, `ManagedExport`, `ManagedContract`, `ParseManagedContract`,
+  `ManagedCallback`, `CallbackReceiver`, `WithInvocation` and `MANAGED.md`.
+  Qimu is Flame's former framework and no consumer used the profile.
+  `process/mcp` keeps the standard `Tools` profile and `Transport`; an
+  application that needs its own MCP methods implements `process.Protocol` over
+  `mcp.Transport`. Pure calling evidence stays in `frame/call`.
+- **Breaking:** `host.Dependency` becomes `host.ReleaseRef`, and
+  `CompactDependencies` becomes `CompactReleases`. `UnitRef` embeds `ReleaseRef`
+  and `ExportRef` embeds `UnitRef`, so each reference spells the installation
+  and release once. Replace `ExportRef.Unit()` with the `UnitRef` field and
+  `UnitRef.Dependency()` with the `ReleaseRef` field. Composite literals that
+  name the promoted fields still compile, and the JSON shapes are unchanged.
+  `UnitRef` and `ExportRef` print as `installation/unit[/export]`.
+- **Breaking:** `host.UnitDeclaration.RequirePortable` owns the rule that an
+  out-of-process unit binds only portable contracts; the process driver and
+  `distribution.Unit.ValidateProcessEntry` both apply it. `distribution.Unit`
+  exposes `Declaration()` and delegates identity, slot and export validity to
+  the Host declaration instead of re-implementing it.
+- **Breaking:** `browser.RealmID(realm)` becomes `Realm.HostRealm()`.
+- **Breaking:** `contractgen.Generate(GenerateConfig)` replaces positional
+  source and directory strings. `contractgen.StandardInput` names standard input,
+  and every requested Go projection must name its path.
+- **Breaking:** `sqlite.Database` owns its transactions:
+  `Connection(ctx, db)` becomes `db.Executor(ctx)`, and `RunInTx`,
+  `RunReadSnapshot`, `RunIndependentTx` and `InstallSchema` become methods of
+  the same name.
+- **Breaking:** `distribution.Store.ImportDirectory` and `ImportArchive` return
+  the `Lease` that holds the published release. The `...Held` variants and the
+  snapshot-only variants are removed; call `Lease.Snapshot` and `Lease.Close`.
+- **Breaking:** `mcp.Tools.Result` returns a closed `mcp.ToolResult`
+  (`StructuredResult` or `EnvelopeResult`) instead of the boolean `FullResult`
+  predicate; an unknown value is refused at preparation.
+- **Breaking:** The portable profile drops `maxTokenBytes`. The SDK enforces
+  Frame's one name rule through a single `validName` predicate over the
+  generated `MAX_NAME_BYTES`, and one `validDigest` predicate, for both its
+  browser and Node entries.
+- `value.PointerToken`, `PointerName`, `PointerNames` and `DefinitionPointer`
+  own JSON Pointer spelling for both schema admission and contract generation.
+- Free functions over one type become its methods across the runner, Host,
+  browser, distribution, SQLite and contract generator. The browser bridge
+  returns typed ready problems, the Host's lifetime authority field is named
+  for what it is, and no-op handle copies are removed.
+- **Breaking:** `sqlite.NewAttempt(setup, realm)` is the one projection of a
+  preparation onto its durable attempt; the process and browser drivers no
+  longer assemble it separately. Every attempt records its scope, scope
+  generation and instance generation, so the optional scope triple is gone.
+  Stored attempts without those members no longer decode.
+- **Breaking:** `distribution.Limits` fields gain the `Max` prefix every other
+  limit uses: `MaxEntries`, `MaxExpandedBytes`, `MaxArchiveBytes`,
+  `MaxManifestBytes` and `MaxCompressionRatio`.
+- **Breaking:** Schema profile constants are named after their type:
+  `SchemaChildrenMap`, `SchemaChildrenSchema`, `SchemaChildrenArray`,
+  `SchemaEdgeSame`, `SchemaEdgeDescend`, `SchemaValueString` through
+  `SchemaValueArray` (formerly `SchemaValues`), and `SchemaTypeNull` through
+  `SchemaTypeString`. Their wire spellings are unchanged.
+- **Breaking:** `browser.HTTPEnvelope.Input` is a `jsontext.Value`.
+- **Breaking:** A release is one `manifest.json` and its artifacts. Remove
+  `distribution.Lock`, `LockName` (`plugin.lock.json`), `ParseLock`,
+  `Lock.Verify`, `Manifest.Lock` and `Manifest.Release`: each restated facts the
+  manifest already owns. `Manifest.Identity` is the release digest and
+  `Manifest.Canonical` returns a `value.JSON`. `Build` returns the archived
+  `Release`; `Release` drops `Lock`; `Trust` receives
+  `(ctx, Source, Release)`; `LockedRelease` becomes `Dependency`. `frame package`
+  reports `archiveDigest`, `releaseDigest` and `manifest`, the vocabulary of
+  `frame inspect`. Rebuild archives; one holding `plugin.lock.json` lists an
+  undeclared file and is refused.
+- **Breaking:** `host.UseOwner.Held` and `sqlite.OwnerSchema.References` return
+  the release digests the queried installation still needs. The Host builds
+  each `ReleaseRef` and its canonical order, so an owner can no longer answer
+  for another installation.
+- **Breaking:** `host.BindingSnapshot.CanonicalJSON` becomes `Canonical`, a
+  `value.JSON` whose `Digest` is `Identity`; equal bindings compare equal. The
+  identity spelling sorts object members, so retained binding identities change.
+- **Breaking:** `process.Driver` owns admitted creation: creations queue in the
+  Driver, where cancellation still yields the runner's non-dispatch proof, and a
+  dispatched `Runner.Launch` is joined rather than cancelled. Cancellation can
+  no longer discard a launch acknowledgement and leave an unknown creation.
+  Applications drop their own launch-serializing `Runner` wrappers.
+- **Breaking:** `host.WithPlan(ctx, host, plan, grant, call)` becomes the method
+  `Host.WithUse(ctx, grant, plan, call)`, the `Use` counterpart of `Host.With`.
+- **Breaking:** `Host.Restore` confirms its projection through the new
+  `host.InstallationStore.ConfirmRestoredInstallations`. Callers no longer call
+  `sqlite.Store.ConfirmRestoredInstallations` after restoring; custom
+  installation stores implement it.
+- `mcp.Tools` names the first missing tool in sorted order, so an incomplete
+  catalog reports the same error on every run.
+- `host.NewDescriptorContract[T](name, version, descriptor)` binds a published
+  portable descriptor and derives its digest, kind and mode; `BindContract`
+  stays the verifier of a received `ContractRef`.
+- `value.JSON.Decode` decodes an admitted document under Frame's codec policy,
+  replacing hand-written `RejectUnknownMembers` and `Numbers` options.
+- `@frame/sdk/json` exports `projectNumbers` and `ProjectedJSONValue` to project
+  every number of a document exactly or refuse it.
+- `frame.ProtocolNamespace` composes the capability, Point, browser control and
+  MCP command metadata identifiers instead of four independent spellings.
+- The browser control handler reports an interrupted request body as a bad
+  request; only an exceeded byte limit reports `413`.
+- `host.DeliverEvent` reports missing arguments as `frame.ErrInvalid`;
+  `frame.ErrContractMismatch` now means only a route of another event contract.
+- Generated Go projections derive the value package import path from that
+  package. SQLite opens every pool, including schema rehearsal, through one
+  connector, and time formats address their pattern's named groups.
+- `value.Null` is the single spelling of the JSON null document. The SQLite
+  `execution_id` column follows the `UseApproval.ExecutionID` field tag instead
+  of repeating its member name. Process problem codes are admitted from the
+  decoded wire specification rather than a second hand-written list.
+- `runner.DirectoryFlag` and `runner.SocketFlag` name the runner executable's
+  flags for both `runner.Daemon` and `cmd/frame-runner`.
+- Go codec admission errors use the `value:` owner prefix; portable profile
+  errors keep the `portable:` vocabulary shared with the Node SDK. Browser
+  TypeScript emission errors use `browser:` and contract generation errors use
+  `contractgen:`.
+- Remove the historical audit and remediation reports from `docs/`; git history
+  and release tags retain them.
+
 ## v0.4.0 — 2026-11-17
 
 Upgrade guidance is in [the v0.4.0 release notes](docs/releases/v0.4.0.md).

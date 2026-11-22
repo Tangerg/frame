@@ -54,7 +54,7 @@ creating another one. `ResumeRealm` after Host reconstruction grants cleanup
 authority only. The trusted in-process `Credentials` projection lets application
 composition reuse the original session without a second Realm registry; it is
 not exposed through `Handler`.
-Realm identity encodes both components independently. Its bounded `RealmID`
+Realm identity encodes both components independently. Its bounded `HostRealm`
 affinity is a digest of that exact tuple, and credential authentication uses the
 same encoding. Punctuation and individually maximal valid names cannot merge
 Realms or change which execution a proof can release. Credentials are opaque;
@@ -219,12 +219,13 @@ a separate lookup that guesses which stored request wins. The execution retains
 its original resource and commit conclusion directly, without a registration
 wrapper or an error-derived uncertainty flag.
 
-MaxRealms bounds resident Realms and MaxPending bounds active operations. A single
-Snapshot occupies one lease slot regardless of its Point count; complete request
-and response byte limits bound that capture's payload. On
-seal, an empty Realm relinquishes its slot. Its credential can still submit
-idempotent cleanup observations. Completed control replies live in the original
-authority epoch's SQLite receipt journal and do not consume active capacity.
+MaxRealms bounds resident Realms, MaxPending bounds active operations and MaxRoutes
+bounds the event routes granted to Realms. A single Snapshot occupies one lease
+slot regardless of its Point count; complete request and response byte limits
+bound that capture's payload. On seal, an empty Realm relinquishes its slot. Its
+credential can still submit idempotent cleanup observations. Completed control
+replies live in the original authority epoch's SQLite receipt journal and do not
+consume active capacity.
 `sqlite.Config.MaxRealmHistoryBytes` separately bounds retained Realm credentials
 and control receipts, including unfinished receipt reservations. Each new control
 operation reserves its maximum receipt before capture, selection consumption,

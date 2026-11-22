@@ -22,12 +22,12 @@ func TestTransactionsKeepIndependentDatabaseOwners(t *testing.T) {
 	}
 	defer second.Close()
 	failure := errors.New("first owner refused")
-	err = sqlite.RunInTx(t.Context(), first, func(ctx context.Context) error {
-		if _, err := sqlite.Connection(ctx, first).ExecContext(ctx, `INSERT INTO facts VALUES ('first')`); err != nil {
+	err = first.RunInTx(t.Context(), func(ctx context.Context) error {
+		if _, err := first.Executor(ctx).ExecContext(ctx, `INSERT INTO facts VALUES ('first')`); err != nil {
 			return err
 		}
-		if err := sqlite.RunInTx(ctx, second, func(ctx context.Context) error {
-			_, err := sqlite.Connection(ctx, second).ExecContext(ctx, `INSERT INTO facts VALUES ('second')`)
+		if err := second.RunInTx(ctx, func(ctx context.Context) error {
+			_, err := second.Executor(ctx).ExecContext(ctx, `INSERT INTO facts VALUES ('second')`)
 			return err
 		}); err != nil {
 			return err
@@ -55,8 +55,8 @@ func TestIndependentTransactionRefusesItsOwnActiveDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err := sqlite.RunInTx(t.Context(), db, func(ctx context.Context) error {
-		if err := sqlite.RunIndependentTx(ctx, db, func(context.Context) error { t.Fatal("independent transaction entered its active owner"); return nil }); err == nil {
+	if err := db.RunInTx(t.Context(), func(ctx context.Context) error {
+		if err := db.RunIndependentTx(ctx, func(context.Context) error { t.Fatal("independent transaction entered its active owner"); return nil }); err == nil {
 			t.Fatal("recursive independent transaction was accepted")
 		}
 		return nil
@@ -71,16 +71,16 @@ func TestReadSnapshotJoinsItsOwnerButCannotPromoteToAWriteSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err := sqlite.RunInTx(t.Context(), db, func(ctx context.Context) error {
-		if _, err := sqlite.Connection(ctx, db).ExecContext(ctx, `INSERT INTO facts VALUES ('owned')`); err != nil {
+	if err := db.RunInTx(t.Context(), func(ctx context.Context) error {
+		if _, err := db.Executor(ctx).ExecContext(ctx, `INSERT INTO facts VALUES ('owned')`); err != nil {
 			return err
 		}
-		return sqlite.RunReadSnapshot(ctx, db, func(ctx context.Context) error {
-			if _, err := sqlite.Connection(ctx, db).ExecContext(ctx, `DELETE FROM facts`); err == nil {
+		return db.RunReadSnapshot(ctx, func(ctx context.Context) error {
+			if _, err := db.Executor(ctx).ExecContext(ctx, `DELETE FROM facts`); err == nil {
 				t.Fatal("nested read scope modified the enclosing writer")
 			}
 			var value string
-			if err := sqlite.Connection(ctx, db).QueryRowContext(ctx, `SELECT value FROM facts`).Scan(&value); err != nil {
+			if err := db.Executor(ctx).QueryRowContext(ctx, `SELECT value FROM facts`).Scan(&value); err != nil {
 				return err
 			}
 			if value != "owned" {
@@ -91,12 +91,12 @@ func TestReadSnapshotJoinsItsOwnerButCannotPromoteToAWriteSet(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := sqlite.RunReadSnapshot(t.Context(), db, func(ctx context.Context) error {
-		return sqlite.RunReadSnapshot(ctx, db, func(ctx context.Context) error {
-			if _, err := sqlite.Connection(ctx, db).ExecContext(ctx, `INSERT INTO facts VALUES ('forbidden')`); err == nil {
+	if err := db.RunReadSnapshot(t.Context(), func(ctx context.Context) error {
+		return db.RunReadSnapshot(ctx, func(ctx context.Context) error {
+			if _, err := db.Executor(ctx).ExecContext(ctx, `INSERT INTO facts VALUES ('forbidden')`); err == nil {
 				t.Fatal("SQLite executed a write in a read-only snapshot")
 			}
-			if err := sqlite.RunInTx(ctx, db, func(context.Context) error { t.Fatal("read snapshot entered a mutation"); return nil }); err == nil {
+			if err := db.RunInTx(ctx, func(context.Context) error { t.Fatal("read snapshot entered a mutation"); return nil }); err == nil {
 				t.Fatal("read snapshot accepted a write-set")
 			}
 			return nil

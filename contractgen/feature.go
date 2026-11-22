@@ -1,6 +1,7 @@
 package contractgen
 
 import (
+	"cmp"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
@@ -40,33 +41,33 @@ const schemaFile = "schema.json"
 
 func schemaReference(definition string) string { return schemaFile + RefPrefix + definition }
 
-// methodFrame is one schema position of a method. Its suffix qualifies the
+// schemaRole is one schema position of a method. Its suffix qualifies the
 // method's root symbol, so the frames of one method claim names as a family.
-type methodFrame string
+type schemaRole string
 
 const (
-	frameInput  methodFrame = "Input"
-	frameOutput methodFrame = "Output"
-	frameChunk  methodFrame = "Chunk"
+	roleInput  schemaRole = "Input"
+	roleOutput schemaRole = "Output"
+	roleChunk  schemaRole = "Chunk"
 )
 
-var methodFrames = []methodFrame{frameInput, frameOutput, frameChunk}
+var schemaRoles = []schemaRole{roleInput, roleOutput, roleChunk}
 
-func (f methodFrame) definition(root string) string { return root + string(f) }
+func (r schemaRole) definition(root string) string { return root + string(r) }
 
-// schema returns the frame's schema; an absent chunk schema is empty.
-func (f methodFrame) schema(descriptor frame.MethodDescriptor) jsontext.Value {
-	switch f {
-	case frameInput:
+// schema returns the schema in this role; an absent chunk schema is empty.
+func (r schemaRole) schema(descriptor frame.MethodDescriptor) jsontext.Value {
+	switch r {
+	case roleInput:
 		return descriptor.Input
-	case frameOutput:
+	case roleOutput:
 		return descriptor.Output
 	default:
 		return descriptor.Stream
 	}
 }
 
-// Local definition names identify nodes only within their original method frame.
+// Local definition names identify nodes only within their original schema role.
 // Equal spellings or bodies cannot establish identity across reference scopes.
 type schemaDefinition struct {
 	root string
@@ -74,10 +75,7 @@ type schemaDefinition struct {
 }
 
 func (d schemaDefinition) compare(other schemaDefinition) int {
-	if order := strings.Compare(d.root, other.root); order != 0 {
-		return order
-	}
-	return strings.Compare(d.name, other.name)
+	return cmp.Or(strings.Compare(d.root, other.root), strings.Compare(d.name, other.name))
 }
 
 func buildFeature(data []byte) (*featureArtifacts, error) {
@@ -93,13 +91,13 @@ func buildFeature(data []byte) (*featureArtifacts, error) {
 	}
 	for _, descriptor := range descriptors {
 		root := roots[descriptor.Name]
-		method := featureMethod{Name: descriptor.Name, Kind: descriptor.Kind, Target: descriptor.Target, Description: descriptor.Description, Input: schemaReference(frameInput.definition(root)), Output: schemaReference(frameOutput.definition(root))}
+		method := featureMethod{Name: descriptor.Name, Kind: descriptor.Kind, Target: descriptor.Target, Description: descriptor.Description, Input: schemaReference(roleInput.definition(root)), Output: schemaReference(roleOutput.definition(root))}
 		if len(descriptor.Stream) != 0 {
-			method.Stream = schemaReference(frameChunk.definition(root))
+			method.Stream = schemaReference(roleChunk.definition(root))
 		}
-		for _, frame := range methodFrames {
-			if raw := frame.schema(descriptor); len(raw) != 0 {
-				if err := addFeatureSchema(artifacts, frame.definition(root), raw, renamed); err != nil {
+		for _, role := range schemaRoles {
+			if raw := role.schema(descriptor); len(raw) != 0 {
+				if err := artifacts.addSchema(role.definition(root), raw, renamed); err != nil {
 					return nil, err
 				}
 			}
@@ -113,7 +111,7 @@ func buildFeature(data []byte) (*featureArtifacts, error) {
 	for pointer, members := range artifacts.stringEnums {
 		node := artifacts.projection.paths[pointer]
 		if node == nil {
-			return nil, fmt.Errorf("feature contracts: enum schema missing at %q", pointer)
+			return nil, fmt.Errorf("contractgen: enum schema missing at %q", pointer)
 		}
 		node.stringValues = members
 	}
@@ -179,9 +177,9 @@ func scopedDefinitions(descriptors []frame.MethodDescriptor, roots map[string]st
 	definitions := make(map[schemaDefinition]jsontext.Value)
 	for _, descriptor := range descriptors {
 		root := roots[descriptor.Name]
-		for _, frame := range methodFrames {
-			raw := frame.schema(descriptor)
-			if len(raw) == 0 || raw.Kind() == 't' || raw.Kind() == 'f' {
+		for _, role := range schemaRoles {
+			raw := role.schema(descriptor)
+			if len(raw) == 0 || booleanSchema(raw) {
 				continue
 			}
 			var document struct {
@@ -195,7 +193,7 @@ func scopedDefinitions(descriptors []frame.MethodDescriptor, roots map[string]st
 				if err != nil {
 					return nil, err
 				}
-				definitions[schemaDefinition{root: frame.definition(root), name: name}] = canonical.Bytes()
+				definitions[schemaDefinition{root: role.definition(root), name: name}] = canonical.Bytes()
 			}
 		}
 	}
@@ -204,9 +202,9 @@ func scopedDefinitions(descriptors []frame.MethodDescriptor, roots map[string]st
 
 func featureNames(descriptors []frame.MethodDescriptor) (map[string]string, map[schemaDefinition]string, error) {
 	roots := make(map[string]string, len(descriptors))
-	suffixes := make([]string, len(methodFrames))
-	for i, frame := range methodFrames {
-		suffixes[i] = string(frame)
+	suffixes := make([]string, len(schemaRoles))
+	for i, role := range schemaRoles {
+		suffixes[i] = string(role)
 	}
 	symbols := newSymbolTable()
 	descriptors = slices.Clone(descriptors)
@@ -282,7 +280,7 @@ func definitionOwners(definitions map[schemaDefinition]jsontext.Value) (map[sche
 			return owner, nil
 		}
 		if active[key] {
-			return schemaDefinition{}, fmt.Errorf("feature contracts: definition ownership cycle at %q in %s", key.name, key.root)
+			return schemaDefinition{}, fmt.Errorf("contractgen: definition ownership cycle at %q in %s", key.name, key.root)
 		}
 		active[key] = true
 		owner := key
@@ -324,7 +322,7 @@ func pureDefinitionReference(raw jsontext.Value) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	tokens, err := pointerTokens(path)
+	tokens, err := framevalue.PointerNames(path)
 	if err != nil {
 		return "", false, err
 	}
@@ -334,14 +332,14 @@ func pureDefinitionReference(raw jsontext.Value) (string, bool, error) {
 	return "", false, nil
 }
 
-func addFeatureSchema(artifacts *featureArtifacts, root string, raw jsontext.Value, names map[schemaDefinition]string) error {
+func (f *featureArtifacts) addSchema(root string, raw jsontext.Value, names map[schemaDefinition]string) error {
 	canonical, err := framevalue.ParseJSON(raw)
 	if err != nil {
 		return err
 	}
 	raw = canonical.Bytes()
-	if raw.Kind() == 't' || raw.Kind() == 'f' {
-		artifacts.definitions[root] = raw
+	if booleanSchema(raw) {
+		f.definitions[root] = raw
 		return nil
 	}
 	enumerations, err := framevalue.ProjectStringEnums(raw)
@@ -356,7 +354,8 @@ func addFeatureSchema(artifacts *featureArtifacts, root string, raw jsontext.Val
 	for name := range definitions {
 		renamed[name] = names[schemaDefinition{root: root, name: name}]
 	}
-	projected, err := projectFeatureDefinitions(definitions, renamed, root)
+	scope := newDefinitionScope(renamed, root)
+	projected, err := scope.definitions(definitions)
 	if err != nil {
 		return err
 	}
@@ -364,7 +363,7 @@ func addFeatureSchema(artifacts *featureArtifacts, root string, raw jsontext.Val
 	if err != nil {
 		return err
 	}
-	updated, err := rewriteFeatureRefs(body, renamed, root)
+	updated, err := scope.schema(body)
 	if err != nil {
 		return err
 	}
@@ -376,10 +375,9 @@ func addFeatureSchema(artifacts *featureArtifacts, root string, raw jsontext.Val
 			matching = append(matching, name)
 		}
 	}
-	owner := root
 	if len(matching) == 1 {
-		owner = matching[0]
-		projected, err = projectFeatureDefinitions(definitions, renamed, matching[0])
+		scope.root = matching[0]
+		projected, err = scope.definitions(definitions)
 		if err != nil {
 			return err
 		}
@@ -388,23 +386,39 @@ func addFeatureSchema(artifacts *featureArtifacts, root string, raw jsontext.Val
 			return err
 		}
 	}
+	if err := f.recordEnums(enumerations, scope); err != nil {
+		return err
+	}
+	if err := f.recordDefinitions(projected); err != nil {
+		return err
+	}
+	f.definitions[root] = updated
+	return nil
+}
+
+// Several roots may project one shared definition or enum; they must agree on
+// it exactly, never let the last root replace an earlier projection.
+func (f *featureArtifacts) recordEnums(enumerations []framevalue.StringEnumeration, scope definitionScope) error {
 	for _, enumeration := range enumerations {
-		pointer, err := projectFeaturePointer(enumeration.Pointer, renamed, owner)
+		pointer, err := scope.pointer(enumeration.Pointer)
 		if err != nil {
 			return err
 		}
-		if previous, exists := artifacts.stringEnums[pointer]; exists && !slices.Equal(previous, enumeration.Values) {
-			return fmt.Errorf("feature contracts: enum schema %q has competing projections", pointer)
+		if previous, exists := f.stringEnums[pointer]; exists && !slices.Equal(previous, enumeration.Values) {
+			return fmt.Errorf("contractgen: enum schema %q has competing projections", pointer)
 		}
-		artifacts.stringEnums[pointer] = enumeration.Values
+		f.stringEnums[pointer] = enumeration.Values
 	}
+	return nil
+}
+
+func (f *featureArtifacts) recordDefinitions(projected map[string]jsontext.Value) error {
 	for name, body := range projected {
-		if previous, exists := artifacts.definitions[name]; exists && string(previous) != string(body) {
-			return fmt.Errorf("feature contracts: definition %q has competing schemas", name)
+		if previous, exists := f.definitions[name]; exists && string(previous) != string(body) {
+			return fmt.Errorf("contractgen: definition %q has competing schemas", name)
 		}
-		artifacts.definitions[name] = body
+		f.definitions[name] = body
 	}
-	artifacts.definitions[root] = updated
 	return nil
 }
 
@@ -426,31 +440,40 @@ func detachDefinitions(raw jsontext.Value) (map[string]jsontext.Value, map[strin
 	return document, definitions, nil
 }
 
-func projectFeatureDefinitions(definitions map[string]jsontext.Value, renamed map[string]string, root string) (map[string]jsontext.Value, error) {
-	projected := make(map[string]jsontext.Value, len(definitions))
-	for name, body := range definitions {
-		updated, err := rewriteFeatureRefs(body, renamed, root)
+// definitionScope moves one schema root into the feature namespace: renamed
+// maps each local definition to its feature symbol, and root names the
+// definition the document's own body becomes.
+type definitionScope struct {
+	renamed map[string]string
+	root    string
+	profile framevalue.SchemaProfile
+}
+
+func newDefinitionScope(renamed map[string]string, root string) definitionScope {
+	return definitionScope{renamed: renamed, root: root, profile: framevalue.ProfileSchema()}
+}
+
+func (s definitionScope) definitions(local map[string]jsontext.Value) (map[string]jsontext.Value, error) {
+	projected := make(map[string]jsontext.Value, len(local))
+	for name, body := range local {
+		updated, err := s.schema(body)
 		if err != nil {
 			return nil, err
 		}
-		target := renamed[name]
+		target := s.renamed[name]
 		if string(updated) == `{"$ref":"`+RefPrefix+target+`"}` {
 			continue
 		}
 		if previous, exists := projected[target]; exists && string(previous) != string(updated) {
-			return nil, fmt.Errorf("feature contracts: definition %q has competing schemas", name)
+			return nil, fmt.Errorf("contractgen: definition %q has competing schemas", name)
 		}
 		projected[target] = updated
 	}
 	return projected, nil
 }
 
-func rewriteFeatureRefs(raw jsontext.Value, renamed map[string]string, root string) (jsontext.Value, error) {
-	return rewriteFeatureSchema(raw, renamed, root, framevalue.ProfileSchema())
-}
-
-func rewriteFeatureSchema(raw jsontext.Value, renamed map[string]string, root string, profile framevalue.SchemaProfile) (jsontext.Value, error) {
-	if string(raw) == jsonTrue || string(raw) == jsonFalse {
+func (s definitionScope) schema(raw jsontext.Value) (jsontext.Value, error) {
+	if booleanSchema(raw) {
 		return raw, nil
 	}
 	var node map[string]jsontext.Value
@@ -458,27 +481,14 @@ func rewriteFeatureSchema(raw jsontext.Value, renamed map[string]string, root st
 		return nil, err
 	}
 	if reference := node[framevalue.KeywordRef]; len(reference) != 0 {
-		var ref string
-		if err := json.Unmarshal(reference, &ref); err != nil {
-			return nil, err
-		}
-		path, err := referencePath(ref)
+		updated, err := s.reference(reference)
 		if err != nil {
 			return nil, err
 		}
-		pointer, err := projectFeaturePointer(path, renamed, root)
-		if err != nil {
-			return nil, err
-		}
-		fragment := url.URL{Fragment: pointer}
-		encoded, err := json.Marshal(fragment.String())
-		if err != nil {
-			return nil, err
-		}
-		node[framevalue.KeywordRef] = encoded
+		node[framevalue.KeywordRef] = updated
 	}
 	for key, child := range node {
-		updated, err := rewriteFeatureChildren(child, profile.Keywords[key].Children, renamed, root, profile)
+		updated, err := s.children(child, s.profile.Keywords[key].Children)
 		if err != nil {
 			return nil, err
 		}
@@ -487,57 +497,74 @@ func rewriteFeatureSchema(raw jsontext.Value, renamed map[string]string, root st
 	return json.Marshal(node, json.Deterministic(true))
 }
 
-func projectFeaturePointer(pointer string, renamed map[string]string, root string) (string, error) {
-	tokens, err := pointerTokens(pointer)
+func (s definitionScope) reference(encoded jsontext.Value) (jsontext.Value, error) {
+	var ref string
+	if err := json.Unmarshal(encoded, &ref); err != nil {
+		return nil, err
+	}
+	path, err := referencePath(ref)
+	if err != nil {
+		return nil, err
+	}
+	pointer, err := s.pointer(path)
+	if err != nil {
+		return nil, err
+	}
+	fragment := url.URL{Fragment: pointer}
+	return json.Marshal(fragment.String())
+}
+
+func (s definitionScope) pointer(pointer string) (string, error) {
+	tokens, err := framevalue.PointerNames(pointer)
 	if err != nil {
 		return "", err
 	}
-	target := []string{framevalue.KeywordDefs, root}
+	target := []string{framevalue.KeywordDefs, s.root}
 	if len(tokens) >= 2 && tokens[0] == framevalue.KeywordDefs {
-		name := renamed[tokens[1]]
+		name := s.renamed[tokens[1]]
 		if name == "" {
-			return "", fmt.Errorf("feature contracts: unknown definition %q", tokens[1])
+			return "", fmt.Errorf("contractgen: unknown definition %q", tokens[1])
 		}
 		target = []string{framevalue.KeywordDefs, name}
 		tokens = tokens[2:]
 	}
 	target = append(target, tokens...)
 	for i, token := range target {
-		target[i] = pointerToken(token)
+		target[i] = framevalue.PointerToken(token)
 	}
 	return "/" + strings.Join(target, "/"), nil
 }
 
-func rewriteFeatureChildren(raw jsontext.Value, children framevalue.SchemaChildren, renamed map[string]string, root string, profile framevalue.SchemaProfile) (jsontext.Value, error) {
+func (s definitionScope) children(raw jsontext.Value, children framevalue.SchemaChildren) (jsontext.Value, error) {
 	switch children {
-	case framevalue.SchemaMap:
+	case framevalue.SchemaChildrenMap:
 		var values map[string]jsontext.Value
 		if err := json.Unmarshal(raw, &values); err != nil {
 			return nil, err
 		}
 		for name, child := range values {
-			updated, err := rewriteFeatureSchema(child, renamed, root, profile)
+			updated, err := s.schema(child)
 			if err != nil {
 				return nil, err
 			}
 			values[name] = updated
 		}
 		return json.Marshal(values, json.Deterministic(true))
-	case framevalue.SchemaArray:
+	case framevalue.SchemaChildrenArray:
 		var values []jsontext.Value
 		if err := json.Unmarshal(raw, &values); err != nil {
 			return nil, err
 		}
 		for index, child := range values {
-			updated, err := rewriteFeatureSchema(child, renamed, root, profile)
+			updated, err := s.schema(child)
 			if err != nil {
 				return nil, err
 			}
 			values[index] = updated
 		}
 		return json.Marshal(values)
-	case framevalue.SchemaChild:
-		return rewriteFeatureSchema(raw, renamed, root, profile)
+	case framevalue.SchemaChildrenSchema:
+		return s.schema(raw)
 	default:
 		return raw, nil
 	}

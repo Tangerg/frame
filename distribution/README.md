@@ -20,20 +20,20 @@ without another `Close` call. Later callers observe that same close result.
 Consumers close their execution owners before the Store. Platforms without the
 supported directory lock fail closed rather than claiming exclusive ownership.
 
-A release is a single-disk ZIP32 archive with absolute directory offsets and no archive comment. Its physical central directory is bounded before entries are allocated. It contains a `manifest.json`, `plugin.lock.json` and
-exactly its listed artifacts. Both documents are decoded strictly: an unknown,
+A release is a single-disk ZIP32 archive with absolute directory offsets and no archive comment. Its physical central directory is bounded before entries are allocated. It contains a `manifest.json` and
+exactly its listed artifacts. The manifest is decoded strictly: an unknown,
 duplicate or missing member refuses the release, so no schema version is kept. `Build` computes artifact sizes and SHA-256 digests
-from the declared source files and emits deterministic archive bytes. It does not
-invoke a compiler or include unlisted source files. The Release digest covers the
-canonical manifest and artifact inventory, excluding the digest field itself.
+from the declared source files, emits deterministic archive bytes and returns the
+`Release` it archived. It does not invoke a compiler or include unlisted source
+files. The release digest is `Manifest.Identity`: the digest of the canonical
+manifest and its artifact inventory. No document stores that digest beside the
+manifest, so no second copy can disagree with it.
 Canonical JSON preserves numeric lexemes and declaration order; artifact inventory
 order is normalized. A package version is a human-facing label, not byte identity.
 
-Exact dependency releases belong to the canonical manifest. `Manifest.Lock()` and
-`Build` derive their lock from that declaration; changing a dependency changes the
-release identity. Lock-only dependency additions are refused. Authors move those
-declarations into the manifest and rebuild the release; the package command no
-longer accepts a separate dependency file.
+Exact dependency releases belong to the canonical manifest, so changing a
+dependency changes the release identity. The package command accepts no separate
+dependency file.
 
 The manifest contains independent Units with typed process variants, browser module
 entries and fixed imports, static resources, contract references and contributions.
@@ -46,11 +46,12 @@ Native objects cannot be declared as process imports or exports.
 
 `ImportDirectory` first snapshots the directory into private staging and validates
 that snapshot. Editing the source afterward cannot change the installed release.
-`ImportArchive` requires the exact archive digest. A consumer-controlled HTTPS
+`ImportArchive` requires the exact archive digest. Both return the Lease that holds
+the published release until the caller closes it. A consumer-controlled HTTPS
 fetcher may supply a private local file; this package does not select network sources.
 
-`Open` requires an application Trust function. A matching digest proves consistency,
-not publisher trust. Applications check publisher, source, signatures if required,
+`Open` requires an application Trust function, which receives the verified
+`Release`. A matching digest proves consistency, not publisher trust. Applications check publisher, source, signatures if required,
 and requested capabilities before publication. Rejection removes staging.
 When a digest is already cached, installation also validates and trusts that final
 cached snapshot and returns it. Its receipt and a subsequent Acquire or Inspect
@@ -64,7 +65,7 @@ An input file with any execution bit must match `Artifact.Executable`. Staging
 normalizes that declaration to owner-only 0600 or 0700; publication derives
 0400 or 0500 from the same artifact declaration. Group/other execution bits are
 not retained as a separate cache permission policy.
-`Limits.Entries` counts files, directories and their implicit ancestors. Directory
+`Limits.MaxEntries` counts files, directories and their implicit ancestors. Directory
 imports and cache revalidation read bounded batches against that same inventory;
 they refuse excess entries before allocating or sorting the rest of a directory. Source
 and expanded bytes, manifest bytes and compression ratio have explicit configurable

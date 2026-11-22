@@ -53,12 +53,12 @@ func TestExternalProfileArchiveNeedsItsHostDriver(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	store, err := Open(Config{Directory: cache, Admission: gate, Trust: func(context.Context, Source, Manifest, Lock) error { return nil }, Retained: func(context.Context, value.Digest) (bool, error) { return false, nil }})
+	store, err := Open(Config{Directory: cache, Admission: gate, Trust: func(context.Context, Source, Release) error { return nil }, Retained: func(context.Context, value.Digest) (bool, error) { return false, nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close(ctx)
-	lease, err := store.ImportArchiveHeld(ctx, name, digest)
+	lease, err := store.ImportArchive(ctx, name, digest)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -126,7 +126,7 @@ func TestReadyAcceptanceSurvivesRetirement(t *testing.T) {
 			if _, err := e.bridge.Ready(e.ctx, e.credentials.Token, changed); !errors.Is(err, sqlite.ErrConflict) {
 				t.Fatalf("retirement permitted another Ready payload: %v", err)
 			}
-			snapshot, err := e.host.SnapshotIn(e.ctx, browser.RealmID(plan.Realm), e.first.Ref())
+			snapshot, err := e.host.SnapshotIn(e.ctx, plan.Realm.HostRealm(), e.first.Ref())
 			if err != nil {
 				t.Fatal(err)
 			}

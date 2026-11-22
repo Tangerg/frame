@@ -3,7 +3,7 @@ package value
 import (
 	"bytes"
 	"encoding/base64"
-	jsonv2 "encoding/json/v2"
+	json "encoding/json/v2"
 	"fmt"
 	"maps"
 	"net/url"
@@ -16,8 +16,6 @@ import (
 	"github.com/Tangerg/scope/core/jsonschema"
 )
 
-const definitionPointer = "/$defs/"
-
 // ReadableDefinitions projects unambiguous reflector names; colliding declarations
 // retain their original identities so cosmetic aliases cannot change a contract.
 func ReadableDefinitions(raw []byte) ([]byte, error) {
@@ -25,7 +23,7 @@ func ReadableDefinitions(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 	var document map[string]any
-	if err := jsonv2.Unmarshal(raw, &document, Numbers()); err != nil {
+	if err := json.Unmarshal(raw, &document, Numbers()); err != nil {
 		return nil, fmt.Errorf("portable: schema: %w", err)
 	}
 	definitions, ok := document[KeywordDefs].(map[string]any)
@@ -39,7 +37,7 @@ func ReadableDefinitions(raw []byte) ([]byte, error) {
 		canonical[renamed[name]] = body
 	}
 	document[KeywordDefs] = canonical
-	return jsonv2.Marshal(document, jsonv2.Deterministic(true))
+	return json.Marshal(document, json.Deterministic(true))
 }
 
 // Schema-looking strings in const, enum, examples and default are application values.
@@ -57,17 +55,17 @@ func rewriteSchemaReferences(value any, names map[string]string, profile SchemaP
 			}
 		default:
 			switch profile.Keywords[key].Children {
-			case SchemaMap:
+			case SchemaChildrenMap:
 				children, _ := child.(map[string]any)
 				for _, schema := range children {
 					rewriteSchemaReferences(schema, names, profile)
 				}
-			case SchemaArray:
+			case SchemaChildrenArray:
 				children, _ := child.([]any)
 				for _, schema := range children {
 					rewriteSchemaReferences(schema, names, profile)
 				}
-			case SchemaChild:
+			case SchemaChildrenSchema:
 				rewriteSchemaReferences(child, names, profile)
 			}
 		}
@@ -82,17 +80,17 @@ func readableReference(ref string, names map[string]string) string {
 	if err != nil {
 		return ref
 	}
-	definition, rooted := strings.CutPrefix(fragment, definitionPointer)
+	definition, rooted := strings.CutPrefix(fragment, DefinitionPointer)
 	if !rooted {
 		return ref
 	}
 	root, suffix, nested := strings.Cut(definition, "/")
-	root = strings.NewReplacer("~1", "/", "~0", "~").Replace(root)
+	root = PointerName(root)
 	name, found := names[root]
 	if !found || name == root {
 		return ref
 	}
-	fragment = definitionPointer + pointerToken(name)
+	fragment = DefinitionPointer + PointerToken(name)
 	if nested {
 		fragment += "/" + suffix
 	}

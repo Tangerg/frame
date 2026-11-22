@@ -49,6 +49,9 @@ type InstallationStore interface {
 	// Installations reads the current committed records inside Host maintenance.
 	// It must not reenter the shared admission gate.
 	Installations(context.Context) ([]InstallationRecord, error)
+	// ConfirmRestoredInstallations runs once Host restoration has projected
+	// those records, so the submissions they settle may be confirmed.
+	ConfirmRestoredInstallations(context.Context) error
 }
 
 type InstallationConfig struct {
@@ -81,6 +84,14 @@ type installed struct {
 	record InstallationRecord
 	plugin Plugin
 	scope  ScopeGrant
+}
+
+// withEnabled proposes the same release and configuration with another
+// enabled state; the scope follows only after the transition commits.
+func (i *installed) withEnabled(enabled bool) *installed {
+	record := i.record.Clone()
+	record.Enabled = enabled
+	return &installed{record: record, plugin: i.plugin}
 }
 
 // InstallationFailure carries the original commit conclusion even if local
@@ -179,11 +190,17 @@ func (h *hostState) Update(ctx context.Context, expected InstallationRecord, con
 	})
 }
 
-func (h *hostState) SetEnabled(ctx context.Context, id InstallationID, enabled bool) error {
+// Enable grants a fresh installation scope generation to the existing record.
+func (h *hostState) Enable(ctx context.Context, id InstallationID) error {
 	return h.changeInstallation(ctx, id, func(current *installed) (*installed, error) {
-		record := current.record.Clone()
-		record.Enabled = enabled
-		return &installed{record: record, plugin: current.plugin}, nil
+		return current.withEnabled(true), nil
+	})
+}
+
+// Disable fences the installation scope and retires every current instance.
+func (h *hostState) Disable(ctx context.Context, id InstallationID) error {
+	return h.changeInstallation(ctx, id, func(current *installed) (*installed, error) {
+		return current.withEnabled(false), nil
 	})
 }
 
@@ -220,11 +237,11 @@ func (t *installationTransition) id() InstallationID {
 
 // destructive transitions invalidate every binding to the original release or
 // configuration, so they require that no business owner still retains it.
-func (t installationTransition) destructive() bool {
+func (t *installationTransition) destructive() bool {
 	return t.before != nil && (t.after == nil || t.after.record.Release != t.before.record.Release || !bytes.Equal(t.after.record.Configuration, t.before.record.Configuration))
 }
 
-func (t installationTransition) change() InstallationChange {
+func (t *installationTransition) change() InstallationChange {
 	var change InstallationChange
 	if t.before != nil {
 		before := t.before.record.Clone()

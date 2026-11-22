@@ -188,7 +188,7 @@ func (h *hostState) PrepareMetadata(contract ContractRef, data []byte) (Prepared
 	if definition == nil {
 		return PreparedMetadata{}, frame.ErrContractMismatch
 	}
-	if err := validateMetadata(definition, types.metadata, value); err != nil {
+	if err := definition.validateMetadata(types.metadata, value); err != nil {
 		return PreparedMetadata{}, err
 	}
 	return PreparedMetadata{contract: contract, projectionType: types.metadata, value: value}, nil

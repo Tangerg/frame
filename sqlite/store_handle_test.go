@@ -22,7 +22,7 @@ func TestStoreHandlesKeepIssuedCapabilitiesWithTheirOriginalAuthority(t *testing
 				Owners: []sqlite.OwnerSchema{{
 					ID:         "business",
 					Statements: []string{`CREATE TABLE facts (value TEXT NOT NULL)`},
-					References: func(context.Context, sqlite.Reader, framehost.InstallationID) ([]framehost.Dependency, error) {
+					References: func(context.Context, sqlite.Reader, framehost.InstallationID) ([]value.Digest, error) {
 						return nil, nil
 					},
 				}},

@@ -54,7 +54,7 @@ type server struct {
 	deliveries deliveries
 	mu         sync.Mutex
 	state      phase
-	bound      map[string]binding
+	bound      map[string]boundService
 	activate   func(context.Context) error
 }
 
@@ -81,14 +81,6 @@ func (s *server) retireIncomplete(expected phase) {
 	if incomplete {
 		s.life.BeginClose(frame.ErrOutcomeUnknown)
 	}
-}
-
-func identities(contracts map[string]*frame.Capability) map[string]string {
-	result := make(map[string]string, len(contracts))
-	for name, c := range contracts {
-		result[name] = c.Identity().Digest().String()
-	}
-	return result
 }
 
 const acknowledged = "true"
@@ -127,7 +119,7 @@ func (s *server) hello(ctx context.Context, raw jsontext.Value) (jsontext.Value,
 	if err := s.peer.reduceFrame(limit); err != nil {
 		return nil, err
 	}
-	return json.Marshal(description{protocol, limit, string(s.unit.ID), identities(s.unit.Exports), identities(s.unit.Imports)})
+	return json.Marshal(describe(hello{Protocol: protocol, MaxFrameBytes: limit}, string(s.unit.ID), s.unit.Exports, s.unit.Imports))
 }
 
 func (s *server) activateUnit(ctx context.Context, raw jsontext.Value) (jsontext.Value, error) {
@@ -225,13 +217,13 @@ func (s *server) prepare(ctx context.Context, raw jsontext.Value) (jsontext.Valu
 	if len(p.Exports) != len(s.unit.Exports) {
 		return nil, mismatch()
 	}
-	bound := make(map[string]binding, len(p.Exports))
+	bound := make(map[string]boundService, len(p.Exports))
 	for name, contract := range s.unit.Exports {
 		svc := p.Exports[name]
 		if framevalue.IsNil(svc) {
 			return nil, mismatch()
 		}
-		bound[name] = binding{contract, svc}
+		bound[name] = boundService{contract, svc}
 	}
 	s.mu.Lock()
 	s.bound = bound

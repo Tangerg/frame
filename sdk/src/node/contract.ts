@@ -2,6 +2,7 @@ import type { Awaitable } from "../index.js";
 import type { JSONNumber } from "../json.js";
 import { createHash } from "node:crypto";
 import { canonicalJSON, freezeJSON } from "../json.js";
+import { validName } from "../identity.js";
 import { compileSchema, SchemaMismatch } from "./schema.js";
 import profile from "./profile.generated.json" with { type: "json" };
 import { captureDescriptor, exceeded, PORTABLE_LIMITS } from "./limits.js";
@@ -26,20 +27,6 @@ export interface CapabilityDescriptor {
 }
 export function digestJSON(value: unknown): string {
   return createHash("sha256").update(canonicalJSON(value)).digest("hex");
-}
-function boundedUTF8(value: unknown, maximumBytes: number): value is string {
-  return (
-    typeof value === "string" &&
-    value.length > 0 &&
-    Buffer.byteLength(value) <= maximumBytes &&
-    !/\p{Surrogate}/u.test(value)
-  );
-}
-export function validToken(value: unknown): value is string {
-  return (
-    boundedUTF8(value, PORTABLE_LIMITS.maxTokenBytes) &&
-    !/[\p{White_Space}\p{Cc}]/u.test(value)
-  );
 }
 export function compareTokens(left: string, right: string): number {
   // Go orders protocol tokens by UTF-8 bytes, independently of JSON key order.
@@ -80,8 +67,8 @@ function admitMethodDescriptor(
 ): asserts value is MethodDescriptor {
   admitShape(value, profile.descriptors.method);
   if (
-    !validToken(value.name) ||
-    (value.target !== undefined && !validToken(value.target)) ||
+    !validName(value.name) ||
+    (value.target !== undefined && !validName(value.target)) ||
     typeof value.kind !== "string" ||
     !profile.descriptors.methodKinds.includes(value.kind) ||
     typeof value.description !== "string"
@@ -271,7 +258,7 @@ export class Capability<
     admitShape(descriptor, profile.descriptors.capability);
     if (
       descriptor.protocol !== PROTOCOL ||
-      !validToken(descriptor.reference) ||
+      !validName(descriptor.reference) ||
       !Array.isArray(descriptor.methods) ||
       descriptor.methods.length === 0
     )

@@ -539,7 +539,7 @@ func TestFailedStartRequiresDurableExitBeforePublishingProof(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := launchFixture(t, c, "failed-proof", 1, t.TempDir())
-	digest, err := requestIdentity(r)
+	digest, err := r.durableIdentity()
 	if err != nil {
 		t.Fatal(err)
 	}

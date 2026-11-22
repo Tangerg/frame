@@ -118,7 +118,10 @@ func TestCachedArtifactDriftRequiresExplicitPublicationRepair(t *testing.T) {
 	if err := os.WriteFile(file, archive, privateFileMode); err != nil {
 		t.Fatal(err)
 	}
-	_, importErr := store.ImportArchive(t.Context(), file, value.Hash(archive))
+	imported, importErr := store.ImportArchive(t.Context(), file, value.Hash(archive))
+	if imported.Valid() {
+		defer imported.Close()
+	}
 	info, statErr := os.Stat(path)
 	if statErr != nil {
 		t.Fatal(statErr)

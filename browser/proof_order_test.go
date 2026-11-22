@@ -26,7 +26,7 @@ func TestPublicationProofReplayCompletesLocalRetirement(t *testing.T) {
 	realm := Realm{ID: "realm", Epoch: "1"}
 	source := framehost.UnitRef{InstallationID: "publisher", Release: value.Hash([]byte("publisher")), UnitID: "view"}
 	attempt := sqlite.Attempt{
-		ID: "execution", Epoch: store.Epoch(), Realm: string(RealmID(realm)), Profile: framehost.BrowserJS,
+		ID: "execution", Epoch: store.Epoch(), Realm: string(realm.HostRealm()), Profile: framehost.BrowserJS,
 		Scope: "scope", ScopeGeneration: 1, Generation: 1, Source: source,
 		Binding: framehost.BindingSnapshot{Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{source}, Units: []framehost.UnitBinding{{Source: source, Configuration: value.Hash(nil)}}},
 	}
@@ -87,7 +87,7 @@ func TestUseProofFencesLiveDescendantsBeforeReadingProjection(t *testing.T) {
 		"unrelated":  {grant: UseGrant{ID: "unrelated", Realm: realm, Execution: execution}},
 	}}
 	proof := sqlite.ExitProof{ExitID: "close"}
-	if err := bridge.releaseUseTree(ctx, "parent", sqlite.Attempt{ID: execution.ID, Realm: string(RealmID(realm))}, proof); err == nil {
+	if err := bridge.releaseUseTree(ctx, "parent", sqlite.Attempt{ID: execution.ID, Realm: string(realm.HostRealm())}, proof); err == nil {
 		t.Fatal("closed projection unexpectedly succeeded")
 	}
 	for _, id := range []string{"parent", "child", "grandchild"} {

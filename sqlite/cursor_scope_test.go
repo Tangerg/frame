@@ -16,14 +16,14 @@ func TestReadSnapshotClosesItsCursorsBeforeRestoringWriter(t *testing.T) {
 	defer runtime.GOMAXPROCS(previous)
 	database, _ := readScopeDatabase(t)
 	var expiredWriter context.Context
-	err := sqlite.RunInTx(t.Context(), database, func(writer context.Context) error {
+	err := database.RunInTx(t.Context(), func(writer context.Context) error {
 		expiredWriter = writer
 		var rows *sql.Rows
 		var row *sqlite.Row
 		var expired context.Context
-		if err := sqlite.RunReadSnapshot(writer, database, func(reader context.Context) error {
+		if err := database.RunReadSnapshot(writer, func(reader context.Context) error {
 			expired = reader
-			access := sqlite.Connection(reader, database)
+			access := database.Executor(reader)
 			var err error
 			rows, err = access.QueryContext(reader, `SELECT 'first' UNION ALL SELECT 'second'`)
 			if err != nil {
@@ -44,20 +44,20 @@ func TestReadSnapshotClosesItsCursorsBeforeRestoringWriter(t *testing.T) {
 		if err := row.Err(); !errors.Is(err, sql.ErrTxDone) {
 			t.Fatalf("expired row concealed its original callback lifetime: %v", err)
 		}
-		for _, enter := range []func(context.Context, sqlite.Database, func(context.Context) error) error{sqlite.RunReadSnapshot, sqlite.RunInTx} {
+		for _, enter := range []func(sqlite.Database, context.Context, func(context.Context) error) error{sqlite.Database.RunReadSnapshot, sqlite.Database.RunInTx} {
 			entered := false
-			err := enter(expired, database, func(context.Context) error { entered = true; return nil })
+			err := enter(database, expired, func(context.Context) error { entered = true; return nil })
 			if entered || !errors.Is(err, sql.ErrTxDone) {
 				t.Fatalf("expired context issued another callback: entered=%t error=%v", entered, err)
 			}
 		}
-		_, err := sqlite.Connection(writer, database).ExecContext(writer, `INSERT INTO facts VALUES('original writer')`)
+		_, err := database.Executor(writer).ExecContext(writer, `INSERT INTO facts VALUES('original writer')`)
 		return err
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := sqlite.RunInTx(expiredWriter, database, func(context.Context) error {
+	if err := database.RunInTx(expiredWriter, func(context.Context) error {
 		t.Fatal("expired writer context issued another callback")
 		return nil
 	}); !errors.Is(err, sql.ErrTxDone) {
@@ -139,9 +139,9 @@ func TestHandledCursorErrorsDoNotBecomeConnectionCleanupFailures(t *testing.T) {
 	database, _ := readScopeDatabase(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	err := sqlite.RunInTx(ctx, database, func(writer context.Context) error {
-		if err := sqlite.RunReadSnapshot(writer, database, func(reader context.Context) error {
-			rows, err := sqlite.Connection(reader, database).QueryContext(reader, `SELECT 1 UNION ALL SELECT abs(-9223372036854775808)`)
+	err := database.RunInTx(ctx, func(writer context.Context) error {
+		if err := database.RunReadSnapshot(writer, func(reader context.Context) error {
+			rows, err := database.Executor(reader).QueryContext(reader, `SELECT 1 UNION ALL SELECT abs(-9223372036854775808)`)
 			if err != nil {
 				return err
 			}
@@ -153,10 +153,10 @@ func TestHandledCursorErrorsDoNotBecomeConnectionCleanupFailures(t *testing.T) {
 		}); err != nil {
 			return err
 		}
-		if err := sqlite.RunReadSnapshot(writer, database, func(reader context.Context) error {
+		if err := database.RunReadSnapshot(writer, func(reader context.Context) error {
 			query, cancel := context.WithCancel(reader)
 			defer cancel()
-			rows, err := sqlite.Connection(reader, database).QueryContext(query, `SELECT 1`)
+			rows, err := database.Executor(reader).QueryContext(query, `SELECT 1`)
 			if err != nil {
 				return err
 			}
@@ -171,7 +171,7 @@ func TestHandledCursorErrorsDoNotBecomeConnectionCleanupFailures(t *testing.T) {
 		}); err != nil {
 			return err
 		}
-		_, err := sqlite.Connection(writer, database).ExecContext(writer, `INSERT INTO facts VALUES('handled cursor errors')`)
+		_, err := database.Executor(writer).ExecContext(writer, `INSERT INTO facts VALUES('handled cursor errors')`)
 		return err
 	})
 	if err != nil {
@@ -187,15 +187,15 @@ func TestTransactionsRefuseAnUninitializedDatabase(t *testing.T) {
 	database := sqlite.Database{}
 	for _, test := range []struct {
 		name  string
-		enter func(context.Context, sqlite.Database, func(context.Context) error) error
+		enter func(sqlite.Database, context.Context, func(context.Context) error) error
 	}{
-		{name: "write", enter: sqlite.RunInTx},
-		{name: "independent", enter: sqlite.RunIndependentTx},
-		{name: "read", enter: sqlite.RunReadSnapshot},
+		{name: "write", enter: sqlite.Database.RunInTx},
+		{name: "independent", enter: sqlite.Database.RunIndependentTx},
+		{name: "read", enter: sqlite.Database.RunReadSnapshot},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			entered := false
-			err := test.enter(t.Context(), database, func(context.Context) error { entered = true; return nil })
+			err := test.enter(database, t.Context(), func(context.Context) error { entered = true; return nil })
 			if err == nil || entered {
 				t.Fatalf("transaction admitted a connection without original cursor evidence: entered=%t error=%v", entered, err)
 			}

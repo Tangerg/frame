@@ -40,13 +40,13 @@ func childAcceptanceConfig(path string, admission framehost.Admission) Config {
 			`CREATE TABLE parent_jobs (id TEXT PRIMARY KEY, active INTEGER NOT NULL, binding BLOB NOT NULL)`,
 			`CREATE TABLE child_jobs (id TEXT PRIMARY KEY, operation TEXT UNIQUE NOT NULL, parent TEXT NOT NULL REFERENCES parent_jobs(id), active INTEGER NOT NULL, binding BLOB NOT NULL)`,
 		},
-		References: func(ctx context.Context, tx Reader, installation framehost.InstallationID) ([]framehost.Dependency, error) {
+		References: func(ctx context.Context, tx Reader, installation framehost.InstallationID) ([]value.Digest, error) {
 			rows, err := tx.QueryContext(ctx, `SELECT binding FROM parent_jobs WHERE active=1 UNION ALL SELECT binding FROM child_jobs WHERE active=1`)
 			if err != nil {
 				return nil, err
 			}
 			defer rows.Close()
-			var retained []framehost.Dependency
+			var retained []value.Digest
 			for rows.Next() {
 				var encoded []byte
 				if err := rows.Scan(&encoded); err != nil {
@@ -58,7 +58,7 @@ func childAcceptanceConfig(path string, admission framehost.Admission) Config {
 				}
 				for _, dependency := range binding.Dependencies() {
 					if dependency.InstallationID == installation {
-						retained = append(retained, dependency)
+						retained = append(retained, dependency.Release)
 					}
 				}
 			}
@@ -163,11 +163,11 @@ func openChildAcceptance(t *testing.T, path string, initialize bool) *childAccep
 			if err != nil {
 				return nil, err
 			}
-			encoded, err := binding.CanonicalJSON()
+			encoded, err := binding.Canonical()
 			if err != nil {
 				return nil, err
 			}
-			_, err = tx.ExecContext(ctx, `INSERT INTO parent_jobs VALUES('parent',1,?)`, encoded)
+			_, err = tx.ExecContext(ctx, `INSERT INTO parent_jobs VALUES('parent',1,?)`, encoded.Bytes())
 			return []byte("parent"), err
 		}, nil)
 		if err != nil || settlement.State != framehost.Committed {
@@ -208,11 +208,11 @@ func (f *childAcceptanceFixture) accept(plan framehost.BindingPlan, operation st
 		if err != nil {
 			return nil, err
 		}
-		encoded, err := binding.CanonicalJSON()
+		encoded, err := binding.Canonical()
 		if err != nil {
 			return nil, err
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO child_jobs VALUES('child',?,'parent',1,?)`, operation, encoded)
+		_, err = tx.ExecContext(ctx, `INSERT INTO child_jobs VALUES('child',?,'parent',1,?)`, operation, encoded.Bytes())
 		return []byte(operation), err
 	}
 }

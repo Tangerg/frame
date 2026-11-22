@@ -30,6 +30,12 @@ The persisted runner proof contains its immutable `ExitReceipt`; diagnostic
 reason, PID and exit code remain on the runner's original observation. The same
 receipt identity is acknowledged after durable acceptance, so diagnostic growth
 cannot prevent an admitted process from handing off its actual exit.
+Admitted creations queue in the driver, one at a time, because the runner
+serializes creation where a queued request could no longer be withdrawn. A
+creation cancelled while queued keeps the runner's non-dispatch proof; once
+dispatched, the driver joins the original `Launch` instead of cancelling it, so
+cancellation cannot discard its acknowledgement and leave an unknown creation.
+A `Runner` given a done context must not dispatch.
 A unique original `LaunchResult` can prove that its own request was never
 written. The driver retains this exact result; a later nondispatched retry could
 not disprove earlier acceptance. Runner capacity refusal is recorded by the

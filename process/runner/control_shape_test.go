@@ -95,7 +95,7 @@ func TestControlRequestEnvelopeRequiresExactlyOneKnownVariant(t *testing.T) {
 
 func TestControlResponseEvidenceRequiresEveryNonNullMember(t *testing.T) {
 	ref := AttemptRef{AttemptID: "attempt", Epoch: 1, RunnerID: "runner"}
-	proof, err := absentProof(ref, 2)
+	proof, err := ref.absenceProof(2)
 	if err != nil {
 		t.Fatal(err)
 	}

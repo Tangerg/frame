@@ -3,7 +3,7 @@ package value
 import (
 	"bytes"
 	"encoding/json/jsontext"
-	jsonv2 "encoding/json/v2"
+	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -235,7 +235,7 @@ func (b *descriptorBuffer) Write(value []byte) (int, error) {
 
 func CheckDescriptorValue(value any) error {
 	var buffer descriptorBuffer
-	if err := jsonv2.MarshalWrite(&buffer, value); err != nil {
+	if err := json.MarshalWrite(&buffer, value); err != nil {
 		return err
 	}
 	return CheckDescriptor(buffer.Bytes())
@@ -245,7 +245,7 @@ func CheckDescriptorValue(value any) error {
 // keep their lexemes for the schema compiler.
 func decodeBoundedJSON(raw []byte) (any, error) {
 	var value any
-	if err := jsonv2.Unmarshal(raw, &value, Numbers()); err != nil {
+	if err := json.Unmarshal(raw, &value, Numbers()); err != nil {
 		return nil, err
 	}
 	return value, nil

@@ -15,7 +15,7 @@ func TestLocalExitPreservesMaximumLengthAttemptIdentity(t *testing.T) {
 	store, _, _ := testStore(t)
 	ref := framehost.UnitRef{InstallationID: "provider", Release: value.Hash(nil), UnitID: "main"}
 	binding := framehost.BindingSnapshot{Roots: []framehost.ExportRef{}, UnitRoots: []framehost.UnitRef{ref}, Units: []framehost.UnitBinding{{Source: ref, Configuration: value.Hash(nil)}}}
-	attempt := Attempt{ID: strings.Repeat("<", frame.MaxNameBytes), Epoch: store.Epoch(), Source: ref, Binding: binding, Realm: "runner", Profile: framehost.LocalProcess}
+	attempt := Attempt{ID: strings.Repeat("<", frame.MaxNameBytes), Epoch: store.Epoch(), Source: ref, Binding: binding, Realm: "runner", Profile: framehost.LocalProcess, Scope: "scope", ScopeGeneration: 1, Generation: 1}
 	proof := attempt.LocalExit("not-started", `{"started":false}`)
 	if _, err := store.RecordAttempt(t.Context(), attempt); err != nil {
 		t.Fatal(err)
@@ -33,7 +33,7 @@ func TestExitEvidenceIsBoundedByTheProofNotTheRequestBudget(t *testing.T) {
 	store, _, _ := testStore(t)
 	ref := framehost.UnitRef{InstallationID: "provider", Release: value.Hash(nil), UnitID: "main"}
 	binding := framehost.BindingSnapshot{UnitRoots: []framehost.UnitRef{ref}, Units: []framehost.UnitBinding{{Source: ref, Configuration: value.Hash(nil)}}}
-	attempt := Attempt{ID: "bounded", Epoch: store.Epoch(), Source: ref, Binding: binding, Realm: "runner", Profile: framehost.LocalProcess}
+	attempt := Attempt{ID: "bounded", Epoch: store.Epoch(), Source: ref, Binding: binding, Realm: "runner", Profile: framehost.LocalProcess, Scope: "scope", ScopeGeneration: 1, Generation: 1}
 	if _, err := store.RecordAttempt(t.Context(), attempt); err != nil {
 		t.Fatal(err)
 	}

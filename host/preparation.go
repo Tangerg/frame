@@ -103,7 +103,7 @@ func (i *unitInstance) prepareUnit() error {
 	if err := i.validateCurrent(work.Context()); err != nil {
 		return err
 	}
-	exports, activate, err := invokeSetup(run, work.Context(), setup)
+	exports, activate, err := invokeSetup(work.Context(), run, setup)
 	if err == nil {
 		err = frame.ContextError(work.Context())
 	}
@@ -131,7 +131,7 @@ func (i *unitInstance) bindImportsLocked() (map[string][]BoundValue, error) {
 	for _, requirement := range i.binding.Imports {
 		values := make([]BoundValue, 0, len(requirement.Providers))
 		for _, source := range requirement.Providers {
-			if source.Unit() == i.binding.Source {
+			if source.UnitRef == i.binding.Source {
 				values = append(values, BoundValue{Source: source, Local: true})
 				continue
 			}
@@ -149,7 +149,7 @@ func (i *unitInstance) bindImportsLocked() (map[string][]BoundValue, error) {
 func (i *unitInstance) providerExportLocked(source ExportRef) (*publication, error) {
 	for _, hold := range i.providerHolds {
 		provider := hold.instance
-		if provider.binding.Source == source.Unit() {
+		if provider.binding.Source == source.UnitRef {
 			return provider.exports.bound(source)
 		}
 	}
@@ -159,7 +159,7 @@ func (i *unitInstance) providerExportLocked(source ExportRef) (*publication, err
 func (i *unitInstance) validateImportsLocked() error {
 	for _, requirement := range i.binding.Imports {
 		for _, source := range requirement.Providers {
-			if source.Unit() == i.binding.Source {
+			if source.UnitRef == i.binding.Source {
 				continue
 			}
 			if _, err := i.providerExportLocked(source); err != nil {
@@ -220,7 +220,7 @@ func (i *unitInstance) publishSetupLocked(publications []*publication) error {
 	return nil
 }
 
-func invokeSetup(setup SetupFunc, ctx context.Context, value Setup) (exports []ExportValue, activate func(context.Context) error, err error) {
+func invokeSetup(ctx context.Context, setup SetupFunc, value Setup) (exports []ExportValue, activate func(context.Context) error, err error) {
 	call := value.setupCall
 	defer func() {
 		exports, activate = call.seal(exports)

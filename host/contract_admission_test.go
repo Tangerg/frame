@@ -120,8 +120,7 @@ func TestRegistryRetainsOriginalCapabilityAcrossRegistrationAndHandleReplacement
 
 func TestForeignDescriptorCannotAcquireFrameCapabilitySemantics(t *testing.T) {
 	descriptor := []byte(`{"protocol":"example","methods":["read"]}`)
-	ref := framehost.ContractRef{Name: "example.foreign", Version: "1", Kind: framehost.ServiceKind, Mode: framehost.PortableMode, Digest: value.Hash(descriptor)}
-	contract, err := framehost.BindContract[string](ref, descriptor)
+	contract, err := framehost.NewDescriptorContract[string]("example.foreign", "1", descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +128,7 @@ func TestForeignDescriptorCannotAcquireFrameCapabilitySemantics(t *testing.T) {
 	if err := host.Register(contract); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.Capability(ref); !errors.Is(err, frame.ErrContractMismatch) {
+	if _, err := host.Capability(contract.Ref()); !errors.Is(err, frame.ErrContractMismatch) {
 		t.Fatalf("foreign descriptor acquired Frame semantics: %v", err)
 	}
 }

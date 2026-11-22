@@ -7,7 +7,6 @@ import (
 
 	"github.com/Tangerg/frame"
 	framehost "github.com/Tangerg/frame/host"
-	"github.com/Tangerg/frame/value"
 )
 
 func TestCapturedBindingReconstructionUsesOriginalInstanceRealms(t *testing.T) {
@@ -28,7 +27,7 @@ func TestCapturedBindingReconstructionUsesOriginalInstanceRealms(t *testing.T) {
 				t.Run(graph.name+"/"+profile+"/"+string(realm), func(t *testing.T) {
 					ctx := testContext(t)
 					descriptor := []byte(`{"protocol":"original-realm-reconstruction"}`)
-					contract, err := framehost.BindContract[string](framehost.ContractRef{Name: "binding.reconstruction", Version: "1", Kind: framehost.ServiceKind, Mode: framehost.PortableMode, Digest: value.Hash(descriptor)}, descriptor)
+					contract, err := framehost.NewDescriptorContract[string]("binding.reconstruction", "1", descriptor)
 					if err != nil {
 						t.Fatal(err)
 					}

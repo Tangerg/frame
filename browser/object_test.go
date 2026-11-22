@@ -123,7 +123,7 @@ func TestBrowserMetadataSurvivesGoTypeRegistrationAfterPublication(t *testing.T)
 		}
 	}
 	publish("before")
-	original, err := e.host.SnapshotIn(e.ctx, browser.RealmID(plan.Realm), point.Ref())
+	original, err := e.host.SnapshotIn(e.ctx, plan.Realm.HostRealm(), point.Ref())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestBrowserMetadataSurvivesGoTypeRegistrationAfterPublication(t *testing.T)
 	}
 	assertMetadata(original, map[string]string{"shared": "browser", "before": "before"})
 	publish("after")
-	current, err := e.host.SnapshotIn(e.ctx, browser.RealmID(plan.Realm), point.Ref())
+	current, err := e.host.SnapshotIn(e.ctx, plan.Realm.HostRealm(), point.Ref())
 	if err != nil {
 		t.Fatal(err)
 	}

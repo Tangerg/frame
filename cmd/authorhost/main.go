@@ -254,7 +254,7 @@ func routes(host framehost.Host, bridge *browser.Bridge, author author, credenti
 		}
 	}
 	mux.HandleFunc(activationHTTP.Method+" "+activationHTTP.Path, application(func(w http.ResponseWriter, r *http.Request) {
-		activate(w, r, host, browser.RealmID(credentials.Realm), author.plugin.Revision())
+		activate(w, r, host, credentials.Realm.HostRealm(), author.plugin.Revision())
 	}))
 	mux.HandleFunc(sealRealmHTTP.Method+" "+sealRealmHTTP.Path, application(func(w http.ResponseWriter, r *http.Request) {
 		var input struct{}
@@ -306,8 +306,7 @@ func readApplicationRequest(w http.ResponseWriter, r *http.Request, target any) 
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxApplicationRequestBytes))
 	if err != nil {
 		status := http.StatusBadRequest
-		var limit *http.MaxBytesError
-		if errors.As(err, &limit) {
+		if _, exceeded := errors.AsType[*http.MaxBytesError](err); exceeded {
 			status = http.StatusRequestEntityTooLarge
 		}
 		http.Error(w, err.Error(), status)

@@ -20,11 +20,11 @@ func sameWire[T any](a, b T) bool {
 }
 
 func copyWire[T any](value T) T {
-	var copy T
-	if err := json.Unmarshal(wireBytes(value), &copy); err != nil {
+	var detached T
+	if err := json.Unmarshal(wireBytes(value), &detached); err != nil {
 		panic(fmt.Errorf("browser: protocol value %T does not round-trip: %w", value, err))
 	}
-	return copy
+	return detached
 }
 
 func wireBytes(value any) []byte {

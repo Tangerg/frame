@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	framehost "github.com/Tangerg/frame/host"
+	"github.com/Tangerg/frame/value"
 )
 
 func TestDynamicPublicationCannotReplaceDeclaredSetup(t *testing.T) {
@@ -18,22 +19,22 @@ func TestDynamicPublicationCannotReplaceDeclaredSetup(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			depth := scenario.depth
 			ctx := testContext(t)
-			var retained []byte
-			business := &retainedUseOwner{read: func(_ context.Context, id framehost.InstallationID) ([]framehost.Dependency, error) {
-				if retained == nil {
+			var retained value.JSON
+			business := &retainedUseOwner{read: func(_ context.Context, id framehost.InstallationID) ([]value.Digest, error) {
+				if retained == (value.JSON{}) {
 					return nil, nil
 				}
-				binding, err := framehost.ParseBinding(retained)
+				binding, err := framehost.ParseBinding(retained.Bytes())
 				if err != nil {
 					return nil, err
 				}
-				var dependencies []framehost.Dependency
+				var releases []value.Digest
 				for _, dependency := range binding.Dependencies() {
 					if dependency.InstallationID == id {
-						dependencies = append(dependencies, dependency)
+						releases = append(releases, dependency.Release)
 					}
 				}
-				return dependencies, nil
+				return releases, nil
 			}}
 			host := testHost(t, framehost.Config{UseOwners: []framehost.UseOwner{business}})
 			point, _ := framehost.NewPoint[string, string]("example.binding.inputs", "1")
@@ -89,7 +90,7 @@ func TestDynamicPublicationCannotReplaceDeclaredSetup(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				retained, err = binding.CanonicalJSON()
+				retained, err = binding.Canonical()
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -141,7 +142,7 @@ func TestDynamicPublicationCannotReplaceDeclaredSetup(t *testing.T) {
 					if id != "original-record" || scope.ID() != grant.ID() {
 						return framehost.BindingSnapshot{}, framehost.ErrUnavailable
 					}
-					return framehost.ParseBinding(retained)
+					return framehost.ParseBinding(retained.Bytes())
 				},
 			})
 			if err := restored.Register(point, service); err != nil {
@@ -163,7 +164,7 @@ func TestDynamicPublicationCannotReplaceDeclaredSetup(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			binding, err := framehost.ParseBinding(retained)
+			binding, err := framehost.ParseBinding(retained.Bytes())
 			if err != nil {
 				t.Fatal(err)
 			}

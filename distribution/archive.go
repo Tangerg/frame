@@ -10,7 +10,7 @@ import (
 
 // The release format uses single-disk ZIP32. Inspect the physical directory
 // before archive/zip allocates one object for each untrusted entry.
-func (limits Limits) openArchive(data []byte) (*zip.Reader, error) {
+func (l Limits) openArchive(data []byte) (*zip.Reader, error) {
 	const endSignature = 0x06054b50
 	var end struct {
 		Signature                                 uint32
@@ -29,10 +29,10 @@ func (limits Limits) openArchive(data []byte) (*zip.Reader, error) {
 	if end.Signature != endSignature || end.CommentBytes != 0 || end.Disk != 0 || end.DirectoryDisk != 0 || end.Entries != end.DiskEntries || end.Entries == math.MaxUint16 || end.Offset == math.MaxUint32 || end.Size == math.MaxUint32 || uint64(end.Offset)+uint64(end.Size) != uint64(endOffset) {
 		return nil, ErrInvalid
 	}
-	if int(end.Entries) > limits.Entries {
+	if int(end.Entries) > l.MaxEntries {
 		return nil, ErrCapacity
 	}
-	if err := limits.checkDirectory(data[end.Offset:endOffset], int(end.Entries)); err != nil {
+	if err := l.checkDirectory(data[end.Offset:endOffset], int(end.Entries)); err != nil {
 		return nil, err
 	}
 	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
@@ -42,7 +42,7 @@ func (limits Limits) openArchive(data []byte) (*zip.Reader, error) {
 	return reader, nil
 }
 
-func (limits Limits) checkDirectory(directory []byte, expected int) error {
+func (l Limits) checkDirectory(directory []byte, expected int) error {
 	const headerSignature = 0x02014b50
 	var header struct {
 		Signature                           uint32
@@ -52,7 +52,7 @@ func (limits Limits) checkDirectory(directory []byte, expected int) error {
 	}
 	count := 0
 	for len(directory) != 0 {
-		if count == limits.Entries {
+		if count == l.MaxEntries {
 			return ErrCapacity
 		}
 		fixed, err := binary.Decode(directory, binary.LittleEndian, &header)
@@ -72,13 +72,13 @@ func (limits Limits) checkDirectory(directory []byte, expected int) error {
 	return nil
 }
 
-func (limits Limits) admitsExpansion(expanded, compressed uint64) bool {
-	if expanded > uint64(limits.ExpandedBytes) {
+func (l Limits) admitsExpansion(expanded, compressed uint64) bool {
+	if expanded > uint64(l.MaxExpandedBytes) {
 		return false
 	}
 	if compressed == 0 {
 		return expanded == 0
 	}
 	whole, remainder := expanded/compressed, expanded%compressed
-	return whole < limits.CompressionRatio || whole == limits.CompressionRatio && remainder == 0
+	return whole < l.MaxCompressionRatio || whole == l.MaxCompressionRatio && remainder == 0
 }

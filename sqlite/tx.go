@@ -18,13 +18,14 @@ type transaction struct {
 	readOnly bool
 }
 
-// Standalone database adapters use this exact database identity to join their
-// caller's write-set. Frame Store callbacks receive their scoped executor instead.
-func Connection(ctx context.Context, db Database) Executor {
-	if db.databaseOwner == nil {
+// Executor joins the transaction ctx carries for this exact database; outside
+// one it refuses every statement. Frame Store callbacks receive their scoped
+// executor instead.
+func (d Database) Executor(ctx context.Context) Executor {
+	if d.databaseOwner == nil {
 		return &transactionAccess{}
 	}
-	if owned, ok := ctx.Value(txKey{database: db.databaseOwner}).(transaction); ok {
+	if owned, ok := ctx.Value(txKey{database: d.databaseOwner}).(transaction); ok {
 		return owned.tx
 	}
 	return &transactionAccess{}
@@ -32,14 +33,14 @@ func Connection(ctx context.Context, db Database) Executor {
 
 // Nested writers join the exact database's original transaction. Taking a
 // second connection here could deadlock owners with a single-slot pool.
-func RunInTx(ctx context.Context, db Database, fn func(context.Context) error) error {
-	if db.databaseOwner == nil || fn == nil {
+func (d Database) RunInTx(ctx context.Context, fn func(context.Context) error) error {
+	if d.databaseOwner == nil || fn == nil {
 		return frame.ErrInvalid
 	}
 	if err := frame.ContextError(ctx); err != nil {
 		return err
 	}
-	database := db.databaseOwner
+	database := d.databaseOwner
 	if owned, ok := ctx.Value(txKey{database: database}).(transaction); ok {
 		if err := owned.tx.validate(); err != nil {
 			return err
@@ -55,14 +56,14 @@ func RunInTx(ctx context.Context, db Database, fn func(context.Context) error) e
 // RunReadSnapshot reads one consistent snapshot without reserving the WAL writer.
 // Reads join an ambient transaction for the same database. The callback must not
 // mutate; RunInTx refuses to promote this snapshot to a write-set.
-func RunReadSnapshot(ctx context.Context, db Database, read func(context.Context) error) error {
-	if db.databaseOwner == nil || read == nil {
+func (d Database) RunReadSnapshot(ctx context.Context, read func(context.Context) error) error {
+	if d.databaseOwner == nil || read == nil {
 		return frame.ErrInvalid
 	}
 	if err := frame.ContextError(ctx); err != nil {
 		return err
 	}
-	database := db.databaseOwner
+	database := d.databaseOwner
 	if owned, ok := ctx.Value(txKey{database: database}).(transaction); ok {
 		owned.readOnly = true
 		return owned.tx.read(ctx, func(scope *connectionScope) error {
@@ -78,11 +79,11 @@ func RunReadSnapshot(ctx context.Context, db Database, read func(context.Context
 
 // Independent transactions refuse an ambient write-set on the same database.
 // Once BEGIN succeeds, this owner joins the original rollback or commit.
-func RunIndependentTx(ctx context.Context, db Database, fn func(context.Context) error) (err error) {
-	if db.databaseOwner == nil {
+func (d Database) RunIndependentTx(ctx context.Context, fn func(context.Context) error) error {
+	if d.databaseOwner == nil {
 		return frame.ErrInvalid
 	}
-	return db.databaseOwner.runIndependentTx(ctx, writeTransaction, fn)
+	return d.databaseOwner.runIndependentTx(ctx, writeTransaction, fn)
 }
 
 func (d *databaseOwner) runIndependentTx(ctx context.Context, mode transactionMode, fn func(context.Context) error) error {

@@ -237,6 +237,26 @@ export function projectNumber(value: unknown): number {
   return value;
 }
 
+/** JSON whose numbers are ordinary JavaScript numbers. */
+export type ProjectedJSONValue =
+  | null
+  | boolean
+  | string
+  | number
+  | ProjectedJSONValue[]
+  | { [key: string]: ProjectedJSONValue };
+
+// Authoring schemas consume plain numbers. Each number is projected exactly or
+// refused, so walking a document can never round a value admitted exactly.
+export function projectNumbers(value: FrozenJSONValue): ProjectedJSONValue {
+  if (isJSONNumber(value)) return projectNumber(value);
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(projectNumbers);
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, projectNumbers(item)]),
+  );
+}
+
 // Structured cloning strips ExactNumber's encoding from captured JSON evidence.
 export function cloneJSON(value: unknown): JSONValue | undefined {
   return value === undefined ? value : parseJSON(stringifyJSON(value));

@@ -17,12 +17,17 @@ import (
 	sdk "github.com/Tangerg/go-sdk/mcp"
 )
 
+// clientImplementation is how this adapter introduces itself in MCP
+// initialization; servers may log it but grant nothing from it.
+var clientImplementation = sdk.Implementation{Name: "frame", Version: "1"}
+
 func connect(ctx context.Context, channel io.ReadWriteCloser, maximum int, configure func(*sdk.Client) error) (*sdk.ClientSession, error) {
 	transport, err := NewTransport(channel, maximum)
 	if err != nil {
 		return nil, err
 	}
-	client := sdk.NewClient(&sdk.Implementation{Name: "frame", Version: "1"}, &sdk.ClientOptions{
+	implementation := clientImplementation
+	client := sdk.NewClient(&implementation, &sdk.ClientOptions{
 		Capabilities:   &sdk.ClientCapabilities{},
 		MultiRoundTrip: &sdk.MultiRoundTripOptions{Disabled: true},
 	})
@@ -48,9 +53,8 @@ func connect(ctx context.Context, channel io.ReadWriteCloser, maximum int, confi
 //
 // A custom [process.Protocol] connects its own SDK client through Transport in
 // [process.Connection.Connect], so its methods and handlers get the same
-// admission as [Tools] and [ManagedProtocol]. Transport neither launches nor
-// releases the process: closing it closes the attached stream, and the driver
-// alone establishes exit.
+// admission as [Tools]. Transport neither launches nor releases the process:
+// closing it closes the attached stream, and the driver alone establishes exit.
 type Transport struct {
 	channel io.ReadWriteCloser
 	maximum int

@@ -126,7 +126,7 @@ func applicationAcknowledgement[I any](name, path string, call func(*App, contex
 func applicationQuery[O any](name, path string, call func(*App, context.Context) (O, error)) applicationOperation {
 	return applicationOperation{
 		contract: browser.HTTPOperation{Name: name, Method: http.MethodGet, Path: path, SuccessStatus: http.StatusOK, Output: reflect.TypeFor[O]()},
-		execute: func(a *App, w http.ResponseWriter, r *http.Request) (any, error) {
+		execute: func(a *App, _ http.ResponseWriter, r *http.Request) (any, error) {
 			var input struct{}
 			if err := decodeQuery(r, &input); err != nil {
 				return nil, err
@@ -139,7 +139,7 @@ func applicationQuery[O any](name, path string, call func(*App, context.Context)
 func applicationQueryInput[I, O any](name, path string, call func(*App, context.Context, I) (O, error)) applicationOperation {
 	return applicationOperation{
 		contract: browser.HTTPOperation{Name: name, Method: http.MethodGet, Path: path, SuccessStatus: http.StatusOK, Input: reflect.TypeFor[I](), Output: reflect.TypeFor[O]()},
-		execute: func(a *App, w http.ResponseWriter, r *http.Request) (any, error) {
+		execute: func(a *App, _ http.ResponseWriter, r *http.Request) (any, error) {
 			var input I
 			if err := decodeQuery(r, &input); err != nil {
 				return nil, err

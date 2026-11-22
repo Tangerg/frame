@@ -27,7 +27,7 @@ func (h *hostState) exportLocked(ref ExportRef) error {
 	if err := ref.Validate(); err != nil {
 		return err
 	}
-	unit, _, err := h.unitLocked(ref.Unit())
+	unit, _, err := h.unitLocked(ref.UnitRef)
 	if err != nil {
 		return err
 	}
@@ -62,7 +62,7 @@ func (h *hostState) candidatesLocked(contract ContractRef) []ExportRef {
 			}
 		}
 	}
-	slices.SortFunc(result, compareExport)
+	slices.SortFunc(result, ExportRef.compare)
 	return result
 }
 
@@ -145,7 +145,7 @@ func (h *hostState) resolveLocked(roots []ExportRef, unitRoots []UnitRef, realm 
 		if err := h.exportLocked(root); err != nil {
 			return nil, err
 		}
-		if err := resolution.resolve(root.Unit()); err != nil {
+		if err := resolution.resolve(root.UnitRef); err != nil {
 			return nil, err
 		}
 	}
@@ -158,7 +158,7 @@ func (h *hostState) resolveLocked(roots []ExportRef, unitRoots []UnitRef, realm 
 	if err := binding.Validate(); err != nil {
 		return nil, err
 	}
-	return &declaredPlan{planHeader: planHeader{owner: h.identity, realm: realm, binding: binding}, reads: resolution.reads}, nil
+	return &declaredPlan{planHeader: planHeader{owner: h.domain, realm: realm, binding: binding}, reads: resolution.reads}, nil
 }
 
 func (h *hostState) indexChoicesLocked(choices []BindingChoice) (map[slotKey][]ExportRef, error) {
@@ -269,10 +269,10 @@ func (r *bindingResolution) resolveProviders(ref UnitRef, requirement ImportDecl
 		if err := r.host.exportLocked(provider); err != nil {
 			return err
 		}
-		if provider.Unit() == ref {
+		if provider.UnitRef == ref {
 			continue
 		}
-		if err := r.resolve(provider.Unit()); err != nil {
+		if err := r.resolve(provider.UnitRef); err != nil {
 			return fmt.Errorf("unit %s requires %s: %w", ref, requirement.Slot, err)
 		}
 	}
@@ -299,14 +299,14 @@ func (r *bindingResolution) providers(ref UnitRef, unit UnitDeclaration, require
 	return slices.Clone(providers), nil
 }
 
-// reachableBinding projects the units reachable from roots, each after all of
-// its providers, so instances can be planned in a single pass.
-func reachableBinding(source BindingSnapshot, roots []ExportRef, unitRoots []UnitRef) (BindingSnapshot, error) {
-	units := make(map[UnitRef]UnitBinding, len(source.Units))
-	for _, unit := range source.Units {
+// reachable projects the units reachable from roots, each after all of its
+// providers, so instances can be planned in a single pass.
+func (b BindingSnapshot) reachable(roots []ExportRef, unitRoots []UnitRef) (BindingSnapshot, error) {
+	units := make(map[UnitRef]UnitBinding, len(b.Units))
+	for _, unit := range b.Units {
 		units[unit.Source] = unit
 	}
-	result := BindingSnapshot{Roots: slices.Clone(roots), UnitRoots: slices.Clone(unitRoots), Selection: source.Selection}
+	result := BindingSnapshot{Roots: slices.Clone(roots), UnitRoots: slices.Clone(unitRoots), Selection: b.Selection}
 	seen := make(map[UnitRef]bool)
 	var visit func(UnitRef) error
 	visit = func(ref UnitRef) error {
@@ -320,7 +320,7 @@ func reachableBinding(source BindingSnapshot, roots []ExportRef, unitRoots []Uni
 		seen[ref] = true
 		for _, requirement := range unit.Imports {
 			for _, provider := range requirement.Providers {
-				if err := visit(provider.Unit()); err != nil {
+				if err := visit(provider.UnitRef); err != nil {
 					return err
 				}
 			}
@@ -329,7 +329,7 @@ func reachableBinding(source BindingSnapshot, roots []ExportRef, unitRoots []Uni
 		return nil
 	}
 	for _, root := range roots {
-		if err := visit(root.Unit()); err != nil {
+		if err := visit(root.UnitRef); err != nil {
 			return BindingSnapshot{}, err
 		}
 	}
@@ -360,36 +360,50 @@ func (h *hostState) validateBindingLocked(binding BindingSnapshot) error {
 		return frame.ErrClosed
 	}
 	for _, unit := range binding.Units {
-		declaration, installation, err := h.unitLocked(unit.Source)
-		if err != nil {
+		if err := h.validateUnitBindingLocked(unit); err != nil {
 			return err
-		}
-		if framevalue.Hash(installation.record.Configuration) != unit.Configuration {
-			return ErrStaleBinding
-		}
-		if err := h.admission.ValidateScope(installation.scope); err != nil {
-			return err
-		}
-		if len(declaration.Declaration.Imports) != len(unit.Imports) {
-			return ErrStaleBinding
-		}
-		for _, bound := range unit.Imports {
-			declared, found := declaration.Declaration.importSlot(bound.Slot)
-			if !found || declared != bound.ImportDeclaration {
-				return ErrStaleBinding
-			}
-			if fixed, isFixed := declaration.Declaration.fixedProviders(bound.Slot); isFixed && !slices.Equal(fixed, bound.Providers) {
-				return ErrStaleBinding
-			}
-			for _, provider := range bound.Providers {
-				if err := h.exportLocked(provider); err != nil {
-					return err
-				}
-			}
 		}
 	}
 	for _, root := range binding.Roots {
 		if err := h.exportLocked(root); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *hostState) validateUnitBindingLocked(unit UnitBinding) error {
+	declaration, installation, err := h.unitLocked(unit.Source)
+	if err != nil {
+		return err
+	}
+	if framevalue.Hash(installation.record.Configuration) != unit.Configuration {
+		return ErrStaleBinding
+	}
+	if err := h.admission.ValidateScope(installation.scope); err != nil {
+		return err
+	}
+	if len(declaration.Declaration.Imports) != len(unit.Imports) {
+		return ErrStaleBinding
+	}
+	for _, bound := range unit.Imports {
+		if err := h.validateImportBindingLocked(declaration.Declaration, bound); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *hostState) validateImportBindingLocked(declaration UnitDeclaration, bound ImportBinding) error {
+	declared, found := declaration.importSlot(bound.Slot)
+	if !found || declared != bound.ImportDeclaration {
+		return ErrStaleBinding
+	}
+	if fixed, isFixed := declaration.fixedProviders(bound.Slot); isFixed && !slices.Equal(fixed, bound.Providers) {
+		return ErrStaleBinding
+	}
+	for _, provider := range bound.Providers {
+		if err := h.exportLocked(provider); err != nil {
 			return err
 		}
 	}

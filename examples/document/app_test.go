@@ -111,7 +111,7 @@ func TestPreparedCaptureIsRejectedAfterConcurrentDisable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Host.SetEnabled(ctx, "converter", false); err != nil {
+	if err := app.Host.Disable(ctx, "converter"); err != nil {
 		t.Fatal(err)
 	}
 	settlement, err := app.CommitTask(ctx, prepared)

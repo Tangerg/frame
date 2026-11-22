@@ -1,3 +1,5 @@
+// Command frame-runner is the independent runner authority that owns direct
+// child processes for durable execution attempts.
 package main
 
 import (
@@ -14,8 +16,8 @@ import (
 )
 
 func main() {
-	directory := flag.String("directory", "", "private runner state directory")
-	socket := flag.String("socket", "", "private unix control socket")
+	directory := flag.String(runner.DirectoryFlag, "", "private runner state directory")
+	socket := flag.String(runner.SocketFlag, "", "private unix control socket")
 	flag.Parse()
 	if err := run(*directory, *socket); err != nil {
 		fmt.Fprintln(os.Stderr, err)

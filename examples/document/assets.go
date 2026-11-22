@@ -84,7 +84,11 @@ func buildPreview(ctx context.Context, store distribution.Store, contracts Contr
 		return distribution.Release{}, err
 	}
 	authorize(value.Hash(archive.Bytes()))
-	return store.ImportArchive(ctx, path, value.Hash(archive.Bytes()))
+	lease, err := store.ImportArchive(ctx, path, value.Hash(archive.Bytes()))
+	if err != nil {
+		return distribution.Release{}, err
+	}
+	return lease.Snapshot(), lease.Close()
 }
 
 func previewDefinition(release distribution.Release) (*framehost.Plugin, error) {

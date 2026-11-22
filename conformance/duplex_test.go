@@ -187,7 +187,7 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = framehost.WithPlan(ctx, h, plan, grant, func(use framehost.Use) error {
+	err = h.WithUse(ctx, grant, plan, func(use framehost.Use) error {
 		return framehost.BorrowExport[frame.Service](ctx, use, export, func(ctx context.Context, relay frame.Service) error {
 			input, _ := framevalue.EncodeJSON("done")
 			var seen []string
@@ -245,7 +245,7 @@ func TestNodeRelaysStreamingAndCancelsOriginalGoCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = h.SetEnabled(ctx, "node", false); err != nil {
+	if err = h.Disable(ctx, "node"); err != nil {
 		t.Fatal(err)
 	}
 	if err = h.WaitRetired(ctx, "node"); err != nil {

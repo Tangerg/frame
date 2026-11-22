@@ -51,49 +51,54 @@ func (o Owner) PrepareUnder(ctx context.Context, request []byte) (SubmissionID, 
 	return o.prepare(ctx, request)
 }
 
-func (o Owner) prepare(ctx context.Context, request []byte) (id SubmissionID, err error) {
+func (o Owner) prepare(ctx context.Context, request []byte) (SubmissionID, error) {
 	if err := o.validateRequest(request); err != nil {
-		return id, err
+		return SubmissionID{}, err
 	}
 	request = bytes.Clone(request)
-	err = func() error {
-		var sequence uint64
-		err := o.store.transaction(ctx, func(tx Executor) error {
-			retained, err := o.retainedSubmissions(ctx, tx)
-			if err != nil {
-				return err
-			}
-			if retained >= uint64(o.store.maxSubmissions) {
-				return frame.ErrCapacity
-			}
-			if err := tx.QueryRowContext(ctx, `UPDATE frame_owners SET next_sequence=next_sequence+1 WHERE id=? RETURNING next_sequence`, o.id).Scan(&sequence); err != nil {
-				return err
-			}
-			_, err = tx.ExecContext(ctx, `INSERT INTO frame_submissions(owner_id,sequence,digest,request,state) VALUES(?,?,?,?,?)`, o.id, sequence, value.Hash(request), request, submissionPrepared)
-			return err
-		})
+	var sequence uint64
+	err := o.store.transaction(ctx, func(tx Executor) error {
+		retained, err := o.retainedSubmissions(ctx, tx)
 		if err != nil {
-			if errors.Is(err, ErrIndeterminate) {
-				o.store.admission.RequireRecovery(err)
-				return err
-			}
-			if sequence == 0 {
-				return err
-			}
-			var stored []byte
-			queryErr := o.store.db.QueryRowContext(context.Background(), `SELECT request FROM frame_submissions WHERE owner_id=? AND sequence=?`, o.id, sequence).Scan(&stored)
-			if errors.Is(queryErr, sql.ErrNoRows) {
-				return err
-			}
-			if queryErr != nil || !bytes.Equal(stored, request) {
-				o.store.admission.RequireRecovery(errors.Join(err, queryErr))
-				return errors.Join(ErrIndeterminate, err, queryErr)
-			}
+			return err
 		}
-		id = SubmissionID{Store: o.store.id, Owner: o.id, Sequence: sequence}
-		return nil
-	}()
-	return id, err
+		if retained >= uint64(o.store.maxSubmissions) {
+			return frame.ErrCapacity
+		}
+		if err := tx.QueryRowContext(ctx, `UPDATE frame_owners SET next_sequence=next_sequence+1 WHERE id=? RETURNING next_sequence`, o.id).Scan(&sequence); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO frame_submissions(owner_id,sequence,digest,request,state) VALUES(?,?,?,?,?)`, o.id, sequence, value.Hash(request), request, submissionPrepared)
+		return err
+	})
+	if err != nil {
+		if err := o.resolvePreparation(sequence, request, err); err != nil {
+			return SubmissionID{}, err
+		}
+	}
+	return SubmissionID{Store: o.store.id, Owner: o.id, Sequence: sequence}, nil
+}
+
+// resolvePreparation decides a failed preparation from durable state: only the
+// original request stored under the reserved sequence proves it was prepared.
+func (o Owner) resolvePreparation(sequence uint64, request []byte, failure error) error {
+	if errors.Is(failure, ErrIndeterminate) {
+		o.store.admission.RequireRecovery(failure)
+		return failure
+	}
+	if sequence == 0 {
+		return failure
+	}
+	var stored []byte
+	queryErr := o.store.db.QueryRowContext(context.Background(), `SELECT request FROM frame_submissions WHERE owner_id=? AND sequence=?`, o.id, sequence).Scan(&stored)
+	if errors.Is(queryErr, sql.ErrNoRows) {
+		return failure
+	}
+	if queryErr != nil || !bytes.Equal(stored, request) {
+		o.store.admission.RequireRecovery(errors.Join(failure, queryErr))
+		return errors.Join(ErrIndeterminate, failure, queryErr)
+	}
+	return nil
 }
 
 // Commit never retries the mutation, including when the original response was
@@ -159,15 +164,13 @@ func (o Owner) commit(ctx context.Context, id SubmissionID, request []byte, muta
 	return o.synchronize(attempt.settlement, synchronize, confirm)
 }
 
+// execute runs the mutation once. A panic or Goexit inside it still settles
+// the original submission before the interruption propagates.
 func (m *submissionMutation) execute(ctx context.Context, mutate func(context.Context, Executor) ([]byte, error)) error {
 	returned := false
 	defer func() {
-		cause := recover()
 		if !returned {
 			m.resolveInterruption()
-		}
-		if cause != nil {
-			panic(cause)
 		}
 	}()
 	err := m.owner.store.transaction(ctx, func(tx Executor) error {
@@ -252,38 +255,40 @@ func (m *submissionMutation) resolveFailure(failure error) error {
 	return errors.Join(failure, err)
 }
 
+// synchronize projects a settled submission and confirms it. An interrupted
+// or failed projection leaves the store fenced until recovery reconciles it.
 func (o Owner) synchronize(settlement Settlement, apply func(Settlement) error, confirm confirmation) (Settlement, error) {
 	if settlement.Synchronized {
 		return settlement, nil
 	}
 	returned := false
 	defer func() {
-		cause := recover()
 		if !returned {
 			o.store.admission.RequireRecovery(ErrUnsettled)
 		}
-		if cause != nil {
-			panic(cause)
-		}
 	}()
+	settlement, err := o.applySynchronization(settlement, apply, confirm)
+	returned = true
+	if err != nil {
+		o.store.admission.RequireRecovery(err)
+	}
+	return settlement, err
+}
+
+func (o Owner) applySynchronization(settlement Settlement, apply func(Settlement) error, confirm confirmation) (Settlement, error) {
 	if apply != nil {
 		projection := settlement
 		projection.Evidence = bytes.Clone(settlement.Evidence)
 		if err := apply(projection); err != nil {
-			o.store.admission.RequireRecovery(err)
-			returned = true
 			return settlement, err
 		}
 	}
 	if confirm == confirmOnCommit {
 		if err := o.confirm(context.Background(), settlement.ID); err != nil {
-			o.store.admission.RequireRecovery(err)
-			returned = true
 			return settlement, err
 		}
 		settlement.Synchronized = true
 	}
-	returned = true
 	return settlement, nil
 }
 

@@ -45,7 +45,7 @@ type realmSession struct {
 func (b *Bridge) Credentials(realm Realm) (Credentials, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	session := b.sessions.get(RealmID(realm))
+	session := b.sessions.get(realm.HostRealm())
 	if session == nil || session.realm != realm {
 		return Credentials{}, framehost.ErrUnavailable
 	}
@@ -115,7 +115,7 @@ func (b *Bridge) openRealm(ctx context.Context, operationID, resumeToken string)
 		b.sessions.cancel()
 		return Credentials{}, err
 	}
-	b.sessions.commit(RealmID(realm), &realmSession{realm: realm, application: frame.NewLifetime(context.Background())})
+	b.sessions.commit(realm.HostRealm(), &realmSession{realm: realm, application: frame.NewLifetime(context.Background())})
 	return b.credentials(realm, resumeToken), nil
 }
 
@@ -162,7 +162,7 @@ func (b *Bridge) anySession(token string) (*realmSession, error) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if session := b.sessions.get(RealmID(realm)); session != nil {
+	if session := b.sessions.get(realm.HostRealm()); session != nil {
 		return session, nil
 	}
 	return &realmSession{realm: realm, sealed: true}, nil
@@ -222,7 +222,7 @@ func (b *Bridge) sealSessionLocked(session *realmSession) {
 
 // reapRealmLocked frees a sealed Realm's slot once it owns no execution.
 func (b *Bridge) reapRealmLocked(realm Realm) {
-	id := RealmID(realm)
+	id := realm.HostRealm()
 	session := b.sessions.get(id)
 	if session == nil || !session.sealed || session.projectionBytes != 0 {
 		return

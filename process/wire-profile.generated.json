@@ -1,5 +1,5 @@
 {
-  "protocol": "503990ecee278d9afbb6b60fdd4709c61eded9815a032b18eed2be65a365b812",
+  "protocol": "32329dec6b9c88397c7c3396f7b0153c494059c83f89b78239dfdc469f6e2291",
   "shapes": {
     "request": {
       "required": [
@@ -41,6 +41,16 @@
       "required": [
         "protocol",
         "maxFrameBytes"
+      ],
+      "optional": []
+    },
+    "description": {
+      "required": [
+        "protocol",
+        "maxFrameBytes",
+        "unit",
+        "exports",
+        "imports"
       ],
       "optional": []
     },

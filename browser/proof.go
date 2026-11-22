@@ -71,7 +71,7 @@ func (p CloseProof) claims(realm Realm, authority Authority) bool {
 func (p CloseProof) exitKind() string { return proofKindPrefix + string(p.ScopeKind) }
 
 func (p CloseProof) exitProof(encoded []byte) sqlite.ExitProof {
-	return sqlite.ExitProof{AttemptID: p.Execution.ID, Realm: string(RealmID(p.Realm)), ExitID: p.CloseID, Kind: p.exitKind(), Evidence: encoded}
+	return sqlite.ExitProof{AttemptID: p.Execution.ID, Realm: string(p.Realm.HostRealm()), ExitID: p.CloseID, Kind: p.exitKind(), Evidence: encoded}
 }
 
 func (b *Bridge) releaseProven(ctx context.Context, proof CloseProof, attempt sqlite.Attempt, exit sqlite.ExitProof) error {
@@ -145,7 +145,7 @@ func (b *Bridge) bindProofUse(ctx context.Context, session *realmSession, attemp
 		return err
 	}
 	approval := record.Approval
-	if approval.ExecutionID != attempt.ID || approval.Realm != RealmID(session.realm) || approval.Epoch != attempt.Epoch || approval.Scope != attempt.Scope || approval.ScopeGeneration != attempt.ScopeGeneration || !sameSet(approval.Instances, proof.Instances) {
+	if approval.ExecutionID != attempt.ID || approval.Realm != session.realm.HostRealm() || approval.Epoch != attempt.Epoch || approval.Scope != attempt.Scope || approval.ScopeGeneration != attempt.ScopeGeneration || !sameSet(approval.Instances, proof.Instances) {
 		return framehost.ErrStaleBinding
 	}
 	return nil
@@ -188,7 +188,7 @@ func (b *Bridge) releaseUseTree(ctx context.Context, id string, attempt sqlite.A
 		delegations := make([]useDelegation, 0, len(b.uses))
 		for _, live := range b.uses {
 			grant := live.grant
-			delegations = append(delegations, useDelegation{grant.ID, grant.ParentUseID, grant.Execution.ID, RealmID(grant.Realm)})
+			delegations = append(delegations, useDelegation{grant.ID, grant.ParentUseID, grant.Execution.ID, grant.Realm.HostRealm()})
 		}
 		err := coverDelegated(covered, delegations, attempt)
 		if err != nil {

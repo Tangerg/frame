@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	jsonv2 "encoding/json/v2"
+	json "encoding/json/v2"
 	"errors"
 	"slices"
 
@@ -13,6 +13,9 @@ import (
 	"github.com/Tangerg/frame/value"
 )
 
+// Attempt is one durable execution request. It pins the exact preparation,
+// including the scope generation and instance generation it runs under, so a
+// fenced scope or a successor instance cannot reuse its protection.
 type Attempt struct {
 	ID              string                    `json:"id"`
 	Epoch           uint64                    `json:"epoch"`
@@ -20,21 +23,28 @@ type Attempt struct {
 	Binding         framehost.BindingSnapshot `json:"binding"`
 	Realm           string                    `json:"realm"`
 	Profile         framehost.Profile         `json:"profile"`
-	Parent          string                    `json:"parent,omitempty"`
-	Scope           framehost.ScopeID         `json:"scope,omitempty"`
-	ScopeGeneration uint64                    `json:"scopeGeneration,omitzero"`
-	Generation      uint64                    `json:"generation,omitzero"`
+	Scope           framehost.ScopeID         `json:"scope"`
+	ScopeGeneration uint64                    `json:"scopeGeneration"`
+	Generation      uint64                    `json:"generation"`
+}
+
+// NewAttempt projects the original preparation onto the request that protects
+// its execution; realm names the authority that will own that execution.
+func NewAttempt(setup framehost.Setup, realm string) Attempt {
+	grant := setup.ScopeGrant()
+	return Attempt{
+		ID: setup.InstanceID(), Epoch: setup.Epoch(), Source: setup.Binding().Source, Binding: setup.Snapshot(),
+		Realm: realm, Profile: setup.Unit().Profile,
+		Scope: grant.WireID(), ScopeGeneration: grant.Generation(), Generation: setup.Generation(),
+	}
 }
 
 func (a Attempt) Validate() error {
 	if !frame.ValidName(a.ID) || !frame.ValidName(a.Realm) || a.Epoch == 0 || a.Profile.Validate() != nil {
 		return errors.New("sqlite: invalid execution attempt")
 	}
-	if a.Parent != "" && (a.Parent == a.ID || !frame.ValidName(a.Parent)) {
-		return errors.New("sqlite: invalid parent attempt")
-	}
-	if a.Profile == framehost.BrowserJS && (a.Scope.Validate() != nil || a.ScopeGeneration == 0 || a.Generation == 0) {
-		return errors.New("sqlite: browser attempt requires its exact scope and generation")
+	if a.Scope.Validate() != nil || a.ScopeGeneration == 0 || a.Generation == 0 {
+		return errors.New("sqlite: attempt requires its exact scope and generations")
 	}
 	if err := a.Source.Validate(); err != nil {
 		return err
@@ -93,27 +103,15 @@ func (s *storeAuthority) RecordAttempt(ctx context.Context, attempt Attempt) (fr
 	if attempt.Epoch != s.epoch {
 		return framehost.NotCommitted, framehost.ErrFenced
 	}
-	encoded, err := jsonv2.Marshal(attempt)
+	encoded, err := json.Marshal(attempt)
 	if err != nil {
 		return framehost.NotCommitted, err
-	}
-	if len(encoded) > s.maxRequestBytes {
-		return framehost.NotCommitted, frame.ErrCapacity
 	}
 	state := framehost.NotCommitted
 	err = s.admission.Under(ctx, func() error {
 		var err error
-		state, err = s.protectionTransaction(ctx, func(tx Executor) error {
-			return recordOnce(func() (bool, error) {
-				row, err := readProtectionRow(ctx, tx, attemptByID, attempt.ID)
-				if err != nil {
-					return false, err
-				}
-				if _, err := decodeAttempt(row); err != nil {
-					return false, err
-				}
-				return bytes.Equal(row.request, encoded), nil
-			}, func() error { return insertAttempt(ctx, tx, attempt, encoded) })
+		state, err = recordProtection(ctx, s, attemptByID, attempt.ID, encoded, protectedRecord.attempt, func(tx Executor) error {
+			return insertAttempt(ctx, tx, attempt, encoded)
 		})
 		return err
 	})
@@ -121,19 +119,6 @@ func (s *storeAuthority) RecordAttempt(ctx context.Context, attempt Attempt) (fr
 }
 
 func insertAttempt(ctx context.Context, tx Executor, attempt Attempt, encoded []byte) error {
-	if attempt.Parent != "" {
-		row, err := readProtectionRow(ctx, tx, attemptByID, attempt.Parent)
-		if err != nil {
-			return err
-		}
-		parent, err := decodeAttempt(row)
-		if err != nil {
-			return err
-		}
-		if parent.State != AttemptApproved {
-			return frame.ErrClosed
-		}
-	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO frame_attempts(id,request,request_digest,state) VALUES(?,?,?,?)`, attempt.ID, encoded, value.Hash(encoded), AttemptApproved)
 	return err
 }
@@ -142,7 +127,7 @@ const attemptRecords = `SELECT id,request,request_digest,state,proof FROM frame_
 const attemptByID = attemptRecords + ` WHERE id=?`
 
 func (s *storeAuthority) Attempts(ctx context.Context) ([]AttemptRecord, error) {
-	return readRecords(ctx, s, attemptRecords+" ORDER BY id", decodeAttempt)
+	return readRecords(ctx, s, attemptRecords+" ORDER BY id", protectedRecord.attempt)
 }
 func (s *storeAuthority) PendingAttempts(ctx context.Context) ([]AttemptRecord, error) {
 	records, err := s.Attempts(ctx)
@@ -152,32 +137,33 @@ func (s *storeAuthority) PendingAttempts(ctx context.Context) ([]AttemptRecord, 
 	return slices.DeleteFunc(records, func(record AttemptRecord) bool { return !record.State.pending() }), nil
 }
 func (s *storeAuthority) Attempt(ctx context.Context, id string) (AttemptRecord, error) {
-	return readRecord(ctx, s, attemptByID, decodeAttempt, id)
+	return readRecord(ctx, s, attemptByID, protectedRecord.attempt, id)
 }
 
-func decodeAttempt(row protectedRecord) (record AttemptRecord, err error) {
+// attempt decodes this row as an attempt; any inconsistency is corruption.
+func (r protectedRecord) attempt() (record AttemptRecord, err error) {
 	defer func() { err = corruptProtection(err) }()
-	state := AttemptState(row.state)
+	state := AttemptState(r.state)
 	if err := state.validate(); err != nil {
 		return record, err
 	}
-	if err := jsonv2.Unmarshal(row.request, &record.Attempt, jsonv2.RejectUnknownMembers(true)); err != nil {
+	if err := json.Unmarshal(r.request, &record.Attempt, json.RejectUnknownMembers(true)); err != nil {
 		return record, err
 	}
 	if err := record.Attempt.Validate(); err != nil {
 		return record, err
 	}
-	if record.Attempt.ID != row.id {
+	if record.Attempt.ID != r.id {
 		return record, errors.New("sqlite: execution attempt identity mismatch")
 	}
 	record.State = state
 	if state == AttemptApproved {
-		if len(row.proof) != 0 {
+		if len(r.proof) != 0 {
 			return record, errors.New("sqlite: approved attempt has exit proof")
 		}
 		return record, nil
 	}
-	if err := jsonv2.Unmarshal(row.proof, &record.Proof, jsonv2.RejectUnknownMembers(true)); err != nil {
+	if err := json.Unmarshal(r.proof, &record.Proof, json.RejectUnknownMembers(true)); err != nil {
 		return record, err
 	}
 	if !record.ExitProven() {
@@ -189,8 +175,8 @@ func decodeAttempt(row protectedRecord) (record AttemptRecord, err error) {
 // ExecutionDependencies is deliberately separate from business Held queries.
 // A Ready idle instance may be retired first; its protection remains here until
 // actual exit is confirmed, including attempts with an unknown creation result.
-func (s *storeAuthority) ExecutionDependencies(ctx context.Context) ([]framehost.Dependency, error) {
-	var dependencies []framehost.Dependency
+func (s *storeAuthority) ExecutionDependencies(ctx context.Context) ([]framehost.ReleaseRef, error) {
+	var dependencies []framehost.ReleaseRef
 	err := s.Read(ctx, func(tx Reader) error {
 		protection, err := readProtectionSnapshot(ctx, tx)
 		if err != nil {
@@ -219,7 +205,7 @@ func (s *storeAuthority) SettleAttempt(ctx context.Context, attempt Attempt, pro
 	if proof.Realm != attempt.Realm {
 		return ErrConflict
 	}
-	original, err := jsonv2.Marshal(attempt)
+	original, err := json.Marshal(attempt)
 	if err != nil {
 		return err
 	}
@@ -236,44 +222,56 @@ func (s *storeAuthority) recordRelease(ctx context.Context, id string, proof Exi
 	if !proof.proves(id) {
 		return errors.New("sqlite: exact exit evidence is required")
 	}
-	encoded, err := encodeProof(proof)
+	encoded, err := json.Marshal(proof)
 	if err != nil {
 		return err
 	}
+	release := attemptRelease{proof: proof, encoded: encoded, target: target, original: original}
 	return s.admission.Maintenance(ctx, func() error {
-		_, err := s.protectionTransaction(ctx, func(tx Executor) error {
-			row, err := readProtectionRow(ctx, tx, attemptByID, id)
-			if errors.Is(err, sql.ErrNoRows) && original != nil {
-				return nil
-			}
-			if err != nil {
-				return err
-			}
-			if original != nil && !bytes.Equal(row.request, original) {
-				return ErrConflict
-			}
-			record, err := decodeAttempt(row)
-			if err != nil {
-				return err
-			}
-			if record.Attempt.Realm != proof.Realm {
-				return ErrConflict
-			}
-			next, err := record.State.afterProof(target)
-			if err != nil {
-				return err
-			}
-			if record.State != AttemptApproved && !bytes.Equal(row.proof, encoded) {
-				return ErrConflict
-			}
-			if next == record.State {
-				return nil
-			}
-			_, err = tx.ExecContext(ctx, `UPDATE frame_attempts SET state=?,proof=? WHERE id=? AND state=?`, next, encoded, id, record.State)
-			return err
-		})
+		_, err := s.protectionTransaction(ctx, func(tx Executor) error { return release.apply(ctx, tx) })
 		return err
 	})
+}
+
+// attemptRelease advances one attempt by its exact proof. A nil original
+// addresses the attempt by ID alone; otherwise only those request bytes may.
+type attemptRelease struct {
+	proof    ExitProof
+	encoded  []byte
+	target   AttemptState
+	original []byte
+}
+
+func (r attemptRelease) apply(ctx context.Context, tx Executor) error {
+	row, err := readProtectionRow(ctx, tx, attemptByID, r.proof.AttemptID)
+	if errors.Is(err, sql.ErrNoRows) && r.original != nil {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if r.original != nil && !bytes.Equal(row.request, r.original) {
+		return ErrConflict
+	}
+	record, err := row.attempt()
+	if err != nil {
+		return err
+	}
+	if record.Attempt.Realm != r.proof.Realm {
+		return ErrConflict
+	}
+	next, err := record.State.afterProof(r.target)
+	if err != nil {
+		return err
+	}
+	if record.State != AttemptApproved && !bytes.Equal(row.proof, r.encoded) {
+		return ErrConflict
+	}
+	if next == record.State {
+		return nil
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE frame_attempts SET state=?,proof=? WHERE id=? AND state=?`, next, r.encoded, r.proof.AttemptID, record.State)
+	return err
 }
 
 // RecordExitProof records a verified subordinate exit without releasing the

@@ -11,11 +11,12 @@ import (
 )
 
 // Protocol binds a Frame execution profile to a conversation on an attached
-// child. Prepare must validate the frozen declaration before launch and must
-// not acquire resources. The driver alone owns launch, attach and exit proof.
+// child. Prepare must validate the frozen declaration and its own frame limit
+// before launch and must not acquire resources. The driver alone owns launch,
+// attach and exit proof.
 type Protocol interface {
 	Profile() framehost.Profile
-	Prepare(framehost.Setup, ExportMetadata, int) (Connection, error)
+	Prepare(setup framehost.Setup, metadata ExportMetadata, maxFrameBytes int) (Connection, error)
 }
 
 // Connection is private to one execution. Close follows every Connect, including

@@ -80,7 +80,7 @@ func (b *Bridge) Publish(ctx context.Context, token string, request PublicationR
 
 func (o ObjectRef) membershipOf(unit PlannedUnit) bool {
 	return o.validIn(unit.Instance.ID) &&
-		o.Export.Contract.Kind == framehost.PointKind && declaresContract(unit, o.Export.Contract)
+		o.Export.Contract.Kind == framehost.PointKind && unit.declaresContract(o.Export.Contract)
 }
 
 func (b *Bridge) publishObject(ctx context.Context, request PublicationRequest) (framehost.Publication, error) {

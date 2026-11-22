@@ -150,7 +150,7 @@ func TestBindingPreparationRetainsExactProviderInstances(t *testing.T) {
 					_, err = host.ActivateIn(ctx, config.Realm, root)
 				case "declaration":
 					var use framehost.Use
-					use, err = host.AcquireUnit(ctx, root.Unit(), config)
+					use, err = host.AcquireUnit(ctx, root.UnitRef, config)
 					if use.Valid() {
 						_, _ = use.Close(ctx)
 					}

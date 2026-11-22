@@ -240,7 +240,7 @@ func TestIndependentWriterCanCancelWhileAnotherOwnerHoldsTheSlot(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- sqlite.RunIndependentTx(ctx, peer, func(context.Context) error { t.Error("canceled writer ran"); return nil })
+		done <- peer.RunIndependentTx(ctx, func(context.Context) error { t.Error("canceled writer ran"); return nil })
 	}()
 	select {
 	case err := <-done:
@@ -255,8 +255,8 @@ func TestIndependentWriterCanCancelWhileAnotherOwnerHoldsTheSlot(t *testing.T) {
 	if err := writer.Rollback(); err != nil {
 		t.Fatal(err)
 	}
-	if err := sqlite.RunInTx(t.Context(), peer, func(ctx context.Context) error {
-		_, err := sqlite.Connection(ctx, peer).ExecContext(ctx, "INSERT INTO facts VALUES(1)")
+	if err := peer.RunInTx(t.Context(), func(ctx context.Context) error {
+		_, err := peer.Executor(ctx).ExecContext(ctx, "INSERT INTO facts VALUES(1)")
 		return err
 	}); err != nil {
 		t.Fatal(err)

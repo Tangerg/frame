@@ -154,7 +154,7 @@ func (h *hostState) ValidateUse(ctx context.Context, use Use) error {
 }
 
 func (h *hostState) validateUseLocked(use *useBorrow) error {
-	if use == nil || use.authority != h.identity {
+	if use == nil || use.authority != h.domain {
 		return frame.ErrInvalid
 	}
 	if h.uses[use.id] != use {
@@ -223,11 +223,11 @@ func (h *hostState) useConfig(config UseConfig) (UseConfig, error) {
 	if !config.Owner.Valid() {
 		return config, frame.ErrInvalid
 	}
-	if config.Owner.HasDomain() && !h.identity.Owns(config.Owner) {
+	if config.Owner.HasDomain() && !h.domain.Owns(config.Owner) {
 		return config, fmt.Errorf("%w: use owner belongs to another authority", frame.ErrInvalid)
 	}
 	if parent := config.Parent; parent.Valid() {
-		if parent.borrow.authority != h.identity || config.Owner != parent.borrow.lifetime {
+		if parent.borrow.authority != h.domain || config.Owner != parent.borrow.lifetime {
 			return config, frame.ErrInvalid
 		}
 		inherited, err := h.inherit(config, parent.borrow)
@@ -304,9 +304,9 @@ func (h *hostState) acquireActivated(ctx context.Context, config UseConfig, reco
 }
 
 func (h *hostState) acquirePrepared(ctx context.Context, plan *capturedPlan, config UseConfig, recordID string) (_ Use, err error) {
-	lifetime := h.newLifetime(context.WithoutCancel(ctx))
+	lifetime := h.domain.NewLifetime(context.WithoutCancel(ctx))
 	use := &useBorrow{
-		authority:      h.identity,
+		authority:      h.domain,
 		id:             rand.Text(),
 		executionID:    config.ExecutionID,
 		scope:          config.Scope,
@@ -554,68 +554,4 @@ func (u *useBorrow) reserveOwner(owner frame.Lifetime, dependencies ...frame.Res
 	ctx := owner.Context()
 	u.stops = append(u.stops, context.AfterFunc(ctx, func() { u.lifetime.BeginClose(context.Cause(ctx)) }))
 	return resource, nil
-}
-
-func Borrow[M, V any](ctx context.Context, use Use, selection Selection[M, V], call func(context.Context, []V) error) error {
-	if call == nil {
-		return frame.ErrInvalid
-	}
-	return withAccess(ctx, use, func(a Access) error {
-		members, err := selection.Members(a)
-		if err != nil {
-			return err
-		}
-		values := make([]V, len(members))
-		for i, member := range members {
-			values[i] = member.Value
-		}
-		return call(a.Context(), values)
-	})
-}
-
-func BorrowExport[V any](ctx context.Context, use Use, source ExportRef, call func(context.Context, V) error) error {
-	if use.borrow == nil || call == nil {
-		return frame.ErrInvalid
-	}
-	borrow := use.borrow
-	work, err := borrow.enter(ctx)
-	if err != nil {
-		return err
-	}
-	defer work.Finish()
-	value, found := exportValue[V](borrow, source)
-	if !found {
-		return frame.ErrContractMismatch
-	}
-	return call(work.Context(), value)
-}
-
-func exportValue[V any](use *useBorrow, source ExportRef) (V, bool) {
-	use.host.mu.Lock()
-	defer use.host.mu.Unlock()
-	for _, member := range use.members {
-		if member.source == source {
-			value, ok := member.value.(V)
-			return value, ok
-		}
-	}
-	var zero V
-	return zero, false
-}
-
-func WithPlan(ctx context.Context, host Host, plan BindingPlan, scope ScopeGrant, call func(Use) error) (err error) {
-	if framevalue.IsNil(ctx) || !host.Valid() || !plan.Valid() || call == nil {
-		return frame.ErrInvalid
-	}
-	owner := frame.NewLifetime(context.WithoutCancel(ctx))
-	causes := owner.ObserveCloseCauses()
-	defer func() {
-		_, closeErr := owner.Close(context.Background())
-		err = causes.Join(err, closeErr)
-	}()
-	use, err := host.Acquire(ctx, plan, UseConfig{Owner: owner, Scope: scope, Realm: plan.plan.header().realm})
-	if err != nil {
-		return err
-	}
-	return call(use)
 }

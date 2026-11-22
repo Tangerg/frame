@@ -43,7 +43,7 @@ func generateConsumer(t *testing.T, directory string, samples []projectionSample
 	if err := os.WriteFile(source, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Generate(source, filepath.Join(directory, "schema"), directory, GoOutput{Path: filepath.Join(directory, "types.go"), Package: "consumer"}); err != nil {
+	if err := Generate(GenerateConfig{Source: source, ArtifactDirectory: filepath.Join(directory, "schema"), TypeScriptDirectory: directory, Go: []GoOutput{{Path: filepath.Join(directory, "types.go"), Package: "consumer"}}}); err != nil {
 		t.Fatal(err)
 	}
 }

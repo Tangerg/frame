@@ -1,3 +1,5 @@
+// Command frame packages, inspects and verifies plugin release archives and
+// generates contract projections from published capability descriptors.
 package main
 
 import (
@@ -56,5 +58,9 @@ func runContract(args []string) error {
 	if flags.NArg() != 0 || *feature == "" {
 		return fmt.Errorf("%w: one feature descriptor is required", frame.ErrInvalid)
 	}
-	return contractgen.Generate(*feature, *out, *ts, contractgen.GoOutput{Path: *goOut, Package: *goPackage, Prefix: *goPrefix})
+	config := contractgen.GenerateConfig{Source: *feature, ArtifactDirectory: *out, TypeScriptDirectory: *ts}
+	if *goOut != "" {
+		config.Go = append(config.Go, contractgen.GoOutput{Path: *goOut, Package: *goPackage, Prefix: *goPrefix})
+	}
+	return contractgen.Generate(config)
 }

@@ -150,7 +150,7 @@ func (b *Bridge) captureLease(ctx context.Context, realm Realm, request Snapshot
 	if err != nil {
 		return nil, err
 	}
-	original, err := b.config.Host.SnapshotIn(ctx, RealmID(realm), points...)
+	original, err := b.config.Host.SnapshotIn(ctx, realm.HostRealm(), points...)
 	if err != nil {
 		return nil, err
 	}

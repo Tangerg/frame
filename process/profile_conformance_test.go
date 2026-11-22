@@ -54,7 +54,7 @@ func TestRealProcessDriverRejectsNativeObjectsBeforeCreationOrBusiness(t *testin
 			if len(binding.Roots) != 1 || binding.Roots[0] != e.ref || e.source.programCalls.Load() != 1 {
 				t.Fatal("profile rejection changed the independent Portable binding")
 			}
-			if err := e.host.SetEnabled(context.WithoutCancel(e.ctx), "echo", false); err != nil {
+			if err := e.host.Disable(context.WithoutCancel(e.ctx), "echo"); err != nil {
 				t.Fatal(err)
 			}
 			if err := e.host.WaitRetired(e.ctx, "echo"); err != nil {

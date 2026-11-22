@@ -35,6 +35,7 @@ type BridgeConfig struct {
 	PublicConfiguration func(context.Context, framehost.Setup) ([]byte, error)
 	MaxRealms           int
 	MaxPending          int
+	MaxRoutes           int
 	MaxMessageBytes     int64
 	Points              []framehost.ContractRef
 }
@@ -101,6 +102,9 @@ func NewBridge(config BridgeConfig) (*Bridge, error) {
 	if config.MaxPending, err = frame.ResolveLimit("browser pending executions", config.MaxPending, defaultMaxPending); err != nil {
 		return nil, err
 	}
+	if config.MaxRoutes, err = frame.ResolveLimit("browser event routes", config.MaxRoutes, defaultMaxRoutes); err != nil {
+		return nil, err
+	}
 	if config.MaxMessageBytes, err = frame.ResolveLimit("browser message bytes", config.MaxMessageBytes, defaultMaxMessageBytes); err != nil {
 		return nil, err
 	}
@@ -120,7 +124,7 @@ func NewBridge(config BridgeConfig) (*Bridge, error) {
 		publications: make(map[string]*controlOperation),
 		snapshots:    make(map[string]*snapshotLease),
 		uses:         make(map[string]*browserUse),
-		routes:       newBoundedTable[string, browserRoute]("event routes", config.MaxPending),
+		routes:       newBoundedTable[string, browserRoute]("event routes", config.MaxRoutes),
 	}, nil
 }
 
@@ -146,6 +150,3 @@ func (*Bridge) RealmBound() bool           { return true }
 func (b *Bridge) Authority() Authority     { return b.authority }
 
 const useResourcePrefix = "browser use "
-
-// jsonNull is the wire spelling of absent Point metadata.
-const jsonNull = "null"

@@ -33,6 +33,12 @@ type sqliteRows interface {
 
 type cursorConnector struct{ driver.Connector }
 
+// memoryDatabase is SQLite's private in-memory database: schema admission
+// rehearses statements there, and a durable Store refuses it.
+const memoryDatabase = ":memory:"
+
+// openDatabase is the one path to a SQLite pool, so every connection carries
+// the cursor ownership of cursorConnector.
 func openDatabase(dsn string) (*sql.DB, error) {
 	connector, err := modernc.NewConnector(dsn)
 	if err != nil {

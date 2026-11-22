@@ -84,7 +84,7 @@ func (b *Bridge) useConfig(session *realmSession, entry *browserExecution, paren
 	}
 	// The Realm application consumes these exports. Making the provider execution
 	// own that borrow would make its exit wait on its own resource protection.
-	config := framehost.UseConfig{Owner: session.application, Scope: entry.setup.ScopeGrant(), Realm: RealmID(session.realm), ExecutionID: entry.plan.Execution.ID}
+	config := framehost.UseConfig{Owner: session.application, Scope: entry.setup.ScopeGrant(), Realm: session.realm.HostRealm(), ExecutionID: entry.plan.Execution.ID}
 	if parentID != "" {
 		b.mu.Lock()
 		parent := b.uses[parentID]

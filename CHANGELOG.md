@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.5.0 — 2026-11-23
+
+Upgrade guidance is in [the v0.5.0 release notes](docs/releases/v0.5.0.md).
+
 - **Breaking:** The local stdio protocol projects its `hello` reply shape into
   `process.WireShapes.Description` and therefore into the protocol digest. The
   Node SDK admits its own description against that shape, so Go and Node can no

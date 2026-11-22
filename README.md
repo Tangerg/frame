@@ -33,28 +33,29 @@ The indexer receives a document-scoped reader and writer, starts only after acti
 
 ## Install
 
-v0.4.0 separates calling evidence from execution adapters and contains breaking
-Go API changes from v0.3.0. Follow the
-[upgrade guide](docs/releases/v0.4.0.md) before updating an existing application.
+v0.5.0 gives each fact one owner across the Host, process, distribution, SQLite,
+browser and SDK, and contains breaking Go API, release-format and protocol changes
+from v0.4.0. Follow the [upgrade guide](docs/releases/v0.5.0.md) before updating
+an existing application.
 
 Install the Go module in an application:
 
 ```sh
-go get github.com/Tangerg/frame@v0.4.0
+go get github.com/Tangerg/frame@v0.5.0
 ```
 
 Install the command-line tools when needed:
 
 ```sh
-go install github.com/Tangerg/frame/cmd/frame@v0.4.0
-go install github.com/Tangerg/frame/cmd/frame-runner@v0.4.0
+go install github.com/Tangerg/frame/cmd/frame@v0.5.0
+go install github.com/Tangerg/frame/cmd/frame-runner@v0.5.0
 ```
 
-Download `frame-sdk-0.4.0.tgz` from the [v0.4.0 release](https://github.com/Tangerg/frame/releases/tag/v0.4.0)
+Download `frame-sdk-0.5.0.tgz` from the [v0.5.0 release](https://github.com/Tangerg/frame/releases/tag/v0.5.0)
 and install it in the consuming application:
 
 ```sh
-npm install ./frame-sdk-0.4.0.tgz
+npm install ./frame-sdk-0.5.0.tgz
 ```
 
 The tarball includes the native, browser, Node and React entries. The SDK is
